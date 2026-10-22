@@ -406,29 +406,14 @@ pub(super) fn apply_choices(
     Ok(())
 }
 
-/// The mode a start requests. No argument means the approved allocation;
-/// retries keep their persisted workspace. The legacy flag is not an approval.
+/// Approval alone selects a task's mode. A legacy allocation flag never
+/// changes it; tasks without an approved mode retain the original policy.
 pub(super) fn launch_mode(run: &Run, task: &Task, launch: &WorkerLaunch) -> WorkspaceMode {
+    if let Some(fixed) = task.approved.as_ref().and_then(|a| a.workspace_mode) {
+        return fixed;
+    }
     if let Some(saved) = &task.workspace {
         return saved.plan.mode;
-    }
-    let fixed = task.approved.as_ref().and_then(|a| a.workspace_mode);
-    if fixed.is_some() {
-        if let Some(new) = launch.new_worktree {
-            let asked = if new {
-                WorkspaceChoice::Worktree.mode(run)
-            } else {
-                WorkspaceMode::Direct
-            };
-            let root = task_root(run, task.destination.as_ref());
-            // Mission's actual allocation for a plain folder is Direct,
-            // including a legacy launch that says newWorktree:true.
-            if asked == WorkspaceMode::Mission && !workflow::has_git(root) {
-                return WorkspaceMode::Direct;
-            }
-            return auto_mode_for(asked, run.workspace_mode, root);
-        }
-        return fixed.unwrap();
     }
     auto_mode_for(
         first_mode(run.workspace_mode, launch.access),
@@ -774,9 +759,17 @@ impl OrchestrationStore {
                 }
             }
             saved.plan.clone()
-        } else if let Some(previous) = previous.filter(|a| !a.cwd.is_empty()) {
-            // Legacy records can be adopted for retries, but are not silently
-            // granted cleanup ownership over a person's existing checkout.
+        } else if let Some(previous) = previous.filter(|a| {
+            !a.cwd.is_empty()
+                && task
+                    .approved
+                    .as_ref()
+                    .and_then(|a| a.workspace_mode)
+                    .is_none()
+        }) {
+            // Only records without an approved mode adopt a previous checkout.
+            // An approved task allocates its approved plan even if a legacy
+            // attempt names another location. Adoption grants no cleanup ownership.
             let mut adopted = workflow::plan(&previous.cwd, "", &task.id, WorkspaceMode::Direct)?;
             if !previous.branch.is_empty() && previous.branch != adopted.branch {
                 return Err("The previous attempt's branch changed.".into());
@@ -1800,7 +1793,15 @@ pub(super) mod tests {
             new_worktree: None,
             base_branch: String::new(),
         };
-        let (run, task, reserved, previous) = store.reserve_attempt("chat:master", &launch)?;
+        prepare_launch(store, &launch, StartedBy::Coordinator)
+    }
+    fn prepare_launch(
+        store: &OrchestrationStore,
+        launch: &WorkerLaunch,
+        by: StartedBy<'_>,
+    ) -> Result<Attempt, String> {
+        let (run, task, reserved, previous) =
+            store.reserve_attempt_for("chat:master", launch, by)?;
         let workspace = store.prepare_task_workspace(
             &ChatManager::default(),
             &run,
@@ -4274,7 +4275,7 @@ pub(super) mod tests {
                     fixed.approved.as_ref().unwrap().workspace_mode,
                     Some(choice.mode(&run))
                 );
-                let wrong = WorkerLaunch {
+                let launch = WorkerLaunch {
                     task_id: task.id.clone(),
                     agent: ChatAgent::Codex,
                     model: None,
@@ -4283,18 +4284,11 @@ pub(super) mod tests {
                     new_worktree: Some(choice != WorkspaceChoice::Worktree),
                     base_branch: String::new(),
                 };
-                for by in [
-                    StartedBy::Coordinator,
-                    StartedBy::Page { retry_of: None },
-                    StartedBy::Recovery("not-reserved"),
-                ] {
-                    assert!(store
-                        .reserve_attempt_for("chat:master", &wrong, by)
-                        .unwrap_err()
-                        .contains("workspace mode"));
-                }
-                assert!(store.snapshot(Some(&run.id)).unwrap().attempts.is_empty());
-                let launched = prepare(&store, &task, access).unwrap();
+                let launched = prepare_launch(&store, &launch, StartedBy::Coordinator).unwrap();
+                assert_eq!(
+                    serde_json::to_value(stored(&store, &task).approved).unwrap(),
+                    serde_json::to_value(&fixed.approved).unwrap()
+                );
                 assert_eq!(launched.is_worktree, choice == WorkspaceChoice::Worktree);
                 if choice == WorkspaceChoice::Checkout {
                     assert_eq!(launched.cwd, repo.root);
@@ -4330,6 +4324,259 @@ pub(super) mod tests {
                 );
                 assert_eq!(prepare(&store, &task, access).unwrap().cwd, launched.cwd);
             }
+        }
+    }
+
+    fn approved_flag_fixture(
+        mode: WorkspaceMode,
+        choice: Option<WorkspaceChoice>,
+    ) -> (Repo, OrchestrationStore, Run, Task) {
+        let repo = Repo::new();
+        let (store, run, task) = setup(&repo, mode);
+        store.require_plan_approval(&run.id).unwrap();
+        selected_worker(&store, &task, Access::Auto);
+        choose_on_card(
+            &store,
+            &run,
+            choice
+                .map(|c| BTreeMap::from([(task.id.clone(), c)]))
+                .unwrap_or_default(),
+        )
+        .unwrap();
+        let task = stored(&store, &task);
+        (repo, store, run, task)
+    }
+
+    fn preparation_failed_without_workspace(store: &OrchestrationStore, task: &Task) -> Attempt {
+        let launch = super::super::tests::launch_for(&task.id);
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
+        store
+            .fail_preparation(
+                &attempt.id,
+                "Preparation temporarily unavailable".into(),
+                String::new(),
+                String::new(),
+                false,
+            )
+            .unwrap();
+        let failed = store
+            .snapshot(Some(&task.run_id))
+            .unwrap()
+            .attempts
+            .into_iter()
+            .find(|a| a.id == attempt.id)
+            .unwrap();
+        assert!(failed.cwd.is_empty());
+        assert!(stored(store, task).workspace.is_none());
+        failed
+    }
+
+    /// Exercise reservation AND the real Git allocation. The flag must not
+    /// mutate approval or allocate the alternate mode, branch or path.
+    fn start_in_approved_plan(
+        repo: &Repo,
+        store: &OrchestrationStore,
+        task: &Task,
+        flag: bool,
+        by: StartedBy<'_>,
+    ) -> Attempt {
+        let plan = task
+            .workspace_proposal
+            .as_ref()
+            .unwrap()
+            .plan
+            .as_ref()
+            .unwrap();
+        let launch = WorkerLaunch {
+            new_worktree: Some(flag),
+            ..super::super::tests::launch_for(&task.id)
+        };
+        let attempt = prepare_launch(store, &launch, by).unwrap();
+        assert_eq!(attempt.status, AttemptStatus::Running);
+        assert_eq!(attempt.cwd, plan.cwd);
+        assert_eq!(attempt.branch, plan.branch);
+        assert_eq!(attempt.is_worktree, plan.mode.is_worktree());
+        let after = stored(store, task);
+        assert_eq!(after.workspace.as_ref().unwrap().plan.mode, plan.mode);
+        assert_eq!(
+            serde_json::to_value(&after.approved).unwrap(),
+            serde_json::to_value(&task.approved).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&after.workspace_proposal).unwrap(),
+            serde_json::to_value(&task.workspace_proposal).unwrap()
+        );
+        assert_eq!(
+            repo.git(&["worktree", "list", "--porcelain"])
+                .matches("worktree ")
+                .count(),
+            if plan.mode.is_worktree() { 2 } else { 1 }
+        );
+        attempt
+    }
+
+    /// Review M1: the coordinator's documented false hint, before either a
+    /// first start or retry, must reserve the six reviewed cases and Direct
+    /// controls without Task.workspace.
+    #[test]
+    fn coordinator_false_without_saved_workspace_keeps_the_approved_mode() {
+        let home = crate::test_dir::TestDir::new("workspace-flag-profile");
+        let _profile = crate::profile::started_in(&home);
+        for mode in [
+            WorkspaceMode::Worktree,
+            WorkspaceMode::Mission,
+            WorkspaceMode::Auto,
+            WorkspaceMode::Direct,
+        ] {
+            for retry in [false, true] {
+                let (repo, store, _, task) = approved_flag_fixture(mode, None);
+                if retry {
+                    preparation_failed_without_workspace(&store, &task);
+                }
+                assert!(stored(&store, &task).workspace.is_none());
+                start_in_approved_plan(&repo, &store, &task, false, StartedBy::Coordinator);
+            }
+        }
+    }
+
+    /// Review M2: the page generates true from an empty preparation cwd.
+    /// Checkout on the plan card fixes Direct across all four run policies.
+    #[test]
+    fn page_true_after_preparation_failure_keeps_the_approved_mode() {
+        let home = crate::test_dir::TestDir::new("workspace-flag-profile");
+        let _profile = crate::profile::started_in(&home);
+        for (mode, choice) in [
+            (WorkspaceMode::Direct, WorkspaceChoice::Checkout),
+            (WorkspaceMode::Auto, WorkspaceChoice::Checkout),
+            (WorkspaceMode::Mission, WorkspaceChoice::Checkout),
+            (WorkspaceMode::Worktree, WorkspaceChoice::Checkout),
+            (WorkspaceMode::Worktree, WorkspaceChoice::Worktree),
+            (WorkspaceMode::Mission, WorkspaceChoice::Worktree),
+        ] {
+            let (repo, store, _, task) = approved_flag_fixture(mode, Some(choice));
+            let failed = preparation_failed_without_workspace(&store, &task);
+            let page_flag = failed.cwd.trim().is_empty();
+            assert!(page_flag);
+            start_in_approved_plan(
+                &repo,
+                &store,
+                &task,
+                page_flag,
+                StartedBy::Page {
+                    retry_of: Some(&failed.id),
+                },
+            );
+        }
+    }
+
+    /// Host recovery shares the same boundary, including the old false hint.
+    #[test]
+    fn recovery_flags_without_saved_workspace_keep_every_approved_mode() {
+        let home = crate::test_dir::TestDir::new("workspace-flag-profile");
+        let _profile = crate::profile::started_in(&home);
+        for mode in [
+            WorkspaceMode::Worktree,
+            WorkspaceMode::Mission,
+            WorkspaceMode::Direct,
+        ] {
+            for flag in [false, true] {
+                let (repo, store, _, task) = approved_flag_fixture(mode, None);
+                let failed = preparation_failed_without_workspace(&store, &task);
+                store
+                    .mutate(|data| {
+                        data.attempts
+                            .get_mut(&failed.id)
+                            .unwrap()
+                            .execution
+                            .next_retry_at = Some(now_ms() - 1);
+                        Ok(())
+                    })
+                    .unwrap();
+                let retry = start_in_approved_plan(
+                    &repo,
+                    &store,
+                    &task,
+                    flag,
+                    StartedBy::Recovery(&failed.id),
+                );
+                assert_eq!(retry.execution.retry_count, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn approved_flags_preserve_saved_workspace_and_retained_work() {
+        let home = crate::test_dir::TestDir::new("workspace-flag-profile");
+        let _profile = crate::profile::started_in(&home);
+        for mode in [
+            WorkspaceMode::Worktree,
+            WorkspaceMode::Mission,
+            WorkspaceMode::Direct,
+        ] {
+            let (repo, store, _, task) = approved_flag_fixture(mode, None);
+            let mut previous = prepare(&store, &task, Access::Auto).unwrap();
+            let work = Path::new(&previous.cwd).join("retained.txt");
+            fs::write(&work, "Keep the worker's changes").unwrap();
+            for flag in [false, true] {
+                report(&store, &previous, WorkerOutcome::Blocked);
+                let retry = start_in_approved_plan(
+                    &repo,
+                    &store,
+                    &task,
+                    flag,
+                    StartedBy::Page {
+                        retry_of: Some(&previous.id),
+                    },
+                );
+                assert_eq!(retry.cwd, previous.cwd);
+                assert_eq!(retry.branch, previous.branch);
+                assert_eq!(
+                    fs::read_to_string(&work).unwrap(),
+                    "Keep the worker's changes"
+                );
+                previous = retry;
+            }
+        }
+    }
+
+    #[test]
+    fn a_legacy_attempt_without_saved_workspace_cannot_change_an_approved_allocation() {
+        let home = crate::test_dir::TestDir::new("workspace-flag-profile");
+        let _profile = crate::profile::started_in(&home);
+        for mode in [
+            WorkspaceMode::Worktree,
+            WorkspaceMode::Mission,
+            WorkspaceMode::Direct,
+        ] {
+            let (repo, store, _, task) = approved_flag_fixture(mode, None);
+            let failed = preparation_failed_without_workspace(&store, &task);
+            let elsewhere = Repo::new();
+            // A nonempty legacy cwd used to skip launch_mode entirely and be
+            // adopted as Direct. It cannot choose an approved task's location.
+            store
+                .mutate(|data| {
+                    let a = data.attempts.get_mut(&failed.id).unwrap();
+                    a.cwd = elsewhere.root.clone();
+                    a.branch = elsewhere.git(&["branch", "--show-current"]);
+                    Ok(())
+                })
+                .unwrap();
+            start_in_approved_plan(
+                &repo,
+                &store,
+                &task,
+                false,
+                StartedBy::Page {
+                    retry_of: Some(&failed.id),
+                },
+            );
+            assert_eq!(
+                elsewhere
+                    .git(&["worktree", "list", "--porcelain"])
+                    .matches("worktree ")
+                    .count(),
+                1
+            );
         }
     }
 
@@ -4592,17 +4839,22 @@ pub(super) mod tests {
             new_worktree: Some(true),
             base_branch: String::new(),
         };
-        assert!(store
-            .reserve_attempt("chat:master", &launch)
-            .unwrap_err()
-            .contains("workspace mode"));
-        assert!(store
-            .reserve_attempt_for("chat:master", &launch, StartedBy::Page { retry_of: None })
-            .unwrap_err()
-            .contains("workspace mode"));
-        assert_eq!(store.snapshot(Some(&run.id)).unwrap().attempts.len(), 0);
         assert_eq!(automation::ready_wave(&before, &before.runs[0]).len(), 1);
-        let one = prepare(&store, &first, Access::Auto).unwrap();
+        let one = prepare_launch(&store, &launch, StartedBy::Page { retry_of: None }).unwrap();
+        assert_eq!(one.cwd, repo.root);
+        assert!(!one.is_worktree);
+        assert_eq!(
+            serde_json::to_value(stored(&store, &first).approved).unwrap(),
+            serde_json::to_value(
+                &before
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == first.id)
+                    .unwrap()
+                    .approved
+            )
+            .unwrap()
+        );
         let snapshot = store.snapshot(Some(&run.id)).unwrap();
         assert!(automation::ready_wave(&snapshot, &snapshot.runs[0]).is_empty());
         assert!(prepare(&store, &second, Access::Auto)

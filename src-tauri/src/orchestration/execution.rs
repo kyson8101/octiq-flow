@@ -1013,9 +1013,9 @@ impl OrchestrationStore {
                     attempt.effort.clone()
                 },
                 access: attempt.access,
-                // Recovery keeps the persisted or approved allocation. The
-                // legacy false flag asks for Direct before a workspace was
-                // saved, and would contradict an approved Worktree/Mission.
+                // Recovery keeps the persisted or approved allocation.
+                // Omission reuses a saved workspace; no allocation hint can
+                // change an approved task's mode, branch or path.
                 new_worktree: None,
                 base_branch: String::new(),
             };

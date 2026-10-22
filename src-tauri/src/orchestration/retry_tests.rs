@@ -925,7 +925,8 @@ fn the_coordinator_is_told_what_a_failure_asks_of_it() {
         "This failure is yours to fix.",
         "Worker reported Failed",
         "attempt.execution and its latestError",
-        "orchestration_worker_start with newWorktree=false",
+        "orchestration_worker_start with newWorktree=false to reuse its workspace",
+        "approval fixes the mode",
         "supersedes",
         "never route around it",
     ] {
@@ -956,6 +957,8 @@ fn the_coordinator_is_told_what_a_failure_asks_of_it() {
 
     let brief = master_prompt(&lead.run);
     assert!(brief.contains(retry::BRIEF));
+    assert!(brief.contains("newWorktree=false to reuse its saved workspace"));
+    assert!(brief.contains("The flag never chooses an approved task’s mode"));
     assert!(brief.contains("never route around it with an unrelated new task"));
 }
 

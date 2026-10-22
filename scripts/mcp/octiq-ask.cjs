@@ -2167,7 +2167,7 @@ const ORCHESTRATION_WORKER_START = {
       model: WORKER_SETTINGS_PROPERTIES.model,
       effort: { type: "string", description: "Optional provider-native effort id." },
       access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"], description: "Worker permission level. Use auto unless the task needs a different boundary." },
-      newWorktree: { type: "boolean", description: "Legacy retry hint. Retries always reuse the task workspace. The run policy chooses the initial workspace; false for a first writing attempt requires Current checkout mode." },
+      newWorktree: { type: "boolean", description: "Legacy allocation hint; never selects an approved task mode or location. With an approved mode, false or omission reuses the saved workspace; when none is saved, either flag allocates the approved plan. True prepares the same approved path and branch, preserving retained work. Tasks without an approved mode keep the run policy; false for a first Auto writer requires Current checkout mode." },
       baseBranch: { type: "string", description: "Optional local base branch. Empty means the run checkout's current branch." },
     },
     required: ["taskId", "agent", "access"],
