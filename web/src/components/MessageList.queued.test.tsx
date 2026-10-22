@@ -20,6 +20,22 @@ const draw = (extra: Partial<Message> = {}, busy = true) => renderToStaticMarkup
     onRestoreUnsent={() => {}} onDismissUnsent={() => {}} />,
 );
 
+describe("turns triggered by the person", () => {
+  it.each([
+    ["octiq-complete-7f", "Wrap-up", "Cancel completing this chat"],
+    ["octiq-plan-start-7f", "Plan started", "Cancel telling the agent its plan was started"],
+  ])("keeps %s in its bubble with the existing queue controls and receipt", (turnId, label, cancel) => {
+    const queued = draw({ turnId });
+    expect(queued).toContain("msg-user");
+    expect(queued).toContain("message-bubble");
+    expect(queued).toContain(`wrap-up-note-label">${label}</span>`);
+    expect(queued).toContain(cancel);
+    expect(queued).toContain(">Send now</button>");
+    expect(queued).not.toContain("msg-host");
+    expect(draw({ turnId, echo: "e1" })).toContain(">Sent</span>");
+  });
+});
+
 describe("the host's turn that tells an agent its plan was started", () => {
   // The bubble said `The agent was told to begin` whatever became of the
   // turn, under a Plan panel that said it was not sent.

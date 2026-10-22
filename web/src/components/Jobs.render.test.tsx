@@ -111,6 +111,13 @@ describe("the turn that wakes the agent", () => {
     expect(html).toContain('data-mark="job"');
     expect(html).toContain("What the agent was told · 3 lines");
     expect(html).toMatch(/<details class="wrap-up-note-text">/);
+    expect(html).toMatch(/<article class="msg msg-host [^"]*" aria-label="OctiqFlow job notification">/);
+    expect(html).not.toContain("msg-user");
+    expect(html).not.toContain("message-bubble");
+    expect(html).not.toContain("message-delivery");
+    expect(html).not.toContain('>Sent</span>');
+    expect(html).not.toContain("data-map-turn");
+    expect(html).not.toContain('class="msg-role"');
   });
 
   it("says a job that ended with no exit code as that, never exit null", () => {
@@ -152,8 +159,39 @@ describe("the turn that wakes the agent", () => {
     expect(delivered).not.toContain("Copy");
     const queued = draw(storeOf(), { ...turn, echo: undefined, delivery: "queued" });
     expect(queued).toContain("Cancel telling the agent the job ended");
+    expect(queued).toContain('>×</button>');
+    expect(queued).not.toContain("Send now");
+    expect(queued).not.toContain("message-delivery");
     expect(queued).not.toContain(">Edit</button>");
     const failed = draw(storeOf(), { ...turn, echo: undefined, delivery: "failed" });
     expect(failed).not.toContain("Restore to composer");
+    expect(failed).not.toContain("Cancel telling");
+    expect(delivered).not.toContain("Cancel telling");
+  });
+
+  it("disables cancel while pending, preserves its error, and drops it on pickup or loss", () => {
+    const queued = { ...turn, echo: undefined, delivery: "queued" as const };
+    expect(draw(storeOf(), { ...queued, queueAction: "cancel" })).toMatch(/class="job-wake-cancel"[^>]*disabled/);
+    expect(draw(storeOf(), { ...queued, queueError: "Could not cancel" })).toContain('role="alert">Could not cancel</p>');
+    for (const extra of [{ echo: "e1" }, { takenUp: true }, { queueLost: true }]) {
+      expect(draw(storeOf(), { ...queued, ...extra })).not.toContain("job-wake-cancel");
+    }
+  });
+
+  it("keeps host wake-ups separate from the person's adjacent messages", () => {
+    const messages: Message[] = [
+      { ...turn, id: "u1", turnId: "person-1", blocks: [{ kind: "text", text: "Before the job" }] },
+      turn,
+      { ...turn, id: "u2", turnId: "person-2", blocks: [{ kind: "text", text: "After the job" }] },
+    ];
+    const html = renderToStaticMarkup(<MessageList messages={messages} busy={false} />);
+    const articles = html.match(/<article\b[^>]*>[\s\S]*?<\/article>/g)!;
+    expect(articles).toHaveLength(3);
+    expect(articles[0]).toContain("msg-user");
+    expect(articles[0]).not.toContain("Job finished");
+    expect(articles[1]).toContain("msg-host");
+    expect(articles[1]).not.toContain("Before the job");
+    expect(articles[1]).not.toContain("After the job");
+    expect(articles[2]).toContain("msg-user");
   });
 });

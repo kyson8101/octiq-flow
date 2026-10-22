@@ -20,7 +20,6 @@ import {
 } from "../lib/chatComplete";
 import type { Message } from "../lib/chat";
 import sheet from "./CompleteChat.css?raw";
-import listSource from "./MessageList.tsx?raw";
 
 const preview: CompletePreview = {
   chatKey: "chat:c1",
@@ -300,8 +299,10 @@ describe("the wrap-up's bubble", () => {
     expect(job).toContain('data-mark="job"');
     expect(job).not.toMatch(flag);
     expect(job).toContain("What the agent was told");
-    // The transcript says which of the three a turn is.
-    expect(listSource).toMatch(/<WrapUpNote label=\{wrapUp\.label\} detail=\{wrapUp\.detail\} text=\{answer\} mark=\{planStart \? "start" : jobEnd \? "job" : "complete"\} \/>/);
+    // The transcript selects each mark, including the separate host job line.
+    expect(draw(wrapUp())).toContain('data-mark="complete"');
+    expect(draw({ ...wrapUp(), turnId: "octiq-plan-start-1" })).toContain('data-mark="start"');
+    expect(draw({ ...wrapUp(), turnId: "octiq-job-job_1" })).toContain('data-mark="job"');
   });
 
   it("draws the note without a disclosure when there is no text to open", () => {

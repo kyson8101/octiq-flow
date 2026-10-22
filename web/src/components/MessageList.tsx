@@ -920,7 +920,7 @@ function TurnView({
   const wakeJob = useJob(jobTurn ? jobIdOfTurn(jobTurn) : null);
   const jobEnd = jobTurn ? jobTurnBubble(message, wakeJob?.job, answer) : null;
   /** One of the host's own turns: named, with its words behind a disclosure. */
-  const wrapUp = completion ?? planStart ?? jobEnd;
+  const wrapUp = completion ?? planStart;
 
   // Cards 80 and 81 — a turn made ENTIRELY of things that HAPPENED takes no
   // name. A compaction is not something Claude said, and a `/model` answered by
@@ -955,6 +955,24 @@ function TurnView({
       <article className={`msg msg-answer ${fresh ? "is-new" : ""}`}>
         <AnswerBubble lines={lateLines}
           status={waits && message.queueLost ? "Not delivered" : waits && message.delivery === "queued" ? "Sent when the current reply ends" : undefined} />
+      </article>
+    );
+  }
+
+  // The job's wake-up is a host event, although the provider receives it as a
+  // user turn. Keep it out of the person's bubble and its delivery/actions.
+  if (jobEnd) {
+    return (
+      <article className={`msg msg-host ${fresh ? "is-new" : ""}`} aria-label="OctiqFlow job notification">
+        <div className="msg-body">
+          <div className="job-wake-line">
+            <WrapUpNote label={jobEnd.label} detail={jobEnd.detail} text={answer} mark="job" />
+            {cancel && <button className="job-wake-cancel" type="button" disabled={!!message.queueAction}
+              title="Take this turn back. The agent is not told that the job ended."
+              aria-label="Cancel telling the agent the job ended" onClick={cancel}>×</button>}
+          </div>
+          {message.queueError && <p className="message-delivery-error" role="alert">{message.queueError}</p>}
+        </div>
       </article>
     );
   }
@@ -1023,7 +1041,7 @@ function TurnView({
         </div>
       )}
       <MediaReplyContext.Provider value={message.id}>
-      <MessageBubble user={role === "user"} message={message} wrapUp={!!completion} planStart={!!planStart} jobTurn={!!jobEnd} onStart={start} onCancel={cancel}
+      <MessageBubble user={role === "user"} message={message} wrapUp={!!completion} planStart={!!planStart} onStart={start} onCancel={cancel}
         onRestore={!wrapUp && (unsent || message.delivery === "unknown") && !message.echo && !message.takenUp && onRestoreUnsent && message.turnId ? () => onRestoreUnsent(message.turnId!) : undefined}
         onDismiss={unsent && onDismissUnsent && message.turnId ? () => onDismissUnsent(message.turnId!) : undefined}
         footer={role === "user" && answer && !wrapUp ? <CopyAnswer text={answer} what="message" /> : undefined}>
@@ -1046,7 +1064,7 @@ function TurnView({
             Anything else in a user turn (there is nothing today) still goes the
             ordinary way. */}
         {wrapUp ? (
-          <WrapUpNote label={wrapUp.label} detail={wrapUp.detail} text={answer} mark={planStart ? "start" : jobEnd ? "job" : "complete"} />
+          <WrapUpNote label={wrapUp.label} detail={wrapUp.detail} text={answer} mark={planStart ? "start" : "complete"} />
         ) : role === "user" && blocks.every((b) => b.kind === "text") ? (
           blocks.map((b, i) => <UserText key={i} text={deskRoute ? readDeskRoute(shown((b as { text: string }).text))?.text ?? shown((b as { text: string }).text) : shown((b as { text: string }).text)} />)
         ) : (

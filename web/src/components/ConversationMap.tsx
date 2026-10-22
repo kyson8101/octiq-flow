@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { Message } from "../lib/chat";
 import { WRAP_UP_LABEL, isWrapUpTurn } from "../lib/chatComplete";
 import { PLAN_START_LABEL, isPlanStartTurn } from "../lib/planTurn";
-import { JOB_TURN_LABEL, isJobTurn } from "../lib/jobs";
+import { isJobTurn } from "../lib/jobs";
 import { isAnswerTurn } from "../lib/questionBlock";
 
 import "./ConversationMap.css";
@@ -44,9 +44,8 @@ function previewText(messages: Message[]): string {
 export function conversationMapTurns(turns: Message[][]): ConversationMapTurn[] {
   return turns.flatMap((turn, index) => {
     if (turn[0]?.role !== "user") return [];
-    // An answer to the agent's question is not a message the person sent, and
-    // is no point on the map.
-    if (isAnswerTurn(turn[0].turnId)) return [];
+    // Answers and job wake-ups are not messages the person sent.
+    if (isAnswerTurn(turn[0].turnId) || isJobTurn(turn[0].turnId)) return [];
 
     const answer = turns.slice(index + 1).find((next) => next[0]?.role === "assistant");
     return [
@@ -54,8 +53,7 @@ export function conversationMapTurns(turns: Message[][]): ConversationMapTurn[] 
         id: turn[0].id,
         // The host's wrap-up turn is named, not quoted: the person did not say it.
         prompt: isWrapUpTurn(turn[0].turnId) ? WRAP_UP_LABEL
-          : isPlanStartTurn(turn[0].turnId) ? PLAN_START_LABEL
-          : isJobTurn(turn[0].turnId) ? JOB_TURN_LABEL : previewText(turn) || "Message",
+          : isPlanStartTurn(turn[0].turnId) ? PLAN_START_LABEL : previewText(turn) || "Message",
         reply: answer ? previewText(answer) : "",
       },
     ];

@@ -38,6 +38,16 @@ describe("conversation map point breaks", () => {
     ]);
   });
 
+  it("skips job wake-ups but keeps the person's wrap-up and plan-start anchors", () => {
+    const turn = (id: string) => [{ ...message(id, "user", "Host instructions"), turnId: id }];
+    expect(conversationMapTurns([
+      turn("octiq-job-job_1"), turn("octiq-complete-1"), turn("octiq-plan-start-1"),
+    ])).toEqual([
+      { id: "octiq-complete-1", prompt: "Wrap-up", reply: "" },
+      { id: "octiq-plan-start-1", prompt: "Plan started", reply: "" },
+    ]);
+  });
+
   it("lays out points in turn order", () => {
     expect(conversationMapRank(0, 3)).toBe(0);
     expect(conversationMapRank(1, 3)).toBeCloseTo(1 / 3);
