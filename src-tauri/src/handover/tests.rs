@@ -718,6 +718,7 @@ fn self_in_a_lead_chat_is_that_registered_agent() {
         lead_name: "Potato".into(),
         project_id: "p-app".into(),
         cross_project: false,
+        roster_fingerprint: None,
         created_at: 0,
     });
     let record = request(&w.store, &FakeHost::of(&w), src, ask("self", "r1")).unwrap();
