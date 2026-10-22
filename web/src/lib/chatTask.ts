@@ -54,6 +54,8 @@ export type TaskDelivery = {
   pushed: boolean;
   merged: boolean;
   mergedRemote: boolean;
+  /** Separate git verification of the integration branch, when one exists. */
+  integration?: { branch: string; merged: boolean; mergedRemote: boolean };
   /** `null` is "unverified" — no release check is configured. Never "no". */
   released: boolean | null;
   releaseNote: string;
@@ -279,10 +281,21 @@ export function gitStateOf(workspace?: TaskWorkspace): string {
   return parts.join(" · ");
 }
 
+/** Shared wording for repositories with an integration branch. */
+export function integrationMergeLine(delivery: TaskDelivery): string | undefined {
+  const integration = delivery.integration;
+  if (!integration) return undefined;
+  if (delivery.merged || delivery.mergedRemote) return `Yes, in ${delivery.target}`;
+  if (integration.merged || integration.mergedRemote) return `In ${integration.branch} · not in ${delivery.target}`;
+  return `Not in ${integration.branch} or ${delivery.target}`;
+}
+
 /** What the merge row says, in the words of the check behind it. */
 export function mergeLine(delivery?: TaskDelivery): string {
   if (!delivery) return "Unverified";
   if (delivery.onTarget) return `Working directly on ${delivery.target}`;
+  const integration = integrationMergeLine(delivery);
+  if (integration) return integration;
   if (delivery.mergedRemote) return `In origin/${delivery.target}`;
   if (delivery.merged) return `In ${delivery.target} locally — not pushed`;
   if (delivery.commits === 0) return `Nothing committed to merge into ${delivery.target} yet`;

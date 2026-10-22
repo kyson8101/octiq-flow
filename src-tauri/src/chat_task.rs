@@ -159,6 +159,16 @@ pub struct Workspace {
     pub has_upstream: bool,
 }
 
+/// Containment in an integration branch, separate from the delivery target.
+/// Kept only as part of the last git verification snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Integration {
+    pub branch: String,
+    pub merged: bool,
+    pub merged_remote: bool,
+}
+
 /// What became of the work: committed, pushed, merged, released — each one
 /// checked, none of them taken on anybody's word.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -190,6 +200,8 @@ pub struct Delivery {
     /// merged on this machine, invisible to everyone else.
     #[serde(default)]
     pub merged_remote: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration: Option<Integration>,
     /// `None` is "unverified", and it is not a failure — most projects have no
     /// release check configured.
     #[serde(default)]
@@ -468,7 +480,11 @@ pub fn chat_task_impl(chat_id: String, refresh: bool) -> Result<TaskStatus, Stri
     // that began before a change and finished after it must not be served as
     // an answer to that change for another FRESH_FOR.
     let asked_at = Instant::now();
-    let (workspace, delivery) = verify(&stored, cwd.as_deref(), &release);
+    let base = chat
+        .as_ref()
+        .and_then(|meta| meta.launch.as_ref())
+        .map(|launch| launch.base_branch.as_str());
+    let (workspace, delivery) = verify(&stored, cwd.as_deref(), &release, base);
 
     let changed = stored.workspace != workspace || stored.delivery != delivery;
     if changed
@@ -564,6 +580,7 @@ fn verify(
     stored: &Stored,
     cwd: Option<&str>,
     release: &ReleaseCheck,
+    base: Option<&str>,
 ) -> (Option<Workspace>, Option<Delivery>) {
     let Some(cwd) = cwd.map(str::trim).filter(|value| !value.is_empty()) else {
         // A chat with no recorded directory. There is nothing to check and
@@ -571,7 +588,7 @@ fn verify(
         return (stored.workspace.clone(), stored.delivery.clone());
     };
     let workspace = verify_workspace(cwd, stored.workspace.as_ref());
-    let delivery = verify_delivery(&workspace, stored, release);
+    let delivery = verify_delivery(&workspace, stored, release, base);
     (Some(workspace), delivery)
 }
 
@@ -619,6 +636,7 @@ fn verify_delivery(
     workspace: &Workspace,
     stored: &Stored,
     release: &ReleaseCheck,
+    base: Option<&str>,
 ) -> Option<Delivery> {
     // Where the questions get asked. A live worktree answers for itself; a
     // removed one is answered by the primary checkout, which shares every ref
@@ -659,6 +677,21 @@ fn verify_delivery(
     let remote_target = format!("origin/{target}");
 
     let merged = !on_target && is_ancestor(&root, &head, &target);
+    // The launch's base is a hint about which branch to check, never evidence
+    // of a merge. Keep that choice from the snapshot if the index is gone.
+    let base = base.or_else(|| {
+        stored
+            .delivery
+            .as_ref()?
+            .integration
+            .as_ref()
+            .map(|i| i.branch.as_str())
+    });
+    let integration = integration_branch(&root, &target, base).map(|branch| Integration {
+        merged: is_ancestor(&root, &head, &format!("refs/heads/{branch}")),
+        merged_remote: is_ancestor(&root, &head, &format!("refs/remotes/origin/{branch}")),
+        branch,
+    });
 
     // A commit that is not even in the target branch cannot be in a release,
     // and the person is reading the Merge row anyway. Asking anyway would run
@@ -678,6 +711,7 @@ fn verify_delivery(
         pushed: !branch.is_empty() && is_ancestor(&root, &head, &remote_branch),
         merged,
         merged_remote: !on_target && is_ancestor(&root, &head, &remote_target),
+        integration,
         on_target,
         released,
         release_note,
@@ -685,6 +719,18 @@ fn verify_delivery(
         head,
         target,
         checked_at: now_ms(),
+    })
+}
+
+fn integration_branch(root: &str, target: &str, base: Option<&str>) -> Option<String> {
+    base.into_iter().chain(["develop"]).find_map(|branch| {
+        let branch = branch.trim();
+        if branch.is_empty() || branch == target {
+            return None;
+        }
+        (ref_exists(root, &format!("refs/heads/{branch}"))
+            || ref_exists(root, &format!("refs/remotes/origin/{branch}")))
+        .then(|| branch.to_string())
     })
 }
 
@@ -1039,6 +1085,7 @@ mod tests {
                 command: Some(format!("touch {at}/release-check-ran")),
                 ..ReleaseCheck::default()
             },
+            None,
         )
         .expect("a delivery");
         assert_eq!(delivery.released, None);
@@ -1092,8 +1139,8 @@ mod tests {
         assert!(workspace.is_repo && !workspace.is_worktree);
         assert_eq!(workspace.branch, "feature/thing");
 
-        let before =
-            verify_delivery(&workspace, &stored, &ReleaseCheck::default()).expect("a delivery");
+        let before = verify_delivery(&workspace, &stored, &ReleaseCheck::default(), None)
+            .expect("a delivery");
         assert_eq!(before.target, "main");
         assert_eq!(before.commits, 1, "one commit main does not have");
         assert!(!before.merged, "nothing has been merged yet");
@@ -1113,6 +1160,7 @@ mod tests {
                 reference: Some("main".into()),
                 ..ReleaseCheck::default()
             },
+            None,
         )
         .expect("a delivery");
         assert!(after.merged, "the branch is now contained in main");
@@ -1122,6 +1170,173 @@ mod tests {
             Some(true),
             "a release ref that contains the commit answers yes"
         );
+    }
+
+    #[test]
+    fn integration_and_target_are_checked_independently_without_releasing_early() {
+        let dir = scratch_repo("integration");
+        let at = dir.to_string_lossy().to_string();
+        let git = |args: &[&str]| run_git(&at, args).expect("git");
+        git(&["branch", "develop"]);
+        git(&["update-ref", "refs/remotes/origin/main", "main"]);
+        git(&[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ]);
+        git(&["checkout", "-b", "feature/thing"]);
+        git(&["commit", "--allow-empty", "-m", "work"]);
+        let release = ReleaseCheck {
+            reference: Some("feature/thing".into()),
+            ..ReleaseCheck::default()
+        };
+        let check = || {
+            verify_delivery(
+                &verify_workspace(&at, None),
+                &Stored::default(),
+                &release,
+                None,
+            )
+            .unwrap()
+        };
+        let neither = check();
+        assert_eq!(neither.target, "main");
+        assert_eq!(
+            neither.integration,
+            Some(Integration {
+                branch: "develop".into(),
+                merged: false,
+                merged_remote: false,
+            })
+        );
+
+        git(&["branch", "-f", "develop", "HEAD"]);
+        let local = check();
+        assert!(local.integration.as_ref().unwrap().merged);
+        assert!(!local.integration.as_ref().unwrap().merged_remote);
+        assert!(!local.merged && !local.merged_remote);
+        assert_eq!(
+            local.released, None,
+            "integration must not unlock the release check"
+        );
+
+        git(&["update-ref", "refs/remotes/origin/develop", "HEAD"]);
+        git(&["branch", "-f", "develop", "main"]);
+        let remote_only = check();
+        assert!(!remote_only.integration.as_ref().unwrap().merged);
+        assert!(remote_only.integration.as_ref().unwrap().merged_remote);
+        assert_eq!(remote_only.released, None);
+
+        git(&["branch", "-f", "develop", "HEAD"]);
+        git(&["branch", "-f", "main", "HEAD"]);
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let both = check();
+        assert!(both.merged && both.merged_remote);
+        assert!(both.integration.as_ref().unwrap().merged);
+        assert!(both.integration.as_ref().unwrap().merged_remote);
+        assert_eq!(both.released, Some(true));
+    }
+
+    #[test]
+    fn integration_requires_a_branch_and_does_not_duplicate_the_target() {
+        let dir = scratch_repo("integration-branches");
+        let at = dir.to_string_lossy().to_string();
+        let git = |args: &[&str]| run_git(&at, args).expect("git");
+        assert_eq!(integration_branch(&at, "main", None), None);
+        git(&["tag", "develop"]);
+        assert_eq!(
+            integration_branch(&at, "main", None),
+            None,
+            "a tag is not an integration branch"
+        );
+        git(&["update-ref", "refs/remotes/origin/develop", "HEAD"]);
+        assert_eq!(
+            integration_branch(&at, "main", None).as_deref(),
+            Some("develop")
+        );
+        assert_eq!(integration_branch(&at, "develop", None), None);
+        git(&["branch", "integration"]);
+        assert_eq!(
+            integration_branch(&at, "main", Some("integration")).as_deref(),
+            Some("integration")
+        );
+        assert_eq!(
+            integration_branch(&at, "main", Some("missing")).as_deref(),
+            Some("develop")
+        );
+        assert_eq!(
+            integration_branch(&at, "main", Some("main")).as_deref(),
+            Some("develop")
+        );
+    }
+
+    #[test]
+    fn integration_is_reverified_for_a_removed_worktree_and_deleted_task_branch() {
+        let dir = scratch_repo("integration-removed");
+        let at = dir.to_string_lossy().to_string();
+        let git = |args: &[&str]| run_git(&at, args).expect("git");
+        let tree = dir.join("task-tree");
+        let cwd = tree.to_string_lossy().to_string();
+        git(&["branch", "integration"]);
+        git(&["worktree", "add", "-b", "feature/thing", &cwd]);
+        run_git(&cwd, &["commit", "--allow-empty", "-m", "work"]).unwrap();
+        let workspace = verify_workspace(&cwd, None);
+        let delivery = verify_delivery(
+            &workspace,
+            &Stored::default(),
+            &ReleaseCheck::default(),
+            Some("integration"),
+        )
+        .unwrap();
+        let stored = Stored {
+            workspace: Some(workspace.clone()),
+            delivery: Some(delivery.clone()),
+            ..Stored::default()
+        };
+        git(&["worktree", "remove", &cwd]);
+        git(&["branch", "-D", "feature/thing"]);
+        git(&["branch", "-f", "integration", &delivery.head]);
+        git(&[
+            "update-ref",
+            "refs/remotes/origin/integration",
+            &delivery.head,
+        ]);
+        let gone = verify_workspace(&cwd, Some(&workspace));
+        let after = verify_delivery(&gone, &stored, &ReleaseCheck::default(), None).unwrap();
+        assert!(after.stale);
+        assert_eq!(after.head, delivery.head);
+        assert!(!after.merged);
+        let integration = after.integration.as_ref().unwrap();
+        assert_eq!(
+            integration.branch, "integration",
+            "retain the recorded base after the index is gone"
+        );
+        assert!(integration.merged && integration.merged_remote);
+        // A deleted integration branch cannot keep yesterday's positive answer.
+        git(&["branch", "-D", "integration"]);
+        git(&["update-ref", "-d", "refs/remotes/origin/integration"]);
+        assert!(
+            verify_delivery(&gone, &stored, &ReleaseCheck::default(), None)
+                .unwrap()
+                .integration
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn old_delivery_snapshots_read_without_integration_and_new_ones_round_trip() {
+        let old = serde_json::to_value(Delivery::default()).unwrap();
+        assert!(old.get("integration").is_none());
+        let mut delivery: Delivery = serde_json::from_value(old).unwrap();
+        assert!(delivery.integration.is_none());
+        delivery.integration = Some(Integration {
+            branch: "develop".into(),
+            merged: true,
+            merged_remote: false,
+        });
+        let json = serde_json::to_value(&delivery).unwrap();
+        assert_eq!(json["integration"]["mergedRemote"], false);
+        assert_eq!(serde_json::from_value::<Delivery>(json).unwrap(), delivery);
     }
 
     #[test]
@@ -1141,6 +1356,7 @@ mod tests {
                 reference: Some("release".into()),
                 ..ReleaseCheck::default()
             },
+            None,
         )
         .expect("a delivery");
         assert!(delivery.on_target, "this chat is on the default branch");
@@ -1163,6 +1379,7 @@ mod tests {
                 command: Some(format!("echo 'octiq-server up · build {head} · ok'")),
                 ..ReleaseCheck::default()
             },
+            None,
         )
         .expect("a delivery");
         assert_eq!(
@@ -1179,6 +1396,7 @@ mod tests {
                 command: Some("echo 'service is up'".into()),
                 ..ReleaseCheck::default()
             },
+            None,
         )
         .expect("a delivery");
         assert_eq!(quiet.released, None);
