@@ -261,8 +261,12 @@ export async function saveHome(id: string | null): Promise<string | null> {
 export async function approvePlan(
   chatKey: string, runId: string, taskIds: string[], revision?: number,
   view?: { surface: "chat" | "panel"; shownMs: number; updatedMs: number | null },
+  workspaceChoices?: import("./workspaceChoice").WorkspaceChoices,
 ): Promise<void> {
-  await bridge.invoke("orchestration_plan_approve", { actorChatKey: chatKey, runId, taskIds, revision, ...view });
+  await bridge.invoke("orchestration_plan_approve", {
+    actorChatKey: chatKey, runId, taskIds, revision, ...view,
+    ...(workspaceChoices && Object.keys(workspaceChoices).length ? { workspaceChoices } : {}),
+  });
 }
 
 /** The person rejects exactly the pending revision drawn on a plan card. */

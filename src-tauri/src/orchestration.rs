@@ -61,8 +61,8 @@ mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
 pub use destination::TaskDestination;
 pub use levels::{TaskAcceptance, TaskSize, XpAward};
-pub use workspaces::WriterBeside;
 use workspaces::{TaskWorkspace, WorkspaceProposal};
+pub use workspaces::{WorkspaceChoice, WriterBeside};
 
 const STORE_VERSION: u32 = 4;
 const DEFAULT_MAX_CONCURRENT: u16 = 4;
@@ -399,12 +399,14 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_at: Option<i64>,
     /// What that approval fixed: the worker, the assignee, the destination
-    /// and the base branch, as they were in effect when it was given
+    /// the base branch and workspace mode, as they were in effect when it was given
     /// (`approval.rs`). Every start is compared with it and none writes it.
     /// Cleared with `approved_at`, and taken again by the next approval. A
     /// manager's subtask has one from its split.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved: Option<approval::Approved>,
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub workspace_choice: Option<workspaces::WorkspaceChoiceFact>,
     /// The state the person approved before a resize or reassignment put this
     /// task back in front of them. Approving the amendment discards it;
     /// rejecting the amendment restores it. Persisted because the decision
@@ -1444,6 +1446,8 @@ impl OrchestrationStore {
             .collect();
         tasks.sort_by_key(|task| (task.created_at, task.id.clone()));
         let (mut reach, now) = (retry::Reach::over(&self.listed_chats), now_ms());
+        // One Git capability read per root, shared by all tasks on this page.
+        let mut workspace_git = BTreeMap::new();
         // Why a task nobody is working on is not starting, for the page and
         // the coordinator: the plan card, not its dependencies or a slot.
         for task in &mut tasks {
@@ -1460,6 +1464,18 @@ impl OrchestrationStore {
                 .filter(|run| run.plan_approval.is_some())
                 .map(|run| {
                     waiting && held_by_plan(run, task, &|id| inner.data.tasks.get(id)).is_some()
+                });
+            task.workspace_choice = inner
+                .data
+                .runs
+                .get(&task.run_id)
+                .filter(|run| run.plan_approval.is_some())
+                .map(|run| {
+                    let root = workspaces::task_root(run, task.destination.as_ref());
+                    let git = *workspace_git
+                        .entry(root.to_string())
+                        .or_insert_with(|| crate::git_ops::workflow::has_git(root));
+                    workspaces::choice_fact(run, task, git)
                 });
             // And the other thing that holds a task whatever asks for it.
             task.held_by_reopen = workspaces::untold_reopen(task).is_some();
@@ -1997,6 +2013,18 @@ impl OrchestrationStore {
         revision: Option<u32>,
         view: CardView,
     ) -> Result<Run, String> {
+        self.approve_plan_from_card_with_choices(actor_chat_key, run_id, seen, revision, view, None)
+    }
+
+    pub fn approve_plan_from_card_with_choices(
+        &self,
+        actor_chat_key: &str,
+        run_id: &str,
+        seen: Option<&[String]>,
+        revision: Option<u32>,
+        view: CardView,
+        workspace_choices: Option<&BTreeMap<String, workspaces::WorkspaceChoice>>,
+    ) -> Result<Run, String> {
         let (Some(seen), Some(revision)) = (seen, revision) else {
             return Err("This page did not say which version of the plan you approved. Reload OctiqFlow, look the plan over, then approve.".into());
         };
@@ -2020,13 +2048,13 @@ impl OrchestrationStore {
                 surface: Some(surface),
                 shown_ms: view.shown_ms,
             };
-            approve_in(
+            decide_plan_in(
                 data,
                 actor_chat_key,
                 run_id,
                 Some(seen),
                 Some(revision),
-                consent,
+                PlanDecision::Approve(consent, workspace_choices.cloned().unwrap_or_default()),
             )
         })
         .inspect(|run| announce_plan_decision(run))
@@ -2153,7 +2181,7 @@ impl OrchestrationStore {
                         .map(|seen| seen.revision)
                 })
                 .collect();
-            if plan.status != PlanStatus::Pending {
+                if plan.status != PlanStatus::Pending {
                 return match plan.status {
                     PlanStatus::Approved => Ok(run.clone()),
                     PlanStatus::Rejected => Err(
@@ -2496,6 +2524,7 @@ impl OrchestrationStore {
                 reopens: Vec::new(),
                 stopped: None,
                 peer_request: None,
+                workspace_choice: None,
                 held_by_plan: None,
                 held_by_reopen: false,
                 retries_used: 0,
@@ -3080,7 +3109,7 @@ impl OrchestrationStore {
             // that attempt's settings and is the person changing nothing.
             // Refused here, before anything is reserved or written.
             if let Some(approved) = &task.approved {
-                approval::keeps_to(approved, &task, &worker, &launch.base_branch)?;
+                approval::keeps_to(approved, &task, &worker, &launch.base_branch, workspaces::launch_mode(&run, &task, launch))?;
             }
             match task.approved.as_ref().and_then(|a| a.worker.as_ref()) {
                 // The approved recovery policy, or none: never one the run's
@@ -3178,21 +3207,14 @@ impl OrchestrationStore {
             // A mission's writers take turns in its one worktree. Refused here,
             // before an attempt exists, the task stays ready for its turn;
             // refused at launch it would settle as failed.
-            if run.workspace_mode == WorkspaceMode::Mission && launch.access != Access::Read {
-                let root = workspaces::task_root(&run, task.destination.as_ref());
-                let busy = data.attempts.values().find(|a| {
-                    a.run_id == run.id
-                        && a.access != Access::Read
-                        && attempt_is_unsettled(data, a)
-                        && data.tasks.get(&a.task_id).is_some_and(|t| {
-                            workspaces::task_root(&run, t.destination.as_ref()) == root
-                        })
-                });
-                if let Some(busy) = busy {
-                    let title = data.tasks.get(&busy.task_id).map_or("", |t| t.title.as_str());
-                    return Err(format!(
-                        "\"{title}\" is writing in this mission's worktree. This task can start when it finishes."
-                    ));
+            if launch.access != Access::Read {
+                if let Some(key) = workspaces::writer_key(&run, &task) {
+                    if let Some(busy) = data.attempts.values().find(|a| a.run_id == run.id
+                        && a.access != Access::Read && attempt_is_unsettled(data, a)
+                        && data.tasks.get(&a.task_id).is_some_and(|t| workspaces::writer_key(&run, t).as_ref() == Some(&key))) {
+                        let title = data.tasks.get(&busy.task_id).map_or("", |t| t.title.as_str());
+                        return Err(format!("\"{title}\" is writing in this shared checkout. This task can start when it finishes."));
+                    }
                 }
             }
 
@@ -5341,12 +5363,12 @@ fn approve_in(
         run_id,
         seen,
         revision,
-        PlanDecision::Approve(consent),
+        PlanDecision::Approve(consent, BTreeMap::new()),
     )
 }
 
 enum PlanDecision {
-    Approve(PlanConsent),
+    Approve(PlanConsent, BTreeMap<String, workspaces::WorkspaceChoice>),
     Reject {
         reason: Option<String>,
         surface: String,
@@ -5374,11 +5396,19 @@ fn decide_plan_in(
         .plan_approval
         .as_ref()
         .ok_or("This run has no plan waiting for approval.")?;
+    if let PlanDecision::Approve(_, choices) = &decision {
+        if !choices.is_empty() && plan.status != PlanStatus::Pending {
+            return Err(
+                "Workspace choices name tasks already approved or outside the pending revision."
+                    .into(),
+            );
+        }
+    }
     if plan.status != PlanStatus::Pending {
         return match (&decision, plan.status) {
-            (PlanDecision::Approve(_), PlanStatus::Approved)
+            (PlanDecision::Approve(..), PlanStatus::Approved)
             | (PlanDecision::Reject { .. }, PlanStatus::Rejected) => Ok(run.clone()),
-            (PlanDecision::Approve(_), PlanStatus::Rejected) => {
+            (PlanDecision::Approve(..), PlanStatus::Rejected) => {
                 Err("The person rejected this plan; nothing was approved".into())
             }
             (PlanDecision::Reject { .. }, PlanStatus::Approved) => {
@@ -5424,7 +5454,8 @@ fn decide_plan_in(
         });
     let now = now_ms();
     match decision {
-        PlanDecision::Approve(mut consent) => {
+        PlanDecision::Approve(mut consent, choices) => {
+            workspaces::apply_choices(data, run_id, &waiting, &choices)?;
             consent.revision = plan_revision;
             consent.at = now;
             let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
@@ -6310,13 +6341,24 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn run(store: &OrchestrationStore) -> Run {
+        // These ledger-only tests simulate independent worktrees at activate,
+        // without provisioning them. Their root must still support the mode:
+        // a non-Git folder is approved as Direct in every run mode. The shared
+        // repository is read-only and its TestDir is removed at process exit.
+        static ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let root = ROOT.get_or_init(|| {
+            let repo = crate::git_ops::workflow::tests::Repo::new();
+            repo.dir.remove_at_exit();
+            repo.root
+        });
         store
-            .create_run(
+            .create_run_with_mode(
                 "chat:master".into(),
                 "Ship the feature".into(),
                 "workspace".into(),
-                "/tmp".into(),
+                root.clone(),
                 Some(2),
+                WorkspaceMode::Worktree,
             )
             .unwrap()
     }
@@ -6582,7 +6624,7 @@ pub(crate) mod tests {
             model: None,
             effort: None,
             access: Access::Auto,
-            new_worktree: Some(true),
+            new_worktree: None,
             base_branch: String::new(),
         }
     }
@@ -6721,10 +6763,11 @@ pub(crate) mod tests {
         let store = OrchestrationStore::default();
         let run = run(&store);
         store.require_plan_approval(&run.id).unwrap();
+        let api = crate::git_ops::workflow::tests::Repo::new();
         let destination = TaskDestination {
             project_id: "shop".into(),
             project_name: "Shop".into(),
-            repository: "/repos/api".into(),
+            repository: api.root.clone(),
         };
         let first = store
             .create_task_for(

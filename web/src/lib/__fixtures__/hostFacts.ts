@@ -43,6 +43,9 @@ import reopenNoticeDelivered from "./host/reopen_notice_delivered.json?raw";
 import retryExecuting from "./host/retry_executing.json?raw";
 import taskStopped from "./host/task_stopped.json?raw";
 import usageContext from "./host/usage_context.json?raw";
+import workspaceChoicePending from "./host/workspace_choice_pending.json?raw";
+import workspaceChoiceApproved from "./host/workspace_choice_approved.json?raw";
+import workspaceChoiceOnlyCheckout from "./host/workspace_choice_only_checkout.json?raw";
 
 /** A fresh copy each time: a test may change what it is given. */
 const ledger = (raw: string) => (): OrchestrationSnapshot => JSON.parse(raw) as OrchestrationSnapshot;
@@ -58,6 +61,9 @@ const answered = (raw: string) => (): QuestionAnswered => JSON.parse(raw) as Que
 export type HostChatEntry = { id: string; projectId: string; title: string; createdAt: number; updatedAt: number; coordinatesRun?: boolean };
 
 export const hostFacts = {
+  workspaceChoicePending: ledger(workspaceChoicePending),
+  workspaceChoiceApproved: ledger(workspaceChoiceApproved),
+  workspaceChoiceOnlyCheckout: ledger(workspaceChoiceOnlyCheckout),
   /** A reopened task whose notice the transcript could not take: ready, and
    *  `heldByReopen: true`. `lifecycle`: workspaces::tests. */
   heldByReopen: ledger(heldByReopen),

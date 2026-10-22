@@ -16,7 +16,7 @@
 //!   with its fallback model;
 //! - the assignee, the registered agent the task was handed to;
 //! - the destination, a project and a repository;
-//! - the base branch the host planned its workspace from.
+//! - the base branch and workspace mode the host planned.
 //!
 //! The words a task carries are not part of it. `reopen_task` gives an
 //! approved task new instructions and keeps the approval; this record is what
@@ -56,6 +56,9 @@ pub struct Approved {
     /// Absent when nothing was planned, or the task works in place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
+    /// Actual allocation mode. Absent on old approvals without a planned workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_mode: Option<WorkspaceMode>,
     pub by: FixedBy,
     pub at: i64,
 }
@@ -120,6 +123,12 @@ impl Approved {
                 .and_then(|proposal| proposal.plan.as_ref())
                 .map(|plan| plan.base_branch.clone())
                 .filter(|base| !base.is_empty()),
+            workspace_mode: task.workspace.as_ref().map(|w| w.plan.mode).or_else(|| {
+                task.workspace_proposal
+                    .as_ref()
+                    .and_then(|p| p.plan.as_ref())
+                    .map(|p| p.mode)
+            }),
             by,
             at,
         }
@@ -167,8 +176,19 @@ pub(super) fn keeps_to(
     task: &Task,
     asked: &automation::WorkerSettings,
     base_branch: &str,
+    workspace_mode: WorkspaceMode,
 ) -> Result<(), String> {
     let mut differs: Vec<String> = Vec::new();
+    if approved
+        .workspace_mode
+        .is_some_and(|mode| mode != workspace_mode)
+    {
+        differs.push(format!(
+            "workspace mode {:?} instead of {:?}",
+            workspace_mode,
+            approved.workspace_mode.unwrap()
+        ));
+    }
     if let Some(worker) = &approved.worker {
         let fallback = worker
             .recovery

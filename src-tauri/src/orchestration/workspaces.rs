@@ -244,10 +244,223 @@ pub struct WorkspaceProposal {
     pub error: Option<String>,
     /// No worker access was chosen yet, so this assumed a writer. A launch
     /// the coordinator later makes read-only may use the current checkout
-    /// instead; every other departure from the plan is still refused.
+    /// instead until an approval fixes the advised mode; every other departure
+    /// from the plan is still refused.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub provisional: bool,
     pub proposed_at: i64,
+}
+
+/// The person's vocabulary; storage fixes the actual workflow mode separately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceChoice {
+    Worktree,
+    Checkout,
+}
+
+impl WorkspaceChoice {
+    pub(super) fn of(mode: WorkspaceMode) -> Self {
+        if mode.is_worktree() {
+            Self::Worktree
+        } else {
+            Self::Checkout
+        }
+    }
+
+    fn mode(self, run: &Run) -> WorkspaceMode {
+        match self {
+            Self::Checkout => WorkspaceMode::Direct,
+            Self::Worktree if run.workspace_mode == WorkspaceMode::Mission => {
+                WorkspaceMode::Mission
+            }
+            Self::Worktree => WorkspaceMode::Worktree,
+        }
+    }
+}
+
+/// Snapshot only: never stored or accepted back from a caller.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceChoiceFact {
+    pub advised: WorkspaceChoice,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chosen: Option<WorkspaceChoice>,
+    pub options: Vec<WorkspaceChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub only_checkout_because: Option<String>,
+}
+
+fn advised_first_mode(run: &Run, task: &Task) -> WorkspaceMode {
+    let access = approval::worker_of(task)
+        .or(task.worker.as_ref())
+        .map(|w| w.access)
+        .or_else(|| run.worker_defaults.as_ref().map(|d| d.access))
+        .unwrap_or(Access::Auto);
+    first_mode(run.workspace_mode, access)
+}
+
+pub(super) fn advised_mode(run: &Run, task: &Task) -> WorkspaceMode {
+    auto_mode_for(
+        advised_first_mode(run, task),
+        run.workspace_mode,
+        task_root(run, task.destination.as_ref()),
+    )
+}
+
+pub(super) fn choice_fact(run: &Run, task: &Task, git: bool) -> WorkspaceChoiceFact {
+    WorkspaceChoiceFact {
+        advised: if !git {
+            WorkspaceChoice::Checkout
+        } else {
+            WorkspaceChoice::of(advised_first_mode(run, task))
+        },
+        chosen: task
+            .approved
+            .as_ref()
+            .and_then(|a| a.workspace_mode)
+            .map(WorkspaceChoice::of),
+        options: if git {
+            vec![WorkspaceChoice::Worktree, WorkspaceChoice::Checkout]
+        } else {
+            vec![WorkspaceChoice::Checkout]
+        },
+        only_checkout_because: (!git)
+            .then(|| "This folder has no Git history, so a worktree cannot be created.".into()),
+    }
+}
+
+/// Validate and plan every override and checkout-only default before the
+/// approval changes anything.
+pub(super) fn apply_choices(
+    data: &mut Stored,
+    run_id: &str,
+    waiting: &BTreeSet<String>,
+    choices: &BTreeMap<String, WorkspaceChoice>,
+) -> Result<(), String> {
+    let run = data.runs.get(run_id).ok_or("The run does not exist.")?;
+    let mut choices = choices.clone();
+    for id in waiting {
+        let task = data.tasks.get(id).ok_or("The task does not exist.")?;
+        // An omitted choice accepts the only available option, even when an
+        // explicit Worktree run left an invalid proposal. Persisted workspaces
+        // and approvals keep their allocation; this only plans new work.
+        if !choices.contains_key(id)
+            && task.approved_at.is_none()
+            && task.approved.is_none()
+            && task.workspace.is_none()
+            && task.active_attempt_id.is_none()
+            && !task_has_attempt(data, id)
+            && !workflow::has_git(task_root(run, task.destination.as_ref()))
+        {
+            choices.insert(id.clone(), WorkspaceChoice::Checkout);
+        }
+    }
+    let mut proposals = Vec::new();
+    for (id, choice) in &choices {
+        let task = data
+            .tasks
+            .get(id)
+            .filter(|t| t.run_id == run_id && waiting.contains(id))
+            .ok_or("A workspace choice names a task outside the plan revision being approved.")?;
+        if task.approved_at.is_some()
+            || task.approved.is_some()
+            || task.workspace.is_some()
+            || task.active_attempt_id.is_some()
+            || task_has_attempt(data, id)
+        {
+            return Err(
+                "A workspace choice cannot change an already approved or started task.".into(),
+            );
+        }
+        let root = task_root(run, task.destination.as_ref());
+        if *choice == WorkspaceChoice::Worktree && !workflow::has_git(root) {
+            return Err("This task's folder has no Git history; choose Current checkout.".into());
+        }
+        let mode = choice.mode(run);
+        let old = task.workspace_proposal.as_ref();
+        let plan = if old
+            .and_then(|p| p.plan.as_ref())
+            .is_some_and(|p| p.mode == mode)
+        {
+            old.unwrap().plan.clone().unwrap()
+        } else {
+            workflow::plan(root, "", workspace_key(run, id, mode), mode)?
+        };
+        let conflict = workflow::occupied(&plan);
+        proposals.push((
+            id.clone(),
+            WorkspaceProposal {
+                new_branch: plan.managed && conflict.is_none(),
+                conflict,
+                plan: Some(plan),
+                error: None,
+                provisional: false,
+                proposed_at: now_ms(),
+            },
+        ));
+    }
+    for (id, proposal) in proposals {
+        data.tasks.get_mut(&id).unwrap().workspace_proposal = Some(proposal);
+    }
+    Ok(())
+}
+
+/// The mode a start requests. No argument means the approved allocation;
+/// retries keep their persisted workspace. The legacy flag is not an approval.
+pub(super) fn launch_mode(run: &Run, task: &Task, launch: &WorkerLaunch) -> WorkspaceMode {
+    if let Some(saved) = &task.workspace {
+        return saved.plan.mode;
+    }
+    let fixed = task.approved.as_ref().and_then(|a| a.workspace_mode);
+    if fixed.is_some() {
+        if let Some(new) = launch.new_worktree {
+            let asked = if new {
+                WorkspaceChoice::Worktree.mode(run)
+            } else {
+                WorkspaceMode::Direct
+            };
+            let root = task_root(run, task.destination.as_ref());
+            // Mission's actual allocation for a plain folder is Direct,
+            // including a legacy launch that says newWorktree:true.
+            if asked == WorkspaceMode::Mission && !workflow::has_git(root) {
+                return WorkspaceMode::Direct;
+            }
+            return auto_mode_for(asked, run.workspace_mode, root);
+        }
+        return fixed.unwrap();
+    }
+    auto_mode_for(
+        first_mode(run.workspace_mode, launch.access),
+        run.workspace_mode,
+        task_root(run, task.destination.as_ref()),
+    )
+}
+
+/// A shared allocation's writer key, used before reservation and by the wave.
+pub(super) fn writer_key(run: &Run, task: &Task) -> Option<String> {
+    let mode = task
+        .workspace
+        .as_ref()
+        .map(|w| w.plan.mode)
+        .or_else(|| task.approved.as_ref().and_then(|a| a.workspace_mode))
+        .unwrap_or_else(|| advised_mode(run, task));
+    if !matches!(mode, WorkspaceMode::Direct | WorkspaceMode::Mission) {
+        return None;
+    }
+    let root = task_root(run, task.destination.as_ref());
+    let checkout = task
+        .workspace
+        .as_ref()
+        .map(|w| w.plan.checkout_root.clone())
+        .or_else(|| {
+            task.workspace_proposal
+                .as_ref()
+                .and_then(|p| p.plan.as_ref())
+                .map(|p| p.checkout_root.clone())
+        })
+        .unwrap_or_else(|| workflow::held_checkout(root));
+    Some(checkout)
 }
 
 /// The mode a first attempt gets: what `prepare_task_workspace` decides, less
@@ -575,22 +788,19 @@ impl OrchestrationStore {
             };
             adopted
         } else {
-            let mode = match run.workspace_mode {
-                WorkspaceMode::Auto => {
-                    if launch.access == Access::Read {
-                        WorkspaceMode::Direct
-                    } else if launch.new_worktree == Some(false) {
-                        return Err("A first writing attempt in Auto mode uses an isolated worktree. Choose Current checkout for the run to edit it directly.".into());
-                    } else {
-                        WorkspaceMode::Worktree
-                    }
-                }
-                mode => mode,
-            };
-            // A routed task starts from its destination repository; one
-            // without a destination from the run's root, as it always has.
+            let mode = launch_mode(run, task, launch);
+            if task
+                .approved
+                .as_ref()
+                .and_then(|a| a.workspace_mode)
+                .is_none()
+                && run.workspace_mode == WorkspaceMode::Auto
+                && writable
+                && launch.new_worktree == Some(false)
+            {
+                return Err("A first writing attempt in Auto mode uses an isolated worktree. Choose Current checkout on the plan card to edit it directly.".into());
+            }
             let root = task_root(run, task.destination.as_ref());
-            let mode = auto_mode_for(mode, run.workspace_mode, root);
             // What the person approved is what gets allocated. A task from
             // before proposals, or one whose proposal failed, plans now.
             match task
@@ -616,6 +826,7 @@ impl OrchestrationStore {
         };
         if writable
             && run.workspace_mode == WorkspaceMode::Auto
+            && task.approved.as_ref().and_then(|a| a.workspace_mode) != Some(WorkspaceMode::Direct)
             && plan.mode == WorkspaceMode::Direct
             && previous.is_some_and(|a| a.access == Access::Read)
         {
@@ -2966,7 +3177,11 @@ pub(super) mod tests {
                 )
                 .unwrap();
             let attempt = self.start(&task).unwrap();
-            let root = self.dir.0.to_string_lossy().into_owned();
+            // Reopen/receipt tests simulate independent retained checkouts,
+            // so their writers do not contend for one shared plain folder.
+            let root = self.dir.0.join(&task.id);
+            crate::profile::make_dir(&root).unwrap();
+            let root = root.to_string_lossy().into_owned();
             self.store
                 .mutate(|data| {
                     let task = data.tasks.get_mut(&task.id).unwrap();
@@ -3946,6 +4161,519 @@ pub(super) mod tests {
                 })
                 .unwrap();
             assert_eq!(store.removal_of(&ada.id, "Ada").is_err(), busy, "{state:?}");
+        }
+    }
+
+    fn choose_on_card(
+        store: &OrchestrationStore,
+        run: &Run,
+        choices: BTreeMap<String, WorkspaceChoice>,
+    ) -> Result<Run, String> {
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let ids: Vec<_> = snapshot
+            .tasks
+            .iter()
+            .filter(|t| t.approved_at.is_none())
+            .map(|t| t.id.clone())
+            .collect();
+        store.approve_plan_from_card_with_choices(
+            "chat:master",
+            &run.id,
+            Some(&ids),
+            Some(snapshot.runs[0].plan_approval.as_ref().unwrap().revision),
+            CardView {
+                surface: "chat".into(),
+                shown_ms: Some(3000),
+                updated_ms: None,
+            },
+            (!choices.is_empty()).then_some(&choices),
+        )
+    }
+
+    fn selected_worker(store: &OrchestrationStore, task: &Task, access: Access) {
+        store
+            .revise_task(
+                "chat:master",
+                &task.id,
+                TaskRevision {
+                    route: Some((
+                        Some(automation::WorkerSettings {
+                            agent: ChatAgent::Codex,
+                            access,
+                            model: None,
+                            effort: None,
+                            recovery: None,
+                        }),
+                        task.assignee.clone(),
+                        task.destination.clone(),
+                    )),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn workspace_choices_leave_every_run_modes_advice_unchanged_when_absent() {
+        let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+        let _profile = crate::profile::started_in(&home);
+        for mode in [
+            WorkspaceMode::Auto,
+            WorkspaceMode::Mission,
+            WorkspaceMode::Worktree,
+            WorkspaceMode::Direct,
+        ] {
+            for access in [Access::Auto, Access::Read] {
+                let repo = Repo::new();
+                let (store, run, task) = setup(&repo, mode);
+                store.require_plan_approval(&run.id).unwrap();
+                selected_worker(&store, &task, access);
+                let before = stored(&store, &task).workspace_proposal.unwrap();
+                choose_on_card(&store, &run, BTreeMap::new()).unwrap();
+                let approved = stored(&store, &task);
+                assert_eq!(
+                    serde_json::to_value(before).unwrap(),
+                    serde_json::to_value(approved.workspace_proposal).unwrap()
+                );
+                assert_eq!(
+                    approved.approved.unwrap().workspace_mode,
+                    Some(first_mode(mode, access))
+                );
+                let launched = prepare(&store, &task, access).unwrap();
+                assert_eq!(launched.is_worktree, first_mode(mode, access).is_worktree());
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_choices_put_writers_in_the_root_and_readers_in_a_worktree() {
+        let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+        let _profile = crate::profile::started_in(&home);
+        for mode in [
+            WorkspaceMode::Auto,
+            WorkspaceMode::Mission,
+            WorkspaceMode::Worktree,
+            WorkspaceMode::Direct,
+        ] {
+            for (access, choice) in [
+                (Access::Auto, WorkspaceChoice::Checkout),
+                (Access::Read, WorkspaceChoice::Worktree),
+            ] {
+                let repo = Repo::new();
+                let (store, run, task) = setup(&repo, mode);
+                store.require_plan_approval(&run.id).unwrap();
+                selected_worker(&store, &task, access);
+                let old = stored(&store, &task)
+                    .workspace_proposal
+                    .unwrap()
+                    .plan
+                    .unwrap();
+                choose_on_card(&store, &run, BTreeMap::from([(task.id.clone(), choice)])).unwrap();
+                let fixed = stored(&store, &task);
+                assert_eq!(
+                    fixed.approved.as_ref().unwrap().workspace_mode,
+                    Some(choice.mode(&run))
+                );
+                let wrong = WorkerLaunch {
+                    task_id: task.id.clone(),
+                    agent: ChatAgent::Codex,
+                    model: None,
+                    effort: None,
+                    access,
+                    new_worktree: Some(choice != WorkspaceChoice::Worktree),
+                    base_branch: String::new(),
+                };
+                for by in [
+                    StartedBy::Coordinator,
+                    StartedBy::Page { retry_of: None },
+                    StartedBy::Recovery("not-reserved"),
+                ] {
+                    assert!(store
+                        .reserve_attempt_for("chat:master", &wrong, by)
+                        .unwrap_err()
+                        .contains("workspace mode"));
+                }
+                assert!(store.snapshot(Some(&run.id)).unwrap().attempts.is_empty());
+                let launched = prepare(&store, &task, access).unwrap();
+                assert_eq!(launched.is_worktree, choice == WorkspaceChoice::Worktree);
+                if choice == WorkspaceChoice::Checkout {
+                    assert_eq!(launched.cwd, repo.root);
+                    if old.mode.is_worktree() {
+                        assert!(!Path::new(&old.cwd).exists());
+                    }
+                    assert_eq!(
+                        repo.git(&["worktree", "list", "--porcelain"])
+                            .matches("worktree ")
+                            .count(),
+                        1
+                    );
+                } else if mode == WorkspaceMode::Mission {
+                    assert_eq!(
+                        launched.branch,
+                        format!("feature/mission-{}", run.id.strip_prefix("run_").unwrap())
+                    );
+                }
+                report(&store, &launched, WorkerOutcome::Blocked);
+                let retry = prepare(&store, &task, access).unwrap();
+                assert_eq!(retry.cwd, launched.cwd);
+                report(&store, &retry, WorkerOutcome::Completed);
+                let reopened = store
+                    .reopen_task(
+                        "chat:master",
+                        &task.id,
+                        "Finish the follow-up in the same workspace".into(),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    reopened.approved.as_ref().unwrap().workspace_mode,
+                    Some(choice.mode(&run))
+                );
+                assert_eq!(prepare(&store, &task, access).unwrap().cwd, launched.cwd);
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_choices_refuse_the_whole_revision_before_changing_any_task() {
+        let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+        let _profile = crate::profile::started_in(&home);
+        let repo = Repo::new();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Auto);
+        store.require_plan_approval(&run.id).unwrap();
+        selected_worker(&store, &task, Access::Auto);
+        let other = super::super::tests::run(&store);
+        let foreign = super::super::tests::task(&store, &other, vec![]);
+        for invalid in ["missing".to_string(), foreign.id] {
+            let before = serde_json::to_value(store.snapshot(Some(&run.id)).unwrap()).unwrap();
+            assert!(choose_on_card(
+                &store,
+                &run,
+                BTreeMap::from([
+                    (task.id.clone(), WorkspaceChoice::Checkout),
+                    (invalid, WorkspaceChoice::Worktree)
+                ])
+            )
+            .is_err());
+            assert_eq!(
+                before,
+                serde_json::to_value(store.snapshot(Some(&run.id)).unwrap()).unwrap()
+            );
+        }
+        choose_on_card(&store, &run, BTreeMap::new()).unwrap();
+        let new = super::super::tests::task(&store, &run, vec![]);
+        assert!(choose_on_card(
+            &store,
+            &run,
+            BTreeMap::from([(task.id.clone(), WorkspaceChoice::Checkout)])
+        )
+        .is_err());
+        assert!(stored(&store, &new).approved_at.is_none());
+        // A task already started without a plan cannot acquire a new mode on a later revision.
+        let (active_store, active_run, active) = setup(&repo, WorkspaceMode::Auto);
+        let _ = prepare(&active_store, &active, Access::Auto).unwrap();
+        active_store.require_plan_approval(&active_run.id).unwrap();
+        assert!(choose_on_card(
+            &active_store,
+            &active_run,
+            BTreeMap::from([(active.id, WorkspaceChoice::Checkout)])
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn workspace_choices_for_a_non_git_folder_only_offer_checkout_and_reject_worktree() {
+        let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+        let _profile = crate::profile::started_in(&home);
+        let root = crate::test_dir::TestDir::new("workspace-choice-plain").canonicalized();
+        let store = OrchestrationStore::default();
+        let run = store
+            .create_run_with_mode(
+                "chat:master".into(),
+                "Plain folder".into(),
+                "project".into(),
+                root.to_string_lossy().into_owned(),
+                Some(3),
+                WorkspaceMode::Worktree,
+            )
+            .unwrap();
+        store.require_plan_approval(&run.id).unwrap();
+        let task = super::super::tests::task(&store, &run, vec![]);
+        selected_worker(&store, &task, Access::Auto);
+        assert!(
+            stored(&store, &task).workspace_choice.is_none(),
+            "the stored task holds no derived choice"
+        );
+        let fact = store
+            .snapshot(Some(&run.id))
+            .unwrap()
+            .tasks
+            .into_iter()
+            .find(|t| t.id == task.id)
+            .unwrap()
+            .workspace_choice
+            .unwrap();
+        assert_eq!(fact.advised, WorkspaceChoice::Checkout);
+        assert_eq!(fact.options, vec![WorkspaceChoice::Checkout]);
+        assert!(fact.only_checkout_because.is_some());
+        if std::env::var_os("OCTIQ_RECORD_FACTS").is_some() {
+            println!(
+                "FACT workspace_choice_only_checkout {}",
+                serde_json::to_value(store.snapshot(Some(&run.id)).unwrap()).unwrap()
+            );
+        }
+        let before = serde_json::to_value(store.snapshot(Some(&run.id)).unwrap()).unwrap();
+        assert!(choose_on_card(
+            &store,
+            &run,
+            BTreeMap::from([(task.id.clone(), WorkspaceChoice::Worktree)])
+        )
+        .is_err());
+        assert_eq!(
+            before,
+            serde_json::to_value(store.snapshot(Some(&run.id)).unwrap()).unwrap()
+        );
+        choose_on_card(&store, &run, BTreeMap::new()).unwrap();
+        assert_eq!(
+            prepare(&store, &task, Access::Auto).unwrap().cwd,
+            run.root_path
+        );
+    }
+
+    #[test]
+    fn workspace_choices_advice_is_available_in_every_run_mode_and_git_destination() {
+        let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+        let _profile = crate::profile::started_in(&home);
+        let repo = Repo::new();
+        let plain = crate::test_dir::TestDir::new("workspace-choice-plain").canonicalized();
+        for mode in [
+            WorkspaceMode::Auto,
+            WorkspaceMode::Mission,
+            WorkspaceMode::Worktree,
+            WorkspaceMode::Direct,
+        ] {
+            for root in [&repo.root, &plain.to_string_lossy().into_owned()] {
+                for access in [Access::Auto, Access::Read] {
+                    let (store, run, _) = setup(&repo, mode);
+                    store.require_plan_approval(&run.id).unwrap();
+                    let task = store
+                        .create_task_for(
+                            "chat:master",
+                            run.id.clone(),
+                            "Destination".into(),
+                            "Work in this folder".into(),
+                            vec![],
+                            None,
+                            None,
+                            None,
+                            Some(TaskDestination {
+                                project_id: "destination".into(),
+                                project_name: "Destination".into(),
+                                repository: root.clone(),
+                            }),
+                        )
+                        .unwrap();
+                    selected_worker(&store, &task, access);
+                    let fact = store
+                        .snapshot(Some(&run.id))
+                        .unwrap()
+                        .tasks
+                        .into_iter()
+                        .find(|t| t.id == task.id)
+                        .unwrap()
+                        .workspace_choice
+                        .unwrap();
+                    assert!(
+                        fact.options.contains(&fact.advised),
+                        "{mode:?}, {access:?}, {root}"
+                    );
+                    if !workflow::has_git(root) {
+                        assert_eq!(fact.options, vec![WorkspaceChoice::Checkout]);
+                        assert_eq!(fact.advised, WorkspaceChoice::Checkout);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_choices_non_git_destinations_approve_and_start_direct_with_or_without_a_choice() {
+        let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+        let _profile = crate::profile::started_in(&home);
+        let repo = Repo::new();
+        let root = crate::test_dir::TestDir::new("workspace-choice-plain").canonicalized();
+        for mode in [
+            WorkspaceMode::Auto,
+            WorkspaceMode::Mission,
+            WorkspaceMode::Worktree,
+            WorkspaceMode::Direct,
+        ] {
+            for explicit in [false, true] {
+                let (store, run, _) = setup(&repo, mode);
+                store.require_plan_approval(&run.id).unwrap();
+                let task = store
+                    .create_task_for(
+                        "chat:master",
+                        run.id.clone(),
+                        "Plain destination".into(),
+                        "Work in this folder".into(),
+                        vec![],
+                        None,
+                        None,
+                        None,
+                        Some(TaskDestination {
+                            project_id: "plain".into(),
+                            project_name: "Plain folder".into(),
+                            repository: root.to_string_lossy().into_owned(),
+                        }),
+                    )
+                    .unwrap();
+                selected_worker(&store, &task, Access::Auto);
+                if mode == WorkspaceMode::Worktree {
+                    assert!(stored(&store, &task)
+                        .workspace_proposal
+                        .unwrap()
+                        .error
+                        .is_some());
+                }
+                let choices = if explicit {
+                    BTreeMap::from([(task.id.clone(), WorkspaceChoice::Checkout)])
+                } else {
+                    BTreeMap::new()
+                };
+                choose_on_card(&store, &run, choices).unwrap();
+                let approved = stored(&store, &task);
+                assert_eq!(
+                    approved.approved.unwrap().workspace_mode,
+                    Some(WorkspaceMode::Direct)
+                );
+                let proposal = approved.workspace_proposal.unwrap();
+                assert!(proposal.error.is_none());
+                assert!(!proposal.provisional);
+                assert_eq!(proposal.plan.unwrap().mode, WorkspaceMode::Direct);
+                let launched = prepare(&store, &task, Access::Auto).unwrap();
+                assert_eq!(launched.status, AttemptStatus::Running);
+                assert_eq!(launched.cwd, root.to_string_lossy());
+                assert!(!launched.is_worktree);
+                assert_eq!(
+                    stored(&store, &task).workspace.unwrap().plan.mode,
+                    WorkspaceMode::Direct
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_choices_are_fixed_at_reservation_and_checkout_writers_wait() {
+        let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+        let _profile = crate::profile::started_in(&home);
+        let repo = Repo::new();
+        let (store, run, first) = setup(&repo, WorkspaceMode::Auto);
+        store.require_plan_approval(&run.id).unwrap();
+        let second = super::super::tests::task(&store, &run, vec![]);
+        for task in [&first, &second] {
+            selected_worker(&store, task, Access::Auto);
+        }
+        choose_on_card(
+            &store,
+            &run,
+            BTreeMap::from([
+                (first.id.clone(), WorkspaceChoice::Checkout),
+                (second.id.clone(), WorkspaceChoice::Checkout),
+            ]),
+        )
+        .unwrap();
+        let before = store.snapshot(Some(&run.id)).unwrap();
+        let launch = WorkerLaunch {
+            task_id: first.id.clone(),
+            agent: ChatAgent::Codex,
+            model: None,
+            effort: None,
+            access: Access::Auto,
+            new_worktree: Some(true),
+            base_branch: String::new(),
+        };
+        assert!(store
+            .reserve_attempt("chat:master", &launch)
+            .unwrap_err()
+            .contains("workspace mode"));
+        assert!(store
+            .reserve_attempt_for("chat:master", &launch, StartedBy::Page { retry_of: None })
+            .unwrap_err()
+            .contains("workspace mode"));
+        assert_eq!(store.snapshot(Some(&run.id)).unwrap().attempts.len(), 0);
+        assert_eq!(automation::ready_wave(&before, &before.runs[0]).len(), 1);
+        let one = prepare(&store, &first, Access::Auto).unwrap();
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        assert!(automation::ready_wave(&snapshot, &snapshot.runs[0]).is_empty());
+        assert!(prepare(&store, &second, Access::Auto)
+            .unwrap_err()
+            .contains("can start when it finishes"));
+        assert_eq!(stored(&store, &second).status, TaskStatus::Ready);
+        assert_eq!(store.snapshot(Some(&run.id)).unwrap().attempts.len(), 1);
+        report(&store, &one, WorkerOutcome::Completed);
+        assert_eq!(prepare(&store, &second, Access::Auto).unwrap().cwd, one.cwd);
+    }
+
+    #[test]
+    fn workspace_choices_snapshot_records_the_host_contract_for_the_page() {
+        let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+        let _profile = crate::profile::started_in(&home);
+        let repo = Repo::new();
+        let (store, run, writer) = setup(&repo, WorkspaceMode::Auto);
+        store.require_plan_approval(&run.id).unwrap();
+        let reader = super::super::tests::task(&store, &run, vec![]);
+        selected_worker(&store, &writer, Access::Auto);
+        selected_worker(&store, &reader, Access::Read);
+        let pending = store.snapshot(Some(&run.id)).unwrap();
+        assert_eq!(
+            pending
+                .tasks
+                .iter()
+                .find(|t| t.id == writer.id)
+                .unwrap()
+                .workspace_choice
+                .as_ref()
+                .unwrap()
+                .advised,
+            WorkspaceChoice::Worktree
+        );
+        assert_eq!(
+            pending
+                .tasks
+                .iter()
+                .find(|t| t.id == reader.id)
+                .unwrap()
+                .workspace_choice
+                .as_ref()
+                .unwrap()
+                .advised,
+            WorkspaceChoice::Checkout
+        );
+        choose_on_card(
+            &store,
+            &run,
+            BTreeMap::from([
+                (writer.id, WorkspaceChoice::Checkout),
+                (reader.id, WorkspaceChoice::Worktree),
+            ]),
+        )
+        .unwrap();
+        let approved = store.snapshot(Some(&run.id)).unwrap();
+        assert!(approved.tasks.iter().all(|t| t
+            .workspace_choice
+            .as_ref()
+            .unwrap()
+            .chosen
+            .is_some()));
+        if std::env::var_os("OCTIQ_RECORD_FACTS").is_some() {
+            println!(
+                "FACT workspace_choice_pending {}",
+                serde_json::to_value(pending).unwrap()
+            );
+            println!(
+                "FACT workspace_choice_approved {}",
+                serde_json::to_value(approved).unwrap()
+            );
         }
     }
 

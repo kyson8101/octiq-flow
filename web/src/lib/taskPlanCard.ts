@@ -14,6 +14,7 @@
 // Confirmed, Removed, or Conflict — so the rows above it are not each tagged.
 import { modelFromReported } from "./agentProviders";
 import { planDestination } from "./planReview";
+import { CHECKOUT_WRITER_NOTE, readWorkspaceChoice, WORKSPACE_CHOICE_LABEL, type WorkspaceChoice } from "./workspaceChoice";
 import type { OrchestrationAttempt, OrchestrationRun, OrchestrationTask } from "./orchestration";
 
 export type CardState = "confirmed" | "planned" | "pending" | "removed" | "conflict" | "unplanned";
@@ -53,12 +54,36 @@ export function taskCardRows(
   run: Pick<OrchestrationRun, "workspaceId" | "rootPath">,
   attempt?: OrchestrationAttempt | null,
   projectName?: (id: string) => string | undefined,
+  selected?: WorkspaceChoice,
 ): CardRow[] {
   const where = planDestination(task, run, projectName);
   const rows: CardRow[] = [
     { key: "project", label: "Project", value: where.project, copy: { text: where.path, name: "project path" } },
   ];
   rows.push(...whereRows(task, attempt));
+  const choice = readWorkspaceChoice(task);
+  if (choice) {
+    const value = choice.chosen ?? selected ?? choice.advised;
+    const changed = !choice.chosen && value !== choice.advised && !task.workspace;
+    // A local override has no host proposal yet. Do not label the advised
+    // worktree's branch/path as the selected checkout (or the reverse).
+    if (changed) {
+      for (const row of rows) {
+        if (row.key === "branch" || row.key === "directory") {
+          row.value = row.key === "directory" && value === "checkout" ? where.path : "Planned on approval";
+          row.copy = undefined;
+          row.code = row.key === "directory" && value === "checkout";
+        }
+      }
+    }
+    const row = rows.find((row) => row.key === "worktree");
+    const worktree: CardRow = {
+      key: "worktree", label: "Worktree", value: WORKSPACE_CHOICE_LABEL[value], state: row?.state,
+      note: [choice.onlyCheckoutBecause, value === "checkout" && choice.writer ? CHECKOUT_WRITER_NOTE : undefined, changed ? undefined : row?.note].filter(Boolean).join(" ") || undefined,
+    };
+    if (row) Object.assign(row, worktree);
+    else rows.push(worktree);
+  }
 
   const worker = task.worker;
   rows.push({ key: "owner", label: "Owner", value: task.assignee?.name ?? "Chosen by the lead" });

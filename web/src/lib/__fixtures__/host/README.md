@@ -205,3 +205,24 @@ fn plan_after_a_settled_json() {
     }
 }
 ```
+
+## Per-task workspace approval
+
+Recorded from the host tests in `orchestration/workspaces.rs`, using the same
+`OCTIQ_RECORD_FACTS=1` / `FACT <name> {…}` capture above. These are complete
+`orchestration_snapshot { runId }` answers, including the derived
+`task.workspaceChoice` and the approved allocation mode.
+
+| File | Host test (`workspaces::tests::…`) | Moment |
+| --- | --- | --- |
+| `workspace_choice_pending.json` | `workspace_choices_snapshot_records_the_host_contract_for_the_page` | Auto writer advises worktree, reader advises checkout; both await approval |
+| `workspace_choice_approved.json` | same test | The person chose checkout for the writer and worktree for the reader; proposals and approvals fix those modes |
+| `workspace_choice_only_checkout.json` | `workspace_choices_for_a_non_git_folder_only_offer_checkout_and_reject_worktree` | An explicit Worktree run over a non-Git folder advises and offers checkout only, with `onlyCheckoutBecause`; approval re-plans its pending proposal as Direct |
+
+```bash
+OCTIQ_RECORD_FACTS=1 cargo test --manifest-path src-tauri/Cargo.toml --lib -- \
+  workspace_choices_ --nocapture --test-threads=1
+```
+
+Write each printed FACT JSON to the matching file, indented by two spaces and
+otherwise unchanged; never reconstruct these snapshots by hand.

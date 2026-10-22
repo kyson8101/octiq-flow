@@ -950,6 +950,7 @@ impl OrchestrationStore {
                     max_minutes,
                     requested_at: now,
                 }),
+                workspace_choice: None,
                 held_by_plan: None,
                 held_by_reopen: false,
                 retries_used: 0,

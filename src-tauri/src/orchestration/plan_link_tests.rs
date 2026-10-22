@@ -26,13 +26,15 @@ impl Planned {
         let chat_id = format!("plan-link-{}", compact_id());
         let key = format!("chat:{chat_id}");
         let store = OrchestrationStore::default();
+        // Ledger-only fixture: its simulated workers own separate worktrees.
         let run = store
-            .create_run(
+            .create_run_with_mode(
                 key.clone(),
                 "Ship the batch".into(),
                 "workspace".into(),
                 dir.0.to_string_lossy().into_owned(),
                 Some(8),
+                WorkspaceMode::Worktree,
             )
             .unwrap();
         Self {

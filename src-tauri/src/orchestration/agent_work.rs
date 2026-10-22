@@ -513,15 +513,16 @@ mod tests {
         }
     }
 
-    /// A run with room for every worker a test starts in it.
+    /// A ledger-only run whose simulated workers own separate worktrees.
     fn wide(store: &OrchestrationStore, chat: &str, objective: &str) -> Run {
         store
-            .create_run(
+            .create_run_with_mode(
                 chat.into(),
                 objective.into(),
                 "workspace".into(),
                 "/tmp".into(),
                 Some(8),
+                WorkspaceMode::Worktree,
             )
             .unwrap()
     }
