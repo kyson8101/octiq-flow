@@ -137,3 +137,9 @@ test("a worker and a front desk keep no plan and are not told to", async () => {
   // A worker is still told the rest.
   assert.match(await instructions({ OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" }), /orchestration_worker_report/);
 });
+
+test("message_send discloses its UTF-8 byte body limit", async () => {
+  const listed = await ask("tools/list");
+  const tool = listed.tools.find(tool => tool.name === "orchestration_message_send");
+  assert.match(tool.description, /20,000 UTF-8 bytes/);
+});
