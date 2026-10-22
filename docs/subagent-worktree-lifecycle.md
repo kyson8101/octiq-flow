@@ -28,7 +28,11 @@ turns. In missions, worktree means the shared mission worktree and checkout
 means the task's root/destination. Non-Git folders offer and advise checkout only
 in every run mode; approval without a choice re-plans them as Direct and fixes
 that mode, even in an explicit New worktree run.
-The legacy `newWorktree` argument cannot change an approved mode.
+The legacy `newWorktree` argument cannot change an approved mode or location,
+through any start door. `false` or omission reuses a saved workspace; with none
+saved, either flag allocates the approved plan. `true` prepares that same
+deterministic path and branch, preserving retained work. Tasks without an
+approved mode keep the legacy run policy.
 
 The browser-only approval command accepts optional
 `workspaceChoices: { [taskId]: "worktree" | "checkout" }` alongside `runId`,

@@ -428,7 +428,7 @@ pub(super) fn expectation(data: &Stored, task_id: &str, now: i64) -> String {
     // A teammate's job, approved in its own words: the one repair is the
     // same job again (`peer_request.rs`).
     if task.peer_request.is_some() {
-        return format!("{head} retry it in the same workspace now (orchestration_worker_start with newWorktree=false and no baseBranch), which uses one retry. That is the only repair: a peer request is not reopened, takes no message, and is replaced only by a new request the person approves. Never leave it as it is. {ask}");
+        return format!("{head} retry it now (orchestration_worker_start with newWorktree=false to reuse its workspace, no baseBranch; approval fixes the mode), which uses one retry. That is the only repair: a peer request is not reopened, takes no message, and is replaced only by a new request the person approves. Never leave it as it is. {ask}");
     }
     // A completed task is not replaced (`supersedable`): a failed check is
     // put right by checking again.
@@ -436,7 +436,7 @@ pub(super) fn expectation(data: &Stored, task_id: &str, now: i64) -> String {
         return format!("{head} put it right now: fix what it found (orchestration_task_reopen on the task whose work it judged), then reopen this task (orchestration_task_reopen, with corrected instructions if the check itself was wrong) so it checks again, which uses one retry. Never leave it as it is, and never route around it with a new check. {ask}");
     }
     format!(
-        "{head} do one of these now: retry it in the same workspace (orchestration_worker_start with newWorktree=false and the settings it ran with); or replace it with a corrected task that names {id} in supersedes (orchestration_task_create). Each of them uses one retry. Never leave the task as it is, and never route around it with a new task that does not name it in supersedes. {ask}"
+        "{head} do one of these now: retry it (orchestration_worker_start with newWorktree=false to reuse its workspace, the same settings; approval fixes the mode); or replace it with a corrected task that names {id} in supersedes (orchestration_task_create). Each of them uses one retry. Never leave the task as it is, and never route around it with a new task that does not name it in supersedes. {ask}"
     )
 }
 

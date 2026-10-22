@@ -1494,13 +1494,14 @@ pub(crate) mod tests {
         work: PeerWork,
     ) -> Result<PeerRequested, String> {
         let (agents, teams) = roster();
+        let run = run_of(store, &worker.run_id);
         store.peer_request(
             &worker.worker_chat_key,
             None,
             work,
             &agents,
             &teams,
-            &[project("workspace", "/tmp")],
+            &[project("workspace", &run.root_path)],
         )
     }
 
