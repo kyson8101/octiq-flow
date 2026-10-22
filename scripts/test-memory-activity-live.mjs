@@ -174,7 +174,7 @@ try {
     modelId: "claude:sonnet", access: "auto", createdAt: Date.now(), updatedAt: Date.now(), generation: 0 });
   await invoke("chat_index_save", { meta: meta(D, "Mango direct chat") });
   const brief = await invoke("team_brief", { chatKey: D, projectId: project.id, leadId: mango.id, task: "Remember how receipts work." });
-  await invoke("chat_start", { key: D, cwd: repo, agent: "claude", model: "sonnet", access: "auto", useSandbox: false,
+  await invoke("chat_start", { key: D, cwd: repo, agent: "claude", model: "sonnet", access: "auto",
     prompt: brief, turnId: "user-direct" });
   await wait("the direct chat's capability", () => capOf(D));
 
@@ -285,7 +285,7 @@ try {
 
   // ---- Another chat cannot draw into this one.
   await invoke("chat_index_save", { meta: meta(C, "Coordinator main chat") });
-  await invoke("chat_start", { key: C, cwd: repo, agent: "claude", model: "sonnet", access: "auto", useSandbox: false,
+  await invoke("chat_start", { key: C, cwd: repo, agent: "claude", model: "sonnet", access: "auto",
     prompt: "Coordinate.", turnId: "user-coordinator" });
   await wait("the coordinator's capability", () => capOf(C));
   results.spoof = await memory(C, "agent_memory_append", { text: "Spoofed.", requestId: "spoof" }, D);
@@ -360,7 +360,7 @@ try {
   const revive = async (key) => {
     fs.rmSync(path.join(CAPS, encodeURIComponent(key)), { force: true });
     await connect();
-    await invoke("chat_start", { key, cwd: repo, agent: "claude", model: "sonnet", access: "auto", useSandbox: false,
+    await invoke("chat_start", { key, cwd: repo, agent: "claude", model: "sonnet", access: "auto",
       prompt: "Carry on.", turnId: `user-revive-${Date.now()}` });
     await wait(`${key}'s capability`, () => capOf(key));
   };

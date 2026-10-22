@@ -126,7 +126,6 @@ function resultFor(request) {
     case "agent_installs": return [{ id: "claude", installed: true, path: "/mock/claude" }, { id: "antigravity", installed: true, path: "/mock/agy" }];
     case "pr_local_list": case "pr_remote_list": return { items: [], warnings: [] };
     case "agent_avatar_status": return { available: false, reason: "Not signed in to Codex." };
-    case "sandbox_snapshot": return { defaultEnabled: false, environments: {} };
     case "git_status_summary": return [{ path: root, repo_root: root, is_repo: true, branch: "develop", changed: 3, ahead: 1, behind: 0 }];
     case "git_local_branches": return { is_repo: true, current: "develop", branches: ["develop"], is_worktree: false };
     case "chat_task": return {
@@ -264,9 +263,8 @@ async function desktop(browser, name, out) {
   // Every action is a button with an icon and a short word, in one line.
   const row = await buttons(page);
   out.buttons = row.map((each) => `${each.id}:${each.label}`);
-  // `plan` joined the bar with the Plan panel, after `tasks`.
-  const order = ["tasks", "plan", "preview", "git", "focus", "details", "copy-id", "complete", "delete"];
-  const words = { tasks: "Tasks", plan: "Plan", preview: "Preview", git: "Git", focus: "Focus", details: "Details", "copy-id": "Copy ID", complete: "Complete", delete: "Delete", more: "More" };
+  const order = ["tasks", "git", "focus", "details", "copy-id", "complete", "delete"];
+  const words = { tasks: "Tasks", git: "Git", focus: "Focus", details: "Details", "copy-id": "Copy ID", complete: "Complete", delete: "Delete", more: "More" };
   const inRow = row.map((each) => each.id).filter((id) => id !== "more");
   // A wider font may already have put the last of them behind More here.
   if (!wideFont) assert.deepEqual(inRow, order, "the direct actions lead, then what was behind the menu, in its order");

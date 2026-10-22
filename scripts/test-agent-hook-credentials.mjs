@@ -145,7 +145,7 @@ try {
   await invoke("chat_index_save", { meta: { id: "hook-credentials", projectId: project.id, title: "hook credentials", cwd: repo,
     modelId: "claude:sonnet", access: "auto", createdAt: Date.now(), updatedAt: Date.now(), generation: 0 } });
 
-  await invoke("chat_start", { key, cwd: repo, agent: "claude", model: "sonnet", access: "auto", useSandbox: false, prompt: "MCP", turnId: "user-1" });
+  await invoke("chat_start", { key, cwd: repo, agent: "claude", model: "sonnet", access: "auto", prompt: "MCP", turnId: "user-1" });
   const snapshot = await wait("both tool calls", async () => stub().find((e) => e.tool === "orchestration_snapshot"));
   const launch = stub().find((e) => e.launch);
   const title = stub().find((e) => e.tool === "set_chat_title");

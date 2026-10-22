@@ -90,7 +90,7 @@ export function frontDeskText(
 }
 
 /** Where a front-desk conversation runs: home, with nothing prepared. It
- *  only routes, so it never gets a checkout, a worktree or a sandbox. */
+ *  only routes, so it never gets a checkout or a worktree. */
 export function frontDeskExecution(homeId: string | null | undefined): ExecutionPlan {
   return {
     target: "home",
@@ -98,7 +98,6 @@ export function frontDeskExecution(homeId: string | null | undefined): Execution
     prepare: false,
     branch: "",
     newWorktree: false,
-    useSandbox: false,
     chosenBy: "auto",
     reason: "The front desk only routes: it works from your home workspace and opens the right agent's chat.",
     crossProject: false,

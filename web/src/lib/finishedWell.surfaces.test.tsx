@@ -470,7 +470,7 @@ describe("a failure's colour is the danger colour on every sheet that draws one"
 
   it("the acceptance line says a failing check in it, not in the warning colour", () => {
     const ledger = hostFacts.planAfterCheckFailed();
-    const stages = runStages(ledger.tasks, ledger.attempts, null);
+    const stages = runStages(ledger.tasks);
     expect(stages.find((stage) => stage.key === "acceptance")).toMatchObject({ value: "Failing", tone: "danger" });
     expect(stages.find((stage) => stage.key === "checks")).toMatchObject({ value: "1 failed", tone: "danger" });
     // "Settled" is the word where a failed check is in the count.
@@ -780,7 +780,7 @@ describe("a failure that waits on the person is one decision, with what moves it
     expect(ledger.runs[0].status).toBe("completed");
     expect(shownRunStatus(ledger.runs[0], ledger.tasks)).toBe("failed");
     expect(stage).toMatchObject({ stage: "review", blocked: true });
-    const stages = runStages(ledger.tasks, ledger.attempts, null);
+    const stages = runStages(ledger.tasks);
     expect(stages.find((item) => item.key === "acceptance")).toMatchObject({ value: "Failing", tone: "danger" });
   });
 
@@ -871,7 +871,7 @@ describe("a failure the coordinator is fixing, and one that is history, is no co
     // The fail pill is still said, in the row's ink.
     expect(drawnRows[0]).toMatch(/class="run-row-pill" data-verdict="fail" data-quiet="true"/);
     expect(stage).toMatchObject({ stage: "review", blocked: false });
-    const stages = runStages(ledger.tasks, ledger.attempts, null);
+    const stages = runStages(ledger.tasks);
     expect(stages.find((item) => item.key === "acceptance")).toMatchObject({ value: "Failing", tone: "quiet" });
     expect(stages.find((item) => item.key === "checks")).toMatchObject({ value: "1 failed", tone: "quiet" });
     expect(workerLine(ledger.tasks[0], ledger.attempts[0])).toEqual({ text: `${ledger.tasks[0].title} · check failed`, tone: null });

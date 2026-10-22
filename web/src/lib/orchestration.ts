@@ -200,8 +200,6 @@ export type OrchestrationTask = {
    *  releases their dependants. Absent: "work" (every task made before
    *  kinds existed, which never has a verdict invented for it). */
   kind?: "work" | "check" | "review" | "acceptance";
-  /** "sandbox": the worker waits for its runnable test environment. */
-  environment?: "none" | "sandbox";
   /** Every change of hands before the work finished, oldest first. */
   handoffs?: { from?: { id: string; name: string }; to: { id: string; name: string }; reason: string; at: number }[];
   /** The task the coordinator created to replace this blocked or failed one. */
@@ -541,8 +539,7 @@ export type WorkerExecution = {
   lastProgressAt?: number | null;
   lastProgress?: string | null;
   currentOperation?: string | null;
-  /** Operations in flight, by id. `octiq:environment` is the host's own:
-   *  building the task's test environment, or waiting for a slot for it. */
+  /** Operations in flight, by id. */
   pendingTools?: Record<string, string>;
   latestError?: { kind: string; message: string; at: number; retryable: boolean } | null;
   retryCount: number;

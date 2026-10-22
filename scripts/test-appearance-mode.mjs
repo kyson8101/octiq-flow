@@ -112,7 +112,7 @@ function resultFor(request) {
     case "permission_pending": return permissions;
     case "question_pending": return questions;
     case "chat_list": case "chat_activity": case "safety_block_pending": case "access_request_pending":
-    case "pr_repositories": case "codex_skills": case "image_preview_list":
+    case "pr_repositories": case "codex_skills":
       return [];
     case "team_list": case "team_leads": return [];
     case "chat_queue_state": return { live: false, queuedTurnIds: [] };
@@ -122,7 +122,6 @@ function resultFor(request) {
     case "agent_models": return { source: "mock", models: [] };
     case "agent_installs": return [{ id: "claude", installed: true, path: "/mock/claude" }];
     case "pr_local_list": case "pr_remote_list": return { items: [], warnings: [] };
-    case "sandbox_snapshot": return { defaultEnabled: false, environments: {} };
     case "git_status_summary": return [{ path: root, repo_root: root, is_repo: true, branch: "develop", changed: 0, ahead: 0, behind: 0 }];
     case "git_local_branches": return { is_repo: true, current: "develop", branches: ["develop"], is_worktree: false };
     case "chat_task": return { chatId: request.args?.chatId, projectId: "octiq" };

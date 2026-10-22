@@ -969,15 +969,10 @@
   .orch-task-detail > .orch-followup, .orch-task-detail > .orch-cleanup-confirm { animation: none; }
   .orch-delivery-actions button, .orch-followup button, .orch-cleanup-confirm button { transition: none; }
 }
-/* A check's kind, its environment and a native decision: each a state of
+/* A check's kind and a native decision: each a state of
    its own, beside the task's status and never folded into it. */
-.orch-task-kind, .orch-task-env, .orch-task-decision { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.orch-task-env[data-tone="ok"] { color: var(--ok); }
-.orch-task-env[data-tone="warn"], .orch-task-decision { color: var(--warn); }
-.orch-task-env[data-tone="active"] { color: var(--fg-2); }
-.orch-task-env-detail { margin: 0 0 12px; overflow-wrap: anywhere; }
-.orch-task-env-detail p { margin: 0 0 4px; color: var(--fg-2); font-size: 11.5px; }
-.orch-task-env-detail ul { margin: 0; padding-left: 16px; color: var(--fg-3); font-size: 10.5px; line-height: 1.5; }
+.orch-task-kind, .orch-task-decision { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.orch-task-decision { color: var(--warn); }
 
 /* Where the run stands: closed, the acceptance line; open, one row per kind
    of evidence. */

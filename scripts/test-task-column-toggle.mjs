@@ -71,7 +71,6 @@ function resultFor(request) {
     case "chat_activity": return [];
     case "chat_queue_state": return { live: false, queuedTurnIds: [] };
     case "orchestration_snapshot": return snapshot;
-    case "sandbox_snapshot": return { defaultEnabled: false, environments: {} };
     case "permission_pending": return [];
     case "memory_usage": return { totalMb: 0, procs: 0, rows: [] };
     case "usage_summary": return {};

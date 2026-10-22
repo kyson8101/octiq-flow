@@ -6,15 +6,10 @@
 // to be built against fields the host does not send that way. A test that
 // needs another moment of the same ledger changes a copy, in the test, and
 // says what it changed.
-import type { ChatPlan } from "../chatPlan";
 import type { OrchestrationSnapshot, OrchestrationTask } from "../orchestration";
 import type { Question, QuestionAnswered } from "../question";
 import cardOnGateBlocked from "./host/card_on_gate_blocked.json?raw";
 import cardPending from "./host/card_pending.json?raw";
-import chatPlanDecided from "./host/chat_plan_decided.json?raw";
-import chatPlanDiscussing from "./host/chat_plan_discussing.json?raw";
-import chatPlanNone from "./host/chat_plan_none.json?raw";
-import chatPlanStarted from "./host/chat_plan_started.json?raw";
 import claudeRefusal from "./host/claude_refusal.json?raw";
 import coordinatesRun from "./host/coordinates_run.json?raw";
 import failureAwaitsCoordinator from "./host/failure_awaits_coordinator.json?raw";
@@ -46,9 +41,6 @@ import usageContext from "./host/usage_context.json?raw";
 
 /** A fresh copy each time: a test may change what it is given. */
 const ledger = (raw: string) => (): OrchestrationSnapshot => JSON.parse(raw) as OrchestrationSnapshot;
-
-/** An answer to `chat_plan_get`, a fresh copy each time. */
-const plan = (raw: string) => (): ChatPlan => JSON.parse(raw) as ChatPlan;
 
 /** One `octiq_question_answered` line of a chat's record, a fresh copy
  *  each time. */
@@ -142,22 +134,6 @@ export const hostFacts = {
   /** Two entries of `chat_index_list`: a chat that coordinates a run, and one
    *  that does not (no key at all). */
   coordinatesRun: (): { lead: HostChatEntry; plain: HostChatEntry } => JSON.parse(coordinatesRun),
-  /** `chat_plan_get` for a chat with no plan: `revision: 0`, no items, no
-   *  `updatedAt`, `updatedBy` or `started`, `awaitsStart: false`. */
-  chatPlanNone: plan(chatPlanNone),
-  /** Two items being discussed, each with open questions, one with a note:
-   *  `awaitsStart: true`. No item has `progress` or `linked`. */
-  chatPlanDiscussing: plan(chatPlanDiscussing),
-  /** The same plan with every question answered and both items `decided`:
-   *  revision 2, still `awaitsStart: true`, no `started`. */
-  chatPlanDecided: plan(chatPlanDecided),
-  /** A started plan (`started.revision: 1`, `told: true`) at revision 2.
-   *  i1 the agent calls `done` while one of its two tasks failed its check;
-   *  i2 one running and one waiting; i3 one failed; i4 a replaced task
-   *  (`closed`, outside `total`) and its replacement; i5 still discussing,
-   *  i6 dropped, i7 added after Start (`addedIn: 2`): none of the three has
-   *  `progress` or `linked`. */
-  chatPlanStarted: plan(chatPlanStarted),
   /** The line the host wrote into a chat's record when the answers to two
    *  questions Codex asked by itself were handed to it: `via: "native"`, one
    *  question with two options (one described) and one free-text question

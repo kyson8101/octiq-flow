@@ -31,7 +31,7 @@ const status = (patch: Partial<TaskStatus> = {}): TaskStatus => ({
 
 const launch: LaunchPlan = {
   projectId: "p-flow", projectName: "octiq-flow", path: "/code/octiq-flow", baseBranch: "develop",
-  newWorktree: true, useSandbox: false, prepare: true, chosenBy: "auto",
+  newWorktree: true, prepare: true, chosenBy: "auto",
 };
 
 const row = (rows: ReturnType<typeof taskEnvironment>["rows"], key: string) => rows.find((r) => r.key === key)!;
@@ -48,7 +48,6 @@ describe("taskEnvironment", () => {
     // git keeps no record of a base: it is only ever the plan's.
     expect(row(rows, "base")).toMatchObject({ value: "develop", evidence: "planned" });
     expect(row(rows, "target")).toMatchObject({ value: "develop", evidence: "confirmed" });
-    expect(row(rows, "sandbox")).toMatchObject({ value: "Off", evidence: "planned" });
   });
 
   it("never shows a plan as verified before the host has checked", () => {
@@ -85,10 +84,4 @@ describe("taskEnvironment", () => {
     expect(row(rows, "checkout").value).toBe("New worktree");
   });
 
-  it("reports the sandbox by its own state", () => {
-    const sandbox = { id: "s", chatKey: "chat:c1", enabled: true, locked: false, cwd: "/x", state: "error" as const,
-      checkedAt: null, error: "port busy", urls: {}, sourceRevision: null, sourceDirty: null, fixtureVersion: null };
-    expect(row(taskEnvironment({ status: status(), sandbox }).rows, "sandbox")).toMatchObject({ value: "Failed: port busy", evidence: "unknown" });
-    expect(row(taskEnvironment({ status: status() }).rows, "sandbox")).toMatchObject({ value: "Unknown", evidence: "unknown" });
-  });
 });

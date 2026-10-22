@@ -17,8 +17,6 @@ import { ProviderFallbackChoices } from "./components/ProviderFallback";
 // Chats run in PARALLEL. Switching to another one does not stop the one you
 // leave — its answer arrives, folds into its own transcript, and is saved,
 // whether or not it is the chat on screen.
-import { useSandboxes } from "./lib/sandbox";
-import { SandboxStatus } from "./components/SandboxStatus";
 import {
   lazy,
   Suspense,
@@ -178,7 +176,7 @@ const NO_ROSTER: readonly TeamAgent[] = [];
 import { savedThemeId } from "./lib/themeStore";
 import { Usage, UsageRow } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
-import { OrchestrationPanel, showTaskRow } from "./components/OrchestrationPanel";
+import { OrchestrationPanel } from "./components/OrchestrationPanel";
 import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type OrchestrationRun } from "./lib/orchestration";
 import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
 import { ChatWorkflowBar, TasksButton } from "./components/ChatWorkflowBar";
@@ -205,8 +203,6 @@ import { useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
 import { orchestrationFeed } from "./lib/orchestrationFeed";
 import { ARRIVAL_GRACE_MS, composesNewChat, stillArriving } from "./lib/arrivingChat";
 import { TaskStopContext, type TaskStopping } from "./components/ReopenedNote";
-import { ImagePreviewPanel, PreviewButton } from "./components/ImagePreviewPanel";
-import { useImagePreviews, previewSlots } from "./lib/imagePreview";
 import { FilesButton, SessionFilesPanel, useSessionPins } from "./components/SessionFiles";
 import { FullscreenButton } from "./components/FullscreenButton";
 import { InstalledReload } from "./components/InstalledReload";
@@ -214,11 +210,6 @@ import { ChatDeleteButton } from "./components/ChatDeleteButton";
 import { ChatCompletionLine, CompleteChatButton, CompleteChatDialog } from "./components/CompleteChat";
 import { chatKindOf, completeAction, completingIds, completionLine, isWrapUpTurn, type CompletePreview } from "./lib/chatComplete";
 import { useChatCompletions } from "./lib/useChatCompletions";
-import { IN_FLIGHT } from "./lib/inFlight";
-import { useChatPlan } from "./lib/useChatPlan";
-import { openQuestions, planOffered, tasksInFlight, type PlanTaskView } from "./lib/planView";
-import { isPlanStartTurn, startTurnLost } from "./lib/planTurn";
-import { PlanButton, PlanPanel } from "./components/PlanPanel";
 import { useConfirm } from "./components/Confirm";
 import { CopyChatIdButton } from "./components/CopyChatIdButton";
 import { ActionBar, type BarAction } from "./components/ActionBar";
@@ -453,10 +444,6 @@ const RAIL_KEY = "octiq.v2.railShut";
  *  so what is worth remembering is the decision to hide it. One flag for every
  *  chat in this browser, not one per chat. */
 const TASKS_KEY = "octiq.v2.tasksShut";
-/** The Plan column beside the chat, on a desktop. Panel state like the git
- *  and files columns', not a setting; a phone's plan page is never
- *  remembered. */
-const PLAN_KEY = "octiq.v2.planColumn";
 /** The run strips the person put away, each as the strip's signature when it
  *  was hidden (`lib/runProgress.dismissStrip`): one short string per run, the
  *  oldest dropped, so a dismissed Done stays dismissed across a reload. */
@@ -580,9 +567,6 @@ export default function App() {
   const [branch, setBranch] = useState("");
   const [branches, setBranches] = useState<WorkLocationBranches>(NO_BRANCHES);
   const [newWorktree, setNewWorktree] = useState(false);
-  const sandboxes = useSandboxes();
-  const [sandboxChoice, setSandboxChoice] = useState<boolean | null>(null);
-  const useSandbox = sandboxChoice ?? sandboxes.snapshot?.defaultEnabled ?? false;
   const [indexReady, setIndexReady] = useState(false);
   const [unavailableChat, setUnavailableChat] = useState<string | null>(null);
   // The chat the address asked for, until it is on screen: a composer drawn
@@ -830,12 +814,6 @@ export default function App() {
   // body, and only one piece of state joins them.
   const [filesOpen, setFilesOpen] = useState(() => localStorage.getItem(FILES_KEY) === "1");
   const [filesMounted, setFilesMounted] = useState(filesOpen);
-  // The Plan panel (components/PlanPanel). A column beside the chat on a
-  // desktop, remembered like the two above; on a phone a page drawn in the
-  // chat's place, open for the one chat it was opened in and never
-  // remembered, so opening a chat never lands on its plan.
-  const [planColumn, setPlanColumn] = useState(() => recall(PLAN_KEY) === "1");
-  const [planPage, setPlanPage] = useState<string | null>(null);
   // The agent column. Shown by default and closed by hand, so the flag it
   // keeps is the closing — see RAIL_KEY.
   const [railShut, setRailShut] = useState(() => localStorage.getItem(RAIL_KEY) === "1");
@@ -1689,9 +1667,8 @@ export default function App() {
   const reclaim = useCallback((id: string, turnId: string, message: Message | undefined) => {
     // The host's wrap-up turn was never typed; taking it back returns nothing.
     // Nor was an answer to the agent's question: it is never the composer's.
-    // Nor the turn that tells an agent its plan was started, or that a job
-    // it registered ended.
-    if (!message || isWrapUpTurn(turnId) || isAnswerTurn(turnId) || isPlanStartTurn(turnId) || isJobTurn(turnId) || reclaimedIds.current.includes(turnId)) return;
+    // Nor the turn that tells an agent a job it registered ended.
+    if (!message || isWrapUpTurn(turnId) || isAnswerTurn(turnId) || isJobTurn(turnId) || reclaimedIds.current.includes(turnId)) return;
     const words = reclaimedMessage(message);
     reclaimedIds.current = [...reclaimedIds.current.slice(-199), turnId];
     setReclaimed((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), words] }));
@@ -2128,24 +2105,15 @@ export default function App() {
   besideRef.current = besideShown ? besideId : null;
   /** The run panel drawn in the chat's place: there is no room for both. */
   const runInPlace = !workflowSplit && workflowView === "run";
-  /** The chat whose plan the page reads, or `null` for a chat that keeps
-   *  none: a worker's, a front desk's, a seat's (`planView.planOffered`),
-   *  one that is not saved yet, one that is unavailable. */
-  const planFor = conversationId && !unavailableChat
-    && planOffered(chatKindOf({ key: keyFor(conversationId), worker: workerChat, frontDesk: frontDeskChats.has(conversationId) }))
-    ? conversationId : null;
-  /** The plan drawn in the chat's place: a phone has no room beside it. */
-  const planInPlace = isMobile && !!planFor && planPage === planFor;
   /** Whether the chat is what the page shows. `conversationId` says which
-   *  chat is open; it does not say the chat is on screen. Five things are
+   *  chat is open; it does not say the chat is on screen. Four things are
    *  drawn in its place, each a `hidden` on the way down to the composer:
    *  the phone's project list (over `main`), a main-area page (Settings,
    *  Agents, Search, Projects, Pull requests: over `chat-app-surface`), the
-   *  phone's Plan page (over `chat-app-surface` too), the run panel where
-   *  there is no room beside it (`workflow-chat-surface`), and the task chat
+   *  run panel where there is no room beside it (`workflow-chat-surface`), and the task chat
    *  where there is no room beside that (`beside-pane is-main`). What holds
    *  only while the chat is on screen asks this. */
-  const chatShown = !showingProjects && !mainPage && !planInPlace && !runInPlace && mainShown;
+  const chatShown = !showingProjects && !mainPage && !runInPlace && mainShown;
   const besideChat = (besideId && chats[besideId]) || EMPTY;
   // The chats whose players may go on playing in place. A playing one in any
   // other chat goes to the floating player (lib/nowPlaying), in the same
@@ -2260,11 +2228,10 @@ export default function App() {
         project: project ?? null,
         homeId,
         repo: branches,
-        sandboxDefault: sandboxes.snapshot?.defaultEnabled ?? false,
         overrides,
       })
       : null,
-    [newTask, talkingToDesk, headAtHome, project, homeId, branches, sandboxes.snapshot?.defaultEnabled, overrides],
+    [newTask, talkingToDesk, headAtHome, project, homeId, branches, overrides],
   );
   // The registered agent a chat belongs to — its lead, or the assignee of the
   // task a worker chat runs. It is the voice of every reply in that chat.
@@ -2300,7 +2267,7 @@ export default function App() {
     [agentsMode, conversationId, leads, roster, workerAssignees, composerIdentity, frontDeskChats],
   );
   // Task details combine the chat's recorded launch plan, the newest worker
-  // attempt, sandbox state and registered persona with live host verification.
+  // attempt and registered persona with live host verification.
   // Keep this at the App boundary: isolated task-panel renders cannot prove
   // that the real conversation has all of those sources wired together.
   const contextFor = useCallback((id: string, chatPersona: Persona | null, model: ModelChoice) => {
@@ -2310,18 +2277,15 @@ export default function App() {
       .sort((a, b) => b.createdAt - a.createdAt)[0];
     const task = attempt ? orchestration.tasks.find((candidate) => candidate.id === attempt.taskId) : undefined;
     const held = conversations.find((conversation) => conversation.id === id);
-    const sandbox = Object.values(sandboxes.snapshot?.environments ?? {})
-      .find((environment) => environment.chatKey === key) ?? null;
     const names = new Map([...workspaces, ...shelved].map((workspace) => [workspace.id, workspace.name]));
     return {
       launch: held?.launch ?? null,
       worker: task ? { task, attempt } : null,
-      sandbox,
       projectName: (projectId: string) => names.get(projectId),
       persona: chatPersona,
       runsOn: chatPersona ? `${providerFor(model.agent).name} ${model.model}` : undefined,
     };
-  }, [orchestration, conversations, sandboxes.snapshot, workspaces, shelved]);
+  }, [orchestration, conversations, workspaces, shelved]);
   const panelContext = useMemo(
     () => (conversationId ? contextFor(conversationId, persona, choice) : undefined),
     [conversationId, contextFor, persona, choice],
@@ -2597,14 +2561,6 @@ export default function App() {
       ? chat.failure
       : undefined;
   const autoResume = chat.autoResume;
-  const previews = useImagePreviews(conversationId ? keyFor(conversationId) : "", chat.busy);
-  const previewVisible = previews.open;
-  // The chat's plan (`lib/useChatPlan`): read when the chat opens and when
-  // the panel does, then the host's event. The column gives way to the
-  // preview panel like the git and files columns do.
-  const planColumnShown = !isMobile && planColumn && !!planFor && !previewVisible;
-  const planOpen = planInPlace || planColumnShown;
-  const planFeed = useChatPlan(conn, planFor, planOpen, orchestrationState.snapshot);
   /** The files this chat says are worth opening — see lib/pins. Read once up
    *  here rather than twice below: the button needs the count and the panel
    *  needs the list, and walking the transcript for each of them would do the
@@ -2750,7 +2706,6 @@ export default function App() {
     setBranch("");
     setBranches(NO_BRANCHES);
     setNewWorktree(false);
-    setSandboxChoice(null);
     setOverrides({});
     setAdvancedOpen(false);
     setRunOpened((before) => ({ ...before, new: false }));
@@ -2957,7 +2912,6 @@ export default function App() {
     setUnavailableChat(null);
     setNewChatError(null);
     // Asked for a chat, the phone shows the chat: its plan page is put away.
-    setPlanPage(null);
     const model = modelFromId(c.modelId ?? meta.current[c.id]?.modelId ?? null) ?? MODELS[0];
     const conversationAccess = accessFor(model.agent, (c.permission as AccessLevel) ?? "read");
     // The level this chat runs at, not the one the page last held: a resumed
@@ -3188,9 +3142,6 @@ export default function App() {
       setGitMounted(true);
       setFilesOpen(false);
       rememberFlag(FILES_KEY, false);
-      setPlanColumn(false);
-      rememberFlag(PLAN_KEY, false);
-      setPlanPage(null);
     }
     rememberFlag(GIT_KEY, next);
   }, []);
@@ -3202,26 +3153,8 @@ export default function App() {
       setFilesMounted(true);
       setGitOpen(false);
       rememberFlag(GIT_KEY, false);
-      setPlanColumn(false);
-      rememberFlag(PLAN_KEY, false);
-      setPlanPage(null);
     }
     rememberFlag(FILES_KEY, next);
-  }, []);
-
-  /** The same, for the Plan panel: an alternative to the two columns above,
-   *  never a third beside them. On a phone it is a page for the chat it was
-   *  opened in (`chatId`), and nothing is remembered. */
-  const showPlan = useCallback((next: boolean, chatId: string | null, phone: boolean) => {
-    if (next) {
-      setGitOpen(false);
-      rememberFlag(GIT_KEY, false);
-      setFilesOpen(false);
-      rememberFlag(FILES_KEY, false);
-    }
-    if (phone) { setPlanPage(next ? chatId : null); return; }
-    setPlanColumn(next);
-    rememberFlag(PLAN_KEY, next);
   }, []);
 
   /** The agent column. Unlike the two above it takes no width from a panel and
@@ -3924,7 +3857,6 @@ export default function App() {
         );
         const prepBranch = plan ? plan.branch : branch;
         const prepWorktree = plan ? plan.newWorktree : newWorktree;
-        const sandboxPlanned = plan ? plan.useSandbox : (sandboxChoice ?? sandboxes.snapshot?.defaultEnabled ?? false);
         // What was planned, recorded once on the chat so its details can tell
         // the plan apart from what git later confirms (lib/taskEnvironment).
         const launch: LaunchPlan | undefined = held ? undefined : {
@@ -3933,7 +3865,6 @@ export default function App() {
           path: targetProject.primary_path ?? "",
           baseBranch: prepareGit ? prepBranch || (project?.id === targetProject.id ? branches.current : "") : "",
           newWorktree: prepareGit && prepWorktree,
-          useSandbox: sandboxPlanned,
           prepare: prepareGit,
           chosenBy: plan ? plan.chosenBy : "person",
           reason: plan?.reason ?? "",
@@ -4076,7 +4007,6 @@ export default function App() {
             // Where the host may continue this chat when `cwd` has been removed
             // and cannot be rebuilt (`chat_recover.rs`).
             fallbackCwd: targetProject.primary_path ?? null,
-            useSandbox: held ? false : plan ? plan.useSandbox : (sandboxChoice ?? sandboxes.snapshot?.defaultEnabled ?? null),
             // A project can group several folders, and the chat starts in only
             // one of them. The rest are named here so the agent can reach the
             // whole project, the same way a terminal in it can.
@@ -4134,8 +4064,6 @@ export default function App() {
       ensureGeneralWorkspace,
       branch,
       newWorktree,
-      sandboxChoice,
-      sandboxes.snapshot?.defaultEnabled,
       choice,
       access,
       effort,
@@ -4296,15 +4224,13 @@ export default function App() {
   const [completeAsk, setCompleteAsk] = useState<string | null>(null);
   /** What `send` would start a chat with. The host uses it only for a chat
    *  with no process, which it then starts with its own turn as the first
-   *  message: a completion's wrap-up, or the turn that tells an agent its
-   *  plan was started. */
+   *  message: a completion's wrap-up. */
   const startSettingsOf = useCallback((id: string) => {
     const held = conversationsRef.current.find((c) => c.id === id);
     const home = workspaces.find((w) => w.id === held?.projectId) ?? project;
     return {
       cwd: held?.cwd ?? chatsRef.current[id]?.cwd ?? home?.primary_path ?? "",
       fallbackCwd: home?.primary_path ?? null,
-      useSandbox: false,
       extraDirs: home?.paths ?? [],
       env: home?.env ?? {},
       agent: choice.agent,
@@ -4325,18 +4251,6 @@ export default function App() {
     // running set: putting it back lit the live dot on a finished chat.
     if (outcome === "completing") setRunning((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
   }, [completions.complete, startSettingsOf]);
-  /** The person's Start on the chat's plan (`chat_plan_start`), or the same
-   *  command again for a plan whose agent was not told. The host records it
-   *  first and then hands the agent a turn; a chat with no process is
-   *  started with that turn from the settings `send` would use. */
-  const startPlan = useCallback(async (id: string, revision: number) => {
-    const answer = await planFeed.start(id, revision, startSettingsOf(id));
-    // One is already out for this chat: nothing was sent.
-    if (answer === IN_FLIGHT) return answer;
-    // The agent has a turn now, in a process that may be new.
-    if (answer.delivered && answer.state !== "told") setRunning((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
-    return answer;
-  }, [planFeed.start, startSettingsOf]);
   const confirmAction = useConfirm();
   /** Close a mission the completed chat coordinated. The person's own action,
    *  asked in the words the run panel asks it in. */
@@ -5191,38 +5105,6 @@ export default function App() {
     setWorkflowViews((before) => ({ ...before, [chatId]: "run" }));
     setRunFocus({ chatKey: keyFor(chatId), runId, nonce: Date.now() });
   }, []);
-  // The Plan panel's way to a task: the run panel, opened at that task's
-  // row. On a phone the plan page gives its place to the run panel; on a
-  // desktop the run column is opened beside it, put away or not. The row is
-  // shown once it is drawn, and nothing is pressed for the person.
-  const [taskFocus, setTaskFocus] = useState<{ taskId: string; nonce: number } | null>(null);
-  const openPlanTask = useCallback((task: PlanTaskView) => {
-    if (!planFor) return;
-    const nonce = Date.now();
-    setRunOpened((before) => ({ ...before, [planFor]: true }));
-    setWorkflowViews((before) => ({ ...before, [planFor]: "run" }));
-    setRunFocus({ chatKey: keyFor(planFor), runId: task.runId, taskId: task.id, nonce });
-    setLateOpened(planFor);
-    showTasks(true);
-    setPlanPage(null);
-    setTaskFocus({ taskId: task.id, nonce });
-  }, [planFor, showTasks]);
-  useEffect(() => {
-    if (!taskFocus) return;
-    const started = Date.now();
-    let frame = requestAnimationFrame(function look() {
-      // Shown, or never drawn (the ledger no longer lists it): the run is open, that is all.
-      if (showTaskRow(taskFocus.taskId) || Date.now() - started > 3_000) { setTaskFocus(null); return; }
-      frame = requestAnimationFrame(look);
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [taskFocus]);
-  // Which of the plan's linked tasks has a turn in flight, by the run
-  // panel's own reader: the only items the accent is on.
-  const planFlying = useMemo(
-    () => tasksInFlight(planFeed.plan, orchestrationState.snapshot, Date.now(), pendingHeld),
-    [planFeed.plan, orchestrationState.snapshot, pendingHeld],
-  );
   const revealPending = useCallback((action: PendingAction) => {
     const conversation = conversationsRef.current.find((item) => item.id === action.openChatId);
     if (!conversation) return;
@@ -5374,14 +5256,6 @@ export default function App() {
     completing: !!conversationId && completingChats.has(conversationId),
     connected: conn === "open",
   });
-  const planQuestions = planFor ? openQuestions(planFeed.plan) : 0;
-  const planPanel = (page: boolean) => planFor && <PlanPanel key={planFor} page={page}
-    plan={planFeed.plan} chatId={planFor} said={planFeed.said} error={planFeed.held?.error} unread={!planFeed.held}
-    startTurnLost={startTurnLost(chat.messages, planFeed.plan?.started?.turnId)}
-    flying={planFlying} connected={conn === "open"}
-    onClose={() => showPlan(false, planFor, page)}
-    onStart={(revision) => startPlan(planFor, revision)}
-    onOpenTask={openPlanTask} />;
   const barActions: BarAction[] = showingProjects ? [] : [
     // A plan waiting in the column that was put away rides on this button,
     // and on More when the button is behind it.
@@ -5392,12 +5266,7 @@ export default function App() {
         if (columnShut) setLateOpened(conversationId);
         if (!columnShut || tasksShut) showTasks(columnShut);
       }} />, { attention: columnShut ? taskCounts.decisions : 0 }),
-    // The chat's plan. Questions still open ride on the button, and on More
-    // when the button is behind it.
-    onChat && planFor && act("plan", 95, <PlanButton questions={planQuestions} open={planOpen}
-      onToggle={() => { previews.setOpen(false); showPlan(!planOpen, planFor, isMobile); }} />, { attention: planOpen ? 0 : planQuestions }),
-    onChat && conversationId && act("preview", 90, <PreviewButton count={previewSlots(previews.images).length} open={previews.open} onClick={() => previews.setOpen(!previews.open)} />),
-    onChat && sessionProject && act("git", 85, <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />),
+    onChat && sessionProject && act("git", 85, <GitButton project={sessionProject} open={gitOpen} onToggle={() => { showGit(!gitOpen); }} />),
     onChat && project && !unavailableChat && act("focus", 80, <FocusModeButton onClick={enterFocus} />),
     !agentsMode && act("new", 70, <button
       className="icon-btn new-chat"
@@ -5424,10 +5293,10 @@ export default function App() {
       // question the person has answered.
       waiting={waitingHere}
     />),
-    onChat && chat.agents.length > 0 && act("agents", 66, <RailButton count={chat.agents.length} open={!railShut && !previewVisible}
-      onToggle={() => { previews.setOpen(false); showRail(previewVisible || railShut); }} />),
-    onChat && sessionFiles.length > 0 && act("pinned", 64, <FilesButton count={sessionFiles.length} open={filesOpen && !previewVisible}
-      onToggle={() => { previews.setOpen(false); showFiles(previewVisible || !filesOpen); }} />),
+    onChat && chat.agents.length > 0 && act("agents", 66, <RailButton count={chat.agents.length} open={!railShut}
+      onToggle={() => { showRail(railShut); }} />),
+    onChat && sessionFiles.length > 0 && act("pinned", 64, <FilesButton count={sessionFiles.length} open={filesOpen}
+      onToggle={() => { showFiles(!filesOpen); }} />),
     onChat && wide && isMobile && act("width", 30, <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />),
     onChat && !agentsMode && !workerChat && act("run", 68, <button className={`orch-toggle${workflowView === "run" && workflowVisible ? " is-on" : ""}`} type="button"
       title={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"}
@@ -5784,10 +5653,7 @@ export default function App() {
               />
             </Suspense>
           )}
-          {/* A phone's Plan page, in the chat's place (`chatShown`). The
-              action bar above it keeps the Plan button, which is the way back. */}
-          {!mainPage && planInPlace && planPanel(true)}
-          <div className={`chat-app-surface ${entryClass(identity)}`} hidden={mainPage || planInPlace}>
+          <div className={`chat-app-surface ${entryClass(identity)}`} hidden={!!mainPage}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
           {(!workerChat || workflowVisible) && <ChatWorkflowBar snapshot={runWorkflow} orchestrated={workflowVisible} view={workflowView} focusMode={focusMode} split={workflowSplit}
             unified={workflowVisible} selectedRun={displayedRun} worker={workerChat} held={holdsRun}
@@ -6151,12 +6017,6 @@ export default function App() {
             />
           )}
 
-          {conversationId && <Arrive when={!!sandboxes.snapshot?.environments[keyFor(conversationId)]?.enabled} scope={conversationId}>
-            {sandboxes.snapshot?.environments[keyFor(conversationId)]?.enabled &&
-              <SandboxStatus key={conversationId} environment={sandboxes.snapshot.environments[keyFor(conversationId)]}
-                running={chat.busy} onRefresh={sandboxes.refresh} />}
-          </Arrive>}
-
           {/* Keyed by project: switching project gets that project's own
               terminals, and coming back reattaches to them rather than
               starting a second set. */}
@@ -6311,8 +6171,6 @@ export default function App() {
             branch={executionPlan ? executionPlan.branch : branch}
             branches={branches}
             onBranch={executionPlan ? (value) => setOverrides((o) => ({ ...o, branch: value })) : setBranch}
-            useSandbox={executionPlan ? executionPlan.useSandbox : useSandbox}
-            onUseSandbox={executionPlan ? (value) => setOverrides((o) => ({ ...o, useSandbox: value })) : setSandboxChoice}
             newWorktree={executionPlan ? executionPlan.newWorktree : newWorktree}
             onNewWorktree={executionPlan ? (value) => setOverrides((o) => ({ ...o, newWorktree: value })) : setNewWorktree}
             showWorkLocation={composesNewChat(conversationId, arrivingChat) && !executionPlan?.crossProject}
@@ -6393,7 +6251,7 @@ export default function App() {
             here it takes width from the view, so the transcript and the prompt
             box move together and stay lined up — which is what the git and
             files panels beside it have always done. */}
-        {!mainPage && !previewVisible && !railShut && chat.agents.length > 0 && (
+        {!mainPage && !railShut && chat.agents.length > 0 && (
           <aside className="side">
             <AgentRail
               agents={chat.agents}
@@ -6407,7 +6265,7 @@ export default function App() {
             rather than something laid over it, so the chat gives up width while
             this is open and takes it straight back when it closes. On a phone
             the stylesheet turns it into a sheet that slides in from the right. */}
-        {!mainPage && gitMounted && !previewVisible && sessionProject && (
+        {!mainPage && gitMounted && sessionProject && (
           <GitPanel
             project={sessionProject}
             open={gitOpen}
@@ -6416,12 +6274,7 @@ export default function App() {
           />
         )}
 
-        {/* The Plan column: an alternative to the git and files columns,
-            and like them it gives way to the preview panel. */}
-        {!mainPage && planColumnShown && planPanel(false)}
-
-        {!mainPage && previewVisible && conversationId && <ImagePreviewPanel key={conversationId} conversationKey={keyFor(conversationId)} images={previews.images} error={previews.error} onClose={() => previews.setOpen(false)} />}
-        {!mainPage && filesMounted && !previewVisible && (
+        {!mainPage && filesMounted && (
           <SessionFilesPanel
             pins={sessionFiles}
             open={filesOpen}
