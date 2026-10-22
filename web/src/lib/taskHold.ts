@@ -331,7 +331,8 @@ export function reopenControl(
  *  `TaskHold.label`): a held task is never "Ready", and one the person
  *  stopped never "Failed", with nothing beside it. */
 export function statusLine(task: Pick<OrchestrationTask, "status">, held: string | null): string {
-  const ledger = TASK_LABELS[task.status];
+  // Completed is a ledger outcome, including a review whose verdict failed.
+  const ledger = task.status === "completed" ? "Completed" : TASK_LABELS[task.status];
   return held ? `Task: ${held} · ledger status: ${ledger}` : `Ledger status: ${ledger}`;
 }
 

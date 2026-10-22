@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { bridge } from "./bridge";
-import { askPaths, knownPath, knownPaths, resetPathStore, subscribePaths } from "./pathStore";
+import { askPaths, knownPath, knownPaths, MISSING_PATH_MS, resetPathStore, subscribePaths } from "./pathStore";
 
 // The real one opens a socket the moment it is imported, which is no way to
 // test a cache.
@@ -25,6 +25,23 @@ afterEach(() => {
 });
 
 describe("askPaths", () => {
+  it("revalidates a missing output after expiry and shares its new answer", async () => {
+    invoke.mockResolvedValueOnce([null]).mockResolvedValueOnce(["/p/film.mp4"]);
+    askPaths(["film.mp4"], "/p");
+    await settle();
+    expect(knownPath("film.mp4", "/p")).toBeNull();
+    askPaths(["film.mp4"], "/p");
+    await settle();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(MISSING_PATH_MS);
+    askPaths(["film.mp4"], "/p");
+    askPaths(["film.mp4"], "/p");
+    await settle();
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(knownPath("film.mp4", "/p")).toBe("/p/film.mp4");
+    expect(knownPaths(["film.mp4"], "/p").get("film.mp4")).toBe("/p/film.mp4");
+  });
+
   it("asks about a whole burst in one call", async () => {
     invoke.mockResolvedValue(["/p/a.ts", null]);
     askPaths(["a.ts"], "/p");

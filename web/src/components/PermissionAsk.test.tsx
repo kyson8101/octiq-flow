@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: vi.fn() } }));
 import { WHOLE_MAX } from "../lib/cardFold";
-import { PermissionAsk, askNote, askNoteParts, askShortParts } from "./PermissionAsk";
+import { PermissionAsk, permissionAgent, askNote, askNoteParts, askShortParts } from "./PermissionAsk";
 
 const change = "Register a new agent, Nova.\n\nProvider: Codex\nAvailable in: Starfall";
 // The same change as the host sends it beside the text (`changeFacts`).
@@ -20,6 +20,26 @@ const draw = (ask: AskProp) => renderToStaticMarkup(<PermissionAsk ask={ask} onA
 /** The same card with its one disclosure open, which static markup cannot press. */
 const drawOpen = (ask: AskProp) => renderToStaticMarkup(<PermissionAsk ask={ask} onAnswered={() => {}} startOpen />);
 
+describe("permission card provider", () => {
+  it.each(["claude", "codex", "antigravity", "pi"])("names %s in every title branch", provider => {
+    for (const [toolName, toolInput] of [
+      ["Read", { file_path: "/p/a.ts" }],
+      ["Bash", { command: "echo one\necho two" }],
+      ["mcp__octiq__task_status", { objective: "Work" }],
+    ] as const) {
+      expect(draw({ id: "a", provider, toolName, toolInput })).toContain(`${permissionAgent(provider)} wants to use`);
+    }
+  });
+  it("prefers the host's runtime provider to stale chat metadata, and falls back neutrally", () => {
+    expect(permissionAgent("codex", "claude")).toBe("Codex");
+    expect(permissionAgent(undefined, "pi")).toBe("Pi");
+    expect(permissionAgent("unknown", "antigravity")).toBe("Antigravity");
+    expect(draw({ id: "unknown", toolName: "Read" })).toContain("The agent wants to use");
+    const html = renderToStaticMarkup(<PermissionAsk ask={{ id: "old-host", toolName: "Read" }} agent="codex" onAnswered={() => {}} />);
+    expect(html).toContain("Codex wants to use");
+  });
+});
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -29,7 +49,7 @@ describe("PermissionAsk", () => {
     for (const toolName of ["mcp__octiq__orchestration_validation_create", "Bash"]) {
       const html = draw({ id: "codex", provider: "codex", toolName, toolInput: { command: "git commit -m fix" } });
       expect(html).toContain("Codex wants to use");
-      expect(html).not.toContain("Claude wants to use");
+      expect(html).not.toContain("The agent wants to use");
     }
   });
 
@@ -66,7 +86,7 @@ describe("PermissionAsk", () => {
       },
     });
     // The whole name stays on the label: it is what a grant would be about.
-    expect(html).toContain('Claude wants to use <strong title="mcp__octiq__agent_update">Agent update</strong>');
+    expect(html).toContain('The agent wants to use <strong title="mcp__octiq__agent_update">Agent update</strong>');
     expect(html).toContain('<span class="label-pill">OctiqFlow</span><span class="label-pill is-mono">agent_update</span>');
     // A move is drawn as what it was and what it becomes.
     expect(html).toContain(
@@ -95,7 +115,7 @@ describe("PermissionAsk", () => {
     // A built-in tool with such a name is one this app does not know.
     const plain = draw({ id: "p2", toolName: "constructor", toolInput: {} });
     expect(plain).toContain('data-kind="other"');
-    expect(plain).toContain("Claude wants to use <strong>constructor</strong>");
+    expect(plain).toContain("The agent wants to use <strong>constructor</strong>");
     expect(plain).toContain(">Allow once<");
   });
 
@@ -240,7 +260,7 @@ describe("PermissionAsk", () => {
     expect(html).toContain("Always");
     expect(html).toContain("Allow once");
     // A built-in tool keeps the name the chat's own cards give it, and no chips.
-    expect(html).toContain("Claude wants to use <strong>bash(pnpm)</strong>");
+    expect(html).toContain("The agent wants to use <strong>bash(pnpm)</strong>");
     expect(html).not.toContain("label-pill");
     expect(html).toContain('<pre class="ask-card-body is-command">pnpm test</pre>');
     expect(askNote({ id: "b1" })).toBe(
@@ -619,7 +639,7 @@ describe("a command on the permission card", () => {
     // The reviewer's two: a harmless first line over the one that matters.
     for (const [first, second] of [['echo "Routine check"', "rm -rf /tmp/example-review-data"], ["pwd", "git push origin main"]]) {
       const html = draw(bash(`${first}\n${second}`));
-      expect(html).toContain('Claude wants to use <strong>Bash</strong><span class="ask-card-script">2-line script</span>');
+      expect(html).toContain('The agent wants to use <strong>Bash</strong><span class="ask-card-script">2-line script</span>');
       expect(html).not.toMatch(/bash\(|git\(|shell\(/);
       // Both lines, in one block, with nothing of it clamped or behind a control.
       const drawn = `${first}\n${second}`.replace(/"/g, "&quot;");
@@ -638,7 +658,7 @@ describe("a command on the permission card", () => {
   it("names a script the same whichever tool runs it, and a one-line command as before", () => {
     expect(draw({ id: "c2", toolName: "command_execution", toolInput: { command: "cat notes.md\nrm notes.md" } }))
       .toContain('<strong>command_execution</strong><span class="ask-card-script">2-line script</span>');
-    expect(draw(bash("git push origin main"))).toContain("Claude wants to use <strong>git(push)</strong>");
+    expect(draw(bash("git push origin main"))).toContain("The agent wants to use <strong>git(push)</strong>");
   });
 
   it("shows a command of twelve lines whole, and allows it as it is", () => {
@@ -705,13 +725,13 @@ describe("a command on the permission card", () => {
   it("titles a command it cannot draw on one line by its size, never by its first command", () => {
     const piped = `echo ${"A".repeat(4990)} | base64 -d | sh`;
     for (const html of [draw(bash(piped)), drawOpen(bash(piped))]) {
-      expect(html).toContain('Claude wants to use <strong>Bash</strong><span class="ask-card-script">5,012-character command</span>');
+      expect(html).toContain('The agent wants to use <strong>Bash</strong><span class="ask-card-script">5,012-character command</span>');
       expect(html).not.toContain("bash(echo)");
       expect(html).toContain('<span class="tool-icon" data-kind="run"');
     }
     // Whole on one line of the card: the title it had.
     const whole = draw(bash("echo safe; rm -rf /tmp/review-danger"));
-    expect(whole).toContain("Claude wants to use <strong>bash(echo)</strong>");
+    expect(whole).toContain("The agent wants to use <strong>bash(echo)</strong>");
     expect(whole).toContain('<pre class="ask-card-body is-command">echo safe; rm -rf /tmp/review-danger</pre>');
     expect(whole).not.toContain("ask-card-script");
     expect(allows(whole)).toEqual({ always: false, once: false });
@@ -944,7 +964,7 @@ describe("a command on the permission card", () => {
   it("says how much an MCP tool's script is in its title, like any other tool's", () => {
     // The reviewer's: thirteen lines down the MCP title, with no word of it.
     const html = draw({ id: "c7", toolName: "mcp__sandbox__run_script", toolInput: { script: lines(13) } });
-    expect(html).toMatch(/Claude wants to use <strong title="mcp__sandbox__run_script">[^<]+<\/strong><span class="ask-card-chips">.*?<\/span><span class="ask-card-script">13-line script<\/span><\/span>/);
+    expect(html).toMatch(/The agent wants to use <strong title="mcp__sandbox__run_script">[^<]+<\/strong><span class="ask-card-chips">.*?<\/span><span class="ask-card-script">13-line script<\/span><\/span>/);
     expect(html).toContain('<span class="tool-icon" data-kind="run"');
     expect(draw({ id: "c8", toolName: "mcp__playwright__browser_run_code_unsafe", toolInput: { code: lines(2) } }))
       .toContain('<span class="ask-card-script">2-line script</span>');

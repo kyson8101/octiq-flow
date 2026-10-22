@@ -14,7 +14,7 @@
 // place this shows its working.
 import { createContext, useContext, useEffect, useSyncExternalStore } from "react";
 import { baseName, isAudio, isHtml, isImage, isPdf, isVideo } from "../lib/files";
-import { askPaths, knownPath, subscribePaths } from "../lib/pathStore";
+import { askPaths, knownPath, MISSING_PATH_MS, subscribePaths } from "../lib/pathStore";
 import { ProsePage, ProsePdf, ProsePlayer } from "./ProseMedia";
 import { ProseShot } from "./ProseShot";
 import { ConversationFileActions } from "./ConversationFileActions";
@@ -48,6 +48,14 @@ export function ProsePath({
   useEffect(() => {
     if (path) askPaths([path], cwd);
   }, [path, cwd]);
+
+  // An output named before it was written must become a link/player without
+  // reopening the chat. Only unresolved paths retry, while they are mounted.
+  useEffect(() => {
+    if (!path || target) return;
+    const timer = setInterval(() => askPaths([path], cwd), MISSING_PATH_MS);
+    return () => clearInterval(timer);
+  }, [path, cwd, target]);
 
   // Not a file, or not yet known to be one. Either way: the words, as written.
   if (!path || !target) return code ? <code>{children}</code> : <>{children}</>;

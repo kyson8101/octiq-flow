@@ -6114,6 +6114,7 @@ export default function App() {
           {conversationId && !workerChat && (
             <ChatRequests
               scope={conversationId}
+              agent={modelFromId(conversations.find((item) => item.id === conversationId)?.modelId ?? meta.current[conversationId]?.modelId ?? null)?.agent}
               asks={asks[conversationId] ?? []}
               safetyBlocks={safetySplit.cards}
               onPermissionAnswered={(id) => setAsks((prev) => ({
@@ -6155,6 +6156,7 @@ export default function App() {
             const title = conversations.find((chat) => chat.id === id)?.title ?? "agent";
             const requests = (safety: typeof cards) => (
               <ChatRequests asks={safety === quiet ? [] : asks[id] ?? []} safetyBlocks={safety}
+                agent={modelFromId(conversations.find((item) => item.id === id)?.modelId ?? meta.current[id]?.modelId ?? null)?.agent}
                 onPermissionAnswered={(requestId) => setAsks((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== requestId) }))}
                 onSafetyAnswered={(requestId) => setSafetyBlocks((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== requestId) }))}
                 onContinue={(message, options) => send(`For your worker chat ${id}:\n\n${message}\n\nCoordinate any follow-up through the orchestration tools.`, [], options)} />

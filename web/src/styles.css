@@ -2797,6 +2797,9 @@ body {
 }
 
 .prose-media.is-audio .prose-media-wait { height: 40px; }
+.prose-media-error { display: block; color: var(--fg-2); font-size: 12px; margin-bottom: 6px; }
+.prose-media-error button { color: var(--fg-1); background: var(--bg-2); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; cursor: pointer; }
+.prose-media-error button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 .prose-page-card {
   display: flex;

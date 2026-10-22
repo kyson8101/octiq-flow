@@ -1005,12 +1005,13 @@ type Allowed = Record<string, { uses: number; why: string }>;
 /** Every file that may write the status word "completed" as a string, with
  *  how often and why. None of them asks whether a TASK is done: that is
  *  `orchestration.isSettled` / `checkFailed` / `finishedWell`, and a file
- *  that compares a task's status with the word itself is a second reader.
+ *  that compares a task's status with the word itself is a second reader,
+ *  except for the explicitly named raw ledger status (not a success claim).
  *  The counts are exact: one more use in any of them fails this test, and
  *  so does a use anywhere else. */
 const COMPLETED: Allowed = {
   "./orchestration.ts": { uses: 6, why: "the status types of a run, a task, an attempt and an execution; isSettled, the one comparison of a task's status with the word; and shownRunStatus, of a RUN the host calls completed while a failure in it is still somebody's move" },
-  "./taskHold.ts": { uses: 2, why: "a RUN that completed offers no start, and an ATTEMPT that completed leaves a ready task its next attempt" },
+  "./taskHold.ts": { uses: 3, why: "a RUN that completed offers no start; an ATTEMPT that completed leaves a ready task its next attempt; the raw ledger status says Completed without claiming the task finished well" },
   "./agentsDashboard.ts": { uses: 1, why: "a RUN that is over has no plan waiting" },
   "./missionPage.ts": { uses: 1, why: "a RUN that has ended hands no task on" },
   "../components/OrchestrationPanel.tsx": { uses: 1, why: "a RUN that completed offers to archive its workers" },
@@ -1069,7 +1070,7 @@ describe("how a task ended has one reader", () => {
   };
   const exact = (allowed: Allowed) => Object.fromEntries(Object.entries(allowed).map(([path, rule]) => [path, rule.uses]));
 
-  it("writes the word \"completed\" only where a run, an attempt or something that is no task is meant", () => {
+  it("writes the word \"completed\" only for approved readers or a raw ledger status", () => {
     expect(Object.keys(SOURCES).length).toBeGreaterThan(300);
     expect(found(READS.completed)).toEqual(exact(COMPLETED));
   });

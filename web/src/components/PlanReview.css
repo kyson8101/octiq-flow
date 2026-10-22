@@ -57,6 +57,8 @@
    The line sits under the heading's words, clear of the dot. */
 .plan-review[data-compact] { gap: 3px; }
 .plan-review-sub { margin: 0; padding-left: 17px; color: var(--fg-2); font-size: 12px; line-height: 1.4; }
+.plan-review-changes { color: var(--fg-2); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.plan-review-changes p { margin: 3px 0 0; }
 
 /* The tasks and the answers under them. When they arrive under the one-line
    card it opens to them rather than jumping: `0fr → 1fr` is a height nobody

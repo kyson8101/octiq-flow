@@ -20,7 +20,7 @@ import { modelFromReported } from "../lib/agentProviders";
 import type { OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
 import { planHoldsEveryStart } from "../lib/taskHold";
 import {
-  awaitingApproval, planDestination, planNumbers, planOwner, planStages, planTasks, stageSummary, type PlanStage,
+  awaitingApproval, nextPlanChanges, planDestination, planNumbers, planOwner, planStages, planTasks, stageSummary, type PlanChanges, type PlanStage,
 } from "../lib/planReview";
 import { planFoldId, planLabel, sizeLabel } from "../lib/cardFold";
 import { FoldBody, FoldToggle, useFold } from "./CardFold";
@@ -87,6 +87,9 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   const goesOn = !approved && run.planApproval?.status === "pending" && !planHoldsEveryStart(run, allTasks);
   const empty = tasks.length === 0;
   const revision = run.planApproval?.revision;
+  const changesRef = useRef<PlanChanges | null>(null);
+  changesRef.current = nextPlanChanges(changesRef.current, run.id, revision, allTasks);
+  const changes = changesRef.current;
   const handle = planHandle(run.id);
   // Folded, the one control opens the tasks under every stage, and after
   // them the line on how to answer in chat.
@@ -187,6 +190,14 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
           {folded && <FoldToggle fold={fold} describedBy={metaId} what="the tasks" />}
         </div>
       </header>
+
+      {!approved && (changes.added.length > 0 || changes.withdrawn.length > 0) && (
+        <div className="plan-review-changes" role="status">
+          <span>Changed in revision {revision}:</span>
+          {changes.added.length > 0 && <p>Added: {changes.added.map((title, index) => <span key={index}>{index > 0 && "; "}<bdi>{title}</bdi></span>)}</p>}
+          {changes.withdrawn.length > 0 && <p>Withdrawn: {changes.withdrawn.map((title, index) => <span key={index}>{index > 0 && "; "}<bdi>{title}</bdi></span>)}</p>}
+        </div>
+      )}
 
       {/* Nothing to decide yet: one line and what it is waiting for. No ghost
           rows and no answers, because a disabled Approve over an empty plan
