@@ -2786,7 +2786,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "runId")?,
                 arg(&args, "taskId")?,
                 arg(&args, "question")?,
-                arg(&args, "options")?,
+                list_arg(&args, "options")?,
             )?;
             to_value(Ok(gate))
         }
@@ -2986,6 +2986,21 @@ mod tests {
         let b: Vec<String> = arg(&snake_case, "extraDirs").unwrap();
         assert_eq!(a, b);
         assert_eq!(a, vec!["/a".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn gate_options_omitted_null_and_empty_reach_the_same_host_validation() {
+        let svc = Services::load();
+        for options in [None, Some(Value::Null), Some(json!([]))] {
+            let mut args = json!({"actorChatKey":"chat:gate-options-test", "runId":"no-such-run", "question":"Choose"});
+            if let Some(options) = options {
+                args["options"] = options;
+            }
+            let error = dispatch(&svc, "orchestration_gate_create", args).unwrap_err();
+            assert!(!error.contains("bad argument"), "{error}");
+            assert!(error == "The run does not exist.", "{error}");
+        }
+        assert!(list_arg::<String>(&json!({"options":"wrong"}), "options").is_err());
     }
 
     #[test]
