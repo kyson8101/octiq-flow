@@ -858,6 +858,31 @@ pub(crate) mod tests {
 
     /// Feedback 00090954 documents the unresolved target distinction with a
     /// local bare remote; no author's remote or branch is changed.
+    #[test]
+    fn a_local_creation_base_cannot_substitute_for_a_delivery_target() {
+        let repo = Repo::new();
+        repo.remote();
+        repo.git(&["branch", "routed-local"]);
+        let p = plan(
+            &repo.root,
+            "routed-local",
+            "task_deliverytarget",
+            WorkspaceMode::Worktree,
+        )
+        .unwrap();
+        provision(&p).unwrap();
+        let head = repo.commit(&p.cwd, "change.txt", "delivered");
+        repo.git(&["merge", "--ff-only", &p.branch]);
+        repo.git(&["push", "origin", "main"]);
+        assert_eq!(
+            merged_into_remote_base(&p, &head),
+            None,
+            "no such remote local-chat branch"
+        );
+        let mut explicit_target = p.clone();
+        explicit_target.base_branch = "main".into();
+        assert_eq!(merged_into_remote_base(&explicit_target, &head), Some(true));
+    }
 
     #[test]
     fn stable_allocation_preserves_primary_and_disables_inherited_tracking() {
