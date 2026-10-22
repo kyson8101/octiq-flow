@@ -1832,6 +1832,26 @@ pub(super) mod tests {
 
     /// Feedback 6f1aa0d3: even a host-marked checkout without an attempt
     /// remains a collision; its existence is not proof of a reserved launch.
+    #[test]
+    fn a_host_marked_orphan_is_refused_and_preserved_for_investigation() {
+        let repo = Repo::new();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Worktree);
+        let plan = proposed(&store, &task);
+        workflow::provision(&plan).unwrap(); // Reproduce the incident's disk state.
+        let err = prepare(&store, &task, Access::Auto).unwrap_err();
+        assert!(err.contains("already exist"), "{err}");
+        let attempts = store.snapshot(Some(&run.id)).unwrap().attempts;
+        assert_eq!(
+            attempts.len(),
+            1,
+            "reservation precedes the occupied-path check"
+        );
+        assert_eq!(attempts[0].number, 1);
+        assert_eq!(attempts[0].status, AttemptStatus::Preparing);
+        assert_eq!(stored(&store, &task).retries_used, 0);
+        assert!(stored(&store, &task).workspace.is_none());
+        workflow::verify(&plan).unwrap(); // Occupant was not changed or removed.
+    }
 
     #[test]
     fn current_checkout_plans_its_own_branch_and_refuses_one_switched_since() {
@@ -2567,6 +2587,36 @@ pub(super) mod tests {
 
     /// Feedback 6f1aa0d3: queued proposals are read-only; admission failures
     /// neither provision a checkout nor spend the first attempt's retry.
+    #[test]
+    fn queued_plan_reads_do_not_provision_or_spend_an_attempt_before_admission() {
+        let repo = Repo::new();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Worktree);
+        let plan = proposed(&store, &task);
+        store
+            .mutate(|data| {
+                data.runs.get_mut(&run.id).unwrap().plan_approval =
+                    Some(PlanApproval::pending(now_ms()));
+                Ok(())
+            })
+            .unwrap();
+        for _ in 0..3 {
+            store.propose_missing_workspaces().unwrap();
+            assert!(prepare(&store, &task, Access::Auto).is_err());
+            assert!(!Path::new(&plan.checkout_root).exists());
+            assert!(store.snapshot(Some(&run.id)).unwrap().attempts.is_empty());
+            assert_eq!(stored(&store, &task).retries_used, 0);
+        }
+        store
+            .mutate(|data| {
+                data.runs.get_mut(&run.id).unwrap().plan_approval = None;
+                Ok(())
+            })
+            .unwrap();
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        assert_eq!(first.number, 1);
+        assert_eq!(stored(&store, &task).retries_used, 0);
+        assert_eq!(first.cwd, plan.cwd);
+    }
 
     #[test]
     fn independent_worktrees_can_write_in_parallel_and_auto_readers_reuse_root() {
