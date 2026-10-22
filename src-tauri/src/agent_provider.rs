@@ -3027,20 +3027,28 @@ pub(crate) mod tests {
     #[test]
     fn antigravity_gets_octiqflows_plugin_through_an_added_folder() {
         let mcp = Path::new("/home/me/.octiqflow/mcp/octiq-ask.json");
+        let plugin_arg = |role: &str| {
+            sh_quote(
+                &Path::new("/home/me/.octiqflow/mcp")
+                    .join("antigravity")
+                    .join(role)
+                    .to_string_lossy(),
+            )
+        };
         let chat = ANTIGRAVITY.build_command(&agy_request(Some(Access::Edits), Some(mcp)));
         assert!(
-            chat.ends_with(" --add-dir '/home/me/.octiqflow/mcp/antigravity/chat-edits'"),
+            chat.ends_with(&format!(" --add-dir {}", plugin_arg("chat-edits"))),
             "{chat}"
         );
         let worker = ANTIGRAVITY.build_command(&AgentCommand {
             orchestration_worker: true,
             ..agy_request(Some(Access::Edits), Some(mcp))
         });
-        assert!(worker.contains(" --add-dir '/home/me/.octiqflow/mcp/antigravity/worker-edits'"));
+        assert!(worker.contains(&format!(" --add-dir {}", plugin_arg("worker-edits"))));
         // Unset is Read, in the folder name as in the flag.
         let unset = ANTIGRAVITY.build_command(&agy_request(None, Some(mcp)));
         assert!(
-            unset.contains(" --mode plan") && unset.ends_with("/antigravity/chat-read'"),
+            unset.contains(" --mode plan") && unset.ends_with(&plugin_arg("chat-read")),
             "{unset}"
         );
         // A front desk is read-only, gets no folder of the chat's, and none
@@ -3054,7 +3062,7 @@ pub(crate) mod tests {
         });
         assert!(desk.contains(" --mode plan"), "{desk}");
         assert!(!desk.contains("'/repo'"), "{desk}");
-        assert!(desk.contains(" --add-dir '/home/me/.octiqflow/mcp/antigravity/front-desk'"));
+        assert!(desk.contains(&format!(" --add-dir {}", plugin_arg("front-desk"))));
         assert!(desk.ends_with(" --disable-slash-commands"), "{desk}");
         // No MCP config, no plugin and nothing to prepare.
         let bare = ANTIGRAVITY.build_command(&agy_request(Some(Access::Edits), None));
@@ -3197,7 +3205,7 @@ pub(crate) mod tests {
         let written: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
         assert_eq!(
             written["mcpServers"]["octiq"]["args"][0],
-            json!(root.join("mcp/octiq-ask.cjs").to_string_lossy())
+            json!(root.join("mcp").join("octiq-ask.cjs").to_string_lossy())
         );
         // Unchanged content is not rewritten.
         let before = std::fs::metadata(&manifest).unwrap().modified().unwrap();
@@ -3214,11 +3222,23 @@ pub(crate) mod tests {
         std::fs::write(root.join("blocked").join("antigravity"), "a file").unwrap();
         let why = write_antigravity_plugin(&blocked, AntigravityRole::Chat(Access::Edits), None)
             .unwrap_err();
-        assert!(
-            why.starts_with("OctiqFlow's Antigravity plugin could not be written to ")
-                && why.contains("antigravity/chat-edits/.agents/plugins/octiqflow/plugin.json"),
-            "{why}"
-        );
+        let plugin_file = blocked
+            .parent()
+            .unwrap()
+            .join("antigravity")
+            .join("chat-edits")
+            .join(".agents")
+            .join("plugins")
+            .join("octiqflow")
+            .join("plugin.json");
+        let named_path = why
+            .strip_prefix("OctiqFlow's Antigravity plugin could not be written to ")
+            .and_then(|rest| rest.split_once(": "))
+            .map(|(path, _)| Path::new(path))
+            .unwrap_or_else(|| panic!("{why}"));
+        // The plugin's relative filename uses forward slashes even when its
+        // parent is a native Windows path. Compare path components, not text.
+        assert_eq!(named_path, plugin_file.as_path(), "{why}");
     }
 
     /// The same folding the chat runtime's reader does, over the real stream.

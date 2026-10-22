@@ -400,7 +400,9 @@ mod tests {
         assert!(roots.contains(&common.join("objects").to_string_lossy().into_owned()));
         assert!(roots.contains(
             &common
-                .join("worktrees/linked/HEAD")
+                .join("worktrees")
+                .join("linked")
+                .join("HEAD")
                 .to_string_lossy()
                 .into_owned()
         ));
