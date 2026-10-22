@@ -48,6 +48,9 @@ const PENDING_FOR_MS: i64 = 24 * 60 * 60 * 1000;
 #[serde(rename_all = "camelCase")]
 pub struct RouteFile {
     pub name: String,
+    /// Only needed while rendering the brief, before the record is saved.
+    #[serde(skip)]
+    source: String,
     /// The copy in the route's own folder: what the new chat opens.
     pub path: String,
     /// Sent to the agent as a picture, not only named.
@@ -356,6 +359,7 @@ fn carry(
         let copied = crate::profile::create_dir_all(folder).and_then(|_| copy(&source, &target));
         match copied {
             Ok(_) => files.push(RouteFile {
+                source: path.to_owned(),
                 image: is_image(&name),
                 name,
                 path: target.to_string_lossy().into_owned(),
@@ -376,9 +380,53 @@ fn carry(
 /// It makes no claim about access: the chat runs at its agent's own level.
 pub const DISCUSSION_NOTE: &str = "This chat is a discussion, not a task: the person wants to talk it through first. Read whatever helps the conversation, and change nothing unless they ask you to.";
 
+fn path_start(previous: Option<char>) -> bool {
+    previous.is_none_or(|ch| !path_character(ch))
+}
+
+fn path_character(ch: char) -> bool {
+    ch.is_alphanumeric() || matches!(ch, '/' | '\\' | '-' | '_' | '~' | '%' | '+' | '.')
+}
+
+fn path_end(rest: &str) -> bool {
+    let mut chars = rest.chars();
+    match chars.next() {
+        None => true,
+        // A sentence-final dot ends the token; an extension continues it.
+        Some('.') => !chars.next().is_some_and(path_character),
+        Some(ch) => !path_character(ch),
+    }
+}
+
 /// The visible part of the routed chat's first message.
 pub fn render(desk: &str, brief: &str, files: &[RouteFile], discuss: bool) -> String {
-    let mut out = format!("{}\n", brief.trim());
+    // Match the longest path first, in one pass over the original text:
+    // paths may prefix one another, and display names are not more input.
+    // Keep separators literal, including Windows paths on a Unix host.
+    let mut paths: Vec<_> = files
+        .iter()
+        .flat_map(|f| [(&f.source, &f.name), (&f.path, &f.name)])
+        .filter(|(path, _)| !path.is_empty())
+        .collect();
+    paths.sort_by_key(|(path, _)| std::cmp::Reverse(path.len()));
+    let mut rest = brief.trim();
+    let mut previous = None;
+    let mut out = String::new();
+    while !rest.is_empty() {
+        if let Some((path, name)) = paths.iter().find(|(path, _)| {
+            path_start(previous) && rest.starts_with(path.as_str()) && path_end(&rest[path.len()..])
+        }) {
+            out.push_str(name);
+            previous = path.chars().next_back();
+            rest = &rest[path.len()..];
+        } else {
+            let ch = rest.chars().next().unwrap();
+            out.push(ch);
+            previous = Some(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+    }
+    out.push('\n');
     if !files.is_empty() {
         out.push_str(&format!(
             "\nAttachments:\n{}\n",
@@ -693,6 +741,170 @@ pub fn unfinished_desks(store: &Path, team_path: &Path) -> Result<Vec<Unfinished
 mod tests {
     use super::*;
     use crate::handover::tests::{project, register, repo, scratch, FakeHost};
+
+    fn picture(source: &str, path: &str, name: &str) -> RouteFile {
+        RouteFile {
+            source: source.into(),
+            path: path.into(),
+            name: name.into(),
+            image: true,
+        }
+    }
+
+    #[test]
+    fn rendered_attachment_has_only_the_copied_path() {
+        let file = picture("/uploads/id-shot.png", "/route/id-shot.png", "shot.png");
+        let brief = format!("检查附件：{}，再次检查 {}。", file.source, file.source);
+        let message = render("Desk", &brief, std::slice::from_ref(&file), false);
+        assert_eq!(message, "检查附件：shot.png，再次检查 shot.png。\n\nAttachments:\n- /route/id-shot.png (image)\n\n(Opened by Desk, the person's front desk, once the person confirmed it.)");
+        assert!(!message.contains(&file.source));
+        assert_eq!(message.matches(&file.path).count(), 1);
+    }
+
+    #[test]
+    fn a_brief_without_attachment_paths_is_unchanged() {
+        let brief = "检查 shot.png；保留 /other/file.png 和 C:\\other\\file.png。";
+        let message = render(
+            "Desk",
+            brief,
+            &[picture("/uploads/shot.png", "/route/shot.png", "shot.png")],
+            false,
+        );
+        assert_eq!(message.split("\n\nAttachments:").next(), Some(brief));
+    }
+
+    #[test]
+    fn both_attachments_replace_source_and_copy_paths_in_the_brief() {
+        let files = [
+            picture("/uploads/a.png", "/route/a.png", "first.png"),
+            picture("/uploads/b.png", "/route/b.png", "second.png"),
+        ];
+        let message = render(
+            "Desk",
+            "Compare /uploads/a.png (/route/a.png) with /uploads/b.png (/route/b.png).",
+            &files,
+            false,
+        );
+        assert!(
+            message.starts_with("Compare first.png (first.png) with second.png (second.png).\n")
+        );
+        for file in &files {
+            assert!(!message.contains(&file.source));
+            assert_eq!(message.matches(&file.path).count(), 1);
+        }
+    }
+
+    #[test]
+    fn attachment_path_prefixes_match_the_longest_path_first() {
+        let files = [
+            picture("/uploads/a.png", "/route/a.png", "short.png"),
+            picture("/uploads/a.png.webp", "/route/a.png.webp", "long.webp"),
+        ];
+        let message = render(
+            "Desk",
+            "/uploads/a.png.webp /uploads/a.png /route/a.png.webp /route/a.png",
+            &files,
+            false,
+        );
+        assert!(message.starts_with("long.webp short.png long.webp short.png\n"));
+    }
+
+    #[test]
+    fn attachment_paths_inside_larger_tokens_are_unchanged() {
+        for file in [
+            picture("/uploads/id-shot.png", "/route/id-shot.png", "shot.png"),
+            picture(
+                r"C:\uploads\id-shot.png",
+                r"C:\route\id-shot.png",
+                "shot.png",
+            ),
+        ] {
+            for path in [&file.source, &file.path] {
+                for brief in [
+                    format!("{path}.webp"),
+                    format!("{path}.backup"),
+                    format!("{path}~backup"),
+                    format!("{path}%20backup"),
+                    format!("{path}+backup"),
+                    format!("{path}-backup"),
+                    format!("{path}_backup"),
+                    format!("{path}/child"),
+                    format!("{path}\\child"),
+                    format!("/other{path}"),
+                    format!(r"D:\other\{path}"),
+                    format!(".{path}"),
+                    format!("-{path}"),
+                    format!("_{path}"),
+                    format!("~{path}"),
+                    format!("%{path}"),
+                    format!("+{path}"),
+                    format!("a{path}"),
+                    format!("字{path}"),
+                ] {
+                    let message = render("Desk", &brief, std::slice::from_ref(&file), false);
+                    assert_eq!(
+                        message.split("\n\nAttachments:").next(),
+                        Some(brief.as_str())
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn whole_attachment_paths_allow_sentence_punctuation_and_wrappers() {
+        for file in [
+            picture("/uploads/id-shot.png", "/route/id-shot.png", "shot.png"),
+            picture(
+                r"C:\uploads\id-shot.png",
+                r"C:\route\id-shot.png",
+                "shot.png",
+            ),
+        ] {
+            for path in [&file.source, &file.path] {
+                for (before, after) in [
+                    ("", ""),
+                    ("Inspect ", "."),
+                    ("检查：", "。"),
+                    ("附件：", "，请看"),
+                    ("", ",next"),
+                    ("", "。请看"),
+                    ("(", ")"),
+                    ("\"", "\""),
+                    ("'", "'"),
+                    ("[", "]"),
+                    ("<", ">"),
+                    ("附件，", ", next"),
+                    ("Inspect (", "). Next"),
+                ] {
+                    let brief = format!("{before}{path}{after}");
+                    let expected = format!("{before}shot.png{after}");
+                    let message = render("Desk", &brief, std::slice::from_ref(&file), false);
+                    assert_eq!(
+                        message.split("\n\nAttachments:").next(),
+                        Some(expected.as_str())
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn windows_attachment_paths_are_replaced_as_written() {
+        let files = [picture(
+            r"C:\uploads\id-shot.png",
+            r"C:\route\id-shot.png",
+            "shot.png",
+        )];
+        let message = render(
+            "Desk",
+            r"检查 C:\uploads\id-shot.png、C:\route\id-shot.png；保留 C:\other\shot.png。",
+            &files,
+            false,
+        );
+        assert!(message.starts_with("检查 shot.png、shot.png；保留 C:\\other\\shot.png。\n"));
+        assert_eq!(message.matches(&files[0].path).count(), 1);
+    }
 
     struct Desk {
         root: crate::test_dir::TestDir,
@@ -1389,6 +1601,7 @@ mod tests {
         let outside = w.root.join("secrets.txt");
         fs::write(&outside, b"no").unwrap();
         let mut asked = ask("Mango", "r1");
+        asked.brief = format!("Inspect {} and {}.", image.display(), log.display());
         asked.attachments = vec![
             image.to_string_lossy().into_owned(),
             log.to_string_lossy().into_owned(),
@@ -1397,6 +1610,11 @@ mod tests {
         ];
         let record = request(&w.store, &host, source(&w, "chat:desk1"), asked).unwrap();
         let route = record.route.clone().unwrap();
+        assert!(route
+            .message
+            .starts_with("Inspect screen shot.png and crash.log.\n"));
+        assert!(!route.message.contains(image.to_string_lossy().as_ref()));
+        assert!(!route.message.contains(log.to_string_lossy().as_ref()));
         let names: Vec<_> = route
             .attachments
             .iter()
