@@ -3085,7 +3085,9 @@ fixes reuse the task's persisted workspace with a new attempt ID. Current
 checkout mode never deletes a directory. The plan card may override the run's advice
 per task with New worktree or Current checkout; approval fixes that mode, and
 writers sharing a checkout take turns (a mission's worktree choice shares its
-mission worktree). The main chat coordinates while a
+mission worktree). Non-Git folders offer and advise checkout only in every run
+mode; approval without a choice re-plans them as Direct and fixes that mode.
+The main chat coordinates while a
 worker owns the write lease; it must not also edit that checkout.
 
 **An approval fixes what a task runs as, and a time stamp or a parent id is

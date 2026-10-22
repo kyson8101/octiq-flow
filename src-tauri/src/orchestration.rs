@@ -6342,14 +6342,21 @@ pub(crate) mod tests {
 
     pub(crate) fn run(store: &OrchestrationStore) -> Run {
         // These ledger-only tests simulate independent worktrees at activate,
-        // without provisioning them. Auto over /tmp means one shared checkout;
-        // real Auto / Direct allocation and leases are exercised in workspaces.
+        // without provisioning them. Their root must still support the mode:
+        // a non-Git folder is approved as Direct in every run mode. The shared
+        // repository is read-only and its TestDir is removed at process exit.
+        static ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let root = ROOT.get_or_init(|| {
+            let repo = crate::git_ops::workflow::tests::Repo::new();
+            repo.dir.remove_at_exit();
+            repo.root
+        });
         store
             .create_run_with_mode(
                 "chat:master".into(),
                 "Ship the feature".into(),
                 "workspace".into(),
-                "/tmp".into(),
+                root.clone(),
                 Some(2),
                 WorkspaceMode::Worktree,
             )
@@ -6617,7 +6624,7 @@ pub(crate) mod tests {
             model: None,
             effort: None,
             access: Access::Auto,
-            new_worktree: Some(true),
+            new_worktree: None,
             base_branch: String::new(),
         }
     }
@@ -6756,10 +6763,11 @@ pub(crate) mod tests {
         let store = OrchestrationStore::default();
         let run = run(&store);
         store.require_plan_approval(&run.id).unwrap();
+        let api = crate::git_ops::workflow::tests::Repo::new();
         let destination = TaskDestination {
             project_id: "shop".into(),
             project_name: "Shop".into(),
-            repository: "/repos/api".into(),
+            repository: api.root.clone(),
         };
         let first = store
             .create_task_for(

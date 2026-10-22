@@ -10,40 +10,40 @@
   "runs": [
     {
       "coordinatorChatKey": "chat:master",
-      "createdAt": 1792687806191,
-      "id": "run_48c2fa51c2424ae9a23557446a1e3198",
+      "createdAt": 1792691781429,
+      "id": "run_047a8c9f260c4ba6af05b81e13d18d3e",
       "maxConcurrent": 3,
       "objective": "Plain folder",
       "planApproval": {
-        "requestedAt": 1792687806191,
-        "revisedAt": 1792687806493,
+        "requestedAt": 1792691781429,
+        "revisedAt": 1792691781491,
         "revision": 3,
-        "scope": "de6d8d42b7929102cdf16b8a9d6181213d27472a71b2fc0b1f8978671c6f40fc",
+        "scope": "7bb03c77a1da47737f57078cef109e0f0c6705bd8aa1098882641ea99f2b3fa4",
         "status": "pending"
       },
-      "rootPath": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workspace-choice-plain-896d7181eecf4e1b99da8347c0aab1a6",
+      "rootPath": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workspace-choice-plain-288f22c7e06b466a8b2bf2880b50a010",
       "status": "running",
-      "updatedAt": 1792687806493,
+      "updatedAt": 1792691781491,
       "workerDefaults": null,
       "workspaceId": "project",
-      "workspaceMode": "auto"
+      "workspaceMode": "worktree"
     }
   ],
   "services": [],
   "tasks": [
     {
-      "createdAt": 1792687806317,
+      "createdAt": 1792691781465,
       "dependsOn": [],
       "heldByPlan": true,
-      "id": "task_e96c171c19d74d07a2e3affcf6e5fe6d",
+      "id": "task_d07921e04ea1461296452d99e1c9dfb9",
       "retriesUsed": 0,
       "retryLimit": 2,
-      "runId": "run_48c2fa51c2424ae9a23557446a1e3198",
+      "runId": "run_047a8c9f260c4ba6af05b81e13d18d3e",
       "size": "medium",
       "spec": "Make the requested change",
       "status": "ready",
       "title": "Implement",
-      "updatedAt": 1792687806493,
+      "updatedAt": 1792691781491,
       "worker": {
         "access": "auto",
         "agent": "codex",
@@ -59,23 +59,9 @@
         ]
       },
       "workspaceProposal": {
+        "error": "Worktree mode requires a Git repository. Select Current checkout for this folder.",
         "newBranch": false,
-        "plan": {
-          "baseBranch": "",
-          "baseSha": "",
-          "branch": "",
-          "checkoutRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workspace-choice-plain-896d7181eecf4e1b99da8347c0aab1a6",
-          "cwd": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workspace-choice-plain-896d7181eecf4e1b99da8347c0aab1a6",
-          "initialStatus": "",
-          "isRepo": false,
-          "managed": false,
-          "mode": "direct",
-          "repositoryRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workspace-choice-plain-896d7181eecf4e1b99da8347c0aab1a6",
-          "warnings": [
-            "This folder has no Git history. Changes are made directly."
-          ]
-        },
-        "proposedAt": 1792687806373
+        "proposedAt": 1792691781465
       }
     }
   ]

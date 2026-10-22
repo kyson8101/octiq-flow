@@ -310,11 +310,7 @@ pub(super) fn advised_mode(run: &Run, task: &Task) -> WorkspaceMode {
 
 pub(super) fn choice_fact(run: &Run, task: &Task, git: bool) -> WorkspaceChoiceFact {
     WorkspaceChoiceFact {
-        advised: if !git
-            && matches!(
-                run.workspace_mode,
-                WorkspaceMode::Auto | WorkspaceMode::Mission
-            ) {
+        advised: if !git {
             WorkspaceChoice::Checkout
         } else {
             WorkspaceChoice::of(advised_first_mode(run, task))
@@ -334,7 +330,8 @@ pub(super) fn choice_fact(run: &Run, task: &Task, git: bool) -> WorkspaceChoiceF
     }
 }
 
-/// Validate and plan every override before the approval changes anything.
+/// Validate and plan every override and checkout-only default before the
+/// approval changes anything.
 pub(super) fn apply_choices(
     data: &mut Stored,
     run_id: &str,
@@ -342,8 +339,25 @@ pub(super) fn apply_choices(
     choices: &BTreeMap<String, WorkspaceChoice>,
 ) -> Result<(), String> {
     let run = data.runs.get(run_id).ok_or("The run does not exist.")?;
+    let mut choices = choices.clone();
+    for id in waiting {
+        let task = data.tasks.get(id).ok_or("The task does not exist.")?;
+        // An omitted choice accepts the only available option, even when an
+        // explicit Worktree run left an invalid proposal. Persisted workspaces
+        // and approvals keep their allocation; this only plans new work.
+        if !choices.contains_key(id)
+            && task.approved_at.is_none()
+            && task.approved.is_none()
+            && task.workspace.is_none()
+            && task.active_attempt_id.is_none()
+            && !task_has_attempt(data, id)
+            && !workflow::has_git(task_root(run, task.destination.as_ref()))
+        {
+            choices.insert(id.clone(), WorkspaceChoice::Checkout);
+        }
+    }
     let mut proposals = Vec::new();
-    for (id, choice) in choices {
+    for (id, choice) in &choices {
         let task = data
             .tasks
             .get(id)
@@ -4172,7 +4186,7 @@ pub(super) mod tests {
                 shown_ms: Some(3000),
                 updated_ms: None,
             },
-            Some(&choices),
+            (!choices.is_empty()).then_some(&choices),
         )
     }
 
@@ -4190,8 +4204,8 @@ pub(super) mod tests {
                             effort: None,
                             recovery: None,
                         }),
-                        None,
-                        None,
+                        task.assignee.clone(),
+                        task.destination.clone(),
                     )),
                     ..Default::default()
                 },
@@ -4379,7 +4393,7 @@ pub(super) mod tests {
                 "project".into(),
                 root.to_string_lossy().into_owned(),
                 Some(3),
-                WorkspaceMode::Auto,
+                WorkspaceMode::Worktree,
             )
             .unwrap();
         store.require_plan_approval(&run.id).unwrap();
@@ -4426,58 +4440,125 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn workspace_choices_plain_missions_advise_checkout_and_explicit_worktree_runs_can_be_overridden(
-    ) {
+    fn workspace_choices_advice_is_available_in_every_run_mode_and_git_destination() {
         let home = crate::test_dir::TestDir::new("workspace-choice-profile");
         let _profile = crate::profile::started_in(&home);
+        let repo = Repo::new();
+        let plain = crate::test_dir::TestDir::new("workspace-choice-plain").canonicalized();
+        for mode in [
+            WorkspaceMode::Auto,
+            WorkspaceMode::Mission,
+            WorkspaceMode::Worktree,
+            WorkspaceMode::Direct,
+        ] {
+            for root in [&repo.root, &plain.to_string_lossy().into_owned()] {
+                for access in [Access::Auto, Access::Read] {
+                    let (store, run, _) = setup(&repo, mode);
+                    store.require_plan_approval(&run.id).unwrap();
+                    let task = store
+                        .create_task_for(
+                            "chat:master",
+                            run.id.clone(),
+                            "Destination".into(),
+                            "Work in this folder".into(),
+                            vec![],
+                            None,
+                            None,
+                            None,
+                            Some(TaskDestination {
+                                project_id: "destination".into(),
+                                project_name: "Destination".into(),
+                                repository: root.clone(),
+                            }),
+                        )
+                        .unwrap();
+                    selected_worker(&store, &task, access);
+                    let fact = store
+                        .snapshot(Some(&run.id))
+                        .unwrap()
+                        .tasks
+                        .into_iter()
+                        .find(|t| t.id == task.id)
+                        .unwrap()
+                        .workspace_choice
+                        .unwrap();
+                    assert!(
+                        fact.options.contains(&fact.advised),
+                        "{mode:?}, {access:?}, {root}"
+                    );
+                    if !workflow::has_git(root) {
+                        assert_eq!(fact.options, vec![WorkspaceChoice::Checkout]);
+                        assert_eq!(fact.advised, WorkspaceChoice::Checkout);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_choices_non_git_destinations_approve_and_start_direct_with_or_without_a_choice() {
+        let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+        let _profile = crate::profile::started_in(&home);
+        let repo = Repo::new();
         let root = crate::test_dir::TestDir::new("workspace-choice-plain").canonicalized();
-        for mode in [WorkspaceMode::Mission, WorkspaceMode::Worktree] {
-            let store = OrchestrationStore::default();
-            let run = store
-                .create_run_with_mode(
-                    "chat:master".into(),
-                    "Plain folder".into(),
-                    "project".into(),
-                    root.to_string_lossy().into_owned(),
-                    Some(3),
-                    mode,
-                )
-                .unwrap();
-            store.require_plan_approval(&run.id).unwrap();
-            let task = super::super::tests::task(&store, &run, vec![]);
-            selected_worker(&store, &task, Access::Auto);
-            let pending = store
-                .snapshot(Some(&run.id))
-                .unwrap()
-                .tasks
-                .into_iter()
-                .find(|t| t.id == task.id)
-                .unwrap();
-            if mode == WorkspaceMode::Mission {
+        for mode in [
+            WorkspaceMode::Auto,
+            WorkspaceMode::Mission,
+            WorkspaceMode::Worktree,
+            WorkspaceMode::Direct,
+        ] {
+            for explicit in [false, true] {
+                let (store, run, _) = setup(&repo, mode);
+                store.require_plan_approval(&run.id).unwrap();
+                let task = store
+                    .create_task_for(
+                        "chat:master",
+                        run.id.clone(),
+                        "Plain destination".into(),
+                        "Work in this folder".into(),
+                        vec![],
+                        None,
+                        None,
+                        None,
+                        Some(TaskDestination {
+                            project_id: "plain".into(),
+                            project_name: "Plain folder".into(),
+                            repository: root.to_string_lossy().into_owned(),
+                        }),
+                    )
+                    .unwrap();
+                selected_worker(&store, &task, Access::Auto);
+                if mode == WorkspaceMode::Worktree {
+                    assert!(stored(&store, &task)
+                        .workspace_proposal
+                        .unwrap()
+                        .error
+                        .is_some());
+                }
+                let choices = if explicit {
+                    BTreeMap::from([(task.id.clone(), WorkspaceChoice::Checkout)])
+                } else {
+                    BTreeMap::new()
+                };
+                choose_on_card(&store, &run, choices).unwrap();
+                let approved = stored(&store, &task);
                 assert_eq!(
-                    pending.workspace_choice.unwrap().advised,
-                    WorkspaceChoice::Checkout
+                    approved.approved.unwrap().workspace_mode,
+                    Some(WorkspaceMode::Direct)
                 );
+                let proposal = approved.workspace_proposal.unwrap();
+                assert!(proposal.error.is_none());
+                assert!(!proposal.provisional);
+                assert_eq!(proposal.plan.unwrap().mode, WorkspaceMode::Direct);
+                let launched = prepare(&store, &task, Access::Auto).unwrap();
+                assert_eq!(launched.status, AttemptStatus::Running);
+                assert_eq!(launched.cwd, root.to_string_lossy());
+                assert!(!launched.is_worktree);
                 assert_eq!(
-                    pending.workspace_proposal.unwrap().plan.unwrap().mode,
+                    stored(&store, &task).workspace.unwrap().plan.mode,
                     WorkspaceMode::Direct
                 );
-            } else {
-                assert!(
-                    pending.workspace_proposal.unwrap().error.is_some(),
-                    "the legacy invalid default is unchanged"
-                );
             }
-            choose_on_card(
-                &store,
-                &run,
-                BTreeMap::from([(task.id.clone(), WorkspaceChoice::Checkout)]),
-            )
-            .unwrap();
-            assert_eq!(
-                prepare(&store, &task, Access::Auto).unwrap().cwd,
-                run.root_path
-            );
         }
     }
 

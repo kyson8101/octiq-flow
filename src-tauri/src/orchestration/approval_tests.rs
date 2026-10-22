@@ -582,7 +582,6 @@ fn a_recovery_fallback_that_was_not_approved_is_refused() {
         .unwrap();
     let recovery = |model: &str| WorkerLaunch {
         model: Some(model.into()),
-        new_worktree: Some(false),
         ..host_launch(&store, &approved.id)
     };
     let refused = store

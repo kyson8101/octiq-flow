@@ -25,7 +25,9 @@ The plan card may override this advice per task with New worktree or Current
 checkout (`orchestration_plan_approve.workspaceChoices`, keyed by task ID);
 approval fixes the mode, retries reuse it, and writers sharing a checkout take
 turns. In missions, worktree means the shared mission worktree and checkout
-means the task's root/destination. Non-Git folders offer checkout only.
+means the task's root/destination. Non-Git folders offer and advise checkout only
+in every run mode; approval without a choice re-plans them as Direct and fixes
+that mode, even in an explicit New worktree run.
 The legacy `newWorktree` argument cannot change an approved mode.
 
 The browser-only approval command accepts optional
