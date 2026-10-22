@@ -310,15 +310,48 @@ Every elicitation that still arrives uses the normal card: an MCP server can
 forge the native message and `_meta` fields. Use the captured fixtures and
 `scripts/capture-codex-elicitation.mjs`.
 
-At Auto and Edits, linked-worktree commits get shared objects/, only the
-current existing branch's ref/reflog files and their locks, and the current
-worktree's index, commit-message, HEAD, logs/ and lock paths
-(`codex_git.rs`). Never grant the shared git dir or worktree admin dir:
-shared refs/ and logs/, other branches, packed-refs, hooks, config and
-config.worktree must remain protected. Detached, unborn or malformed HEADs
-get no branch ref grant. Neither do main, master, develop, the primary
-worktree's branch or the known origin/HEAD default. Ref files and parent paths
-must not be symlinks.
+At Auto and Edits, linked-worktree Git operations get shared objects/ and
+only the current existing branch's ref/reflog files and their locks
+(`codex_git.rs`). In the current worktree's own admin dir they get index,
+HEAD, AUTO_MERGE, ORIG_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD and MERGE_MSG
+(each with its .lock), plus COMMIT_EDITMSG, MERGE_HEAD, MERGE_MODE,
+SQUASH_MSG and FETCH_HEAD. The only admin directory
+grant is logs/. Every path is checked for redirects and its expected
+file/directory type before granting.
+Never grant the shared git dir or worktree admin dir: shared refs/ and logs/
+(including refs/remotes/), refs/stash, other branches or worktrees,
+packed-refs, hooks, config, config.worktree, gitdir and commondir must remain
+protected. Detached, unborn or malformed HEADs get no branch ref grant.
+Neither do main, master, develop, the primary worktree's branch or the known
+origin/HEAD default. Ref files and parent paths must not be symlinks.
+Network access stays off at Auto and Edits; a FETCH_HEAD file grant does not
+authorize a network fetch or push.
+Before each exec launch or app-server start/resume/turn, git_ops prepares
+only the validated branch's missing ref/reflog parent directories on the
+host (through profile::make_dir, checking each component for redirects).
+It never writes a ref or grants its parent; a failure only logs. This keeps
+packed-only branches writable after pack-refs prunes their loose parents.
+A gc during one turn can still remove a parent until the next turn prepares it.
+Codex 0.163 refuses `file-write-unlink <admin>/rebase-merge` even when that
+directory is a writable root (the same holds for rebase-apply and sequencer).
+These directories are deliberately not granted: plain rebase and multi-commit
+cherry-pick/revert fail before changing HEAD, rather than rewrite the branch
+and leave a stuck operation at cleanup. `rebase --apply` is also unsupported:
+Git 2.45 detaches HEAD to the upstream before the denied rebased-patches write;
+the task branch ref stays intact. Recover with `git switch <task-branch>`.
+Single-commit cherry-pick/revert and merge/commit use file grants. Never grant the admin parent to bypass this.
+Git 2.45 may print a non-fatal packed-refs.lock denial during cleanup:
+AUTO_MERGE can remain, as can CHERRY_PICK_HEAD after cherry-pick and REVERT_HEAD
+after a conflicted revert. These last two still indicate an in-progress
+operation despite exit 0; after verifying the result, remove only that own
+admin marker (resolve its path with `git rev-parse --git-path CHERRY_PICK_HEAD`
+or REVERT_HEAD). Clean single revert and `cherry-pick --no-commit` followed
+by `git commit` need no marker cleanup. Shared packed-refs stays protected.
+Autostash's dynamic index.stash.<pid> files are not granted (refs/stash also
+stays protected). Observed denials are `file-write-create <admin>/rebase-merge`,
+`file-write-create <admin>/rebased-patches` for rebase --apply,
+`file-write-create <admin>/sequencer` and `file-write-create <admin>/index.stash.<pid>`.
+Use merge, or use a Full-access worker or the coordinator for these operations.
 There is no task-branch pin yet: `commit_roots` is recomputed from HEAD for
 each launch, resume and turn, so a worker may switch to and commit on another
 non-protected branch; protected branches are refused.
