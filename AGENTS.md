@@ -2920,8 +2920,8 @@ Rules that hold:
 - **The playground's cell `(−1, 0)` and the plaza `(0, 0)` are never plots.**
   波特 share homes of up to four, designed together; agents have one plot
   each.
-- **three.js loads with the page and with no other** (`lazy` in `App`); the
-  view owns its canvas and lets its context go on dispose
+- **three.js loads for the island page and for chat portraits** (which use
+  the island rig); the view owns its canvas and lets its context go on dispose
   (`renderer.forceContextLoss`), because a browser keeps only a few and the
   terminals need theirs. It pauses when the page is hidden.
 - **Look at it without a server**: `web/island.html` on the Vite dev server

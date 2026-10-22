@@ -71,6 +71,10 @@ export function lineCount(text: string): number {
  *  and not the two units JavaScript stores it in. Every size a card states
  *  is counted this way. */
 export function chars(text: string): number {
+  // Most roles and commands contain no surrogate pairs. Let the native
+  // scanner establish that once, rather than visit millions of ASCII units
+  // in JS on every size/approval check.
+  if (!/[\ud800-\udbff][\udc00-\udfff]/.test(text)) return text.length;
   let n = 0;
   for (let i = 0; i < text.length; i += 1) {
     const unit = text.charCodeAt(i);
@@ -421,6 +425,10 @@ const KIND = (() => {
   return kind;
 })();
 
+// Skip only printable ASCII, tab and LF. NUL, DEL and even CRLF still go
+// through the original classifier, which owns every control-character rule.
+const PLAIN_ASCII = /^[\x20-\x7e\t\n]*$/;
+
 /** What "CJK" means for that exception: Han, kana and Hangul, and the CJK
  *  and full-width punctuation that sits between them. */
 const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3001-\u303F\uFF00-\uFF9F\uFFA1-\uFFEF]/u;
@@ -452,6 +460,7 @@ function charAt(text: string, index: number): string {
  *  it stands, how many units it is, and its code point. One pass, and
  *  nothing is made per character but the call. */
 function eachMarked(text: string, visit: (at: number, units: number, point: number) => void): void {
+  if (PLAIN_ASCII.test(text)) return;
   const end = text.length;
   for (let i = 0; i < end; i += 1) {
     const unit = text.charCodeAt(i);

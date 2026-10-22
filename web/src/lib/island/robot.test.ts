@@ -10,8 +10,10 @@ const look = (over: Partial<Look> = {}): Look => ({
 const POSES: Pose[] = ["stand", "walk", "sit", "work", "think", "wave", "raise", "sleep", "dance", "cheer", "talk", "swing", "ride", "climb", "sob"];
 
 describe("a chibi robot", () => {
-  it("is made in every frame, with every eye and every antenna", () => {
-    for (const frame of FRAMES) for (const eyes of EYES) for (const antenna of ANTENNAS) {
+  // Keep all 384 combinations, but give each frame/eye its own case: one
+  // synchronous test building/merging 384 real meshes starved the full suite.
+  it.each(FRAMES.flatMap(frame => EYES.map(eyes => ({ frame, eyes }))))("is made in frame $frame with eyes $eyes and every antenna", ({ frame, eyes }) => {
+    for (const antenna of ANTENNAS) {
       const rig = createIslandRobot(look({ frame, eyes, antenna }));
       expect(rig.root.getObjectByName("head")).toBeDefined();
       rig.dispose();
@@ -64,7 +66,9 @@ describe("a chibi robot", () => {
         poseIslandRobot(rig, pose, t, { stride: t % 1, lean: Math.sin(t) * 0.5, bored: pose === "stand" });
         rig.root.updateMatrixWorld(true);
         rig.root.traverse((part) => {
-          for (const value of part.matrixWorld.elements) expect(Number.isFinite(value)).toBe(true);
+          // Check every matrix entry without allocating 16 assertion chains
+          // per part on every frame (tens of thousands in this pose sweep).
+          expect(part.matrixWorld.elements.every(Number.isFinite), part.name).toBe(true);
         });
       }
     }

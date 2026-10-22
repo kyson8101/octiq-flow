@@ -4,7 +4,7 @@
 //
 // Its stage is always on the page, out of sight unless something floats: the
 // element lives there while the browser's picture-in-picture window shows it,
-// and while a closed window has parked it for its chat.
+// with a visible fallback after that window closes.
 import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { nowPlaying } from "../lib/nowPlaying";
 import "./NowPlaying.css";
@@ -41,12 +41,12 @@ export function NowPlaying({ onBack, chatTitle }: {
       {view && (
         <div className="now-playing-bar">
           <button type="button" className="now-playing-btn" onClick={() => nowPlaying.toggle()}
-            aria-label={playing ? "Pause" : "Play"} title={playing ? "Pause" : "Play"}>
+            disabled={!!view.error} aria-label={playing ? "Pause" : "Play"} title={playing ? "Pause" : "Play"}>
             {playing ? <PauseIcon /> : <PlayIcon />}
           </button>
           <button type="button" className="now-playing-back" onClick={() => nowPlaying.goBack()}
             title={title ? `Back to ${title}` : "Back to its chat"}>
-            <span className="now-playing-name">{view.source.name}</span>
+            <span className="now-playing-name" role={view.error ? "alert" : undefined}>{view.error ? "Could not load this media." : view.source.name}</span>
             <span className="now-playing-chat">{title ? `Back to ${title}` : "Back to its chat"}</span>
           </button>
           {view.canPip && (

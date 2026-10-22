@@ -8,13 +8,15 @@ import { nowPlaying, type MediaKind, type MediaLike, type MediaSource } from "..
 /** Which chat a transcript is (`MessageList`): the chat its players belong to.
  *  Null outside a chat, where a player never floats. */
 export const MediaChatContext = createContext<string | null>(null);
+export const MediaReplyContext = createContext("");
 
 export const useMediaChat = () => useContext(MediaChatContext);
+export const useMediaReply = () => useContext(MediaReplyContext);
 
 /** Whether the store holds this chat's file detached, so its slot should be
  *  drawn now rather than wait to be near the screen. */
-export function useHeldMedia(chat: string | null, path: string) {
-  return useSyncExternalStore(nowPlaying.subscribe, () => nowPlaying.holds(chat, path), () => false);
+export function useHeldMedia(chat: string | null, path: string, reply: string) {
+  return useSyncExternalStore(nowPlaying.subscribe, () => nowPlaying.holds(chat, path, reply), () => false);
 }
 
 /** A new player element, as the browser's own controls draw it. Pointed at
@@ -36,16 +38,16 @@ export function useMediaSlot<E extends HTMLMediaElement>(source: MediaSource, ur
   const holder = useRef<HTMLSpanElement>(null);
   const latest = useRef({ source, url, bind });
   latest.current = { source, url, bind };
-  const { chat, path, kind, name } = source;
+  const { chat, reply, path, kind, name } = source;
   useLayoutEffect(() => {
     const slot = holder.current;
     if (!slot) return;
     return nowPlaying.mount(
       slot,
-      { chat, path, kind, name },
+      { chat, reply, path, kind, name },
       () => createMedia(kind, latest.current.url, name) as unknown as MediaLike,
       (el) => latest.current.bind(el as unknown as E),
     );
-  }, [chat, path, kind, name]);
+  }, [chat, reply, path, kind, name]);
   return holder;
 }

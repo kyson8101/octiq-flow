@@ -1,12 +1,12 @@
 // The chat avatar in a real browser, with an isolated transport and WebGL.
 import assert from 'node:assert/strict';
-import {createRequire} from 'node:module';
+import {browserPaths} from './browser-paths.mjs';
 import {mkdtemp} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-const require=createRequire(new URL('../web/package.json',import.meta.url));
-const {createServer,transformWithEsbuild}=await import(require.resolve('vite'));
-const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
+const {webRoot,require,moduleUrl}=browserPaths(import.meta.url);
+const {createServer,transformWithEsbuild}=await import(moduleUrl(require.resolve('vite')));
+const {chromium}=await import(moduleUrl(process.env.PLAYWRIGHT_MODULE||'playwright'));
 const evidence=await mkdtemp(join(tmpdir(),'octiq-chat-avatar-'));
 const bridgeSource=`
 const events=new Map();window.avatarCalls=[];
@@ -26,7 +26,7 @@ window.contexts=0;const original=HTMLCanvasElement.prototype.getContext;HTMLCanv
 const root=createRoot(document.getElementById('root'));window.unmountAvatars=()=>root.unmount();
 root.render(<main style={{padding:40,background:'#edf1f8',fontFamily:'sans-serif'}}><h1>Maya</h1><div id='portrait'><AgentAvatar island name='Maya' id='maya' size={180}/></div><p>Chat header <AgentAvatar island name='Maya' id='maya' size={48}/></p><p>Message <AgentAvatar island name='Maya' id='maya' size={40}/></p><p id='editor'>Uploaded photo <AgentAvatar name='Maya' id='maya' avatar='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg"/%3E' size={40}/></p></main>);
 `;
-const server=await createServer({root:new URL('../web',import.meta.url).pathname,server:{host:'127.0.0.1',port:0,strictPort:false},plugins:[{
+const server=await createServer({root:webRoot,server:{host:'127.0.0.1',port:0,strictPort:false},plugins:[{
 name:'chat-avatar-fixture',enforce:'pre',resolveId(id){if(id==='virtual:chat-avatar')return '\0chat-avatar'},async load(id){if(id==='\0chat-avatar')return(await transformWithEsbuild(entry,'fixture.tsx',{loader:'tsx',jsx:'automatic'})).code;if(id.endsWith('/src/lib/bridge.ts'))return bridgeSource},
 configureServer(server){server.middlewares.use(async(req,res,next)=>{if(req.url!=='/__avatar')return next();res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml(req.url,'<div id="root"></div><script type="module" src="/@vite/client"></script><script type="module" src="/@id/__x00__chat-avatar"></script>'))})}
 }]});
