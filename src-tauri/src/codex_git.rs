@@ -166,15 +166,27 @@ fn current_branch(cwd: &Path) -> Option<String> {
     }
     let branch = String::from_utf8(output.stdout).ok()?;
     let branch = branch.trim_end_matches(['\r', '\n']);
-    if !branch.starts_with("refs/heads/") {
+    // Task branches are ASCII; refuse Unicode case/normalization aliases on APFS/NTFS.
+    if !branch.is_ascii() || !branch.starts_with("refs/heads/") {
+        return None;
+    }
+    // show-ref can resolve a case alias through a loose ref on APFS/NTFS.
+    // Require Git's listed spelling, and refuse even a listed spelling when
+    // another ref would share its path on a case-insensitive filesystem.
+    let branches = git_text(cwd, &["for-each-ref", "--format=%(refname)", "refs/heads/"])?;
+    if !branches.lines().any(|listed| listed == branch)
+        || branches
+            .lines()
+            .any(|listed| listed != branch && listed.eq_ignore_ascii_case(branch))
+    {
         return None;
     }
     // HEAD is writable inside the worker's admin files. Switching it must
     // never turn a subsequent launch/resume into a protected-ref grant.
-    if matches!(
-        branch,
-        "refs/heads/main" | "refs/heads/master" | "refs/heads/develop"
-    ) {
+    if ["refs/heads/main", "refs/heads/master", "refs/heads/develop"]
+        .iter()
+        .any(|protected| branch.eq_ignore_ascii_case(protected))
+    {
         return None;
     }
     // The first porcelain entry is the primary checkout, even when this
@@ -184,7 +196,8 @@ fn current_branch(cwd: &Path) -> Option<String> {
         || worktrees
             .lines()
             .take_while(|line| !line.is_empty())
-            .any(|line| line.strip_prefix("branch ") == Some(branch))
+            .filter_map(|line| line.strip_prefix("branch "))
+            .any(|primary| primary.eq_ignore_ascii_case(branch))
     {
         return None;
     }
@@ -192,7 +205,10 @@ fn current_branch(cwd: &Path) -> Option<String> {
         cwd,
         &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
     ) {
-        if default.strip_prefix("refs/remotes/origin/") == branch.strip_prefix("refs/heads/") {
+        if default
+            .strip_prefix("refs/remotes/origin/")
+            .is_some_and(|default| branch["refs/heads/".len()..].eq_ignore_ascii_case(default))
+        {
             return None;
         }
     }
@@ -565,6 +581,161 @@ mod tests {
         assert_eq!(commit_roots(&work, Some(Access::Edits)).len(), 25);
     }
 
+    fn assert_branch_refused(dir: &Path, work: &Path, branch: &str) {
+        git(work, &["symbolic-ref", "HEAD", branch]);
+        assert_eq!(current_branch(work), None, "{branch}");
+        for access in [Access::Auto, Access::Edits] {
+            assert_no_branch_grant(dir, &commit_roots(work, Some(access)));
+            assert!(branch_parents(work, Some(access)).is_none(), "{branch}");
+        }
+    }
+
+    #[test]
+    fn unlisted_case_aliases_get_no_branch_grant_or_parent_preparation() {
+        let (dir, work) = fixture();
+        for branch in ["main", "master", "develop", "trunk", "feature/octiq-other"] {
+            git(&dir, &["branch", branch]);
+        }
+        git(
+            &dir,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/trunk",
+            ],
+        );
+        let listed = git_text(
+            &work,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+        )
+        .unwrap();
+        for branch in [
+            "refs/heads/MAIN",
+            "refs/heads/Main",
+            "refs/heads/mAster",
+            "refs/heads/DEVELOP",
+            "refs/heads/FIXTURE",
+            "refs/heads/TRUNK",
+            "refs/heads/FEATURE/octiq-other",
+        ] {
+            assert!(!listed.lines().any(|name| name == branch));
+            assert_branch_refused(&dir, &work, branch);
+        }
+        // Even packed-only aliases must not make differently cased parents.
+        git(&dir, &["pack-refs", "--all"]);
+        let common = dir.join(".git");
+        for base in [common.join("refs/heads"), common.join("logs/refs/heads")] {
+            let parent = base.join("feature");
+            if parent.exists() {
+                std::fs::remove_dir_all(parent).unwrap();
+            }
+        }
+        for access in [Access::Auto, Access::Edits] {
+            crate::git_ops::prepare_codex_branch_parents(&work, Some(access));
+            for base in [common.join("refs/heads"), common.join("logs/refs/heads")] {
+                assert!(!base.join("feature").exists());
+                assert!(!base.join("FEATURE").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn exactly_listed_protected_names_are_matched_without_regard_to_ascii_case() {
+        for branch in ["MAIN", "Main", "mAster", "DEVELOP"] {
+            let (dir, work) = fixture();
+            git(&dir, &["branch", branch]);
+            let branch = format!("refs/heads/{branch}");
+            let listed = git_text(
+                &work,
+                &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+            )
+            .unwrap();
+            assert!(listed.lines().any(|name| name == branch));
+            assert_branch_refused(&dir, &work, &branch);
+        }
+    }
+
+    #[test]
+    fn exactly_listed_primary_and_origin_default_case_aliases_are_refused() {
+        let (dir, work) = fixture();
+        // The primary HEAD may itself use a different spelling from the list.
+        git(&dir, &["symbolic-ref", "HEAD", "refs/heads/FIXTURE"]);
+        assert_branch_refused(&dir, &work, "refs/heads/fixture");
+
+        git(&work, &["branch", "trunk"]);
+        git(
+            &work,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/TRUNK",
+            ],
+        );
+        assert_branch_refused(&dir, &work, "refs/heads/trunk");
+    }
+
+    #[test]
+    fn listed_branches_with_ascii_case_collisions_are_both_refused() {
+        let (dir, work) = fixture();
+        git(&dir, &["branch", "feature/octiq-other"]);
+        git(&dir, &["pack-refs", "--all"]);
+        // Packed refs can represent both spellings even on APFS/NTFS.
+        let packed = dir.join(".git").join("packed-refs");
+        let text = std::fs::read_to_string(&packed).unwrap();
+        let mut lines: Vec<_> = text
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(str::to_owned)
+            .collect();
+        let head = git_text(&work, &["rev-parse", "HEAD"]).unwrap();
+        lines.push(format!("{head} refs/heads/FEATURE/octiq-other"));
+        lines.sort_unstable_by(|a, b| {
+            a.split_once(' ')
+                .unwrap()
+                .1
+                .cmp(b.split_once(' ').unwrap().1)
+        });
+        std::fs::write(
+            packed,
+            format!(
+                "# pack-refs with: peeled fully-peeled sorted \n{}\n",
+                lines.join("\n")
+            ),
+        )
+        .unwrap();
+        let listed = git_text(
+            &work,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+        )
+        .unwrap();
+        for branch in [
+            "refs/heads/feature/octiq-other",
+            "refs/heads/FEATURE/octiq-other",
+        ] {
+            assert!(listed.lines().any(|name| name == branch));
+            assert_branch_refused(&dir, &work, branch);
+        }
+        git(&work, &["symbolic-ref", "HEAD", "refs/heads/feature/x"]);
+        assert_eq!(
+            current_branch(&work).as_deref(),
+            Some("refs/heads/feature/x")
+        );
+    }
+
+    #[test]
+    fn exactly_listed_non_ascii_kelvin_branch_is_refused() {
+        let (dir, work) = fixture();
+        let branch = "refs/heads/feature/\u{212a}elvin";
+        git(&dir, &["branch", "feature/\u{212a}elvin"]);
+        let listed = git_text(
+            &work,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+        )
+        .unwrap();
+        assert!(listed.lines().any(|name| name == branch));
+        assert_branch_refused(&dir, &work, branch);
+    }
+
     #[test]
     fn detached_unborn_and_non_branch_heads_get_no_branch_grant() {
         let (dir, work) = fixture();
@@ -854,6 +1025,77 @@ console.log('PASS: protected branch ref/reflog and locks refused after HEAD swit
                     .exists());
             }
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires the real Codex OS sandbox, Node and a case-insensitive filesystem"]
+    fn real_codex_sandbox_refuses_main_case_alias_after_root_refresh() {
+        let (dir, work) = fixture();
+        git(&dir, &["branch", "main"]);
+        let common = crate::paths::canonicalize(dir.join(".git")).unwrap();
+        let main = common.join("refs/heads/main");
+        let main_log = common.join("logs/refs/heads/main");
+        let before = std::fs::read(&main).unwrap();
+        let log_before = std::fs::read(&main_log).unwrap();
+        assert_eq!(
+            std::fs::read(common.join("refs/heads/MAIN")).unwrap(),
+            before,
+            "this regression requires a case-insensitive filesystem"
+        );
+        let probe = dir.join("case-alias.cjs");
+        std::fs::write(
+            &probe,
+            format!(
+                "require('node:fs').writeFileSync({}, 'ref: refs/heads/MAIN\\n');",
+                serde_json::to_string(&common.join("worktrees/linked/HEAD")).unwrap()
+            ),
+        )
+        .unwrap();
+        let out = sandbox(&work, &commit_roots(&work, Some(Access::Auto)), &probe);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            git_text(&work, &["symbolic-ref", "HEAD"]).as_deref(),
+            Some("refs/heads/MAIN")
+        );
+        // Recompute exactly as a later launch/resume/turn does after the worker's HEAD write.
+        let roots = commit_roots(&work, Some(Access::Auto));
+        assert_no_branch_grant(&dir, &roots);
+        assert!(branch_parents(&work, Some(Access::Auto)).is_none());
+        crate::git_ops::prepare_codex_branch_parents(&work, Some(Access::Auto));
+        std::fs::write(
+            &probe,
+            r#"
+const fs = require('node:fs'), assert = require('node:assert/strict');
+const run = require('node:child_process').spawnSync;
+fs.writeFileSync('protected-marker.txt', 'MUST NOT REACH MAIN\n');
+const add = run('git', ['add','protected-marker.txt'], {encoding:'utf8'});
+assert.equal(add.status, 0, add.stderr);
+const commit = run('git', ['-c','user.name=Test','-c','user.email=test@example.invalid',
+  '-c','commit.gpgsign=false','commit','-qm','case alias must fail'], {encoding:'utf8'});
+assert.notEqual(commit.status, 0, commit.stdout);
+assert.match(commit.stderr, /cannot lock ref 'HEAD'/);
+assert.match(commit.stderr, /MAIN.lock.*Operation not permitted/);
+console.log(commit.stderr);
+console.log('PASS: HEAD alias MAIN gets no refreshed branch grant; sandbox commit refused');
+"#,
+        )
+        .unwrap();
+        let out = sandbox(&work, &roots, &probe);
+        println!("{}", String::from_utf8_lossy(&out.stdout));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(std::fs::read(main).unwrap(), before);
+        assert_eq!(std::fs::read(main_log).unwrap(), log_before);
+        assert!(!common.join("refs/heads/main.lock").exists());
+        println!("PASS: protected main ref and reflog are byte-identical after refused commit");
     }
 
     #[test]

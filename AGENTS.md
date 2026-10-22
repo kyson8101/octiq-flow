@@ -322,8 +322,12 @@ Never grant the shared git dir or worktree admin dir: shared refs/ and logs/
 (including refs/remotes/), refs/stash, other branches or worktrees,
 packed-refs, hooks, config, config.worktree, gitdir and commondir must remain
 protected. Detached, unborn or malformed HEADs get no branch ref grant.
-Neither do main, master, develop, the primary worktree's branch or the known
-origin/HEAD default. Ref files and parent paths must not be symlinks.
+Only an ASCII branch that Git lists byte-for-byte is granted; any other listed
+branch with the same ASCII case-insensitive name prevents the grant. Protected
+names main, master, develop, the primary worktree's branch and the known
+origin/HEAD default are matched without regard to ASCII case. Non-ASCII names
+are refused to avoid APFS/NTFS Unicode case/normalization aliases. Ref files
+and parent paths must not be symlinks.
 Network access stays off at Auto and Edits; a FETCH_HEAD file grant does not
 authorize a network fetch or push.
 Before each exec launch or app-server start/resume/turn, git_ops prepares
