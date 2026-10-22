@@ -29,7 +29,9 @@ import { approveOnce, useApproving } from "../lib/planApproving";
 import { cardView, nextShown, PLAN_SETTLE_MS, settling, type PlanShown } from "../lib/planShown";
 import { AgentLogo } from "./AgentLogo";
 import { AgentAvatar } from "./AgentAvatar";
-import { TaskPlanCard } from "./TaskPlanCard";
+import { TaskPlanCard, type WorkspaceDecision } from "./TaskPlanCard";
+import { readWorkspaceChoice, workspaceChoiceFact, workspaceDraft, workspaceOverrides, type WorkspaceDraft } from "../lib/workspaceChoice";
+import { notePress } from "../lib/pressGuard";
 import { CommandApprovalChoice } from "./CommandApprovalChoice";
 import { useRosterAgent } from "../lib/agentRoster";
 import "./PlanReview.css";
@@ -77,6 +79,27 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   const stages = useMemo(() => planStages(tasks), [tasks]);
   const numbers = useMemo(() => planNumbers(stages), [stages]);
   const waiting = useMemo(() => awaitingApproval(tasks), [tasks]);
+  const [workspace, setWorkspace] = useState<WorkspaceDraft>(() => workspaceDraft(run));
+  // Reset during render: even the first draw/click of a new revision uses
+  // its advice, and returning to an old revision cannot resurrect a draft.
+  if (workspace.runId !== run.id || workspace.revision !== run.planApproval?.revision) {
+    setWorkspace(workspaceDraft(run));
+    setError("");
+  }
+  const workspaceChoices = workspaceOverrides(workspace, run, tasks, waiting);
+  const workspaceFact = workspaceChoiceFact(workspaceChoices);
+  const workspaceDecision = (task: OrchestrationTask): WorkspaceDecision | undefined => {
+    const choice = readWorkspaceChoice(task);
+    if (approved || run.planApproval?.status !== "pending" || !waiting.includes(task.id) || !choice?.editable) return;
+    return {
+      value: workspaceChoices[task.id] ?? choice.advised,
+      disabled: busy,
+      onChange: (value) => setWorkspace((was) => ({ ...workspaceDraft(run), choices: {
+        ...(was.runId === run.id && was.revision === run.planApproval?.revision ? was.choices : {}),
+        [task.id]: value,
+      } })),
+    };
+  };
   // Some of the plan was approved before: mark what is new since.
   const amended = !approved && waiting.length > 0 && waiting.length < tasks.filter((task) => !task.splitBy).length;
   const blocked = stages.some((stage) => stage.blocked);
@@ -118,7 +141,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
       // The revision on screen goes with the click: a plan the lead changed
       // a moment ago is refused, not approved unseen.
       const sent = await approveOnce(run.id, () => approvePlan(run.coordinatorChatKey, run.id, waiting, revision,
-        { surface, ...cardView(shownRef.current ?? shown, Date.now()) }));
+        { surface, ...cardView(shownRef.current ?? shown, Date.now()) }, workspaceChoices));
       if (sent) onApproved?.();
     } catch (reason) {
       setError(String((reason as Error).message ?? reason));
@@ -186,6 +209,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
             {!empty && (folded
               ? <> · {planLabel(tasks.length, stages.length)}</>
               : <> · {count(tasks.length, "task")} · {count(stages.length, "stage")}</>)}
+            {workspaceFact && <span className="plan-workspace-fact"> · {workspaceFact}</span>}
           </p>
           {folded && <FoldToggle fold={fold} describedBy={metaId} what="the tasks" />}
         </div>
@@ -217,6 +241,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
                   <ul className="plan-stage-tasks">
                     {stage.tasks.map((task) => (
                       <PlanTask key={task.id} task={task} run={run} projectName={projectName} whole={folded}
+                        workspaceDecision={workspaceDecision(task)}
                         added={amended && waiting.includes(task.id)}
                         number={numbers.get(task.id) ?? 0} numbers={numbers} />
                     ))}
@@ -309,7 +334,7 @@ export function PlanRejectConfirmation({ reason, busy, disabled, rejecting, onRe
   </div>;
 }
 
-function PlanTask({ task, run, projectName, added, number, numbers, whole = false }: {
+function PlanTask({ task, run, projectName, added, number, numbers, whole = false, workspaceDecision }: {
   task: OrchestrationTask;
   run: OrchestrationRun;
   projectName?: (id: string) => string | undefined;
@@ -320,6 +345,7 @@ function PlanTask({ task, run, projectName, added, number, numbers, whole = fals
   /** Drawn out in full, with nothing of it behind a disclosure of its own:
    *  the chat's card, whose one opening has to show what is being approved. */
   whole?: boolean;
+  workspaceDecision?: WorkspaceDecision;
 }) {
   const owner = planOwner(task);
   const assigneeFace = useRosterAgent(task.assignee?.id);
@@ -358,7 +384,7 @@ function PlanTask({ task, run, projectName, added, number, numbers, whole = fals
     return (
       <li className="plan-task" data-whole="">
         <div className="plan-task-row">{summary}</div>
-        <TaskPlanCard task={task} run={run} projectName={projectName} />
+        <TaskPlanCard task={task} run={run} projectName={projectName} workspaceDecision={workspaceDecision} />
         <CommandApprovalChoice task={task} run={run} />
         {spec && (
           <div className="plan-task-brief">
@@ -374,12 +400,12 @@ function PlanTask({ task, run, projectName, added, number, numbers, whole = fals
       {/* The standard plan card first; the lead's full brief stays one
           disclosure further in, because it is written for the worker. */}
       <details>
-        <summary>{summary}<span className="plan-task-chevron" aria-hidden="true" /></summary>
-        <TaskPlanCard task={task} run={run} projectName={projectName} />
+        <summary onClick={notePress}>{summary}<span className="plan-task-chevron" aria-hidden="true" /></summary>
+        <TaskPlanCard task={task} run={run} projectName={projectName} workspaceDecision={workspaceDecision} />
         <CommandApprovalChoice task={task} run={run} />
         {spec && (
           <details className="plan-task-brief">
-            <summary>Full brief</summary>
+            <summary onClick={notePress}>Full brief</summary>
             <div className="plan-task-spec">{spec}</div>
           </details>
         )}

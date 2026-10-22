@@ -1,28 +1,37 @@
 // The standard plan card, as it reads inside a plan row and a task's details:
 // compact key-value facts, then one line of problem, one of goal, and the
 // acceptance criteria as a checklist the person reads — never ticks.
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { copyText } from "../lib/clipboard";
 import { useRosterAgent } from "../lib/agentRoster";
 import { isSettled, type OrchestrationAttempt, type OrchestrationRun, type OrchestrationTask } from "../lib/orchestration";
 import { CARD_STATE_LABEL, taskCardRows, type CardRow } from "../lib/taskPlanCard";
+import { readWorkspaceChoice, WORKSPACE_CHOICE_LABEL, type WorkspaceChoice } from "../lib/workspaceChoice";
+import { dropHeld, notePress, repeatsAnother } from "../lib/pressGuard";
 import { AgentAvatar } from "./AgentAvatar";
 import { TaskAcceptanceLine, TaskSizeFact } from "./TaskLevel";
 import "./TaskPlanCard.css";
 
-export function TaskPlanCard({ task, run, attempt, projectName }: {
+export type WorkspaceDecision = { value: WorkspaceChoice; disabled: boolean; onChange: (value: WorkspaceChoice) => void };
+
+export function TaskPlanCard({ task, run, attempt, projectName, workspaceDecision }: {
   task: OrchestrationTask;
   run: Pick<OrchestrationRun, "workspaceId" | "rootPath">;
   attempt?: OrchestrationAttempt | null;
   projectName?: (id: string) => string | undefined;
+  workspaceDecision?: WorkspaceDecision;
 }) {
   const face = useRosterAgent(task.assignee?.id);
-  const rows = taskCardRows(task, run, attempt, projectName);
+  const rows = taskCardRows(task, run, attempt, projectName, workspaceDecision?.value);
+  const choice = readWorkspaceChoice(task);
   const card = task.card;
   return (
     <section className="plan-card" aria-label={`Plan card: ${task.title}`}>
       <dl className="plan-card-facts">
         {rows.map((row) => (
+          row.key === "worktree" && choice?.editable && workspaceDecision ? (
+            <WorkspaceRadios key={row.key} task={task} advised={choice.advised} decision={workspaceDecision} note={row.note} />
+          ) :
           <Fact key={row.key} row={row}>
             {row.key === "owner" && task.assignee && (
               <AgentAvatar name={face?.name ?? task.assignee.name} avatar={face?.avatar} id={task.assignee.id} size={16} decorative />
@@ -52,6 +61,39 @@ export function TaskPlanCard({ task, run, attempt, projectName }: {
       {task.assignee && isSettled(task) && <TaskAcceptanceLine task={task} />}
     </section>
   );
+}
+
+function WorkspaceRadios({ task, advised, decision, note }: {
+  task: OrchestrationTask; advised: WorkspaceChoice; decision: WorkspaceDecision; note?: string;
+}) {
+  // Two surfaces can draw the same task at once. Native radio names belong
+  // to this group, so choosing here never silently unchecks the other card.
+  const id = useId();
+  return <>
+    <dt id={`${id}-label`}>Worktree</dt>
+    <dd>
+      <div className="plan-workspace-options" role="radiogroup" aria-label={`Worktree for ${task.title}`}>
+        {(["worktree", "checkout"] as const).map((mode) => (
+          <label key={mode} data-checked={decision.value === mode || undefined}
+            onKeyDown={dropHeld}
+            onClickCapture={(event) => {
+              if (repeatsAnother(event)) {
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+              }
+              notePress(event);
+            }}>
+            <input type="radio" name={`${id}-workspace`} value={mode} checked={decision.value === mode}
+              disabled={decision.disabled} onChange={() => decision.onChange(mode)} />
+            <span>{WORKSPACE_CHOICE_LABEL[mode]}</span>
+            {advised === mode && <span className="plan-workspace-recommended">Recommended</span>}
+          </label>
+        ))}
+      </div>
+      {note && <span className="plan-card-note">{note}</span>}
+    </dd>
+  </>;
 }
 
 function Fact({ row, children }: { row: CardRow; children?: ReactNode }) {

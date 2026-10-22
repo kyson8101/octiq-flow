@@ -18,6 +18,7 @@ import chatPlanCss from "../components/ChatPlanCards.css?raw";
 import handoverCss from "../components/HandoverCards.css?raw";
 import questionCss from "../components/InlineQuestions.css?raw";
 import planReviewCss from "../components/PlanReview.css?raw";
+import taskPlanCardCss from "../components/TaskPlanCard.css?raw";
 import planPanelCss from "../components/PlanPanel.css?raw";
 import guofengSheet from "../guofeng.css?raw";
 import xpSheet from "../xp.css?raw";
@@ -186,6 +187,7 @@ const RULES = [
   ...rules(handoverCss, "HandoverCards.css"),
   ...rules(questionCss, "InlineQuestions.css"),
   ...rules(planReviewCss, "PlanReview.css"),
+  ...rules(taskPlanCardCss, "TaskPlanCard.css"),
   ...rules(chatPlanCss, "ChatPlanCards.css"),
   ...rules(mangaSheet, "manga.css"),
   ...rules(xpSheet, "xp.css"),
@@ -216,6 +218,9 @@ const NAME_CARD_APART = new Set([".handover-unpassed li"]);
 
 /** The border, the dot and the primary answer of each card that asks. */
 const DECISION_RULES = [
+  ".plan-workspace-options label[data-checked]",
+  ":root .plan-card .plan-workspace-options input[type=\"radio\"]",
+  ".plan-workspace-options label:focus-within",
   // Permission and access request.
   ".ask-card",
   ".ask-card-dot",

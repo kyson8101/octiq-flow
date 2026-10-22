@@ -182,6 +182,14 @@ export type OrchestrationTask = {
   /** The branch and directory planned for it before it starts. Kept after
    *  launch as the record of what was approved; `workspace` is what exists. */
   workspaceProposal?: WorkspaceProposal;
+  /** Host-derived approval choices; absent on older hosts. Read through
+   *  workspaceChoice.ts, including the approved choice after a decision. */
+  workspaceChoice?: {
+    advised: "worktree" | "checkout";
+    chosen?: "worktree" | "checkout";
+    options: ("worktree" | "checkout")[];
+    onlyCheckoutBecause?: string;
+  };
   dependsOn: string[];
   parentTaskId?: string;
   /** Set by the host on a subtask its parent's own manager split off: the
