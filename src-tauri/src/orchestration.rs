@@ -1275,6 +1275,7 @@ impl OrchestrationStore {
                     recovered |= retention::prune_finished_runs(&mut data);
                     recovered |= refresh_plan_revisions(&mut data);
                     recovered |= levels::stamp_scoring_since(&mut data, now_ms());
+                    recovered |= correct_finished_run_statuses(&mut data);
                     inner.data = data;
                 }
                 Ok(data) => {
@@ -5923,40 +5924,72 @@ fn make_ready(data: &mut Stored, run_id: &str) {
     }
 }
 
-fn recompute_run(data: &mut Stored, run_id: &str) {
-    let tasks: Vec<_> = data
+/// The current work's status, without timestamps, retention or other writes.
+fn derived_run_status(data: &Stored, run_id: &str) -> RunStatus {
+    let mut tasks: Vec<_> = data
         .tasks
         .values()
         .filter(|task| task.run_id == run_id)
-        .map(|task| task.status)
         .collect();
+    let has_tasks = !tasks.is_empty();
+    // Replacements and withdrawals stay in the ledger as history, but do
+    // not decide what the run's remaining work became. A run with only
+    // history still falls through to Stopped, never an empty Completed.
+    tasks.retain(|task| task.superseded_by.is_none() && task.status != TaskStatus::Cancelled);
     let has_open_gate = data
         .gates
         .values()
         .any(|gate| gate.run_id == run_id && gate.status == GateStatus::Open);
     // Held by a failing verdict: waiting on someone, not working.
-    let failed_check = data
-        .tasks
-        .values()
-        .any(|task| task.run_id == run_id && completed_but_held(task));
-    let status = if tasks.is_empty() {
+    let failed_check = tasks.iter().any(|task| completed_but_held(task));
+    if !has_tasks {
         RunStatus::Planning
-    } else if tasks.iter().all(|status| *status == TaskStatus::Completed) {
+    } else if !tasks.is_empty()
+        && tasks
+            .iter()
+            .all(|task| task.status == TaskStatus::Completed)
+    {
         RunStatus::Completed
-    } else if has_open_gate || tasks.contains(&TaskStatus::Blocked) || failed_check {
+    } else if has_open_gate
+        || tasks.iter().any(|task| task.status == TaskStatus::Blocked)
+        || failed_check
+    {
         RunStatus::Waiting
-    } else if tasks.iter().any(|status| {
+    } else if tasks.iter().any(|task| {
         matches!(
-            status,
+            task.status,
             TaskStatus::Running | TaskStatus::Ready | TaskStatus::Pending
         )
     }) {
         RunStatus::Running
-    } else if tasks.contains(&TaskStatus::Failed) {
+    } else if tasks.iter().any(|task| task.status == TaskStatus::Failed) {
         RunStatus::Failed
     } else {
         RunStatus::Stopped
-    };
+    }
+}
+
+/// Repair terminal labels saved by older reducers. Do not reopen an explicit
+/// stop/close or derive the state of a plan/in-flight run on load. Only the
+/// label changes: history, updated_at and retention belong to normal writes.
+fn correct_finished_run_statuses(data: &mut Stored) -> bool {
+    let corrections: Vec<_> = data
+        .runs
+        .values()
+        .filter(|run| matches!(run.status, RunStatus::Failed | RunStatus::Completed))
+        .filter_map(|run| {
+            let status = derived_run_status(data, &run.id);
+            (status != run.status).then(|| (run.id.clone(), status))
+        })
+        .collect();
+    for (id, status) in &corrections {
+        data.runs.get_mut(id).unwrap().status = *status;
+    }
+    !corrections.is_empty()
+}
+
+fn recompute_run(data: &mut Stored, run_id: &str) {
+    let status = derived_run_status(data, run_id);
     if let Some(run) = data.runs.get_mut(run_id) {
         if !matches!(run.status, RunStatus::Stopped | RunStatus::Closed) {
             run.status = status;
@@ -6333,6 +6366,401 @@ pub(crate) mod tests {
                 None,
             )
             .unwrap()
+    }
+
+    /// Feedback ea1fe10e: only current work decides a run's status. Include
+    /// every historical status so a replaced block/check cannot hold it either.
+    #[test]
+    fn recompute_run_leaves_replaced_and_cancelled_tasks_in_history() {
+        for (live, expected) in [
+            (TaskStatus::Completed, RunStatus::Completed),
+            (TaskStatus::Pending, RunStatus::Running),
+            (TaskStatus::Ready, RunStatus::Running),
+            (TaskStatus::Running, RunStatus::Running),
+            (TaskStatus::Blocked, RunStatus::Waiting),
+            (TaskStatus::Failed, RunStatus::Failed),
+        ] {
+            let store = OrchestrationStore::default();
+            let run = run(&store);
+            let current = task(&store, &run, vec![]);
+            let history: Vec<_> = (0..7).map(|_| task(&store, &run, vec![])).collect();
+            let mut inner = store.inner.lock().unwrap();
+            let data = &mut inner.data;
+            data.tasks.get_mut(&current.id).unwrap().status = live;
+            for (old, status) in history.iter().zip([
+                TaskStatus::Pending,
+                TaskStatus::Ready,
+                TaskStatus::Running,
+                TaskStatus::Blocked,
+                TaskStatus::Failed,
+                TaskStatus::Completed,
+                TaskStatus::Cancelled,
+            ]) {
+                let old = data.tasks.get_mut(&old.id).unwrap();
+                old.status = status;
+                if status != TaskStatus::Cancelled {
+                    old.superseded_by = Some(current.id.clone());
+                }
+                if status == TaskStatus::Completed {
+                    old.kind = TaskKind::Review;
+                    old.verdict = Some(Verdict::Fail);
+                }
+            }
+            recompute_run(data, &run.id);
+            assert_eq!(data.runs[&run.id].status, expected, "{live:?}");
+            assert_eq!(data.tasks.len(), 8, "history is preserved");
+            assert_eq!(data.tasks[&history[4].id].status, TaskStatus::Failed);
+        }
+    }
+
+    #[test]
+    fn recompute_run_preserves_empty_gated_held_and_ended_runs() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        {
+            let mut inner = store.inner.lock().unwrap();
+            recompute_run(&mut inner.data, &run.id);
+            assert_eq!(inner.data.runs[&run.id].status, RunStatus::Planning);
+        }
+        let cancelled = task(&store, &run, vec![]);
+        {
+            let mut inner = store.inner.lock().unwrap();
+            inner.data.tasks.get_mut(&cancelled.id).unwrap().status = TaskStatus::Cancelled;
+            recompute_run(&mut inner.data, &run.id);
+            assert_eq!(inner.data.runs[&run.id].status, RunStatus::Stopped);
+            // Recompute preserves an explicit stop; reopen this fixture to
+            // exercise an open gate with only withdrawn tasks.
+            inner.data.runs.get_mut(&run.id).unwrap().status = RunStatus::Running;
+        }
+        let gate = store
+            .create_gate("chat:master", run.id.clone(), None, "Decide".into(), vec![])
+            .unwrap();
+        let mut inner = store.inner.lock().unwrap();
+        let data = &mut inner.data;
+        recompute_run(data, &run.id);
+        assert_eq!(data.runs[&run.id].status, RunStatus::Waiting);
+        data.gates
+            .get_mut(&gate.id)
+            .unwrap()
+            .close(GateStatus::Resolved, now_ms());
+        let mut check = data.tasks[&cancelled.id].clone();
+        check.id = "current-check".into();
+        check.status = TaskStatus::Completed;
+        check.kind = TaskKind::Review;
+        check.verdict = Some(Verdict::Fail);
+        data.tasks.insert(check.id.clone(), check.clone());
+        // Today's all-completed answer stays Completed even for a held check;
+        // failure.awaits and shownRunStatus say whose move that failure is.
+        recompute_run(data, &run.id);
+        assert_eq!(data.runs[&run.id].status, RunStatus::Completed);
+        let mut pending = check.clone();
+        pending.id = "waiting-on-check".into();
+        pending.status = TaskStatus::Pending;
+        data.tasks.insert(pending.id.clone(), pending);
+        recompute_run(data, &run.id);
+        assert_eq!(data.runs[&run.id].status, RunStatus::Waiting);
+        for status in [RunStatus::Stopped, RunStatus::Closed] {
+            data.runs.get_mut(&run.id).unwrap().status = status;
+            recompute_run(data, &run.id);
+            assert_eq!(data.runs[&run.id].status, status);
+        }
+    }
+
+    /// Completed-first is deliberate: runWaits surfaces an open gate itself.
+    /// Replaced/withdrawn history must give the same label as no history.
+    #[test]
+    fn recompute_run_completed_status_ignores_history_with_an_open_gate() {
+        for with_history in [false, true] {
+            let store = OrchestrationStore::default();
+            let (run, first) = pending_plan(&store);
+            let current = if with_history {
+                let withdrawn = task(&store, &run, vec![]);
+                store
+                    .revise_task(
+                        "chat:master",
+                        &withdrawn.id,
+                        TaskRevision {
+                            withdraw: true,
+                            ..TaskRevision::default()
+                        },
+                    )
+                    .unwrap();
+                store
+                    .approve_plan("chat:master", &run.id, None, None)
+                    .unwrap();
+                finish_attempt(&store, start_task(&store, &first.id), WorkerOutcome::Failed);
+                let replacement = task(&store, &run, vec![]);
+                store
+                    .supersede("chat:master", &first.id, &replacement.id)
+                    .unwrap();
+                replacement
+            } else {
+                first
+            };
+            store
+                .approve_plan("chat:master", &run.id, None, None)
+                .unwrap();
+            let attempt = start_task(&store, &current.id);
+            let gate = store
+                .create_gate("chat:master", run.id.clone(), None, "Decide".into(), vec![])
+                .unwrap();
+            finish_attempt(&store, attempt, WorkerOutcome::Completed);
+            let snapshot = store.snapshot(Some(&run.id)).unwrap();
+            assert_eq!(
+                snapshot.runs[0].status,
+                RunStatus::Completed,
+                "{with_history}"
+            );
+            assert!(snapshot
+                .tasks
+                .iter()
+                .filter(|t| { t.superseded_by.is_none() && t.status != TaskStatus::Cancelled })
+                .all(|t| t.status == TaskStatus::Completed));
+            assert_eq!(
+                snapshot
+                    .gates
+                    .iter()
+                    .find(|g| g.id == gate.id)
+                    .unwrap()
+                    .status,
+                GateStatus::Open
+            );
+        }
+    }
+
+    #[test]
+    fn loading_corrects_only_stale_finished_run_statuses() {
+        for (stored, current, verdict, gated, expected) in [
+            // Like run_65d009e8: failed history, withdrawals and passing checks.
+            (
+                RunStatus::Failed,
+                TaskStatus::Completed,
+                Some(Verdict::Pass),
+                false,
+                RunStatus::Completed,
+            ),
+            (
+                RunStatus::Failed,
+                TaskStatus::Failed,
+                None,
+                false,
+                RunStatus::Failed,
+            ),
+            (
+                RunStatus::Completed,
+                TaskStatus::Completed,
+                Some(Verdict::Pass),
+                false,
+                RunStatus::Completed,
+            ),
+            (
+                RunStatus::Completed,
+                TaskStatus::Completed,
+                Some(Verdict::Pass),
+                true,
+                RunStatus::Completed,
+            ),
+            (
+                RunStatus::Completed,
+                TaskStatus::Completed,
+                Some(Verdict::Fail),
+                false,
+                RunStatus::Completed,
+            ),
+            (
+                RunStatus::Completed,
+                TaskStatus::Completed,
+                None,
+                false,
+                RunStatus::Completed,
+            ),
+            (
+                RunStatus::Stopped,
+                TaskStatus::Completed,
+                Some(Verdict::Pass),
+                false,
+                RunStatus::Stopped,
+            ),
+            (
+                RunStatus::Closed,
+                TaskStatus::Completed,
+                Some(Verdict::Pass),
+                false,
+                RunStatus::Closed,
+            ),
+            (
+                RunStatus::Planning,
+                TaskStatus::Completed,
+                Some(Verdict::Pass),
+                false,
+                RunStatus::Planning,
+            ),
+            (
+                RunStatus::Running,
+                TaskStatus::Completed,
+                Some(Verdict::Pass),
+                false,
+                RunStatus::Running,
+            ),
+            (
+                RunStatus::Waiting,
+                TaskStatus::Completed,
+                Some(Verdict::Pass),
+                false,
+                RunStatus::Waiting,
+            ),
+        ] {
+            let root = crate::test_dir::TestDir::new("run-status-load");
+            let _profile = crate::profile::started_in(&root);
+            let path = root.join("orchestrations.json");
+            let store = OrchestrationStore::default();
+            let run = run(&store);
+            let check = task(&store, &run, vec![]);
+            let replaced = task(&store, &run, vec![]);
+            let withdrawn = task(&store, &run, vec![]);
+            if gated {
+                store
+                    .create_gate("chat:master", run.id.clone(), None, "Decide".into(), vec![])
+                    .unwrap();
+            }
+            store
+                .mutate(|data| {
+                    let current_check = data.tasks.get_mut(&check.id).unwrap();
+                    current_check.kind = TaskKind::Review;
+                    current_check.status = current;
+                    current_check.verdict = verdict;
+                    let replaced = data.tasks.get_mut(&replaced.id).unwrap();
+                    replaced.status = TaskStatus::Failed;
+                    replaced.superseded_by = Some(check.id.clone());
+                    data.tasks.get_mut(&withdrawn.id).unwrap().status = TaskStatus::Cancelled;
+                    let run = data.runs.get_mut(&run.id).unwrap();
+                    run.status = stored;
+                    run.updated_at = 123;
+                    Ok(())
+                })
+                .unwrap();
+            let data = store.inner.lock().unwrap().data.clone();
+            let bytes = serde_json::to_vec(&data).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            let loaded = OrchestrationStore::load(path.clone());
+            let mut expected_data = serde_json::to_value(&data).unwrap();
+            expected_data["runs"][&run.id]["status"] = json!(expected);
+            assert_eq!(
+                serde_json::to_value(&loaded.inner.lock().unwrap().data).unwrap(),
+                expected_data,
+                "{stored:?}, {current:?}, {verdict:?}, gated={gated}"
+            );
+            let saved = fs::read(&path).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&saved).unwrap(),
+                expected_data
+            );
+            if stored == expected {
+                assert_eq!(
+                    saved, bytes,
+                    "an unchanged status must not rewrite the ledger"
+                );
+            } else {
+                let reloaded = OrchestrationStore::load(path.clone());
+                assert_eq!(
+                    reloaded.inner.lock().unwrap().data.runs[&run.id].status,
+                    expected
+                );
+                assert_eq!(
+                    fs::read(&path).unwrap(),
+                    saved,
+                    "the correction saves only once"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn correcting_finished_run_statuses_does_not_prune_or_touch_timestamps() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let current = task(&store, &run, vec![]);
+        let mut data = store.inner.lock().unwrap().data.clone();
+        data.tasks.get_mut(&current.id).unwrap().status = TaskStatus::Completed;
+        data.runs.get_mut(&run.id).unwrap().status = RunStatus::Failed;
+        // More messages than retention keeps: a label correction must keep all.
+        for n in 0..8 {
+            let id = format!("m{n}");
+            data.messages.insert(
+                id.clone(),
+                OrchestrationMessage {
+                    id,
+                    run_id: run.id.clone(),
+                    from_chat_key: "chat:master".into(),
+                    to_chat_key: "chat:worker".into(),
+                    kind: "status".into(),
+                    subject: "s".into(),
+                    body: "b".into(),
+                    created_at: n,
+                    relay: None,
+                },
+            );
+        }
+        let mut expected = serde_json::to_value(&data).unwrap();
+        expected["runs"][&run.id]["status"] = json!(RunStatus::Completed);
+        assert!(correct_finished_run_statuses(&mut data));
+        assert_eq!(serde_json::to_value(&data).unwrap(), expected);
+        assert!(!correct_finished_run_statuses(&mut data));
+    }
+
+    #[test]
+    fn recompute_run_completion_survives_replaced_failure_withdrawal_and_reload() {
+        let root = crate::test_dir::TestDir::new("run-history");
+        let _profile = crate::profile::started_in(&root);
+        let file = root.join("orchestrations.json");
+        let store = OrchestrationStore::load(file.clone());
+        let (run, first) = pending_plan(&store);
+        let withdrawn = task(&store, &run, vec![]);
+        store
+            .revise_task(
+                "chat:master",
+                &withdrawn.id,
+                TaskRevision {
+                    withdraw: true,
+                    ..TaskRevision::default()
+                },
+            )
+            .unwrap();
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        finish_attempt(&store, start_task(&store, &first.id), WorkerOutcome::Failed);
+        let replacement = task(&store, &run, vec![]);
+        store
+            .supersede("chat:master", &first.id, &replacement.id)
+            .unwrap();
+        store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        finish_attempt(
+            &store,
+            start_task(&store, &replacement.id),
+            WorkerOutcome::Completed,
+        );
+        let before = store.snapshot(Some(&run.id)).unwrap();
+        assert_eq!(before.runs[0].status, RunStatus::Completed);
+        drop(store);
+        let restored = OrchestrationStore::load(file);
+        let after = restored.snapshot(Some(&run.id)).unwrap();
+        assert_eq!(after.runs[0].status, RunStatus::Completed);
+        let old = after.tasks.iter().find(|t| t.id == first.id).unwrap();
+        assert_eq!(old.status, TaskStatus::Failed);
+        assert_eq!(old.superseded_by.as_deref(), Some(replacement.id.as_str()));
+        assert_eq!(old.failure.as_ref().unwrap().awaits, Awaits::Nobody);
+        assert_eq!(
+            after
+                .tasks
+                .iter()
+                .find(|t| t.id == withdrawn.id)
+                .unwrap()
+                .status,
+            TaskStatus::Cancelled
+        );
     }
 
     /// Feedback 6b0870f9: only the coordinator replaces a blocked or failed

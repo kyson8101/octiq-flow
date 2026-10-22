@@ -12,7 +12,7 @@
 // `chat_queue_state` after a reload. Nothing here decides that a chat is done;
 // the tick arrives through the chat index like any other.
 import type { Message } from "./chat";
-import { locationOf, type TaskDelivery, type TaskWorkspace } from "./chatTask";
+import { integrationMergeLine, locationOf, type TaskDelivery, type TaskWorkspace } from "./chatTask";
 
 /** The wrap-up is an ordinary recorded user turn; this prefix is how the host
  *  marks it (`COMPLETION_TURN_PREFIX`). No person's turn id starts with it. */
@@ -113,6 +113,8 @@ const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? on
 function mergedFact(delivery?: TaskDelivery): string {
   if (!delivery) return "Unverified";
   if (delivery.onTarget) return `On ${delivery.target}`;
+  const integration = integrationMergeLine(delivery);
+  if (integration) return integration;
   if (delivery.mergedRemote || delivery.merged) return `Yes, in ${delivery.target}`;
   return `No, not in ${delivery.target}`;
 }
