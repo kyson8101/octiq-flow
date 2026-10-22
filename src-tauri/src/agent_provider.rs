@@ -591,25 +591,9 @@ impl AgentProvider for ClaudeProvider {
             cmd.push_str(&format!(
                 " --mcp-config {} --allowedTools {} --append-system-prompt {}",
                 sh_quote(&mcp.to_string_lossy()),
-                sh_quote(
-                    "mcp__octiq__ask_user mcp__octiq__task_status mcp__octiq__set_chat_title mcp__octiq__feedback_submit mcp__octiq__feedback_list mcp__octiq__feedback_get mcp__octiq__feedback_update mcp__octiq__search_conversations mcp__octiq__read_conversation \\
-                     mcp__octiq__preview_image mcp__octiq__preview_html mcp__octiq__island_propose mcp__octiq__island_look mcp__octiq__island_build mcp__octiq__island_grant \\
-                     mcp__octiq__orchestration_run_create mcp__octiq__orchestration_task_create \\
-                     mcp__octiq__orchestration_snapshot mcp__octiq__orchestration_worker_start \\
-                     mcp__octiq__orchestration_worker_report mcp__octiq__orchestration_gate_create \\
-                     mcp__octiq__orchestration_gate_resolve mcp__octiq__orchestration_message_send \\
-                     mcp__octiq__orchestration_run_stop mcp__octiq__orchestration_peer_ask \\
-                     mcp__octiq__orchestration_peer_request \\
-                     mcp__octiq__vault_info mcp__octiq__vault_list mcp__octiq__vault_search \\
-                     mcp__octiq__vault_read mcp__octiq__vault_write mcp__octiq__vault_patch \\
-                     mcp__octiq__vault_move mcp__octiq__vault_archive mcp__octiq__vault_receipt \\
-                     mcp__octiq__vault_agent_memory_read mcp__octiq__vault_agent_memory_append \\
-                     mcp__octiq__vault_agent_memory_lessons \\
-                     mcp__octiq__handover mcp__octiq__handover_ask mcp__octiq__handover_outcome \\
-                     mcp__octiq__agent_list mcp__octiq__agent_register mcp__octiq__agent_update \\
-                     mcp__octiq__agent_delete mcp__octiq__agent_policy_update \\
-                     mcp__octiq__team_create mcp__octiq__team_update mcp__octiq__request_access",
-                ),
+                sh_quote(&crate::permission::HOST_BOOKKEEPING.iter()
+                    .map(|tool| format!("mcp__octiq__{tool}"))
+                    .collect::<Vec<_>>().join(" ")),
                 sh_quote(&with_preferences(
                     &format!(
                         "{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{worker_prompt}"
@@ -2617,6 +2601,53 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    fn providers_share_exact_host_bookkeeping_rules_and_keep_work_gated() {
+        use std::collections::BTreeSet;
+        let expected: BTreeSet<_> = crate::permission::HOST_BOOKKEEPING
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(expected.len(), crate::permission::HOST_BOOKKEEPING.len());
+        let claude = command(AgentKind::Claude, Some(Path::new("octiq-ask.json")));
+        let actual: BTreeSet<_> = claude
+            .split(" --allowedTools '")
+            .nth(1)
+            .unwrap()
+            .split('\'')
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .map(|tool| tool.strip_prefix("mcp__octiq__").unwrap())
+            .collect();
+        assert_eq!(actual, expected);
+        for line in [
+            CODEX.build_command(&codex_request(false, &[])),
+            codex_exec_command(&codex_request(false, &[]), &CODEX),
+        ] {
+            let actual: BTreeSet<_> = line
+                .split("mcp_servers.octiq.tools.")
+                .skip(1)
+                .map(|part| part.split('.').next().unwrap())
+                .collect();
+            assert_eq!(actual, expected);
+        }
+        for tool in [
+            "orchestration_worker_start",
+            "orchestration_validation_create",
+            "orchestration_run_create",
+            "orchestration_task_create",
+            "orchestration_gate_resolve",
+            "orchestration_dispatch_ready",
+            "vault_write",
+        ] {
+            assert!(!expected.contains(tool), "{tool} must still ask");
+            assert!(!crate::permission::host_bookkeeping(&format!(
+                "mcp__octiq__{tool}"
+            )));
+        }
+    }
+
     /// A Claude launch allows OctiqFlow's own tools and nothing else, at
     /// every access level, worker or not. An allow rule for a shell line
     /// would outlive any "once": it covers every matching call the process
@@ -3120,9 +3151,14 @@ pub(crate) mod tests {
         for kind in [AgentKind::Claude, AgentKind::Codex, AgentKind::Pi] {
             let line = command(kind, Some(Path::new("/tmp/octiq-ask.json")));
             assert!(!line.contains(PLAN_PROMPT), "{line}");
-            if kind != AgentKind::Codex {
+            // Plan tools are host bookkeeping in the shared Claude/Codex
+            // allow list; their instructions still travel only through MCP.
+            if kind == AgentKind::Pi {
                 assert!(!line.contains("plan_update"), "{line}");
                 assert!(!line.contains("plan_read"), "{line}");
+            } else {
+                assert!(line.contains("plan_update"), "{line}");
+                assert!(line.contains("plan_read"), "{line}");
             }
         }
         let said = |app_server: bool, worker: bool| {
