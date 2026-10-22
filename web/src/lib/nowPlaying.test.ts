@@ -188,6 +188,13 @@ describe("now playing", () => {
     // The native error may be reset by the browser; the held failure is not.
     el.error = null;
     expect(store.errorOf(el)).toBe("Decode failed");
+    // Retry keeps this element; successful metadata clears the held failure
+    // so the mini-player's controls work when it next leaves the reply.
+    el.fire("loadedmetadata");
+    expect(store.errorOf(el)).toBeNull();
+    await el.play();
+    store.show(["B"]);
+    expect(store.snapshot()).toMatchObject({ paused: false, error: null });
   });
 
   it("paused PiP Back to tab opens its source chat when the tab regains focus", async () => {

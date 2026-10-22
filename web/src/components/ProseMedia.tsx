@@ -51,7 +51,11 @@ export function useNear<T extends Element>() {
  *  One that is playing goes on playing when the person goes to another chat
  *  (`lib/nowPlaying`). Coming back, it is drawn at once, near the screen or
  *  not: nothing new is fetched, it is the same element. */
-export function ProsePlayer({ path, kind }: { path: string; kind: "video" | "audio" }) {
+export function ProsePlayer(props: { path: string; kind: "video" | "audio" }) {
+  return <ProsePlayerForPath key={`${props.kind}:${props.path}`} {...props} />;
+}
+
+function ProsePlayerForPath({ path, kind }: { path: string; kind: "video" | "audio" }) {
   const [holder, near] = useNear<HTMLSpanElement>();
   const [failed, setFailed] = useState(false);
   const chat = useMediaChat();
@@ -61,7 +65,8 @@ export function ProsePlayer({ path, kind }: { path: string; kind: "video" | "aud
   // that then fell back to waiting would hand it straight out again.
   const kept = useRef(false);
   if (held) kept.current = true;
-  useEffect(() => setFailed(false), [path, kind]);
+  // Reset by path identity, not a mount effect: the slot's layout bind may
+  // already have reported an error carried back from the detached player.
   return (
     <span className={`prose-media is-${kind}`} ref={holder}>
       {failed && <span className="prose-media-error" role="status">
