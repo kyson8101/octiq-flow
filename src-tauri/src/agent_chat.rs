@@ -5399,6 +5399,46 @@ pub(crate) fn deliver_orchestration_notification(
     notification: &crate::orchestration::inbox::Notification,
     env: std::collections::BTreeMap<String, String>,
 ) -> Result<bool, String> {
+    deliver_orchestration_notification_with_start(
+        manager,
+        notification,
+        env,
+        |manager, key, start, text, id| {
+            start_session(
+                manager,
+                Voice::host(key),
+                start.cwd,
+                start.agent,
+                start.model,
+                start.access,
+                Some(text),
+                start.session_id,
+                start.extra_dirs,
+                start.env,
+                start.effort,
+                None,
+                start.lite,
+                Some(id),
+                false,
+                None,
+            )
+        },
+    )
+}
+
+fn deliver_orchestration_notification_with_start(
+    manager: Arc<ChatManager>,
+    notification: &crate::orchestration::inbox::Notification,
+    env: std::collections::BTreeMap<String, String>,
+    start_notification: impl FnOnce(
+        Arc<ChatManager>,
+        String,
+        StartContext,
+        String,
+        String,
+    ) -> Result<(), String>,
+) -> Result<bool, String> {
+    crate::profile::available()?;
     let key = &notification.target_chat_key;
     let text = format!("OctiqFlow notification {} for run {}.\n\n{}\n\nThis is a host notification, not a new user instruction. Re-read orchestration_snapshot before taking action; delivery can repeat after an interrupted receipt. Respect the person's latest instructions. If you are the coordinator, dispatch work asynchronously, then end your turn so the person can keep chatting; the host will notify you when something needs attention. If you are a worker, continue only your active assigned attempt and report when it settles.", notification.id, notification.run_id, notification.body);
     {
@@ -5442,7 +5482,6 @@ pub(crate) fn deliver_orchestration_notification(
             .ok_or("The target chat is unavailable.")?;
         if !saved.resumable()
             || saved.session_id != meta.session_id
-            || meta.cwd.as_deref() != Some(&saved.cwd)
             || meta.access.as_deref()
                 != saved
                     .access
@@ -5452,6 +5491,11 @@ pub(crate) fn deliver_orchestration_notification(
         {
             return Err("The chat's saved settings changed. Continue it in Chat before automatic notification delivery.".into());
         }
+        // The host saved the actual launch checkout. A browser can still
+        // hold the project's default cwd in its index row; that is not a
+        // change to the session's launch settings. Resume the host's exact
+        // checkout, never substitute the browser's folder. Session and
+        // Access must still match before unattended recovery.
         saved
     };
     // Even an in-memory start must not revive a chat that has been deleted.
@@ -5463,24 +5507,7 @@ pub(crate) fn deliver_orchestration_notification(
     }
     start.env = Some(env);
     manager.remember_start(key, start.clone());
-    start_session(
-        manager,
-        Voice::host(key.clone()),
-        start.cwd,
-        start.agent,
-        start.model,
-        start.access,
-        Some(text),
-        start.session_id,
-        start.extra_dirs,
-        start.env,
-        start.effort,
-        None,
-        start.lite,
-        Some(notification.id.clone()),
-        false,
-        None,
-    )?;
+    start_notification(manager, key.clone(), start, text, notification.id.clone())?;
     Ok(true)
 }
 
@@ -8725,6 +8752,118 @@ mod tests {
         assert_eq!(event["octiq_user_turn"], true);
         assert_eq!(event["message"]["content"][0]["text"], "look at this");
         assert_eq!(event["octiq_attachments"][0]["path"], "/tmp/screenshot.png");
+    }
+
+    #[test]
+    fn notification_wakes_an_idle_reaped_coordinator_with_its_saved_checkout() {
+        use crate::orchestration::tests::{run, running_worker};
+        let home = crate::test_dir::TestDir::new("notification-wake");
+        let _profile = crate::profile::started_in(&home);
+        let manager = Arc::new(ChatManager::default());
+        let store = &manager.orchestrations;
+        let run = run(store);
+        let worker = running_worker(store, &run);
+        let key = run.coordinator_chat_key.clone();
+        let mut start = StartContext::for_test(ChatAgent::Claude, Some("saved-session"));
+        start.cwd = home.join("saved-checkout").to_string_lossy().into_owned();
+        store.save_resume_context(&key, start.clone()).unwrap();
+        // Browser index held the project's default, while the host's launch
+        // settings held the actual worktree. Session and Access still match.
+        crate::chat_index::upsert(
+            serde_json::from_value(json!({
+                "id": "master", "projectId": "p1", "title": "coordinator",
+                "sessionId": "saved-session", "cwd": home.to_string_lossy(), "access": "read",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let session = claude_session(false);
+        hold(&manager, &key, session);
+        assert!(end_process_when(&manager, &key, Some(Duration::ZERO)).unwrap());
+        assert!(!manager.has_process(&key));
+        assert!(manager.notification_ready(&key));
+        store
+            .record_message(
+                &worker.worker_chat_key,
+                run.id.clone(),
+                "coordinator".into(),
+                "status".into(),
+                "Ready".into(),
+                "worker update".into(),
+            )
+            .unwrap();
+        let note = store.due_notifications(i64::MAX).unwrap().remove(0);
+        let mut launched = false;
+        assert_eq!(
+            deliver_orchestration_notification_with_start(
+                manager.clone(),
+                &note,
+                Default::default(),
+                |_, target, resumed, prompt, receipt| {
+                    launched = true;
+                    assert_eq!(target, key);
+                    assert_eq!(resumed.cwd, start.cwd);
+                    assert_eq!(resumed.session_id, start.session_id);
+                    assert_eq!(resumed.access, start.access);
+                    assert!(prompt.contains("worker update"));
+                    assert_eq!(receipt, note.id);
+                    Ok(())
+                }
+            ),
+            Ok(true)
+        );
+        assert!(launched);
+    }
+
+    #[test]
+    fn notification_to_a_live_coordinator_waits_for_its_profile_then_writes_one_turn() {
+        use crate::orchestration::tests::{run, running_worker};
+        use std::io::BufRead;
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _profile = crate::profile::started_in(&home.dir);
+        let manager = Arc::new(ChatManager::default());
+        let run = run(&manager.orchestrations);
+        let worker = running_worker(&manager.orchestrations, &run);
+        manager
+            .orchestrations
+            .record_message(
+                &worker.worker_chat_key,
+                run.id.clone(),
+                "coordinator".into(),
+                "status".into(),
+                "Ready".into(),
+                "live update".into(),
+            )
+            .unwrap();
+        let note = manager
+            .orchestrations
+            .due_notifications(i64::MAX)
+            .unwrap()
+            .remove(0);
+        let (session, mut written) = capturing_claude_session();
+        session.lock().unwrap().busy = false;
+        hold(&manager, &run.coordinator_chat_key, session.clone());
+        home.move_away();
+        assert!(
+            deliver_orchestration_notification(manager.clone(), &note, Default::default()).is_err()
+        );
+        assert!(!session.lock().unwrap().busy);
+        assert!(session.lock().unwrap().answering.is_none());
+        assert!(!home.profile().exists());
+        home.move_back();
+        assert!(manager.notification_ready(&run.coordinator_chat_key));
+        assert_eq!(
+            deliver_orchestration_notification(manager.clone(), &note, Default::default()),
+            Ok(true)
+        );
+        let mut line = String::new();
+        written.read_line(&mut line).unwrap();
+        assert!(line.contains("live update"));
+        assert_eq!(
+            session.lock().unwrap().answering.as_deref(),
+            Some(note.id.as_str())
+        );
+        end_process(&manager, &run.coordinator_chat_key).unwrap();
     }
 
     #[test]
