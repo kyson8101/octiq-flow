@@ -57,6 +57,7 @@ import { readTaskReopened, type TaskReopened } from "./taskReopened";
 import { answeredMessageId, QUESTION_ANSWERED, readQuestionAnswered, type QuestionAnswered } from "./question";
 import { taskLabel, type BackgroundTask } from "./background";
 import { outcomeOfResult, readOutcome, type ToolOutcome } from "./toolOutcome";
+import { noticeTurnId } from "./hostNotice";
 
 /** The one line a turn the CLIENT sent is drawn as, or `undefined` for one a
  *  person typed.
@@ -1567,8 +1568,6 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   }
 
   if (type === "user") {
-    // Host notification echoes are receipts, not messages typed by the person.
-    if (e.octiq_orchestration_notification_id) return state;
     const raw = asObj(e.message).content;
     // The echo of a typed slash command carries its content as one bare
     // string, where every other user message carries a list of blocks. Read
@@ -1580,6 +1579,20 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // arguments — so a subagent only ever contributes tool results here, and
     // the whole bubble path below is skipped.
     if (parent) return foldToolResults(state, content, e);
+
+    // Retain the boundary even on Claude's receipt echo. Otherwise its answer
+    // joins the person's previous reply after replay. The page folds this host
+    // transport independently and never offers the person's message actions.
+    const noticeId = noticeTurnId(e);
+    if (noticeId) {
+      if (state.messages.some((m) => m.turnId === noticeId)) return state;
+      const text = content.filter((c) => asStr(asObj(c).type) === "text")
+        .map((c) => asStr(asObj(c).text)).join("");
+      return { ...state, messages: [...state.messages, {
+        id: `u:${noticeId}`, turnId: noticeId, role: "user", streaming: false,
+        echo: asStr(e.uuid) || noticeId, blocks: [{ kind: "text", text }],
+      }] };
+    }
 
     // Codex's command-line protocol never writes the prompt back on stdout.
     // The backend records this canonical envelope alongside Codex's events so

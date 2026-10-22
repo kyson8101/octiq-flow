@@ -10,6 +10,7 @@ import { WRAP_UP_LABEL, isWrapUpTurn } from "../lib/chatComplete";
 import { PLAN_START_LABEL, isPlanStartTurn } from "../lib/planTurn";
 import { isJobTurn } from "../lib/jobs";
 import { isAnswerTurn } from "../lib/questionBlock";
+import { isNoticeTurn } from "../lib/hostNotice";
 
 import "./ConversationMap.css";
 
@@ -45,9 +46,10 @@ export function conversationMapTurns(turns: Message[][]): ConversationMapTurn[] 
   return turns.flatMap((turn, index) => {
     if (turn[0]?.role !== "user") return [];
     // Answers and job wake-ups are not messages the person sent.
-    if (isAnswerTurn(turn[0].turnId) || isJobTurn(turn[0].turnId)) return [];
+    if (isAnswerTurn(turn[0].turnId) || isJobTurn(turn[0].turnId) || isNoticeTurn(turn[0].turnId)) return [];
 
-    const answer = turns.slice(index + 1).find((next) => next[0]?.role === "assistant");
+    const next = turns[index + 1];
+    const answer = next?.[0]?.role === "assistant" ? next : undefined;
     return [
       {
         id: turn[0].id,
