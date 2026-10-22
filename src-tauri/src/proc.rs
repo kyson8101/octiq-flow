@@ -115,9 +115,11 @@ pub fn resolve_agent_shell(
         })
     };
 
-    // An explicit SHELL wins everywhere. This is the branch macOS has always
-    // taken, so nothing about this change can alter what it does there.
-    if let Some(shell) = shell_env.filter(|s| !s.trim().is_empty()) {
+    // Unix keeps its explicit login shell. On Windows SHELL can name an
+    // interactive PowerShell/cmd; only bash or sh can read this POSIX line.
+    if let Some(shell) =
+        shell_env.filter(|s| !s.trim().is_empty() && (!is_windows || is_posix_shell_name(s)))
+    {
         return found(shell);
     }
     if !is_windows {
@@ -167,6 +169,19 @@ pub fn resolve_agent_shell(
          Windows that means the bash shipped with Git for Windows. Install it \
          from https://git-scm.com/download/win, or set SHELL to a bash."
             .to_string(),
+    )
+}
+
+// Split both native separators even in macOS tests of Windows lookup. A
+// substring match would accept powershell.exe or a directory named bash.
+fn is_posix_shell_name(path: &str) -> bool {
+    matches!(
+        path.rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+        "bash" | "bash.exe" | "sh" | "sh.exe"
     )
 }
 
@@ -431,6 +446,50 @@ mod tests {
             assert_eq!(shell.program, "/bin/bash");
             assert_eq!(shell.args, vec!["-lc".to_string()]);
         }
+    }
+
+    #[test]
+    fn windows_ignores_non_posix_shell_env_and_finds_git_bash() {
+        for value in [
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+            r"C:\Windows\System32\cmd.exe",
+            "powershell.exe",
+            "pwsh.exe",
+            "cmd.exe",
+            r"C:\bash.exe\cmd.exe",
+        ] {
+            let shell = resolve_agent_shell(Some(value.into()), None, true, &|name| {
+                (name == "bash").then(|| r"C:\Program Files\Git\bin\bash.exe".into())
+            })
+            .unwrap();
+            assert_eq!(
+                shell.program, r"C:\Program Files\Git\bin\bash.exe",
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_accepts_only_posix_shell_file_names_from_shell_env() {
+        for value in [
+            r"C:\Program Files\Git\bin\bash.exe",
+            "bash.exe",
+            "SH.EXE",
+            "C:/Git/bin/sh",
+            "bash",
+            "sh",
+        ] {
+            let shell = resolve_agent_shell(Some(value.into()), None, true, &nothing).unwrap();
+            assert_eq!(shell.program, value);
+        }
+        assert!(resolve_agent_shell(Some("pwsh.exe".into()), None, true, &nothing).is_err());
+    }
+
+    #[test]
+    fn unix_keeps_its_explicit_shell_without_windows_name_restrictions() {
+        let shell = resolve_agent_shell(Some("/bin/fish".into()), None, false, &nothing).unwrap();
+        assert_eq!(shell.program, "/bin/fish");
     }
 
     #[test]
