@@ -311,14 +311,18 @@ mod tests {
             );
             for protected in [
                 common.clone(),
-                common.join("refs/heads/develop"),
-                common.join("refs/heads/main"),
-                common.join("logs/refs/heads/develop"),
+                common.join("refs").join("heads").join("develop"),
+                common.join("refs").join("heads").join("main"),
+                common
+                    .join("logs")
+                    .join("refs")
+                    .join("heads")
+                    .join("develop"),
                 common.join("packed-refs"),
-                common.join("hooks/x"),
+                common.join("hooks").join("x"),
                 common.join("config"),
                 admin.join("config.worktree"),
-                common.join("worktrees/other/index"),
+                common.join("worktrees").join("other").join("index"),
             ] {
                 assert!(
                     !roots.iter().any(|root| protected.starts_with(root)),
@@ -397,13 +401,12 @@ mod tests {
         let common = crate::paths::canonicalize(dir.join(".git")).unwrap();
         // objects/ and all existing own-admin grants remain available.
         assert_eq!(roots.len(), 9, "{roots:?}");
-        assert!(roots.contains(&common.join("objects").to_string_lossy().into_owned()));
-        assert!(roots.contains(
-            &common
-                .join("worktrees/linked/HEAD")
-                .to_string_lossy()
-                .into_owned()
-        ));
+        assert!(roots
+            .iter()
+            .any(|root| Path::new(root) == common.join("objects")));
+        assert!(roots.iter().any(|root| {
+            Path::new(root) == common.join("worktrees").join("linked").join("HEAD")
+        }));
         assert!(
             !roots.iter().any(|root| {
                 Path::new(root).starts_with(common.join("refs"))
@@ -456,7 +459,7 @@ mod tests {
             }));
         }
         std::fs::write(
-            common.join("worktrees/linked/HEAD"),
+            common.join("worktrees").join("linked").join("HEAD"),
             "ref: refs/heads/../main\n",
         )
         .unwrap();
@@ -478,13 +481,13 @@ mod tests {
         );
         let common = crate::paths::canonicalize(dir.join(".git")).unwrap();
         std::fs::rename(
-            common.join("worktrees/linked"),
-            common.join("worktrees/held"),
+            common.join("worktrees").join("linked"),
+            common.join("worktrees").join("held"),
         )
         .unwrap();
         std::os::unix::fs::symlink(
-            common.join("worktrees/other"),
-            common.join("worktrees/linked"),
+            common.join("worktrees").join("other"),
+            common.join("worktrees").join("linked"),
         )
         .unwrap();
         common
@@ -496,21 +499,21 @@ mod tests {
         let (dir, work) = fixture();
         let common = redirect_admin(&dir);
         assert!(commit_roots(&work, Some(Access::Auto)).is_empty());
-        std::fs::remove_file(common.join("worktrees/linked")).unwrap();
+        std::fs::remove_file(common.join("worktrees").join("linked")).unwrap();
         std::fs::rename(
-            common.join("worktrees/held"),
-            common.join("worktrees/linked"),
+            common.join("worktrees").join("held"),
+            common.join("worktrees").join("linked"),
         )
         .unwrap();
         std::fs::write(
-            common.join("worktrees/linked/gitdir"),
-            dir.join("other/.git").to_str().unwrap(),
+            common.join("worktrees").join("linked").join("gitdir"),
+            dir.join("other").join(".git").to_str().unwrap(),
         )
         .unwrap();
         assert!(commit_roots(&work, Some(Access::Edits)).is_empty());
         // A redirect one level above the admin must be refused too.
         std::fs::write(
-            common.join("worktrees/linked/gitdir"),
+            common.join("worktrees").join("linked").join("gitdir"),
             work.join(".git").to_str().unwrap(),
         )
         .unwrap();
@@ -526,21 +529,33 @@ mod tests {
         use std::os::unix::fs::symlink;
         let (dir, work) = fixture();
         let common = crate::paths::canonicalize(dir.join(".git")).unwrap();
-        let admin = common.join("worktrees/linked");
+        let admin = common.join("worktrees").join("linked");
         let outside = crate::test_dir::TestDir::new("codex-roots-outside");
         symlink(
             outside.join("lock"),
-            common.join("refs/heads/feature/x.lock"),
+            common
+                .join("refs")
+                .join("heads")
+                .join("feature")
+                .join("x.lock"),
         )
         .unwrap();
         std::fs::rename(
-            common.join("logs/refs/heads/feature"),
+            common
+                .join("logs")
+                .join("refs")
+                .join("heads")
+                .join("feature"),
             outside.join("feature"),
         )
         .unwrap();
         symlink(
             outside.join("feature"),
-            common.join("logs/refs/heads/feature"),
+            common
+                .join("logs")
+                .join("refs")
+                .join("heads")
+                .join("feature"),
         )
         .unwrap();
         symlink(outside.join("message"), admin.join("COMMIT_EDITMSG")).unwrap();
@@ -548,24 +563,35 @@ mod tests {
         crate::profile::make_dir(&admin.join("AUTO_MERGE.lock")).unwrap();
         let roots = commit_roots(&work, Some(Access::Auto));
         for refused in [
-            common.join("refs/heads/feature/x.lock"),
-            common.join("logs/refs/heads/feature/x"),
-            common.join("logs/refs/heads/feature/x.lock"),
+            common
+                .join("refs")
+                .join("heads")
+                .join("feature")
+                .join("x.lock"),
+            common
+                .join("logs")
+                .join("refs")
+                .join("heads")
+                .join("feature")
+                .join("x"),
+            common
+                .join("logs")
+                .join("refs")
+                .join("heads")
+                .join("feature")
+                .join("x.lock"),
             admin.join("COMMIT_EDITMSG"),
             admin.join("AUTO_MERGE.lock"),
         ] {
             assert!(
-                !roots.contains(&refused.to_string_lossy().into_owned()),
+                !roots.iter().any(|root| Path::new(root) == refused),
                 "{roots:?}"
             );
         }
         // Refusing a redirect must not discard the normal branch file itself.
-        assert!(roots.contains(
-            &common
-                .join("refs/heads/feature/x")
-                .to_string_lossy()
-                .into_owned()
-        ));
+        assert!(roots.iter().any(|root| {
+            Path::new(root) == common.join("refs").join("heads").join("feature").join("x")
+        }));
     }
 
     // Run explicitly on a machine with Codex and Node installed. No model
@@ -601,7 +627,10 @@ mod tests {
     fn real_codex_sandbox_refuses_redirected_admin() {
         let (dir, work) = fixture();
         let common = redirect_admin(&dir);
-        let target = common.join("worktrees/other/COMMIT_EDITMSG");
+        let target = common
+            .join("worktrees")
+            .join("other")
+            .join("COMMIT_EDITMSG");
         std::fs::write(&target, "protected\n").unwrap();
         let roots = commit_roots(&work, Some(Access::Auto));
         assert!(roots.is_empty());
@@ -648,8 +677,8 @@ console.log('PASS: real Codex sandbox refuses another worktree admin via symlink
         for branch in ["main", "master", "develop", "fixture", "trunk"] {
             git(&work, &["switch", "--ignore-other-worktrees", branch]);
             let targets = [
-                common.join("refs/heads").join(branch),
-                common.join("logs/refs/heads").join(branch),
+                common.join("refs").join("heads").join(branch),
+                common.join("logs").join("refs").join("heads").join(branch),
             ];
             let before: Vec<_> = targets
                 .iter()
@@ -701,16 +730,32 @@ console.log('PASS: protected branch ref/reflog and locks refused after HEAD swit
         git(&dir, &["branch", "feature/other"]);
         let common = crate::paths::canonicalize(dir.join(".git")).unwrap();
         let targets = [
-            common.join("refs/heads/develop"),
-            common.join("refs/heads/main"),
-            common.join("refs/heads/feature/other"),
-            common.join("logs/refs/heads/develop"),
-            common.join("logs/refs/heads/main"),
-            common.join("logs/refs/heads/feature/other"),
+            common.join("refs").join("heads").join("develop"),
+            common.join("refs").join("heads").join("main"),
+            common
+                .join("refs")
+                .join("heads")
+                .join("feature")
+                .join("other"),
+            common
+                .join("logs")
+                .join("refs")
+                .join("heads")
+                .join("develop"),
+            common.join("logs").join("refs").join("heads").join("main"),
+            common
+                .join("logs")
+                .join("refs")
+                .join("heads")
+                .join("feature")
+                .join("other"),
             common.join("packed-refs"),
-            common.join("hooks/x"),
+            common.join("hooks").join("x"),
             common.join("config"),
-            common.join("worktrees/linked/config.worktree"),
+            common
+                .join("worktrees")
+                .join("linked")
+                .join("config.worktree"),
         ];
         let before: Vec<_> = targets.iter().map(std::fs::read).collect();
         let probe = dir.join("probe.cjs");

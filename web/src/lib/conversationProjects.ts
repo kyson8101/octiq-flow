@@ -27,6 +27,8 @@ export type ConversationProjectInfo = {
   homeProjectId?: string;
 };
 
+export type ConversationProject = { id: string; name: string };
+
 /** Plain-language project context for row labels and non-visual consumers. */
 export function conversationProjectSummary(
   info: ConversationProjectInfo,
@@ -47,12 +49,12 @@ export function conversationProjectSummary(
  * The registered project a conversation row takes its colour from, or null
  * for a neutral row.
  *
- * An ordinary chat keeps its own project. A coordinator takes the project its
- * tasks work in, never the home it was started from: one destination colours
+ * An ordinary chat keeps its own project. A coordinator takes the projects
+ * resolved for its tasks: one destination colours
  * the row, several leave it neutral (each project badge carries its own
  * colour), and a ledger still loading, a discussion with no tasks yet,
- * destinations nobody recorded and a project since removed all stay neutral
- * rather than borrow one. Tasks with no recorded destination already show as
+ * projects nobody can identify and a project since removed all stay neutral
+ * rather than borrow one. Tasks with no confirmed project already show as
  * "+?" beside the badge, so they do not stop the one known destination from
  * colouring the row.
  */
@@ -70,15 +72,17 @@ export function conversationColorProjectId(
  * The projects a conversation is actually doing work in.
  *
  * A coordinator chat may live in General, but that is its conversation home,
- * not a work destination. Its projects therefore come only from task
- * destinations in the orchestration ledger, across every run (settled runs
- * included). A normal chat continues to belong to its indexed project.
+ * not necessarily a work destination. Use explicit task destinations across
+ * every run (settled runs included). A task without one runs in its run's own
+ * checkout: use that run's registered project, then the chat's if the run's
+ * project is unavailable. A normal chat keeps its indexed project.
  */
 export function conversationProjectInfo(
   chat: Pick<Conversation, "id" | "projectId">,
   snapshot: OrchestrationSnapshot | null,
   coordinatorChatKeys: ReadonlySet<string> | null,
   ledgerUnavailable = false,
+  projects: readonly ConversationProject[] = [],
 ): ConversationProjectInfo {
   const chatKey = `chat:${chat.id}`;
   if (!snapshot) {
@@ -118,25 +122,31 @@ export function conversationProjectInfo(
     };
   }
 
-  const runIds = new Set(runs.map((run) => run.id));
+  const runsById = new Map(runs.map((run) => [run.id, run]));
   const tasks = snapshot.tasks
-    .filter((task) => runIds.has(task.runId))
+    .filter((task) => runsById.has(task.runId))
     .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
   if (tasks.length === 0) {
     return { status: "discussion", destinations: [], taskCount: 0, unknownTaskCount: 0 };
   }
 
   const destinations = new Map<string, TaskDestination>();
+  const known = new Map(projects.map((project) => [project.id, project]));
   let unknownTaskCount = 0;
   for (const task of tasks) {
-    if (!task.destination) {
+    const run = runsById.get(task.runId)!;
+    const project = known.get(run.workspaceId) ?? known.get(chat.projectId);
+    const destination = task.destination ?? (project ? {
+      projectId: project.id, projectName: project.name, repository: run.rootPath,
+    } : undefined);
+    if (!destination) {
       unknownTaskCount += 1;
       continue;
     }
     // Tasks are newest first, so the first record also preserves the newest
     // stored name/repository when a project was renamed or moved later.
-    if (!destinations.has(task.destination.projectId)) {
-      destinations.set(task.destination.projectId, task.destination);
+    if (!destinations.has(destination.projectId)) {
+      destinations.set(destination.projectId, destination);
     }
   }
 
@@ -157,10 +167,11 @@ export function projectConversations(
   projectId: string,
   snapshot: OrchestrationSnapshot | null,
   coordinatorChatKeys: ReadonlySet<string> | null,
+  projects: readonly ConversationProject[] = [],
 ): Conversation[] {
   return chats
     .filter((chat) => {
-      const info = conversationProjectInfo(chat, snapshot, coordinatorChatKeys);
+      const info = conversationProjectInfo(chat, snapshot, coordinatorChatKeys, false, projects);
       if (info.status === "home") return info.homeProjectId === projectId;
       return info.destinations.some((destination) => destination.projectId === projectId);
     })
@@ -172,10 +183,11 @@ export function projectConversationCounts(
   chats: readonly Conversation[],
   snapshot: OrchestrationSnapshot | null,
   coordinatorChatKeys: ReadonlySet<string> | null,
+  projects: readonly ConversationProject[] = [],
 ): Map<string, number> {
   const counts = new Map<string, number>();
   for (const chat of chats) {
-    const info = conversationProjectInfo(chat, snapshot, coordinatorChatKeys);
+    const info = conversationProjectInfo(chat, snapshot, coordinatorChatKeys, false, projects);
     const projectIds = info.status === "home"
       ? (info.homeProjectId ? [info.homeProjectId] : [])
       : info.destinations.map((destination) => destination.projectId);

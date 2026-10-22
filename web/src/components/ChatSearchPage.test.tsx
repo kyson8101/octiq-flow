@@ -70,6 +70,21 @@ describe("ChatSearchPage", () => {
     expect(out).not.toContain(">General</span>");
   });
 
+  it("uses the known run project for destination-free tasks in search labels", () => {
+    const out = html({
+      conversations: [coordinator],
+      ledgerSnapshot: {
+        ...ledger, runs: [{ ...ledger.runs[0], workspaceId: "p1" }],
+        tasks: ledger.tasks.map((task) => ({ ...task, destination: undefined })),
+      },
+      coordinatorChatKeys: new Set(["chat:cto"]),
+    });
+    expect(out).toContain('aria-label="Roadmap, octiq-flow, 2 tasks"');
+    expect(out).toContain('aria-label="Work projects: octiq-flow, 2 tasks"');
+    expect(out).toContain('project-avatar-text">OF</span>');
+    expect(out).not.toContain("Project unknown");
+  });
+
   it("marks a coordinator result by its work project, not General", () => {
     const single: OrchestrationSnapshot = { ...ledger, tasks: ledger.tasks.slice(0, 1) };
     const withGeneral = [...projects, { id: "general", name: "General", initial: "G" }];

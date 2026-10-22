@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { OrchestrationRun, OrchestrationSnapshot, OrchestrationTask } from "./orchestration";
 import {
-  conversationColorProjectId, conversationProjectInfo, crossProjectChatKeys, projectConversationCounts,
+  conversationColorProjectId, conversationProjectInfo, conversationProjectSummary, crossProjectChatKeys, projectConversationCounts,
   projectConversations,
 } from "./conversationProjects";
 import type { Conversation } from "./store";
@@ -30,6 +30,64 @@ const snapshot = (runs: OrchestrationRun[], tasks: OrchestrationTask[]): Orchest
 });
 
 describe("conversationProjectInfo", () => {
+  const projects = [{ id: "alpha", name: "Current Alpha" }, { id: "beta", name: "Beta" }];
+
+  it("attributes tasks without destinations to their run's known project", () => {
+    const ledger = snapshot([{ ...run("one"), workspaceId: "alpha", rootPath: "/work/alpha" }],
+      [task("first", "one"), task("second", "one")]);
+    const info = conversationProjectInfo(chat("cto", "beta"), ledger, new Set(), false, projects);
+    expect(info).toEqual({
+      status: "projects",
+      destinations: [{ projectId: "alpha", projectName: "Current Alpha", repository: "/work/alpha" }],
+      taskCount: 2,
+      unknownTaskCount: 0,
+    });
+    expect(conversationColorProjectId(info, (id) => projects.some((project) => project.id === id))).toBe("alpha");
+    expect(conversationProjectSummary(info, (id) => projects.find((project) => project.id === id)!.name))
+      .toBe("Current Alpha, 2 tasks");
+  });
+
+  it("combines the run project and a cross-project destination without double counting", () => {
+    const ledger = snapshot([{ ...run("one"), workspaceId: "alpha", rootPath: "/work/alpha" }],
+      [task("first", "one"), task("second", "one"), task("cross", "one", "beta", 2)]);
+    const info = conversationProjectInfo(chat("cto"), ledger, new Set(), false, projects);
+    expect(info).toEqual({
+      status: "projects",
+      destinations: [
+        { projectId: "beta", projectName: "BETA", repository: "/work/beta" },
+        { projectId: "alpha", projectName: "Current Alpha", repository: "/work/alpha" },
+      ],
+      taskCount: 3,
+      unknownTaskCount: 0,
+    });
+    expect(conversationColorProjectId(info, () => true)).toBeNull();
+    expect(Object.fromEntries(projectConversationCounts([chat("cto")], ledger, new Set(), projects)))
+      .toEqual({ beta: 1, alpha: 1 });
+    expect(projectConversations([chat("cto")], "alpha", ledger, new Set(), projects).map((item) => item.id))
+      .toEqual(["cto"]);
+  });
+
+  it.each(["", "removed"])("uses the chat's known project when the run project is %j", (workspaceId) => {
+    const ledger = snapshot([{ ...run("one"), workspaceId }], [task("local", "one")]);
+    expect(conversationProjectInfo(chat("cto", "alpha"), ledger, new Set(), false, projects)).toMatchObject({
+      status: "projects", destinations: [{ projectId: "alpha", projectName: "Current Alpha" }],
+      taskCount: 1, unknownTaskCount: 0,
+    });
+  });
+
+  it("resolves each run separately and counts only tasks with no known project as unknown", () => {
+    const ledger = snapshot(
+      [{ ...run("one"), workspaceId: "alpha" }, { ...run("two"), workspaceId: "removed" }],
+      [task("local", "one"), task("unknown", "two"), task("also-unknown", "two")],
+    );
+    expect(conversationProjectInfo(chat("cto"), ledger, new Set(), false, projects)).toMatchObject({
+      status: "projects", destinations: [{ projectId: "alpha" }], taskCount: 3, unknownTaskCount: 2,
+    });
+    const unknown = conversationProjectInfo(chat("cto"), ledger, new Set(), false, [{ id: "other", name: "Other" }]);
+    expect(unknown).toEqual({ status: "unknown", destinations: [], taskCount: 3, unknownTaskCount: 3 });
+    expect(conversationProjectSummary(unknown, () => "Unused")).toBe("work project unknown");
+  });
+
   it("collects unique task destinations across every run, including completed work", () => {
     const ledger = snapshot(
       [run("older", "cto", 1), run("newer", "cto", 2), run("other", "someone-else", 3)],

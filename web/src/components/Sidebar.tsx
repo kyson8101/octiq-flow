@@ -283,7 +283,7 @@ export function Sidebar({
     const unread = isUnread(chat, currentConversation);
     const done = isChatDone(chat);
     const project = projectById.get(chat.projectId);
-    const projectInfo = conversationProjectInfo(chat, projectLedger, coordinatorChatKeys, ledgerUnavailable);
+    const projectInfo = conversationProjectInfo(chat, projectLedger, coordinatorChatKeys, ledgerUnavailable, knownProjects);
     const projectSummary = conversationProjectSummary(
       projectInfo,
       (id, fallback) => projectById.get(id)?.name ?? fallback ?? "Unknown project",
