@@ -1013,7 +1013,10 @@ impl OrchestrationStore {
                     attempt.effort.clone()
                 },
                 access: attempt.access,
-                new_worktree: Some(false),
+                // Recovery keeps the persisted or approved allocation. The
+                // legacy false flag asks for Direct before a workspace was
+                // saved, and would contradict an approved Worktree/Mission.
+                new_worktree: None,
                 base_branch: String::new(),
             };
             if let Err(error) = self.start_worker_for(
