@@ -3916,6 +3916,7 @@ pub(crate) fn start_session(
         && !front_desk
         && transport == crate::agent_provider::InputTransport::CommandLine
     {
+        crate::git_ops::prepare_codex_branch_parents(std::path::Path::new(&cwd), access);
         crate::codex_git::commit_roots(std::path::Path::new(&cwd), access)
     } else {
         Vec::new()
