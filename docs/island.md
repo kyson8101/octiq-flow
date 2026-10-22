@@ -26,6 +26,10 @@ carry umbrellas; sleeping robots fold them. Lead agents (registered roots or
 managers with direct reports) have a soft gold aura. Reduced motion stops aura
 pulsing and rainfall movement.
 
+After dark, warm light pools illuminate roofless building interiors, the plaza
+and paths by the plot signs and dock. Lights and brighter glow parts fade with
+the same dusk/dawn value as the sky; reduced motion keeps the lights steady.
+
 Autonomous building is procedural island simulation, not an agent model call.
 At the selected building pace (Often: 2h, Sometimes: 8h, Rarely: 24h, Never:
 off), the host may add or restyle one small roofless pavilion on a free agent's

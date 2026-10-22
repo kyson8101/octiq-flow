@@ -125,6 +125,11 @@ export function finishMaterials(): Record<Finish, Material> {
   };
 }
 
+/** One multiplier for all agent-built glow parts; noon keeps their original colour. */
+export function setFinishNight(night: number) {
+  (finishMaterials().glow as MeshBasicMaterial).color.setScalar(1 + Math.max(0, Math.min(1, night)) * 1.6);
+}
+
 /** One part, baked: the unit shape scaled, turned and moved, with its colour
  *  in every vertex. */
 function bakedPart(part: Part): BufferGeometry {
