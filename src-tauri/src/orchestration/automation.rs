@@ -1,6 +1,7 @@
 //! Opt-in host scheduling of the ready wave. Planning can come from an agent,
 //! a static workflow, or API calls; dispatch does not depend on an LLM turn.
 use super::*;
+use serde_json::Value;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +62,112 @@ impl WorkerSettings {
         }
         Ok(self)
     }
+}
+
+/// Validate a lead's choice at assignment time, never while loading a ledger
+/// or starting a task whose approval already fixed its worker settings.
+pub(crate) fn validate_effort(agent: ChatAgent, model: &str, effort: &str) -> Result<(), String> {
+    let cache = if agent == ChatAgent::Codex {
+        let home = std::env::var_os("CODEX_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| crate::paths::home_dir().map(|home| home.join(".codex")));
+        home.and_then(|home| std::fs::read(home.join("models_cache.json")).ok())
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    } else {
+        None
+    };
+    validate_effort_with_cache(agent, model, effort, cache.as_ref())
+}
+
+fn validate_effort_with_cache(
+    agent: ChatAgent,
+    model: &str,
+    effort: &str,
+    cache: Option<&Value>,
+) -> Result<(), String> {
+    let valid = if agent == ChatAgent::Antigravity {
+        // The Gemini id is authoritative; this value is bookkeeping only
+        // and the adapter never emits a conflicting --effort flag.
+        let lower = model.to_ascii_lowercase();
+        lower
+            .starts_with("gemini-")
+            .then(|| lower.rsplit('-').next().unwrap())
+            .filter(|value| matches!(*value, "low" | "medium" | "high" | "xhigh" | "max"))
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default()
+    } else {
+        let cached = if agent == ChatAgent::Codex {
+            cache.and_then(|cache| codex_efforts(cache, model))
+        } else {
+            None
+        };
+        cached.unwrap_or_else(|| {
+            [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra",
+                "ultracode",
+            ]
+            .into_iter()
+            .filter(|value| {
+                crate::agent_provider::provider_for(agent)
+                    .effort(value)
+                    .is_some()
+            })
+            .map(str::to_string)
+            .collect()
+        })
+    };
+    // A cache cannot make the adapter forward a native value it does not
+    // understand (or an arbitrary string). Keep the two capability sets in
+    // agreement, including on a cache written by a newer CLI.
+    let valid: Vec<_> = valid
+        .into_iter()
+        .filter(|value| {
+            crate::agent_provider::provider_for(agent)
+                .effort(value)
+                .is_some()
+        })
+        .collect();
+    if valid.iter().any(|value| value == effort) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Effort `{effort}` is not valid for {model}. Valid efforts: {}.{}",
+            if valid.is_empty() {
+                "no separate effort (omit effort)".into()
+            } else {
+                valid.join(", ")
+            },
+            if agent == ChatAgent::Antigravity {
+                " Antigravity fixes effort in its model; match that value or omit effort."
+            } else {
+                ""
+            }
+        ))
+    }
+}
+
+fn codex_efforts(cache: &Value, model: &str) -> Option<Vec<String>> {
+    let entry = cache
+        .get("models")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("slug").and_then(Value::as_str) == Some(model))?;
+    Some(
+        entry
+            .get("supported_reasoning_levels")?
+            .as_array()?
+            .iter()
+            .filter_map(|level| level.get("effort").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 impl WorkerDefaults {
@@ -353,6 +460,55 @@ pub fn start_scheduler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chosen_effort_uses_codex_model_cache_and_provider_vocabularies() {
+        let cache = json!({"models":[
+            {"slug":"gpt-limited", "supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]},
+            {"slug":"gpt-current", "supported_reasoning_levels":[{"effort":"ultra"}]}
+        ]});
+        for effort in ["low", "high"] {
+            validate_effort_with_cache(ChatAgent::Codex, "gpt-limited", effort, Some(&cache))
+                .unwrap();
+        }
+        let refused =
+            validate_effort_with_cache(ChatAgent::Codex, "gpt-limited", "max", Some(&cache))
+                .unwrap_err();
+        assert!(refused.contains("Valid efforts: low, high."), "{refused}");
+        validate_effort_with_cache(ChatAgent::Codex, "gpt-current", "ultra", Some(&cache)).unwrap();
+        assert_eq!(
+            crate::agent_provider::provider_for(ChatAgent::Codex).effort("ultra"),
+            Some("ultra")
+        );
+        for effort in ["low", "medium", "high", "xhigh", "max", "ultracode"] {
+            validate_effort_with_cache(ChatAgent::Claude, "opus", effort, None).unwrap();
+        }
+        assert!(validate_effort_with_cache(ChatAgent::Claude, "sonnet", "minimal", None).is_err());
+        validate_effort_with_cache(
+            ChatAgent::Antigravity,
+            "gemini-3.8-flash-high",
+            "high",
+            None,
+        )
+        .unwrap();
+        for model in ["gemini-3.8-flash", "claude-sonnet-4-6"] {
+            assert!(
+                validate_effort_with_cache(ChatAgent::Antigravity, model, "high", None)
+                    .unwrap_err()
+                    .contains("omit")
+            );
+        }
+        // Existing selections/approvals are not revalidated on load/start.
+        WorkerSettings {
+            agent: ChatAgent::Codex,
+            access: Access::Read,
+            model: Some("gpt-limited".into()),
+            effort: Some("legacy".into()),
+            recovery: None,
+        }
+        .normalized()
+        .unwrap();
+    }
 
     fn automatic() -> WorkerDefaults {
         serde_json::from_value(json!({ "access": "auto" })).unwrap()

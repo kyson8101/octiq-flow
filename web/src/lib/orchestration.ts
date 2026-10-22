@@ -156,6 +156,8 @@ export type TaskDestination = {
 };
 
 export type OrchestrationTask = {
+  /** The lead explicitly chose effort; retained across reassignment. */
+  effortChosen?: boolean;
   id: string;
   runId: string;
   title: string;

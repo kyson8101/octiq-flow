@@ -54,6 +54,17 @@ const KINDS = [
   ["a front desk", { OCTIQ_FRONT_DESK: "1" }, []],
 ];
 
+test("assigned task tools expose effort independently of registered identity", async () => {
+  const { tools } = await ask("tools/list");
+  for (const name of ["orchestration_task_create", "orchestration_task_revise", "orchestration_task_reassign"]) {
+    const tool = tools.find(tool => tool.name === name);
+    assert.ok(tool, name);
+    assert.equal(tool.inputSchema.properties.effort.type, "string");
+    assert.equal(tool.inputSchema.properties.worker.properties.effort.type, "string");
+    assert.ok(!tool.inputSchema.properties.worker.required?.includes("agent"), "assigned worker.effort needs no identity fields");
+  }
+});
+
 test("every kind of chat gets instructions Claude Code keeps whole", async () => {
   for (const [kind, env, flags] of KINDS) {
     const said = await instructions(env, flags);

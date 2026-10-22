@@ -73,6 +73,131 @@ fn task_now(store: &OrchestrationStore, id: &str) -> Task {
         .unwrap()
 }
 
+#[test]
+fn approved_worker_effort_cannot_be_changed_by_revise_or_by_mutating_the_task() {
+    let store = OrchestrationStore::default();
+    let (run, task) = approved(
+        &store,
+        Some(automation::WorkerSettings {
+            effort: Some("low".into()),
+            ..settings(Access::Manual)
+        }),
+    );
+    let changed = automation::WorkerSettings {
+        effort: Some("high".into()),
+        ..settings(Access::Manual)
+    };
+    assert!(store
+        .revise_task(
+            "chat:master",
+            &task.id,
+            TaskRevision {
+                route: Some((Some(changed.clone()), task.assignee.clone(), None)),
+                ..Default::default()
+            }
+        )
+        .is_err());
+    store
+        .mutate(|data| {
+            let task = data.tasks.get_mut(&task.id).unwrap();
+            task.effort_chosen = true;
+            task.worker = Some(changed);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        task_now(&store, &task.id).lead_effort().as_deref(),
+        Some("low")
+    );
+    assert_eq!(
+        task_now(&store, &task.id)
+            .approved
+            .unwrap()
+            .worker
+            .unwrap()
+            .effort
+            .as_deref(),
+        Some("low")
+    );
+    for by in [StartedBy::Coordinator, StartedBy::Page { retry_of: None }] {
+        let refused = store
+            .reserve_attempt_for(
+                "chat:master",
+                &WorkerLaunch {
+                    effort: Some("high".into()),
+                    ..host_launch(&store, &task.id)
+                },
+                by,
+            )
+            .unwrap_err();
+        assert!(refused.contains("high effort instead of low"), "{refused}");
+    }
+    assert!(attempts_of(&store, &task.id).is_empty());
+    assert_eq!(plan_of(&store, &run.id).status, PlanStatus::Approved);
+}
+
+#[test]
+fn rejecting_effort_on_reassignment_restores_its_worker_and_input_provenance() {
+    for originally_chosen in [false, true] {
+        let store = OrchestrationStore::default();
+        let (_, initial) = approved(
+            &store,
+            Some(automation::WorkerSettings {
+                effort: Some("high".into()),
+                ..settings(Access::Manual)
+            }),
+        );
+        store
+            .mutate(|data| {
+                data.tasks.get_mut(&initial.id).unwrap().effort_chosen = originally_chosen;
+                Ok(())
+            })
+            .unwrap();
+        let before = task_now(&store, &initial.id);
+        let moved = store
+            .reassign_task_with_effort(
+                "chat:master",
+                &before.id,
+                (
+                    Some(automation::WorkerSettings {
+                        effort: Some("low".into()),
+                        ..settings(Access::Manual)
+                    }),
+                    Some(TaskAssignee {
+                        id: "backup".into(),
+                        name: "Backup".into(),
+                    }),
+                    None,
+                ),
+                "Backup takeover".into(),
+                Some(true),
+            )
+            .unwrap();
+        assert!(moved.approved.is_none() && moved.effort_chosen);
+        let plan = plan_of(&store, &before.run_id);
+        assert_eq!(plan.status, PlanStatus::Pending);
+        assert!(held(&store, &before.run_id).contains(&before.id));
+        store
+            .reject_plan_from_card(
+                "chat:master",
+                &before.run_id,
+                Some(&[before.id.clone()]),
+                Some(plan.revision),
+                None,
+                CardView {
+                    surface: "chat".into(),
+                    shown_ms: Some(2_000),
+                    updated_ms: None,
+                },
+            )
+            .unwrap();
+        let restored = task_now(&store, &before.id);
+        assert_eq!(restored.worker, before.worker);
+        assert_eq!(restored.effort_chosen, originally_chosen);
+        assert_eq!(restored.approved, before.approved);
+    }
+}
+
 fn attempts_of(store: &OrchestrationStore, task_id: &str) -> Vec<Attempt> {
     let mut attempts: Vec<Attempt> = store
         .snapshot(None)
