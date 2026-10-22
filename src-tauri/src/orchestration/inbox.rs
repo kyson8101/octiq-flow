@@ -376,6 +376,63 @@ impl OrchestrationStore {
             Ok(())
         })
     }
+    /// Choose only a recorded coordinator location, never a worker checkout
+    /// leaked into start settings by a rejected duplicate browser launch.
+    pub(crate) fn notification_resume_cwd(
+        &self,
+        key: &str,
+        run_id: &str,
+        saved: &str,
+        indexed: Option<&str>,
+    ) -> Result<String, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        let path = |value: &str| {
+            crate::paths::canonical_target(Path::new(value)).unwrap_or_else(|| PathBuf::from(value))
+        };
+        let coordinator = inner
+            .data
+            .runs
+            .get(run_id)
+            .is_some_and(|run| run.coordinator_chat_key == key);
+        if !coordinator {
+            if indexed.is_some_and(|value| path(value) != path(saved)) {
+                return Err("The worker's saved checkout changed.".into());
+            }
+            return Ok(saved.to_string());
+        }
+        let mut cwd = saved.to_string();
+        if let Some(indexed) = indexed.filter(|value| path(value) != path(saved)) {
+            let root = inner.data.runs.get(run_id)
+                .filter(|run| run.coordinator_chat_key == key && path(&run.root_path) == path(indexed))
+                .ok_or("The chat's checkout changed. Continue it in Chat before automatic notification delivery.")?;
+            cwd = root.root_path.clone();
+        }
+        let chosen = path(&cwd);
+        if inner
+            .data
+            .tasks
+            .values()
+            .filter_map(|task| task.workspace.as_ref())
+            .any(|ws| {
+                ws.plan.is_managed_worktree()
+                    && !ws.plan.checkout_root.trim().is_empty()
+                    && (ws.lease_attempt_id.is_some()
+                        || matches!(
+                            ws.state,
+                            workspaces::WorkspaceState::Preparing
+                                | workspaces::WorkspaceState::Cleaning
+                        ))
+                    && chosen.starts_with(path(&ws.plan.checkout_root))
+            })
+        {
+            return Err("A worker holds the saved checkout. Continue the coordinator in its own checkout before automatic notification delivery.".into());
+        }
+        Ok(cwd)
+    }
+
     pub(crate) fn saved_resume_context(
         &self,
         key: &str,
@@ -686,6 +743,51 @@ mod tests {
             )
             .unwrap();
     }
+    #[test]
+    fn coordinator_wake_avoids_a_workers_leased_worktree_and_unvouched_index_paths() {
+        let home = crate::test_dir::TestDir::new("notification-lease");
+        let _profile = crate::profile::started_in(&home);
+        let store = OrchestrationStore::default();
+        let root = home.join("coordinator").to_string_lossy().into_owned();
+        let leased = home.join("worker").to_string_lossy().into_owned();
+        let run = store
+            .create_run(
+                "chat:master".into(),
+                "test".into(),
+                "workspace".into(),
+                root.clone(),
+                Some(2),
+            )
+            .unwrap();
+        let worker = running_worker(&store, &run);
+        store.mutate(|data| {
+            data.tasks.get_mut(&worker.task_id).unwrap().workspace = Some(serde_json::from_value(json!({
+                "plan": {"mode":"worktree", "cwd":leased, "checkoutRoot":leased,
+                    "repositoryRoot": root, "branch":"feature/worker", "baseBranch":"develop",
+                    "baseSha":"abc", "managed":true, "isRepo":true, "warnings":[], "initialStatus":""},
+                "state":"ready", "leaseAttemptId":worker.id, "delivery":null,
+            })).unwrap());
+            Ok(())
+        }).unwrap();
+        assert_eq!(
+            store.notification_resume_cwd(&run.coordinator_chat_key, &run.id, &leased, Some(&root)),
+            Ok(root.clone())
+        );
+        assert!(store
+            .notification_resume_cwd(&run.coordinator_chat_key, &run.id, &leased, Some(&leased))
+            .unwrap_err()
+            .contains("worker holds"));
+        assert_eq!(
+            store.notification_resume_cwd(&worker.worker_chat_key, &run.id, &leased, Some(&leased)),
+            Ok(leased.clone()),
+            "a worker keeps its own checkout"
+        );
+        let stranger = home.join("unvouched").to_string_lossy().into_owned();
+        assert!(store
+            .notification_resume_cwd(&run.coordinator_chat_key, &run.id, &leased, Some(&stranger))
+            .is_err());
+    }
+
     #[test]
     fn settled_worker_updates_are_cancelled_but_requests_and_reports_survive() {
         let store = OrchestrationStore::default();

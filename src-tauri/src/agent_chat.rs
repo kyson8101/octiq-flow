@@ -1794,6 +1794,13 @@ impl ChatManager {
     /// would then be rebuilt. The claiming thread's own start goes through,
     /// because `chat_start` runs on one thread from the claim to the spawn.
     pub(crate) fn claim_start(&self, key: &str) -> Result<StartClaim<'_>, String> {
+        self.hold_start(key)?
+            .ok_or_else(|| format!("chat '{key}' is already running"))
+    }
+
+    /// Borrow this thread's recovery claim, or reserve a fresh launch. Even
+    /// a refused duplicate browser start must not rewrite resume settings.
+    fn hold_start(&self, key: &str) -> Result<Option<StartClaim<'_>>, String> {
         let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         let replacing = self
             .handoffs
@@ -1801,14 +1808,22 @@ impl ChatManager {
             .map_err(|e| e.to_string())?
             .contains(key);
         let mut claims = self.start_claims.lock().map_err(|e| e.to_string())?;
-        if sessions.contains_key(key) || replacing || claims.contains_key(key) {
+        if sessions.contains_key(key)
+            || replacing
+            || claims
+                .get(key)
+                .is_some_and(|owner| *owner != thread::current().id())
+        {
             return Err(format!("chat '{key}' is already running"));
         }
+        if claims.contains_key(key) {
+            return Ok(None);
+        }
         claims.insert(key.to_string(), thread::current().id());
-        Ok(StartClaim {
+        Ok(Some(StartClaim {
             manager: self,
             key: key.to_string(),
-        })
+        }))
     }
 
     /// Whether another thread holds this chat for its own start.
@@ -3055,6 +3070,7 @@ fn chat_start_with_user_turn(
     lite: Option<bool>,
     user_turn_id: Option<String>,
 ) -> Result<(), String> {
+    let _claim = manager.hold_start(&key)?;
     let mut agent = agent;
     let mut model = model;
     let mut effort = effort;
@@ -5505,6 +5521,11 @@ fn deliver_orchestration_notification_with_start(
             return Ok(true);
         }
     }
+    let _claim = manager.hold_start(key)?;
+    let meta = crate::chat_index::list()
+        .into_iter()
+        .find(|m| format!("chat:{}", m.id) == *key)
+        .ok_or("The target chat is unavailable.")?;
     let mut start = if let Some(start) = manager.start_context(key) {
         start
     } else {
@@ -5512,10 +5533,6 @@ fn deliver_orchestration_notification_with_start(
             .orchestrations
             .saved_resume_context(key)
             .ok_or("Resume the main chat once to restore its provider settings.")?;
-        let meta = crate::chat_index::list()
-            .into_iter()
-            .find(|m| format!("chat:{}", m.id) == *key)
-            .ok_or("The target chat is unavailable.")?;
         if !saved.resumable()
             || saved.session_id != meta.session_id
             || meta.access.as_deref()
@@ -5527,23 +5544,20 @@ fn deliver_orchestration_notification_with_start(
         {
             return Err("The chat's saved settings changed. Continue it in Chat before automatic notification delivery.".into());
         }
-        // The host saved the actual launch checkout. A browser can still
-        // hold the project's default cwd in its index row; that is not a
-        // change to the session's launch settings. Resume the host's exact
-        // checkout, never substitute the browser's folder. Session and
-        // Access must still match before unattended recovery.
         saved
     };
-    // Even an in-memory start must not revive a chat that has been deleted.
-    if !crate::chat_index::list()
-        .iter()
-        .any(|m| format!("chat:{}", m.id) == *key)
-    {
-        return Err("The target chat is unavailable.".into());
-    }
+    // A rejected browser start used to poison the saved cwd while its real
+    // process kept running. Repair only to the coordinator's recorded run
+    // root when the index agrees, and never resume inside a worker's lease.
+    start.cwd = manager.orchestrations.notification_resume_cwd(
+        key,
+        &first.run_id,
+        &start.cwd,
+        meta.cwd.as_deref(),
+    )?;
     start.env = Some(env);
     manager.remember_start(key, start.clone());
-    start_notification(manager, key.clone(), start, text, receipt)?;
+    start_notification(manager.clone(), key.clone(), start, text, receipt)?;
     Ok(true)
 }
 
@@ -8791,20 +8805,70 @@ mod tests {
     }
 
     #[test]
-    fn notification_wakes_an_idle_reaped_coordinator_with_its_saved_checkout() {
-        use crate::orchestration::tests::{run, running_worker};
+    fn a_refused_duplicate_start_cannot_poison_a_coordinators_resume_checkout() {
+        use crate::orchestration::tests::run;
+        let home = crate::test_dir::TestDir::new("notification-drift");
+        let _profile = crate::profile::started_in(&home);
+        let manager = Arc::new(ChatManager::default());
+        let run = run(&manager.orchestrations);
+        let key = run.coordinator_chat_key.clone();
+        let original = StartContext::for_test(ChatAgent::Claude, Some("live-session"));
+        manager.remember_start(&key, original.clone());
+        hold(&manager, &key, claude_session(false));
+        let drifted = home.join("worker-checkout").to_string_lossy().into_owned();
+        let refused = chat_start_with_user_turn(
+            manager.clone(),
+            key.clone(),
+            drifted,
+            ChatAgent::Claude,
+            None,
+            Some(Access::Read),
+            Some("user turn".into()),
+            None,
+            Some("live-session".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(refused, Err(format!("chat '{key}' is already running")));
+        assert_eq!(manager.start_context(&key).unwrap().cwd, original.cwd);
+        assert_eq!(
+            manager
+                .orchestrations
+                .saved_resume_context(&key)
+                .unwrap()
+                .cwd,
+            original.cwd
+        );
+        end_process(&manager, &key).unwrap();
+    }
+
+    #[test]
+    fn notification_wakes_an_idle_reaped_coordinator_in_its_recorded_root() {
+        use crate::orchestration::tests::running_worker;
         let home = crate::test_dir::TestDir::new("notification-wake");
         let _profile = crate::profile::started_in(&home);
         let manager = Arc::new(ChatManager::default());
         let store = &manager.orchestrations;
-        let run = run(store);
+        let run = store
+            .create_run(
+                "chat:master".into(),
+                "test".into(),
+                "workspace".into(),
+                home.to_string_lossy().into_owned(),
+                Some(2),
+            )
+            .unwrap();
         let worker = running_worker(store, &run);
         let key = run.coordinator_chat_key.clone();
         let mut start = StartContext::for_test(ChatAgent::Claude, Some("saved-session"));
         start.cwd = home.join("saved-checkout").to_string_lossy().into_owned();
         store.save_resume_context(&key, start.clone()).unwrap();
-        // Browser index held the project's default, while the host's launch
-        // settings held the actual worktree. Session and Access still match.
+        // An old rejected start poisoned the host's cwd. The browser and
+        // the run still agree on the coordinator's original root.
         crate::chat_index::upsert(
             serde_json::from_value(json!({
                 "id": "master", "projectId": "p1", "title": "coordinator",
@@ -8838,7 +8902,7 @@ mod tests {
                 |_, target, resumed, prompt, receipt| {
                     launched = true;
                     assert_eq!(target, key);
-                    assert_eq!(resumed.cwd, start.cwd);
+                    assert_eq!(resumed.cwd, run.root_path);
                     assert_eq!(resumed.session_id, start.session_id);
                     assert_eq!(resumed.access, start.access);
                     assert!(prompt.contains("worker update"));
@@ -11710,6 +11774,10 @@ mod start_claim_tests {
         let manager = Arc::new(ChatManager::default());
         let key = "chat:claimed";
         let claim = manager.claim_start(key).expect("nothing runs there");
+        assert!(
+            manager.hold_start(key).unwrap().is_none(),
+            "recovery borrows its own claim"
+        );
         assert!(!manager.claimed_elsewhere(key), "the claimant's own start");
 
         let other = manager.clone();
