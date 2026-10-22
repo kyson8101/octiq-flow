@@ -94,6 +94,8 @@ pub(super) fn enqueue(
         }) {
             n.state = DeliveryState::Cancelled;
             n.updated_at = now;
+            n.last_error =
+                Some("Folded progress: a worker report or host state superseded it.".into());
         }
     }
     let id = format!("{RECEIPT_PREFIX}{}", compact_id());
@@ -123,6 +125,90 @@ pub(super) fn enqueue(
 /// the notice is false and is never delivered.
 pub(super) fn withdrawn_exact_grant(n: &Notification) -> bool {
     n.source.starts_with("exact-grant:") || n.source.starts_with("exact-grant-note:")
+}
+
+/// Only structured informational worker messages are foldable. In particular,
+/// do not infer a request's importance from words in its body: questions,
+/// escalations, decisions and reports retain their own durable identity.
+fn informational_attempt<'a>(
+    data: &'a Stored,
+    n: &Notification,
+) -> Option<(&'a Attempt, &'a OrchestrationMessage)> {
+    let run = data.runs.get(&n.run_id)?;
+    if n.target_chat_key != run.coordinator_chat_key {
+        return None;
+    }
+    let message = data.messages.get(n.source.strip_prefix("message:")?)?;
+    if !matches!(message.kind.as_str(), "status" | "progress") {
+        return None;
+    }
+    let attempt = data
+        .attempts
+        .values()
+        .filter(|a| {
+            a.run_id == n.run_id
+                && a.worker_chat_key == message.from_chat_key
+                && a.created_at <= message.created_at
+        })
+        .max_by_key(|a| (a.created_at, a.number))?;
+    Some((attempt, message))
+}
+
+fn stale_reason(data: &Stored, n: &Notification) -> Option<String> {
+    if let Some((attempt, message)) = informational_attempt(data, n) {
+        let task = data.tasks.get(&attempt.task_id)?;
+        if !matches!(
+            attempt.status,
+            AttemptStatus::Preparing | AttemptStatus::Running
+        ) || task.active_attempt_id.as_deref() != Some(&attempt.id)
+            || task.superseded_by.is_some()
+        {
+            return Some(format!(
+                "Folded worker update: attempt {} is no longer running the task.",
+                attempt.id
+            ));
+        }
+        if data.notifications.values().any(|other| {
+            other.id != n.id
+                && other.state != DeliveryState::Cancelled
+                && informational_attempt(data, other).is_some_and(|(a, m)| {
+                    a.id == attempt.id && (m.created_at, &m.id) > (message.created_at, &message.id)
+                })
+        }) {
+            return Some(format!(
+                "Folded worker update: a newer status exists for attempt {}.",
+                attempt.id
+            ));
+        }
+    }
+    // These sources identify the exact failed attempt. Do not use the
+    // sender's latest attempt: retries can reuse a conversation, and an old
+    // failure must never be attributed to the new work.
+    let failed_id = [
+        "execution-failed:",
+        "provider-retry:",
+        "recovery-failed:",
+        "recovery-held:",
+    ]
+    .into_iter()
+    .find_map(|prefix| n.source.strip_prefix(prefix))
+    .and_then(|tail| tail.split(':').next());
+    if let Some(attempt) = failed_id.and_then(|id| data.attempts.get(id)) {
+        if let Some(task) = data.tasks.get(&attempt.task_id) {
+            if task.superseded_by.is_some()
+                || data
+                    .attempts
+                    .values()
+                    .any(|a| a.task_id == task.id && a.number > attempt.number)
+            {
+                return Some(format!(
+                    "Folded failure notice: attempt {} was superseded by a newer attempt or task.",
+                    attempt.id
+                ));
+            }
+        }
+    }
+    None
 }
 
 fn valid(data: &Stored, n: &Notification) -> bool {
@@ -357,13 +443,15 @@ impl OrchestrationStore {
                 {
                     continue;
                 }
-                let still_valid = valid(data, &before);
+                let cancellation = stale_reason(data, &before).or_else(|| {
+                    (!valid(data, &before))
+                        .then(|| "Notification no longer applies to its run or recipient.".into())
+                });
                 let n = data.notifications.get_mut(id).unwrap();
-                if !still_valid {
+                if let Some(reason) = cancellation {
                     n.state = DeliveryState::Cancelled;
                     n.updated_at = now;
-                    n.last_error =
-                        Some("Notification no longer applies to its run or recipient.".into());
+                    n.last_error = Some(reason);
                     continue;
                 }
                 n.state = DeliveryState::Delivering;
@@ -598,6 +686,143 @@ mod tests {
             )
             .unwrap();
     }
+    #[test]
+    fn settled_worker_updates_are_cancelled_but_requests_and_reports_survive() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        for kind in [
+            "status",
+            "progress",
+            "question",
+            "escalation",
+            "instruction",
+        ] {
+            ping(&store, &run, &worker, kind, kind);
+        }
+        store
+            .report_worker(
+                &worker.worker_chat_key,
+                WorkerReport {
+                    attempt_id: worker.id.clone(),
+                    outcome: WorkerOutcome::Completed,
+                    summary: "done".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        let due = store.due_notifications(i64::MAX).unwrap();
+        let ids: Vec<_> = due.iter().map(|n| n.id.clone()).collect();
+        store.claim_notifications(&ids, i64::MAX - 60_000).unwrap();
+        let notes = store.snapshot(None).unwrap().notifications;
+        for n in notes {
+            if n.kind == "progress" || n.body.contains("message [status]") {
+                assert_eq!(n.state, DeliveryState::Cancelled);
+                assert!(n.last_error.is_some(), "{}", n.body);
+            } else {
+                assert_eq!(n.state, DeliveryState::Delivering, "{}", n.body);
+            }
+        }
+    }
+
+    #[test]
+    fn a_running_attempt_keeps_only_its_latest_structured_status() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        for body in ["old status", "latest status"] {
+            ping(&store, &run, &worker, "status", body);
+        }
+        // Give the two events a strict order independent of clock precision.
+        store
+            .mutate(|data| {
+                for message in data.messages.values_mut() {
+                    if message.body == "latest status" {
+                        message.created_at += 1;
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        let due = store.due_notifications(i64::MAX).unwrap();
+        let ids: Vec<_> = due.iter().map(|n| n.id.clone()).collect();
+        let claimed = store.claim_notifications(&ids, i64::MAX - 60_000).unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert!(claimed[0].body.contains("latest status"));
+        let old = store
+            .snapshot(None)
+            .unwrap()
+            .notifications
+            .into_iter()
+            .find(|n| n.body.contains("old status"))
+            .unwrap();
+        assert_eq!(old.state, DeliveryState::Cancelled);
+        assert!(old.last_error.unwrap().contains("newer status"));
+    }
+
+    #[test]
+    fn superseded_failure_notices_fold_without_losing_reports_or_decisions() {
+        for replacement in [false, true] {
+            let store = OrchestrationStore::default();
+            let run = run(&store);
+            let worker = running_worker(&store, &run);
+            store
+                .mutate(|data| {
+                    for (source, kind) in [
+                        (format!("execution-failed:{}", worker.id), "capacity"),
+                        (format!("recovery-failed:{}", worker.id), "provider"),
+                        (format!("report:{}", worker.id), "report"),
+                        (format!("native-decision:{}", worker.id), "native_decision"),
+                        (format!("decision:{}", worker.id), "decision"),
+                    ] {
+                        enqueue(
+                            data,
+                            &run.id,
+                            &worker.worker_chat_key,
+                            &run.coordinator_chat_key,
+                            source,
+                            kind,
+                            "act on this".into(),
+                        );
+                    }
+                    if replacement {
+                        data.tasks.get_mut(&worker.task_id).unwrap().superseded_by =
+                            Some("replacement-task".into());
+                    } else {
+                        let mut newer = worker.clone();
+                        newer.id = "new-attempt".into();
+                        newer.number += 1;
+                        data.tasks
+                            .get_mut(&worker.task_id)
+                            .unwrap()
+                            .active_attempt_id = Some(newer.id.clone());
+                        data.attempts.insert(newer.id.clone(), newer);
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            let ids: Vec<_> = store
+                .due_notifications(i64::MAX)
+                .unwrap()
+                .into_iter()
+                .map(|n| n.id)
+                .collect();
+            let kept = store.claim_notifications(&ids, i64::MAX - 60_000).unwrap();
+            assert_eq!(kept.len(), 3);
+            assert!(kept
+                .iter()
+                .all(|n| matches!(n.kind.as_str(), "report" | "native_decision" | "decision")));
+            assert!(store
+                .snapshot(None)
+                .unwrap()
+                .notifications
+                .iter()
+                .filter(|n| n.state == DeliveryState::Cancelled)
+                .all(|n| n.last_error.as_ref().unwrap().contains("superseded")));
+        }
+    }
+
     #[test]
     fn progress_coalesces_but_decisions_and_reports_remain_durable() {
         let store = OrchestrationStore::default();
