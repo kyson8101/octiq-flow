@@ -317,9 +317,6 @@ export function backgroundChip(job: Pick<Job, "done" | "total">): string {
  *  starts with it. */
 export const JOB_TURN_PREFIX = "octiq-job-";
 
-/** What the conversation map calls the wake turn. */
-export const JOB_TURN_LABEL = "Job ended";
-
 export function isJobTurn(turnId?: string | null): boolean {
   return typeof turnId === "string" && turnId.startsWith(JOB_TURN_PREFIX);
 }
@@ -387,7 +384,7 @@ export function wakeLine(said: unknown): WakeLine | null {
   return { id, label, status, exitCode };
 }
 
-/** What the wake turn's bubble says in place of the host's text: how the job
+/** What the wake turn's host line says in place of the host's text: how the job
  *  ended and which job. From the job the page holds; else from the turn's
  *  own first line (`wakeLine`), when it names this very turn's job; else
  *  `Job ended` alone. Nothing is read out of the host's prose. */
