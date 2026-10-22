@@ -8597,6 +8597,10 @@ pub(crate) mod tests {
 
     #[test]
     fn rejection_never_withdraws_terminal_active_or_history_bearing_tasks() {
+        // Snapshot failure routing reads the chat index. Keep another test's
+        // coordinator changes from changing that derived view mid-comparison.
+        let home = crate::test_dir::TestDir::new("rejection-keeps-tasks");
+        let _profile = crate::profile::started_in(&home);
         let store = OrchestrationStore::default();
         let (run, completed) = pending_plan(&store);
         let failed = task(&store, &run, Vec::new());
