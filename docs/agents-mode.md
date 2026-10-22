@@ -432,8 +432,9 @@ The destination is stored on the task and carried through the worker chat
 (which belongs to the destination project and gets its environment), the task
 workspace and lease, execution, retries and review. It is checked again before
 every worker start; a destination deleted since approval stops the task.
-Worker provider, model, effort and access still come from the assignee's
-registration.
+Worker provider, model and access come from the assignee's registration.
+Effort defaults to that registration; the lead may choose a task-specific
+`effort` above or below it, according to size and risk.
 
 ## Registered agents and the org chart
 
@@ -1127,8 +1128,26 @@ only from the active worker of the named parent, and only when the parent is
 top-level and has an assignee. A coordinator may put `parentTaskId` on a task
 of its own, and that makes it nothing but a task with a parent named on it: it
 is routed as the lead's direct report, waits on the plan card and is approved
-on its own. The assignee's provider, model, effort and
-access become the task's worker settings, so a lead cannot misquote a teammate.
+on its own. The assignee's provider, model and access become the task's worker
+settings. The lead may pass top-level `effort` on create, revise or reassign;
+otherwise the registered effort is the default. `worker.effort` is also accepted
+with an assignee, and must match top-level `effort` if both are given. Only
+`worker.recovery` is otherwise read; provider, model and access cannot be changed.
+The same choice is available when a manager splits its own task.
+
+The host validates a chosen effort against the registered provider/model
+(Codex uses its local `models_cache.json` when the model is listed). Antigravity
+accepts a chosen effort only when it matches the effort encoded in its Gemini
+model id; other models accept no separate effort. Choose effort by task
+size and risk. The plan card shows `worker.effort`, and approval fixes it with
+the worker settings. An approved task cannot be revised; a start with different
+effort is refused. Reassignment carries a lead's explicit choice to the new
+agent if valid, otherwise it refuses and asks for a new effort. An inherited
+registration default instead becomes the new agent's default. Reassignment to a
+different agent returns an approved task to the person's plan card, including when a new effort was supplied. Rejection restores the
+previous worker effort and the provenance of that choice. The stored optional
+`effortChosen` flag records explicit input, including a choice equal to the
+registration default; it is not a derived status.
 
 ## Plan approval
 

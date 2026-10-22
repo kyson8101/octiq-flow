@@ -270,6 +270,28 @@ mod tests {
         assert_eq!(next.access, Access::Manual);
     }
     #[test]
+    fn per_task_effort_survives_provider_failover_with_native_alias_mapping() {
+        for (chosen, expected) in [
+            ("low", "low"),
+            ("high", "high"),
+            ("xhigh", "xhigh"),
+            ("minimal", "low"),
+            ("ultra", "max"),
+            ("ultracode", "max"),
+        ] {
+            let source = Settings {
+                agent: AgentKind::Codex,
+                model: Some("gpt-5.6-sol".into()),
+                effort: Some(chosen.into()),
+                access: Access::Read,
+            };
+            let next = equivalent(&source, AgentKind::Claude).unwrap();
+            assert_eq!(next.effort.as_deref(), Some(expected));
+            assert_eq!(next.access, source.access);
+        }
+    }
+
+    #[test]
     fn maps_default_tiers_effort_and_access_without_escalation() {
         for (model, mapped) in [
             ("opus", "gpt-5.6-sol"),

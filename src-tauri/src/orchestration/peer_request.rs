@@ -913,6 +913,7 @@ impl OrchestrationStore {
             });
             let now = now_ms();
             let task = Task {
+                effort_chosen: false,
                 id: id.clone(),
                 run_id: run.id.clone(),
                 title: title.clone(),
