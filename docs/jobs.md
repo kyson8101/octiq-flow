@@ -374,3 +374,12 @@ The job "render · "final" cut" failed: exit code 1, after 2m 14s.
   A batch script that writes a progress file is.
 - On Windows the wrapper hands on no signal: a console's Ctrl-C reaches the
   command as it reaches the wrapper.
+
+### Spool invocation receipts
+
+New wrappers put their stable `invocationId` on every line. Within one launch,
+renaming, copying or recreating a valid start returns the original host job id;
+its progress/end cannot create a second job or wake. Older starts without that
+field are deduplicated by canonical start content (including wrapper pid).
+Receipts live only as long as that launch's secret; another launch cannot replay
+its records.

@@ -348,7 +348,14 @@ fn a_wrapper_that_died_without_an_end_is_interrupted_only_once_its_file_is_read(
     assert_eq!(jobs_of(&scene, &chat)[0]["status"], "done");
 
     let other = file_in(&dir);
-    append(&other, &start(&key));
+    append(
+        &other,
+        &line(
+            &key,
+            "start",
+            json!({"invocationId":"other", "wrapperPid":1}),
+        ),
+    );
     pass(&scene, true, true);
     let alive = Cell::new(false);
     scene
@@ -367,8 +374,15 @@ fn a_refused_start_is_answered_and_what_follows_it_says_nothing() {
     let scene = scene();
     let chat = chat();
     let (dir, key) = open(&scene, &chat);
-    for _ in 0..32 {
-        append(&file_in(&dir), &start(&key));
+    for n in 0..32 {
+        append(
+            &file_in(&dir),
+            &line(
+                &key,
+                "start",
+                json!({"invocationId": format!("job-{n}"), "wrapperPid": 1}),
+            ),
+        );
     }
     pass(&scene, true, true);
     assert_eq!(jobs_of(&scene, &chat).len(), 32);
@@ -746,7 +760,14 @@ fn a_refused_name_made_again_is_looked_at_again() {
         append(&other, &(start("wrong") + &"z".repeat(64) + "\n"));
         pass(&scene, true, true);
         std::fs::remove_file(&other).unwrap();
-        append(&other, &(real_start(&key) + &"\n".repeat(4096)));
+        append(
+            &other,
+            &(line(
+                &key,
+                "start",
+                json!({"invocationId":"other", "wrapperPid":123}),
+            ) + &"\n".repeat(4096)),
+        );
         pass(&scene, true, true);
         pass(&scene, true, true);
         assert_eq!(jobs_of(&scene, &chat).len(), 2);
@@ -872,4 +893,47 @@ fn an_answer_planted_as_a_link_is_replaced_not_written_through() {
         .is_symlink());
     let answer: Value = serde_json::from_str(&std::fs::read_to_string(&ack).unwrap()).unwrap();
     assert_eq!(answer["id"], jobs_of(&scene, &chat)[0]["id"]);
+}
+
+/// Feedback 9c959462: the filename is not a wrapper invocation identity.
+#[test]
+fn copying_or_recreating_a_spool_file_reuses_the_invocation_receipt() {
+    for explicit in [false, true] {
+        let scene = scene();
+        let chat = chat();
+        let (dir, key) = open(&scene, &chat);
+        let file = file_in(&dir);
+        let copy = file_in(&dir);
+        let record = if explicit {
+            line(
+                &key,
+                "start",
+                json!({"invocationId":"one", "wrapperPid":123, "wake":true}),
+            )
+        } else {
+            real_start(&key)
+        };
+        append(&file, &record);
+        pass(&scene, true, true);
+        std::fs::copy(&file, &copy).unwrap();
+        pass(&scene, true, true);
+        assert_eq!(jobs_of(&scene, &chat).len(), 1, "renamed replay");
+        let answer = |file: &Path| -> Value {
+            serde_json::from_str(&std::fs::read_to_string(file.with_extension("ack")).unwrap())
+                .unwrap()
+        };
+        assert_eq!(answer(&file), answer(&copy));
+        append(&file, &end(&key, 0));
+        append(&copy, &end(&key, 0));
+        pass(&scene, true, true);
+        assert_eq!(owed_wakes_of(&scene), 1);
+        append(&file_in(&dir), &(record + &end(&key, 0)));
+        pass(&scene, true, true);
+        assert_eq!(
+            jobs_of(&scene, &chat).len(),
+            1,
+            "replay after original removed"
+        );
+        assert_eq!(owed_wakes_of(&scene), 1);
+    }
 }
