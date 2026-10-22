@@ -337,7 +337,6 @@ directories, not these file roots. Native cards carry the actual provider.
 | chat transcripts | profile dir | `chat_index.rs`, `transcript.rs` |
 | agent diagnostics | `~/.octiqflow/logs/agent-diagnostics.jsonl` (one rotated predecessor) | `diagnostics.rs` |
 | chat task status | `<chats dir>/task-status.json` | `chat_task.rs` |
-| a chat's plan (one file a chat) | `<chats dir>/plan_<chat id>.json` | `chat_plan.rs` |
 | registered agents (agents mode) | `<profile dir>/team.json` | `team.rs` — see `docs/agents-mode.md` |
 | XP awards (agents mode) | `xp_awards` in `<profile dir>/orchestrations.json` | `orchestration/levels.rs` |
 | agent token usage | `<chats dir>/agent-usage.json` | `agent_usage.rs` |
@@ -386,8 +385,7 @@ until the process exits. It makes nothing and looks nothing up again.
   each with its reason). Whether a path can lie in the profile is not for
   the caller to judge: a vault, a worktree or `~/.octiqflow/mcp` is inside
   it when the profile base is set that way. A script the host starts keeps
-  the same rule (`scripts/mcp/preview.cjs` makes `previews/<chat>` and no
-  parent of it).
+  the same rule.
 - **The folder a server started with is that directory, not whatever is at
   its path.** A path still answers after its folder is removed and another
   is made there, or after it is pointed somewhere else. So a process leaves
@@ -433,10 +431,10 @@ until the process exits. It makes nothing and looks nothing up again.
   profile that is there, or the profile's sentence (asked after the read,
   never wrapped in the store's own words): preferences, the roster,
   handovers, the vault's settings and receipts, safety authorizations,
-  feedback, sandbox state, PR workflows, chat task status, the memory
+  feedback, PR workflows, chat task status, the memory
   activity ledger. What answers the page from a record or the index asks
   `profile::available` first (`chat_since`, `chat_page`,
-  `chat_index_deleted`, `image_preview_list`, `chat_search`). A store kept
+  `chat_index_deleted`, `chat_search`). A store kept
   in memory (ledger, projects, questions, usage, background tasks,
   auto-resumes) goes on answering and never reloads while the server
   runs: its save fails in the profile's words and, once the folder is
@@ -510,231 +508,15 @@ Three rules hold:
   four seconds so several open tabs cost one `git status`. The accent is for a
   turn in flight only — states the work is merely *owed* stay quiet.
 
-### A chat's plan
+The MCP server's instructions and each tool description stay under 4,096
+characters (`scripts/mcp/instructions.test.cjs`): Claude Code drops text past
+that limit. Put tool-specific guidance in that tool's description.
 
-A chat keeps one plan (`chat_plan.rs`, `docs/chat-plan.md`): the list the
-person and the agent agree on before work starts. It is not the
-orchestration plan card, which approves a run's tasks and still has to be
-approved after Start. Three owners, and nothing crosses between them:
-
-- **The agent writes the list** with `plan_read` and `plan_update`
-  (`octiq-ask.cjs` → `POST /hook/plan`): items with a status (`discussing`,
-  `decided`, `in_progress`, `done`, `dropped`), decisions, open questions, a
-  note and the task ids an item became. A change patches items by id and
-  carries the revision it was based on; a stale one is refused whole.
-  **Nothing is removed**: the person can only read the list, so an item
-  leaves by `dropped` and stays on it. Ids are the host's (`i1`, `i2`).
-- **The person starts it.** `chat_plan_start` is the page's command and
-  nobody else's: no hook routes to it and the MCP server has no such tool,
-  the same way `chat_complete` has none (`plan_tests::
-  no_hook_and_no_mcp_tool_can_start_a_plan`).
-- **The host counts the work.** An item's `progress` and `linked` are read
-  from the ledger for each answer (`orchestration/plan_link.rs`), never
-  stored and never taken from the agent. An item's own `in_progress` or
-  `done` is the agent's word and is shown as that; the two can disagree.
-
-Four rules hold:
-
-- **The Start gate is on the agent's door, not the person's.** While a plan
-  is not started and has an item that is not dropped (`Plan::awaits_start`),
-  `/hook/orchestration` refuses that chat's agent the commands in
-  `web::PLAN_GATED_COMMANDS`: run_create, task_create, the coordinator's
-  worker_start, dispatch_ready and task_reopen. The socket's commands of the
-  same names are the person's own and are not asked. A chat with no plan is
-  never asked anything. A new command that starts orchestrated work for an
-  agent joins that list. Once started a plan never gates again.
-- **A plan that cannot be read holds the gate.** A profile folder that is
-  away, or a file that cannot be understood, is an error from `chat_plan::
-  gate`, never "no plan": that would lift the gate, and the next change
-  would start the list again from nothing.
-- **Start is save-first, and the Start is not the turn.** It is recorded,
-  then the agent is handed one turn in the host's words (`start_message`,
-  turn id `octiq-plan-start-…`, queued behind a running turn like any
-  message, or the first message of a chat with no process, through
-  `start_chat`). A Start that cannot be saved is refused whole and tells
-  the agent nothing. A turn that cannot be handed over leaves the Start
-  standing: the answer says `delivered: false` with the reason, never an
-  error, `started.told` stays false, and the page asks again with the same
-  command. The host does not retry by itself.
-- **One Start, one turn, however often and from however many tabs it is
-  asked.** When and on which revision a plan was started is recorded once
-  and never touched again. The turn is handed over once, and two things
-  hold that (review of 16e4188, H2: every ask made a fresh turn id, so two
-  asks at once queued two turns, and so did an ask after a `told` that
-  failed to save):
-  - *a claim* (`chat_plan::telling`, one per chat): held from reading
-    whether the agent was told to noting that it was, so two asks are one
-    after the other and the second finds what the first did. Taking the
-    Start's turn back from the queue holds it too. It is taken before any
-    lock of the chats', and nothing that holds one of those asks for it.
-  - *a receipt that is not the note.* `started.told` is a note, and a note
-    can fail to save. The receipt is the turn's own line in the chat's
-    record, under an id that is the Start's: `started.turn_id` is made with
-    the Start, and every try is under it or one counted on from it
-    (`next_turn_id`: `…`, `…-try2`). Each ask of a started plan reads what
-    became of those turns (`agent_chat::host_turns`) before it sends: no
-    line, and the turn is handed over under the same id; handed over, and
-    nothing is sent and a missing note is saved; gone, and the next try has
-    the next id.
-  - *what the server did, kept by the server* (`chat_plan::StartTurns`, on
-    the chat manager, read and changed under the claim). The line and the
-    note are both files, and the line is written best effort: with a chats
-    folder that took no write the turn was with the agent and nothing said
-    so, and the next ask handed the same turn over again (review 2b, H2b).
-    A hand-over this server made is remembered for as long as it runs and
-    read before the record (`host_turns`' `here`): for that turn only a
-    line that says it is gone makes it so, and no line, or `queued` with
-    the queue no longer holding it, is handed over. A turn taken back from
-    this server's queue (✕) is remembered as that, and is gone whatever
-    line the record took: read from the files alone, `told` with no line
-    was handed over for good. Either note is owed when it could not be
-    saved (`plan starts told` in `profile_status.owed`,
-    `dispatch::settle_plan_starts`). **In memory: a server that stops
-    before either file took its write hands the turn over again.**
-    Refusing the tell when no receipt can be kept was the other choice
-    (`docs/chat-plan.md` says why not).
-  - **A turn that is gone is told again, and that is how it differs from
-    one that was delivered**: the person took it back (✕), it was marked not
-    sent, or its last word is `queued` and no queue holds it (the queue is
-    in memory: a server queued it and stopped). Each is a line the host
-    already wrote. A turn written to the agent has `dispatched` after
-    `queued` and is never gone; `unknown` (its process ended before saying
-    it had the prompt) counts as handed over, so the host never sends it a
-    second time. The ✕ sets `told` back to false so the page offers `Tell
-    the agent`; the other two leave it true until the next ask, which reads
-    the record whatever the note says.
-  - A new thing the host tells an agent ONCE asks `host_turns` under an id
-    that is a function of what it tells of, the same way, and hands it the
-    turn it remembers handing over. A fresh id for each try, and a flag for
-    "was it told", is the shape that failed; so is a receipt that exists
-    only when a best-effort write went through.
-- **Only the chat's own agent writes.** `/hook/plan` keeps the `HookCaller`
-  and refuses a front desk, a room seat (`session_key != chat_key`; a seat
-  may read) and a worker by `is_worker_chat`, which still holds after its
-  attempt settled. The socket refuses `chat_plan_update`.
-
-What the gate cannot do is said in the docs and in the tool description:
-it covers work started through the host, not an agent editing files in its
-own chat. The peer tools and the host's scheduler for a run that existed
-before the plan are not gated either.
-
-Agents are told how to keep a plan in the two tools' descriptions, and when
-to keep one in a single sentence (`PLAN_PROMPT` in `agent_provider.rs`, word
-for word `PLAN_INSTRUCTIONS` in the script; a test on each side). Like the
-card diagram it rides no command line. **The MCP server's instructions stay
-under 4,096 characters, and so does every tool's description**
-(`scripts/mcp/instructions.test.cjs`, for each kind of chat): Claude Code
-drops what is past that without a word, and at 5,658 the end of
-read_conversation, the orchestration and peer sentences, task_status and the
-ask_user sentence never reached a Claude chat. What belongs to one tool
-goes in that tool's description. That is room of its own, not a place the
-limit does not reach: Claude Code applies the same limit to each upfront
-tool description (the longest is 2,008 today), so a description that keeps
-growing is cut like the instructions were.
-
-A plan follows the chat's task status when the chat goes: kept through the
-trash window, removed when the chat is purged, kept by `/clear`.
-
-### The Plan panel is where the person reads a plan and starts it
-
-`components/PlanPanel` draws the chat's plan; `lib/planView` says what each
-part says, and `lib/useChatPlan` keeps it in step with the host. The panel is
-read-only but for Start: no edit, reorder or delete. The person changes a
-plan by saying so in the chat.
-
-- **It is hosted like the git and files columns**: a column beside the chat
-  on a desktop (`octiq.v2.planColumn`, written through `lib/remember`), an
-  alternative to those two and never a third beside them, giving way to the
-  preview panel as they do. On a phone it is a page drawn in the chat's
-  place (`planInPlace`, part of `chatShown`), for the one chat it was opened
-  in and never remembered. Its button is one line of `barActions` (`Plan`,
-  after `Tasks`) and carries the open questions in `--decide`, and nothing
-  when there are none.
-- **Offered to a chat's own agent only** (`planView.planOffered`, asked of
-  `chatKindOf`): not a worker's chat, a front desk or a seat. The button,
-  the panel and every read hang on `App`'s one `planFor`.
-- **Nothing polls.** `chat_plan_get` when the chat opens, when the panel
-  opens and on each connect, then the `chat-plan` event. That event does not
-  fire when the ledger moves, so a plan that links tasks is read again when
-  what the ledger says of those tasks changes (`planView.ledgerSignature`),
-  and at no other tick. A read that was in the air when an event arrived
-  cannot put the older plan back (`reducePlans`, by `rev`), and a Start's
-  answer that arrives after the events that followed it changes nothing.
-- **Three owners, each drawn as what it is.** The item's status word is the
-  agent's. `progress` and `linked` are the host's: absent draws nothing,
-  never a zero. Where they disagree both are shown and the agent's word
-  colours nothing: `Done` beside `1/2 · 1 failed` is grey
-  (`planView.countAgrees`).
-- **Colour is state.** The accent is an item with a linked task whose
-  attempt is executing, asked of the run panel's own reader
-  (`tasksInFlight` → `runProgress.progressRow`'s `flight`), never of the
-  host's `running`, which also counts an attempt being prepared. `--ok` is
-  done, `--decide` a question still open and Start, `--warn` a plan that
-  could not be read. A linked task that failed is said in grey words: whose
-  move a failure is, is the run panel's to show, and the task's row there
-  is one press away (`showTaskRow`, the run panel's `focusTaskId`).
-- **What the agent wrote is text**: a title, a decision, a question and a
-  note are never markdown, a link or markup. Three decisions are shown and
-  the rest are behind a line that says how many; a note is behind its own
-  disclosure; dropped items are last, muted.
-- **Start is the host's to offer** (`planView.planStart`): drawn while
-  `awaitsStart` is true and never worked out from the items. It sends
-  `chat_plan_start` with the revision on screen and the settings a
-  completion would start the chat with (`startSettingsOf`), from the one
-  place that names the command (`useChatPlan`). Open questions are said
-  beside it and do not block. A refusal recorded nothing: the host's words
-  go under the button, which stays. `delivered: false` is a Start that IS
-  recorded with an agent that was not told: both halves are said apart
-  (`Started 18:06 · the agent has not been told yet`), the reason is behind
-  a disclosure, and the one control is `Tell the agent`, the same command
-  again. A plan whose items were all dropped says `Nothing to start`. There
-  is no un-start.
-- **Start is never fired by the press or key that brought it on screen**,
-  and has no confirm in front of it, like the page's other Starts. The
-  bar's button and every disclosure of the panel are remembered by the
-  cards' guard (`notePress`), Start drops a held key (`dropHeld`) and a
-  press that repeats the one the panel was opened with (`strayAnswer`). It
-  sits outside the panel's scroller, so nothing an item opens moves it.
-- **One Start is out for a chat at a time, held by the sender and not by
-  the control** (`useChatPlan.askPlanStart`, `lib/inFlight`). The control
-  is drawn anew every time the panel opens, and it kept "a Start is out" in
-  its own state: shut on a Start the host had not answered and opened
-  again, it was on, and a press sent the same `chat_plan_start` a second
-  time, for Start and for `Tell the agent` (review 3, H2). The hold is the
-  sender's now, by the chat (`planFlight`), and Start and Tell share it: a
-  second ask while one is out sends nothing (`IN_FLIGHT`), whichever
-  control or surface asked, and the control draws `Sending…` from that
-  hold (`useInFlight`), so one mounted while a Start is out is off. What
-  the host said of the last Start is the hook's to keep as well
-  (`planFeed.said`), so a refusal that arrives while the panel is shut is
-  still said. The host records one Start for two at once; the page does
-  not lean on that.
-- **`Tell the agent` is also offered for a Start turn the page can see was
-  not sent** (`planTurn.startTurnLost`). The host leaves `started.told`
-  true when the turn was marked not sent, or was queued by a server that
-  did not live to hand it over, and puts it right on the next ask. For the
-  latest try under the Start's id that the page holds, not sent and not
-  taken up, the panel says `Started 18:06 · the turn that tells the agent
-  was not sent` with the same control. A turn the page does not hold
-  (behind `Load earlier messages`, or cleared) is not told apart from one
-  delivered long ago: nothing is offered for it.
-- **The host's turn is named, not quoted** (`lib/planTurn`): a turn whose id
-  starts `octiq-plan-start-` is drawn as `Plan started` with the host's text
-  behind a disclosure, like a completion's wrap-up, under a mark of its own
-  (`WrapUpNote` with `mark="start"`): a Start is not a completion and does
-  not wear its flag. Its take-back says
-  Cancel, takes the turn back and never the Start, and returns nothing to
-  the composer (`reclaim` skips it). **The bubble says what happened to
-  that turn** (`planStartBubble`): `The agent was told to begin` only for
-  one that was handed over, `Telling the agent after the current reply`
-  while it is queued, `Not sent · this turn did not reach the agent` and
-  `Lost from the queue · this turn did not reach the agent` for one that
-  was not sent. It speaks of the turn, not the plan: a later try may have
-  told the agent. The bubble and the panel's `Tell the agent` read a try
-  through one reader (`startTurnUnsent`).
-- `scripts/test-plan-panel.mjs` draws the host's four plans in the real App
-  at 1280 and 390 and presses Start. `lib/decideColour.test.ts` names the
-  panel's parts (`PLAN_PARTS`): a part added to the sheet is added there.
+Saved state from the retired chat Plan, Preview panel and Settings Sandbox is
+removed once at server startup (`retired_features.rs`): `chats/plan_*.json`,
+`previews/` and `sandboxes/` beneath the pinned profile. Cleanup uses
+`profile::available`, skips redirected chat folders, never follows store
+symlinks or invokes Docker, and logs failures without stopping startup.
 
 ### A chat whose folder was removed is recovered before it starts
 
@@ -748,8 +530,8 @@ missing. The order:
    again at the commit remembered for it (`Delivery.head`). What the worktree
    was comes from git's own `worktree list` (a folder deleted by hand is still
    listed until the next prune) and from the last `chat_task` verification,
-   because either can be the one that survived. The same path keeps the chat's
-   sandbox, which is bound to its folder, and the agent's own session folder.
+   because either can be the one that survived. The same path keeps the
+   agent's own session folder.
 2. **Else move the chat to a folder that exists**: the worktree's root when
    only a subfolder went and git still calls it that checkout, the
    repository's primary checkout as `chat_task` last verified it, then a
@@ -792,9 +574,7 @@ missing. The order:
   git refuses a branch another worktree holds, which falls through to step 2.
   Uncommitted and untracked files in the removed folder are gone, and both
   notices and the banner say so.
-- **Sandbox ownership is unchanged.** `sandbox::Store::select` still runs,
-  after the recovery, with the recovered folder. A chat that had to move with
-  an enabled sandbox is refused as before ("belongs to a different folder").
+
 - **It is told twice, once each.** `Held::settle` runs after those
   refusals and is a method of what is held, so it cannot run outside it: a durable `octiq_chat_recovered` event
   draws a notice in the chat and moves the page's `cwd`, and the agent's next
@@ -1148,7 +928,7 @@ row, title 60 characters, note 120. Icons are a fixed set of 24 names
   thing: Claude Code keeps only the first 4,096 characters of a server's
   instructions (seen in a live chat on 2026-10-13, cut mid-word there), and
   those were already 4,946 long. The whole text is held under that mark
-  now (see **A chat's plan**). Codex's app-server reads it
+  now (`scripts/mcp/instructions.test.cjs`). Codex's app-server reads it
   in its developer instructions (a message on stdin), Antigravity in the
   plugin's rules file. `codex exec` takes its instructions as an argument
   and Pi has no host rules, so neither is told. A front desk is not told.
@@ -1452,7 +1232,7 @@ handover-cards-namecard.html` is the mock they were built from.
     name). The open chat's id does not say the chat is on screen: `App`'s
     `chatShown` does, the one value for the five things drawn in a chat's
     place (the phone's project list, a main-area page such as Settings or
-    Agents, the phone's Plan page, the run panel and the task chat where
+    Agents, the run panel and the task chat where
     there is no room beside them). Off screen calls the travel off, waiting or in flight, and
     nothing brings it back. The rule hangs on that value and the open chat
     in one effect, never on the callers that change them; a new thing drawn
@@ -1510,7 +1290,7 @@ narrow Windows window gets the phone's layout.
   (`Return to chat`), and the usage number on a page that has no action bar.
 - **The action bar** (`components/ActionBar`, 36px; 45px on a phone): every
   action for what is on screen, each a button with an icon and a short word
-  (`Tasks`, `Plan`, `Preview`, `Git`, `Focus`, `New task`, `Details`,
+  (`Tasks`, `Git`, `Focus`, `New task`, `Details`,
   `Agents`, `Pinned`, `Full width`, `Run`, `Reload`, `Copy ID`, `Complete`,
   `Delete`),
   in that order. The word is short and stays the same; the sentence is the
@@ -1693,8 +1473,7 @@ the row's own width, measured (`lib/composerFit.rowFit`, a `ResizeObserver`
 on the row and a look when what the row holds changes), and never by the
 window's alone: with the run column and a side column open on a 1280px
 window the chat is about 340px, the window still said "desktop", and the
-row's overflow landed on Send, drawn past the composer's right edge. (That
-is older than the Plan column: the git and files columns did the same.)
+row's overflow landed on Send, drawn past the composer's right edge.
 
 - **Side by side while what the row holds is no wider than the row. Folded,
   it is tried side by side again when the row has grown past the width it
@@ -2887,8 +2666,8 @@ or shows a process already running with the MCP `job_register`; the page reads
   recorded from the real program (`job_progress/fixtures`), never on text
   written by hand.
 - **A finished job wakes its agent once**, as host turn `octiq-job-<id>`,
-  asked of `agent_chat::host_turns` before every send (the told-once rule of
-  **A chat's plan**). It queues like a message; a settled worker's job wakes
+  asked of `agent_chat::host_turns` before every send, so a turn already
+  handed over or taken back is never sent again. It queues like a message; a settled worker's job wakes
   its coordinator instead.
 - **Only the start needs the launch's capability.** `progress` and `end`
   carry the job's own token, because a job outlives the agent process that
@@ -3222,7 +3001,7 @@ person stopped did not fail. So:
 - **A reopen has two doors, like a start and a gate's answer**
   (`ReopenedBy`). The coordinator's comes only through `/hook/orchestration`
   (`task_reopen` → `orchestration_task_reopen_in_chat`, which the socket
-  refuses and the plan's Start gate holds) and is held to the budget. The
+  refuses) and is held to the budget. The
   person's comes only through the socket (`orchestration_task_reopen`,
   which no hook action maps to): it is taken when the retries are used,
   gives them back, closes the decision the coordinator opened about the
@@ -3311,8 +3090,7 @@ desk is removed.
 never taken from an agent**: `heldByPlan`, `heldByReopen`, `failure`,
 `retrying` and `retryLimit` on a task, `awaits` on an open gate and a pending
 native decision, `usage` and `context` on an attempt, `coordinatesRun` on a
-chat's index entry, `awaitsStart` on a chat's plan and `progress` and
-`linked` on its items. Each is
+chat's index entry. Each is
 `skip_deserializing` or added at the dispatch arm, and absent rather than
 zero or guessed when the host does not know (`docs/agents-mode.md`, What the
 run panel reads from the host). **Not read back is half of "never stored";
@@ -3503,17 +3281,10 @@ time limit).
   all four.
   - **A. Nothing that stops something running reads or saves the profile
     first.** What a stop needs to find its target is in memory, or is asked
-    of the system itself (the process table, Docker): never of a file in
-    the profile. The Sandbox panel's Stop read `state.json`, saved "about to
-    stop" and ran Docker through files in the sandbox's own folder, so with
-    the folder away the services kept running. `sandbox::Store::known` is
-    what this server last read or wrote, a stop goes by it, and Docker is
-    asked by the project's name alone when the frozen file cannot be read
-    (`down_by_name`). Stop, down and the host's own stop ACT, then save
-    (`save_regardless`), say `unsaved`, and owe the write. Anything that
-    creates (a sandbox start, check or reset) reads the file and stays
-    refused. A sweep for this rule lists everything that kills, downs or
-    ends, and then everything each of them reads on the way there.
+    of the system itself (the process table), never of a file in the profile.
+    Stop acts, then saves, says `unsaved`, and owes the write. A sweep for
+    this rule lists everything that kills or ends, and everything each of
+    them reads on the way there.
   - **B. An action that fails for a missing profile never discards the
     person's input.** A refusal is not a failure of the thing refused. A
     Stop on an agent that goes on only in a new process starts the first

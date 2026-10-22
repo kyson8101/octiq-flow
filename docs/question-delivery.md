@@ -106,11 +106,8 @@ cannot hang the call, and streams its bytes to `POST /hook/question-media`
 (the launch's capability, `chatKey`/`sessionKey`/`launchId`, `name` and
 `bytes` in the query, the file as the body). The file is read there, by the
 agent's process with the agent's rights, and never by the server: an agent
-cannot show the person a file it could not open itself. This is
-`preview_image`'s precedent: an MCP server is outside Claude's Bash sandbox
-and Codex's seatbelt, as `preview.cjs` is, so the rights are those of the
-agent's process. What differs from `preview_image` is who writes the
-snapshot: the host (`src-tauri/src/question_media.rs`), so the folder is made
+cannot show the person a file it could not open itself. The host writes the
+snapshot (`src-tauri/src/question_media.rs`), so the folder is made
 only through `profile::make_dir` and nothing is written into a profile folder
 that is gone or replaced.
 
@@ -175,7 +172,7 @@ A worker's questions become a gate (`route_worker_questions`): its text names
 each file with its kind and path, so the coordinator can look before
 answering.
 
-**Lifecycle**: like the chat's plan, kept through the trash window and
+**Lifecycle**: kept through the trash window and
 `/clear`, removed when the chat is purged (`question_media::forget`, from
 the purge sweep and from startup's `chat_index::reconcile`).
 

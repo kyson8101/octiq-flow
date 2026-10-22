@@ -50,7 +50,7 @@ project has nowhere to work, so it is left out as well.
 - **The head** is always the cross-project conversation from the home
   workspace (below).
 - **A project agent** only works in its own project, so picking one moves the
-  draft to that project. Its repository, branch, worktree and sandbox are then
+  draft to that project. Its repository, branch and worktree are then
   chosen exactly as for any lead in that project, and **Advanced** offers no
   other project. If the draft is moved to another project anyway, the choice
   goes back to the default, which the page shows. A send that would still put
@@ -291,14 +291,14 @@ the person picked. So there is no standing rule, only the lift above.
 
 ## Where a new task runs (automatic, with Advanced overrides)
 
-The project, branch, worktree and sandbox controls are hidden on a new task.
+The project, branch and worktree controls are hidden on a new task.
 They are still decided: `lib/agentExecution.ts` (`autoExecution`) chooses them,
 and the send path applies exactly that plan:
 
 - **The head** coordinates from the home workspace (below), whichever page the
-  conversation was started from. No git is prepared and no sandbox is started
+  conversation was started from. No git is prepared
   for the conversation. Every task it hands out gets its own destination and
-  environment from the host.
+  workspace from the host.
 - **A lead in a project** starts in a **new worktree** of that project, based
   on the branch the project is on. The host resolves the base and creates the
   worktree (`git_prepare_chat_workspace`). A folder that is not a repository
@@ -329,14 +329,14 @@ project or a Git setup.
 The task panel behind the status line (`ChatTaskBar`) has an **Environment**
 section: the agent (avatar, name, state, provider/model), project, repository,
 working directory, branch, base branch, target, checkout (primary checkout or
-task worktree, and its path), sandbox and git state. Each path has a Copy
+task worktree, and its path) and git state. Each path has a Copy
 button. `lib/taskEnvironment.ts` merges two sources and labels every row:
 
 - **Planned**: the chat's `launch` plan, or, for a worker chat, its orchestration
   task's destination and workspace plan (latest attempt, so retries show the
   one running).
 - **Verified**: `chat_task`'s git verification of the chat's own directory,
-  with when it was checked. The sandbox is reported by its own state.
+  with when it was checked.
 
 **Stale** (the directory is gone and git was read from the primary checkout),
 **Removed** (a cleaned or deleted worktree) and **Not verified** are never
@@ -1152,13 +1152,7 @@ registration default; it is not a derived status.
 ## Plan approval
 
 This is the plan card of a run: the tasks a lead created, waiting for your
-approval. It is not a chat's plan (`docs/chat-plan.md`), the list you and an
-agent agree on before any run exists. That one has a Start of its own, which
-only you press, and while it has not been pressed the chat's agent is
-refused `orchestration_run_create`, `orchestration_task_create`,
-`orchestration_worker_start`, `orchestration_dispatch_ready` and
-`orchestration_task_reopen`. Pressing it approves no task: a run the agent
-then opens still waits here.
+approval.
 
 Every run a lead opens waits for you (`run.planApproval`, always required).
 The host starts a task only once you have approved it: until then it refuses

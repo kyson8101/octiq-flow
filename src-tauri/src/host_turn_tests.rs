@@ -1,7 +1,7 @@
 //! What became of a turn the host handed a chat's agent (`host_turns`):
 //! the receipt a caller that must tell an agent something once reads
-//! before it sends (`chat_plan_start`). Each state is made the way the
-//! host makes it, through the functions that write the lines, in a record
+//! before it sends. Legacy plan-start ids remain ordinary host turns. Each
+//! state uses the functions that write the lines, in a record
 //! of the test's own.
 use super::*;
 
@@ -29,7 +29,7 @@ impl Record {
     /// The host takes the turn `name`: its line is in the record.
     fn accepted(&self, name: &str) -> String {
         let id = self.id(name);
-        record_durable_user_turn(&self.key, &id, "The person pressed Start.", &[]);
+        record_durable_user_turn(&self.key, &id, "Host notification.", &[]);
         id
     }
 
@@ -42,7 +42,7 @@ impl Record {
             &self.manager,
             &self.key,
             &self.key,
-            "The person pressed Start.",
+            "Host notification.",
             &[],
             Some(id.clone()),
         )
@@ -131,7 +131,7 @@ fn a_turns_lines_say_what_became_of_it() {
         &record.key,
         json!({ "type": "user", "octiq_user_turn_id": received }),
     );
-    // A turn of another Start, or a person's own, is not in the answer.
+    // An unrelated legacy host turn, or a person's own, is not in the answer.
     record_durable_user_turn(&record.key, "octiq-plan-start-another", "Another", &[]);
     record_durable_user_turn(&record.key, "user-1", "Hello", &[]);
 

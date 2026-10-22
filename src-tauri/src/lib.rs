@@ -22,7 +22,6 @@ mod bus;
 mod canvas;
 mod chat_index;
 mod chat_jobs;
-mod chat_plan;
 mod chat_recover;
 mod chat_search;
 mod chat_task;
@@ -39,7 +38,6 @@ mod git;
 mod git_ops;
 mod git_watch;
 mod handover;
-mod image_preview;
 mod island;
 mod job_progress;
 mod job_spool;
@@ -66,8 +64,8 @@ mod question;
 mod question_media;
 mod question_store;
 mod record_trim;
+mod retired_features;
 mod safety_block;
-mod sandbox;
 mod team;
 mod team_tools;
 #[cfg(test)]
@@ -94,6 +92,7 @@ pub async fn run_headless() {
         eprintln!("[server] {}", profile_lock::conflict_message(&owner));
         std::process::exit(1);
     }
+    retired_features::at_startup();
     // Once, before anything can be running: tidy away transcripts no chat
     // points at any more.
     chat_index::reconcile();
