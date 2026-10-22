@@ -657,7 +657,10 @@ struct CodexAppSession {
     interrupt_when_started: bool,
     next_request: u64,
     /// Pending MCP confirmations, cancelled with this process/turn.
-    elicitations: HashMap<String, tokio::sync::oneshot::Sender<()>>,
+    elicitations: HashMap<String, codex_elicitation::Pending>,
+    // Native MCP items correlate Codex 0.163 approvals, which omit tool_name.
+    mcp_calls: HashMap<String, Value>,
+    mcp_refusals: HashMap<String, String>,
     model: Option<String>,
     effort: Option<String>,
     access: Option<Access>,
@@ -685,6 +688,8 @@ impl ChatSession {
     fn turn_ended(&mut self) {
         if let Some(codex) = self.codex.as_mut() {
             codex.elicitations.clear();
+            codex.mcp_calls.clear();
+            codex.mcp_refusals.clear();
         }
         self.busy = false;
         self.last_active = Instant::now();
@@ -4152,6 +4157,8 @@ pub(crate) fn start_session(
             interrupt_when_started: false,
             next_request: 0,
             elicitations: HashMap::new(),
+            mcp_calls: HashMap::new(),
+            mcp_refusals: HashMap::new(),
             model: selected_model,
             effort: selected_effort,
             access,
@@ -4264,6 +4271,7 @@ pub(crate) fn start_session(
                 match serde_json::from_str::<Value>(trimmed) {
                     Ok(mut event) => {
                         if transport.is_app_server() {
+                            codex_elicitation::observe(&asking, &mut event);
                             if crate::codex_app_server::is_server_request(&event) {
                                 if let Err(error) = reading
                                     .orchestrations
@@ -4283,7 +4291,11 @@ pub(crate) fn start_session(
                             if event.get("method").and_then(Value::as_str)
                                 == Some("serverRequest/resolved")
                             {
-                                codex_elicitation::resolved(&asking, &event["params"]["requestId"]);
+                                codex_elicitation::resolved(
+                                    &asking,
+                                    &key,
+                                    &event["params"]["requestId"],
+                                );
                             }
                             let native_thread = if let Ok(session) = asking.lock() {
                                 session.codex.as_ref().map(|codex| codex.thread_id.clone())
@@ -4695,6 +4707,8 @@ pub(crate) fn start_session(
             if let Ok(mut session) = asking.lock() {
                 if let Some(codex) = session.codex.as_mut() {
                     codex.elicitations.clear();
+                    codex.mcp_calls.clear();
+                    codex.mcp_refusals.clear();
                 }
                 reading.questions.detach_launch(&session.launch_id);
                 record_delivery(&key, session.user_turn_id.take().as_deref(), "unknown");
@@ -6666,6 +6680,7 @@ fn answer_permission(
     let ask = crate::permission::Request {
         chat_key: Some(key.to_string()),
         session_id: field("session_id"),
+        provider: Some(ChatAgent::Claude),
         tool_name: field("tool_name"),
         tool_input: request.get("input").cloned(),
         tool_use_id: field("tool_use_id"),
@@ -7572,6 +7587,8 @@ impl ChatManager {
             interrupt_when_started: false,
             next_request: 0,
             elicitations: HashMap::new(),
+            mcp_calls: HashMap::new(),
+            mcp_refusals: HashMap::new(),
             model: None,
             effort: None,
             access: Some(access),
@@ -7791,6 +7808,8 @@ fn end_process_when(
 fn stop_process(manager: &ChatManager, key: &str, session: &mut ChatSession) {
     if let Some(codex) = session.codex.as_mut() {
         codex.elicitations.clear();
+        codex.mcp_calls.clear();
+        codex.mcp_refusals.clear();
     }
     if let Err(error) = manager.background.interrupt(key, &session.launch_id,
         "The provider session was ended or switched. Background work is no longer attached; inspect retained output before retrying.") {
@@ -11022,6 +11041,8 @@ mod tests {
                 interrupt_when_started: false,
                 next_request: 0,
                 elicitations: HashMap::new(),
+                mcp_calls: HashMap::new(),
+                mcp_refusals: HashMap::new(),
                 model: None,
                 effort: None,
                 access: Some(Access::Read),
@@ -11234,6 +11255,8 @@ mod tests {
                 interrupt_when_started: false,
                 next_request: 0,
                 elicitations: HashMap::new(),
+                mcp_calls: HashMap::new(),
+                mcp_refusals: HashMap::new(),
                 model: None,
                 effort: None,
                 access: Some(Access::Read),
@@ -13487,6 +13510,8 @@ mod completion_tests {
                 interrupt_when_started: false,
                 next_request: 0,
                 elicitations: HashMap::new(),
+                mcp_calls: HashMap::new(),
+                mcp_refusals: HashMap::new(),
                 model: None,
                 effort: None,
                 access: Some(Access::Read),

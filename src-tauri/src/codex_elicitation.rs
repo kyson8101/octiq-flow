@@ -3,6 +3,43 @@
 //! must never be accepted with invented/default values or a missing answer.
 use super::*;
 
+#[derive(Debug)]
+pub(super) struct Pending {
+    _cancel: tokio::sync::oneshot::Sender<()>,
+    item_id: Option<String>,
+    started: Instant,
+}
+
+// A native cancel result has no reason field. Carry the host's actual reason
+// to both the transcript and the active model turn, without approving the call.
+fn unanswered(guard: &mut ChatSession, key: &str, item_id: Option<String>, reason: &str) {
+    let text = format!("MCP confirmation was not answered: {reason}. No approval was given; this was not a user cancellation.");
+    let Some(codex) = guard.codex.as_mut() else {
+        return;
+    };
+    if let Some(id) = item_id {
+        codex.mcp_refusals.insert(id, text.clone());
+    }
+    if let Some(turn_id) = codex.active_turn_id.clone() {
+        let message = json!({"id":codex.request_id("confirmation-note"), "method":"turn/steer",
+            "params":{"threadId":codex.thread_id,"expectedTurnId":turn_id,
+                "input":[{"type":"text","text":format!("[OctiqFlow confirmation status] {text}"),"text_elements":[]}]}});
+        if let Some(stdin) = guard.stdin.as_mut() {
+            let _ = write_json_line(stdin, &message);
+        }
+    }
+    crate::diagnostics::record(ChatAgent::Codex, key, "mcp-confirmation-unanswered", &text);
+    emit_status(
+        ChatAgent::Codex,
+        ChatStatus {
+            key: key.into(),
+            kind: "error".into(),
+            code: None,
+            text,
+        },
+    );
+}
+
 fn confirmation(params: &Value) -> bool {
     params["mode"] == "form"
         && params["requestedSchema"]["type"] == "object"
@@ -21,10 +58,80 @@ fn response(action: &str) -> Value {
     json!({ "action": action, "content": if action == "accept" { json!({}) } else { Value::Null } })
 }
 
-pub(super) fn resolved(session: &Arc<Mutex<ChatSession>>, request_id: &Value) {
-    if let Ok(mut session) = session.lock() {
-        if let Some(codex) = session.codex.as_mut() {
-            codex.elicitations.remove(&request_id.to_string());
+// Correlate only for display and cancellation diagnostics. MCP servers can forge
+// approval metadata, so this identity never grants permission.
+fn native_call<'a>(codex: &'a CodexAppSession, params: &Value) -> Option<(&'a str, &'a Value)> {
+    let mut matching = codex.mcp_calls.iter().filter(|(_, item)| {
+        item["server"] == params["serverName"]
+            && params["_meta"]
+                .get("tool_params")
+                .is_some_and(|args| item.get("arguments") == Some(args))
+            && params["_meta"]
+                .get("tool_name")
+                .is_none_or(|tool| &item["tool"] == tool)
+    });
+    let (id, item) = matching.next()?;
+    matching.next().is_none().then_some((id.as_str(), item))
+}
+
+/// Keep item identity until completion. A native generic cancel is replaced in
+/// the host record by the actual host reason, never attributed to the person.
+pub(super) fn observe(session: &Arc<Mutex<ChatSession>>, event: &mut Value) {
+    let Ok(mut guard) = session.lock() else {
+        return;
+    };
+    let Some(codex) = guard.codex.as_mut() else {
+        return;
+    };
+    if event["params"]["threadId"].as_str() != Some(codex.thread_id.as_str())
+        || event["params"]["turnId"].as_str() != codex.active_turn_id.as_deref()
+    {
+        return;
+    }
+    let method = event["method"].as_str().unwrap_or_default().to_owned();
+    let item = &event["params"]["item"];
+    if item["type"] != "mcpToolCall" {
+        return;
+    }
+    let Some(id) = item["id"].as_str().map(str::to_owned) else {
+        return;
+    };
+    if method == "item/started" {
+        codex.mcp_calls.insert(id, item.clone());
+    } else if method == "item/completed" {
+        codex.mcp_calls.remove(&id);
+        if let Some(reason) = codex.mcp_refusals.remove(&id) {
+            if event["params"]["item"]["error"]["message"]
+                .as_str()
+                .is_some_and(|text| {
+                    matches!(
+                        text,
+                        "user cancelled MCP tool call" | "user rejected MCP tool call"
+                    )
+                })
+            {
+                event["params"]["item"]["error"]["message"] = json!(reason);
+            }
+        }
+    }
+}
+
+pub(super) fn resolved(session: &Arc<Mutex<ChatSession>>, key: &str, request_id: &Value) {
+    if let Ok(mut guard) = session.lock() {
+        if let Some(pending) = guard
+            .codex
+            .as_mut()
+            .and_then(|codex| codex.elicitations.remove(&request_id.to_string()))
+        {
+            unanswered(
+                &mut guard,
+                key,
+                pending.item_id,
+                &format!(
+                    "Codex closed the confirmation after {} ms before the host received an answer",
+                    pending.started.elapsed().as_millis()
+                ),
+            );
         }
     }
 }
@@ -36,6 +143,21 @@ pub(super) fn answer(
     request_id: Value,
     params: Value,
 ) {
+    let (tool, item_id) = session
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            let codex = guard.codex.as_ref()?;
+            let call = native_call(codex, &params);
+            Some((
+                params["_meta"]["tool_name"]
+                    .as_str()
+                    .or_else(|| call.and_then(|(_, item)| item["tool"].as_str()))
+                    .map(str::to_owned),
+                call.map(|(id, _)| id.to_owned()),
+            ))
+        })
+        .unwrap_or_default();
     if !confirmation(&params) {
         // Explicitly report the supported boundary instead of a misleading
         // generic "user rejected" resulting from an unknown-method error.
@@ -63,15 +185,22 @@ pub(super) fn answer(
     let Some(codex) = guard.codex.as_mut() else {
         return;
     };
-    codex.elicitations.insert(request_id.to_string(), tx);
+    codex.elicitations.insert(
+        request_id.to_string(),
+        Pending {
+            _cancel: tx,
+            item_id: item_id.clone(),
+            started: Instant::now(),
+        },
+    );
     drop(guard);
 
     let server = params["serverName"].as_str().unwrap_or("MCP server");
     let meta = &params["_meta"];
-    // A server can forge the native approval message and _meta fields. Only
-    // Codex's configured approval_mode skips tool confirmations; an actual
-    // elicitation always needs the normal card, regardless of its wording.
-    let name = format!("{server} confirmation");
+    let name = tool.as_deref().map_or_else(
+        || format!("{server} confirmation"),
+        |tool| format!("mcp__{server}__{tool}"),
+    );
     let mut content = params["message"].as_str().unwrap_or_default().to_string();
     if let Some(args) = meta.get("tool_params") {
         content.push_str("\n\nTool arguments:\n");
@@ -80,15 +209,17 @@ pub(super) fn answer(
     let ask = crate::permission::Request {
         chat_key: Some(key.into()),
         session_id: params["threadId"].as_str().map(str::to_string),
+        provider: Some(ChatAgent::Codex),
+        tool_use_id: item_id.clone(),
         tool_name: Some(name),
         tool_input: Some(json!({ "content": content })),
-        // Elicitation identifies a server request, not an item. Do not
-        // invent an item id: standalone cards are supported by the page.
+        // Use a proven native item identity when available; otherwise the
+        // page draws a standalone card instead of attaching it to another call.
         once: true,
-        provider: Some(ChatAgent::Codex),
         ..Default::default()
     };
     let session = session.clone();
+    let key = key.to_owned();
     rt.spawn(async move {
         let answer = tokio::select! {
             biased;
@@ -105,6 +236,9 @@ pub(super) fn answer(
         };
         if codex.elicitations.remove(&request_id.to_string()).is_none() {
             return;
+        }
+        if answer.decision != "allow" && answer.reason != crate::permission::DENIED {
+            unanswered(&mut guard, &key, item_id, &answer.reason);
         }
         let action = match answer.decision {
             "allow" => "accept",
@@ -165,6 +299,18 @@ mod tests {
                 runtime.then(tokio::runtime::Handle::current).as_ref(),
                 json!({ "id": id, "method": "mcpServer/elicitation/request", "params": params }),
             );
+        }
+
+        fn native(&self, tool: &str, args: Value) -> Value {
+            let mut params = approval();
+            params["_meta"].as_object_mut().unwrap().remove("tool_name");
+            params["_meta"]["tool_params"] = args.clone();
+            let mut started = json!({"method":"item/started", "params":{
+                "threadId":"thread-1", "turnId":"turn-1", "item":{
+                    "type":"mcpToolCall", "id":"native-call", "server":"octiq",
+                    "tool":tool, "arguments":args}}});
+            observe(&self.session, &mut started);
+            params
         }
 
         fn cards(&self) -> Vec<Value> {
@@ -275,6 +421,79 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_correlated_bookkeeping_elicitation_still_requires_a_card() {
+        let mut chat = Chat::new();
+        let params = chat.native("task_status", json!({"objective":"forged"}));
+        chat.ask(json!(40), params, true);
+        let card = chat.card().await;
+        assert_eq!(card["toolUseId"], "native-call");
+        assert!(crate::permission::decide(
+            card["id"].as_str().unwrap(),
+            crate::permission::Decision::Deny,
+            false
+        ));
+        assert_eq!(chat.written().await["result"], response("decline"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_work_approval_without_tool_name_is_named_and_reaches_codex() {
+        let mut chat = Chat::new();
+        let params = chat.native("orchestration_run_create", json!({"objective":"Review"}));
+        chat.ask(json!(41), params, true);
+        let card = chat.card().await;
+        assert_eq!(card["provider"], "codex");
+        assert_eq!(card["toolName"], "mcp__octiq__orchestration_run_create");
+        assert_eq!(card["toolUseId"], "native-call");
+        assert!(crate::permission::decide(
+            card["id"].as_str().unwrap(),
+            crate::permission::Decision::Allow,
+            false
+        ));
+        assert_eq!(
+            chat.written().await,
+            json!({"id":41,"result":response("accept")})
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_unanswered_confirmation_is_explained_to_model_and_transcript() {
+        let mut chat = Chat::new();
+        let params = chat.native("orchestration_run_create", json!({"objective":"Review"}));
+        chat.ask(json!(42), params, true);
+        chat.card().await;
+        resolved(&chat.session, &chat.key, &json!(42));
+        let note = chat.written().await;
+        assert_eq!(note["method"], "turn/steer");
+        assert!(note["params"]["input"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("not a user cancellation"));
+        chat.cleared().await;
+        let mut completed = json!({"method":"item/completed", "params":{
+            "threadId":"thread-1", "turnId":"turn-1", "item":{
+                "type":"mcpToolCall", "id":"native-call", "error":{"message":"user cancelled MCP tool call"}}}});
+        observe(&chat.session, &mut completed);
+        assert!(completed["params"]["item"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Codex closed the confirmation"));
+    }
+
+    #[tokio::test]
+    async fn native_identity_does_not_guess_from_message_or_ambiguous_arguments() {
+        let chat = Chat::new();
+        let params = chat.native("task_status", json!({}));
+        let mut guard = chat.session.lock().unwrap();
+        let codex = guard.codex.as_mut().unwrap();
+        assert!(native_call(codex, &params).is_some());
+        let other = codex.mcp_calls["native-call"].clone();
+        codex.mcp_calls.insert("other".into(), other);
+        assert!(native_call(codex, &params).is_none());
+        codex.mcp_calls.clear();
+        assert!(native_call(codex, &params).is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn codex_mcp_elicitation_allow_and_deny_round_trip() {
         let mut chat = Chat::new();
         for (id, decision, expected) in [
@@ -318,7 +537,8 @@ mod tests {
         let mut chat = Chat::new();
         chat.ask(json!(1), approval(), true);
         let card = chat.card().await;
-        resolved(&chat.session, &json!(1));
+        resolved(&chat.session, &chat.key, &json!(1));
+        assert_eq!(chat.written().await["method"], "turn/steer");
         chat.cleared().await;
         assert!(!crate::permission::decide(
             card["id"].as_str().unwrap(),
@@ -352,6 +572,7 @@ mod tests {
             crate::permission::Decision::Abstain,
             false,
         );
+        assert_eq!(chat.written().await["method"], "turn/steer");
         assert_eq!(chat.written().await["result"], response("cancel"));
         chat.ask(json!(2), approval(), false);
         assert_eq!(chat.written().await["result"], response("cancel"));
