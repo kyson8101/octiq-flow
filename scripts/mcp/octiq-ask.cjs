@@ -1550,7 +1550,7 @@ const ROUTE_CHAT = {
         items: { type: "string" },
         description:
           "Paths listed under \"Attachments:\" in the person's messages that " +
-          "the agent should get. The host copies them where the new chat can open them.",
+          "the agent should get. The host copies them where the new chat can open them. Pass files through attachments; do not paste their paths into the brief.",
       },
       purpose: {
         type: "string",
