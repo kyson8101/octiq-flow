@@ -777,11 +777,15 @@ async function conversationSearch(args = {}) {
  *  handed — but there is no reason for anything NEW to speak two dialects. */
 function askOctiq(questions) {
   return new Promise((resolve) => {
+    // A lost response cannot tell us whether the host adopted the media.
+    // Preserve the answer text, but let the caller discard unclaimed files;
+    // the host protects snapshots already attached to a stored question.
+    const transportFailed = (answer) => resolve({ answer, transportFailed: true });
     let port;
     try {
       port = hookPort();
     } catch {
-      return resolve({ answer: "OctiqFlow is not reachable, so the user could not be asked." });
+      return transportFailed("OctiqFlow is not reachable, so the user could not be asked.");
     }
     const body = JSON.stringify({ chatKey: CHAT_KEY, sessionKey: process.env.OCTIQ_SESSION_KEY || CHAT_KEY, launchId: process.env.OCTIQ_LAUNCH_ID || undefined, questions });
     const req = http.request(
@@ -800,19 +804,22 @@ function askOctiq(questions) {
             const said = JSON.parse(out);
             // A refusal (a file the host would not show) asked nothing.
             if (said.error) resolve({ error: said.error, outcome: said.outcome });
-            else resolve({ answer: said.answer ?? "" });
+            else if (typeof said.answer === "string") resolve({ answer: said.answer });
+            else transportFailed("OctiqFlow gave no answer.");
           } catch {
-            resolve({ answer: "OctiqFlow gave no answer." });
+            transportFailed("OctiqFlow gave no answer.");
           }
         });
+        res.on("aborted", () => transportFailed("OctiqFlow could not be reached."));
+        res.on("error", () => transportFailed("OctiqFlow could not be reached."));
       },
     );
-    req.on("error", () => resolve({ answer: "OctiqFlow could not be reached." }));
+    req.on("error", () => transportFailed("OctiqFlow could not be reached."));
     // The server has its own, shorter deadline; this only stops a wedged
     // socket holding the turn open indefinitely.
     req.setTimeout(30 * 60 * 1000, () => {
       req.destroy();
-      resolve({ answer: "The question timed out." });
+      transportFailed("The question timed out.");
     });
     req.write(body);
     req.end();
@@ -3162,8 +3169,10 @@ async function handle(msg) {
         });
       }
       const answer = await askOctiq(asked);
-      if (answer.error) {
+      if (answer.error || answer.transportFailed) {
         await discardMedia(mediaIds(asked)).catch(() => {});
+      }
+      if (answer.error) {
         return reply(msg.id, {
           content: [{ type: "text", text: `Nothing was asked: ${answer.error}` }],
           isError: true,
