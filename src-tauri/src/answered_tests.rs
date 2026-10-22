@@ -20,6 +20,15 @@ use crate::profile::tests::Home;
 use crate::question_store::{Answer, QuestionStore, ANSWERED, NOTES_OWED};
 use serde_json::json;
 
+// Store-level tests simulate a successful transport after claiming the answer.
+fn native_handover(store: &QuestionStore, id: &str) -> Result<Option<Vec<String>>, String> {
+    let answer = store.take_native(id)?;
+    if answer.is_some() {
+        store.native_written(id, Ok(()))?;
+    }
+    Ok(answer)
+}
+
 /// A chat with nothing of its own left in the scratch profile afterwards.
 struct Chat {
     key: String,
@@ -168,6 +177,13 @@ async fn a_natively_asked_questions_answer_stays_in_the_chats_record() {
         "{response}"
     );
 
+    // Writing the pipe can wake its reader before the delivery note is kept.
+    for _ in 0..200 {
+        if !chat.lines().is_empty() && asked_in(&svc, &chat.key).is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     let lines = chat.lines();
     assert_eq!(lines.len(), 1, "one line for the call: {lines:?}");
     let line = &lines[0];
@@ -369,27 +385,31 @@ fn a_question_cancelled_or_never_answered_writes_nothing() {
     let cancelled = Chat::new("cancelled");
     let (id, answers) = waiting(store, &cancelled.key);
     store.cancel(&[answers[0].id.clone()]).unwrap();
-    assert_eq!(store.take_native(&id).unwrap(), Some(Vec::new()));
+    assert_eq!(native_handover(&store, &id).unwrap(), Some(Vec::new()));
     assert!(store.take_tool(&id).unwrap().unwrap().contains("cancelled"));
     assert!(cancelled.lines().is_empty());
 
     let stopped = Chat::new("stopped");
     let (id, _answers) = waiting(store, &stopped.key);
     store.cancel_chat(&stopped.key).unwrap();
-    assert_eq!(store.take_native(&id).unwrap(), Some(Vec::new()));
+    assert_eq!(native_handover(&store, &id).unwrap(), Some(Vec::new()));
     assert!(stopped.lines().is_empty());
 
     let late = Chat::new("late");
     let (id, answers) = waiting(store, &late.key);
     // The call's ten minutes ran out: nothing to take, and it lets go.
-    assert_eq!(store.take_native(&id).unwrap(), None);
+    assert_eq!(native_handover(&store, &id).unwrap(), None);
     store.detach(&id);
     assert!(
         late.lines().is_empty(),
         "an unanswered question has no line"
     );
     store.answer(&answers).unwrap();
-    assert_eq!(store.take_native(&id).unwrap(), None, "nobody waits for it");
+    assert_eq!(
+        native_handover(&store, &id).unwrap(),
+        None,
+        "nobody waits for it"
+    );
     let mut turns = Vec::new();
     deliver_question_answers_with(manager.clone(), |record| {
         turns.push(record.turn_id());
@@ -435,7 +455,7 @@ fn an_answer_handed_over_while_the_record_cannot_be_written_is_said_and_owed() {
 
     world.home.move_away();
     let why = crate::profile::available().expect_err("the profile folder is away");
-    let (taken, said) = crate::unsaved::told(|| store.take_native(&id));
+    let (taken, said) = crate::unsaved::told(|| native_handover(&store, &id));
     assert_eq!(
         taken.unwrap(),
         Some(vec!["SQLite".to_string()]),
@@ -493,7 +513,7 @@ fn a_line_that_is_already_in_the_record_is_not_written_again() {
     let (id, answers) = waiting(store, &chat.key);
     store.answer(&answers).unwrap();
     world.home.move_away();
-    assert!(store.take_native(&id).unwrap().is_some());
+    assert!(native_handover(&store, &id).unwrap().is_some());
     world.home.move_back();
     assert!(store.owes_notes());
     // The line as the lost write left it.
@@ -565,7 +585,7 @@ fn a_chat_cleared_before_an_owed_line_is_written_does_not_get_it() {
     let (id, answers) = waiting(&manager.questions, &chat.key);
     manager.questions.answer(&answers).unwrap();
     let blocked = record_refuses_lines(&chat);
-    assert!(manager.questions.take_native(&id).unwrap().is_some());
+    assert!(native_handover(&manager.questions, &id).unwrap().is_some());
     assert!(manager.questions.owes_notes());
     std::fs::remove_dir(&blocked).unwrap();
 
@@ -590,7 +610,7 @@ fn a_record_that_keeps_refusing_is_left_alone_between_tries() {
     let (id, answers) = waiting(&manager.questions, &chat.key);
     manager.questions.answer(&answers).unwrap();
     let blocked = record_refuses_lines(&chat);
-    assert!(manager.questions.take_native(&id).unwrap().is_some());
+    assert!(native_handover(&manager.questions, &id).unwrap().is_some());
     // The first try after the hand-over is made at once, and fails.
     assert!(manager.questions.settle_notes().is_err());
     std::fs::remove_dir(&blocked).unwrap();
@@ -624,7 +644,7 @@ fn a_line_that_can_be_read_back_is_owed_until_its_record_is_synced() {
         }
 
         crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(true));
-        let (taken, said) = crate::unsaved::told(|| store.take_native(&id));
+        let (taken, said) = crate::unsaved::told(|| native_handover(&store, &id));
         assert_eq!(taken.unwrap(), Some(vec!["SQLite".to_string()]));
         assert_eq!(
             said.iter()
@@ -664,7 +684,7 @@ fn owing(manager: &ChatManager, chat: &Chat) -> String {
     let (id, answers) = waiting(&manager.questions, &chat.key);
     manager.questions.answer(&answers).unwrap();
     let blocked = record_refuses_lines(chat);
-    assert!(manager.questions.take_native(&id).unwrap().is_some());
+    assert!(native_handover(&manager.questions, &id).unwrap().is_some());
     assert!(manager.questions.owes_notes());
     std::fs::remove_dir(&blocked).unwrap();
     id
@@ -808,7 +828,7 @@ fn a_line_owed_from_while_the_folder_was_away_keeps_to_the_record_it_found() {
     let (id, answers) = waiting(store, &chat.key);
     store.answer(&answers).unwrap();
     world.home.move_away();
-    assert!(store.take_native(&id).unwrap().is_some());
+    assert!(native_handover(&store, &id).unwrap().is_some());
     world.home.move_back();
     assert!(store.owes_notes());
 
@@ -827,5 +847,79 @@ fn a_line_owed_from_while_the_folder_was_away_keeps_to_the_record_it_found() {
         chat.lines().is_empty(),
         "the cleared chat got an old answer"
     );
+    assert!(!store.owes_notes());
+}
+
+/// Feedback e3bd1762 exercises the actual native-response callback with no
+/// stdin, rather than pretending that claiming an answer sent it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_closed_native_response_pipe_leaves_a_visible_uncertain_answer() {
+    let svc = Services::load();
+    let chat = Chat::new("closed-native-pipe");
+    let (_agent, _heard) = codex(&svc.chats, &chat.key);
+    let ids = asks_natively(
+        &svc,
+        &chat.key,
+        json!([{ "id":"choice", "question":"Which branch?" }]),
+    )
+    .await;
+    svc.chats.sessions.lock().unwrap()[&chat.key]
+        .lock()
+        .unwrap()
+        .stdin
+        .take();
+    dispatch(
+        &svc,
+        "question_answer_batch",
+        json!({"answers":[{"id":ids[0],"answer":"develop"}]}),
+    )
+    .unwrap();
+    let mut uncertain = None;
+    for _ in 0..200 {
+        let pending = dispatch(&svc, "question_pending", json!({})).unwrap();
+        uncertain = pending
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|q| q["id"] == ids[0] && q["status"] == "failed")
+            .cloned();
+        if uncertain.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let uncertain = uncertain.expect("the failed native handover stays visible");
+    assert!(uncertain["error"]
+        .as_str()
+        .unwrap()
+        .contains("response pipe is closed"));
+    assert_eq!(uncertain["retryable"], false);
+    assert!(
+        chat.lines().is_empty(),
+        "no delivered-answer line after a failed pipe"
+    );
+    assert!(!svc
+        .chats
+        .questions
+        .outbox()
+        .unwrap()
+        .iter()
+        .any(|r| r.origin.chat_key == chat.key));
+    svc.chats.test_end(&chat.key);
+}
+
+/// The response write may block while the person clears the conversation.
+#[test]
+fn a_native_answer_claimed_before_clear_does_not_write_into_the_new_history() {
+    let store = QuestionStore::default();
+    let chat = Chat::new("native-clear-during-write");
+    let (id, answers) = waiting(&store, &chat.key);
+    record_chat_event(&chat.key, json!({"type":"system","text":"old history"}));
+    store.answer(&answers).unwrap();
+    assert!(store.take_native(&id).unwrap().is_some());
+    crate::transcript::forget(&chat.key);
+    record_chat_event(&chat.key, json!({"type":"system","text":"new history"}));
+    store.native_written(&id, Ok(())).unwrap();
+    assert!(chat.lines().is_empty());
     assert!(!store.owes_notes());
 }

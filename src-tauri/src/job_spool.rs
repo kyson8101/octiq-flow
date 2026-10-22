@@ -80,6 +80,8 @@ struct Launch {
     /// SHA-256 of the secret.
     digest: [u8; 32],
     files: BTreeMap<String, Cursor>,
+    /// Invocation receipts survive removal/replacement of a spool filename.
+    starts: Mutex<BTreeMap<String, Value>>,
     /// The next place in the line of files waiting to be looked at.
     next_ticket: u64,
     /// That the folder could not be opened as itself was logged.
@@ -112,6 +114,7 @@ struct Cursor {
     unreadable_logged: bool,
     /// When the answer to its start was written.
     ack_at: Option<Instant>,
+    pending_ack: Option<Value>,
     /// Done with: the system said it is gone, or the host removed it.
     removed: bool,
     /// How many times the file was opened, for the tests to count.
@@ -128,6 +131,7 @@ impl Cursor {
             logged: false,
             unreadable_logged: false,
             ack_at: None,
+            pending_ack: None,
             removed: false,
             opened: 0,
         }
@@ -290,6 +294,7 @@ impl Spools {
             ident,
             digest: digest(&secret),
             files: BTreeMap::new(),
+            starts: Mutex::new(BTreeMap::new()),
             next_ticket: 0,
             folder_logged: false,
         };
@@ -470,6 +475,7 @@ fn read_launch(
             continue;
         };
         if cursor.removed {
+            retry_ack(&folder, name, cursor);
             continue;
         }
         match cursor.vetted {
@@ -483,6 +489,7 @@ fn read_launch(
                     own: &own,
                     digests,
                     jobs,
+                    starts: &launch.starts,
                 };
                 unread |= read_ours(&ctx, name, cursor, alive, running);
             }
@@ -527,6 +534,7 @@ fn read_launch(
                     own: &own,
                     digests,
                     jobs,
+                    starts: &launch.starts,
                 };
                 unread |= read_ours(&ctx, &name, cursor, alive, running);
             }
@@ -553,7 +561,7 @@ fn read_launch(
     // What is left of an own file that is gone: its answer, once
     // `--detach` has had time to read it. Only an answer the host wrote.
     launch.files.retain(|name, cursor| {
-        if !cursor.removed {
+        if !cursor.removed || cursor.pending_ack.is_some() {
             return true;
         }
         if cursor.ack_at.is_some_and(|at| at.elapsed() < ACK_KEEP) {
@@ -650,6 +658,7 @@ struct Ctx<'a> {
     own: &'a [u8; 32],
     digests: &'a [[u8; 32]],
     jobs: &'a Store,
+    starts: &'a Mutex<BTreeMap<String, Value>>,
 }
 
 /// Read on in one of the launch's own files. True while something of it is
@@ -661,6 +670,7 @@ fn read_ours(
     alive: &dyn Fn(u32) -> bool,
     running: bool,
 ) -> bool {
+    retry_ack(ctx.folder, name, cursor);
     let jobs = ctx.jobs;
     let path = ctx.dir.join(name);
     // Asked before the read: a wrapper dead before it holds no line it has
@@ -719,7 +729,7 @@ fn read_ours(
         State::Fresh => at_end && !running,
         State::Started(_) => false,
     };
-    if !done {
+    if !done || cursor.pending_ack.is_some() {
         return true;
     }
     match ctx.folder.remove_file(name) {
@@ -803,7 +813,6 @@ fn take_line(line: &[u8], name: &str, cursor: &mut Cursor, ctx: &Ctx) {
         Err(why) => return note(cursor, why),
     };
     let jobs = ctx.jobs;
-    let stem = spool_stem(name).unwrap_or_default();
     let kind = record
         .get("type")
         .and_then(Value::as_str)
@@ -811,27 +820,32 @@ fn take_line(line: &[u8], name: &str, cursor: &mut Cursor, ctx: &Ctx) {
     let state = cursor.state.clone();
     match (kind.as_deref(), &state) {
         (Some("start"), State::Fresh) => {
+            // New wrappers name their invocation independently of the file.
+            // Legacy starts use their canonical content (including wrapper pid).
+            let identity = record
+                .get("invocationId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(|id| format!("id:{id}"))
+                .unwrap_or_else(|| format!("legacy:{:?}", digest(&record.to_string())));
             let Ok(start) = serde_json::from_value::<Start>(record) else {
                 return note(cursor, "a start that does not parse");
             };
-            let answer = match jobs.start_spooled(ctx.chat_key, start) {
-                Ok(job) => match job["id"].as_str() {
-                    Some(id) => {
-                        cursor.state = State::Started(id.to_string());
-                        json!({ "id": id })
-                    }
-                    None => {
-                        cursor.state = State::Refused;
-                        json!({ "why": "the host made no job" })
-                    }
-                },
-                Err(why) => {
-                    cursor.state = State::Refused;
-                    json!({ "why": why })
-                }
+            let mut starts = ctx.starts.lock().unwrap_or_else(|e| e.into_inner());
+            let answer = starts
+                .entry(identity)
+                .or_insert_with(|| match jobs.start_spooled(ctx.chat_key, start) {
+                    Ok(job) if job["id"].is_string() => json!({ "id": job["id"] }),
+                    Ok(_) => json!({ "why": "the host made no job" }),
+                    Err(why) => json!({ "why": why }),
+                })
+                .clone();
+            cursor.state = match answer["id"].as_str() {
+                Some(id) => State::Started(id.to_string()),
+                None => State::Refused,
             };
-            write_ack(ctx.folder, stem, &answer);
-            cursor.ack_at = Some(Instant::now());
+            cursor.pending_ack = Some(answer);
+            retry_ack(ctx.folder, name, cursor);
         }
         (Some("progress"), State::Started(id)) => {
             let Ok(progress) = serde_json::from_value::<Progress>(record) else {
@@ -856,12 +870,23 @@ fn take_line(line: &[u8], name: &str, cursor: &mut Cursor, ctx: &Ctx) {
 /// under a new temporary name (never through a link) and renamed over the
 /// answer's name, so it is never read in part. A link planted at that name
 /// is replaced as a name; what it pointed at is not touched.
-fn write_ack(folder: &Folder, stem: &str, answer: &Value) {
+fn write_ack(folder: &Folder, stem: &str, answer: &Value) -> std::io::Result<()> {
     let name = format!("{stem}.ack");
     let temp = format!("{stem}.ack-{}", uuid::Uuid::new_v4().simple());
     let written = folder.write_new(&temp, answer.to_string().as_bytes());
-    if written.is_err() || folder.rename(&temp, &name).is_err() {
+    let result = written.and_then(|()| folder.rename(&temp, &name));
+    if result.is_err() {
         let _ = folder.remove_file(&temp);
+    }
+    result
+}
+
+fn retry_ack(folder: &Folder, name: &str, cursor: &mut Cursor) {
+    if let (Some(stem), Some(answer)) = (spool_stem(name), cursor.pending_ack.as_ref()) {
+        if write_ack(folder, stem, answer).is_ok() {
+            cursor.ack_at = Some(Instant::now());
+            cursor.pending_ack = None;
+        }
     }
 }
 
@@ -916,6 +941,7 @@ impl Writer {
         };
         record.insert("key".into(), json!(self.key));
         record.insert("type".into(), json!(kind));
+        record.insert("invocationId".into(), json!(self.id));
         let mut line = Value::Object(record).to_string().into_bytes();
         line.push(b'\n');
         match self.file.write(&line) {

@@ -2224,7 +2224,7 @@ const ORCHESTRATION_GATE_RESOLVE = {
 const ORCHESTRATION_MESSAGE_SEND = {
   name: "orchestration_message_send",
   description:
-    "Send a durable, structured message within one run. Use to: coordinator for the master, " +
+    "Send a durable, structured message within one run. Body limit: 20,000 UTF-8 bytes. Use to: coordinator for the master, " +
     "or an active attempt ID for a worker. Settled attempts cannot resume: start a retry first. " +
     "A worker in the middle of a turn gets it in the answer to its next call to OctiqFlow " +
     "(task_status, an orchestration tool or its report), and cannot report before reading it. " +

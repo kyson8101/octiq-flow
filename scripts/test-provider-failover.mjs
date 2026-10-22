@@ -91,7 +91,7 @@ const invoke = (cmd, args = {}) => new Promise((resolve, reject) => {
   const id = ++sequence; replies.set(id, { resolve, reject }); ws.send(JSON.stringify({ t: "invoke", id, cmd, args }));
 });
 try {
-  await wait("server", async () => { try { return (await fetch(`http://127.0.0.1:${port}/`)).status === 200; } catch { return false; } });
+  await wait("server", async () => { try { return (await fetch(`http://127.0.0.1:${port}/healthz`)).status === 200; } catch { return false; } });
   ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`);
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
   ws.onmessage = ({ data }) => { const frame = JSON.parse(data); if (frame.t === "event") events.push(frame); else if (frame.t === "reply") { const pending = replies.get(frame.id); if (pending) { replies.delete(frame.id); frame.ok ? pending.resolve(frame.result) : pending.reject(new Error(frame.error)); } } };
@@ -117,7 +117,7 @@ try {
     server = spawn(binary, [], { env, stdio: ["ignore", "pipe", "pipe"] });
     server.stdout.on("data", data => { serverLog += data; });
     server.stderr.on("data", data => { serverLog += data; });
-    await wait("restarted server", async () => { try { return (await fetch(`http://127.0.0.1:${port}/`)).status === 200; } catch { return false; } });
+    await wait("restarted server", async () => { try { return (await fetch(`http://127.0.0.1:${port}/healthz`)).status === 200; } catch { return false; } });
     ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`);
     await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
     ws.onmessage = ({ data }) => { const frame = JSON.parse(data); if (frame.t === "event") events.push(frame); else if (frame.t === "reply") { const pending = replies.get(frame.id); if (pending) { replies.delete(frame.id); frame.ok ? pending.resolve(frame.result) : pending.reject(new Error(frame.error)); } } };

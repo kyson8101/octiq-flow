@@ -6139,13 +6139,31 @@ fn clean_files(files: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+#[test]
+fn a_message_limit_counts_utf8_bytes_and_names_both_sizes() {
+    let accepted = "中".repeat(6_666) + "ab";
+    assert_eq!(
+        required_text("message body", accepted, 20_000)
+            .unwrap()
+            .len(),
+        20_000
+    );
+    let refused = "中".repeat(6_667);
+    let error = required_text("message body", refused, 20_000).unwrap_err();
+    assert!(error.contains("20001 UTF-8 bytes"), "{error}");
+    assert!(error.contains("20000 UTF-8 bytes"), "{error}");
+}
+
 fn required_text(label: &str, value: String, max: usize) -> Result<String, String> {
     let value = value.trim().to_string();
     if value.is_empty() {
         return Err(format!("The {label} is required."));
     }
     if value.len() > max {
-        return Err(format!("The {label} is too long."));
+        return Err(format!(
+            "The {label} is too long: {} UTF-8 bytes; the limit is {max} UTF-8 bytes.",
+            value.len()
+        ));
     }
     Ok(value)
 }
@@ -8579,6 +8597,10 @@ pub(crate) mod tests {
 
     #[test]
     fn rejection_never_withdraws_terminal_active_or_history_bearing_tasks() {
+        // Snapshot failure routing reads the chat index. Keep another test's
+        // coordinator changes from changing that derived view mid-comparison.
+        let home = crate::test_dir::TestDir::new("rejection-keeps-tasks");
+        let _profile = crate::profile::started_in(&home);
         let store = OrchestrationStore::default();
         let (run, completed) = pending_plan(&store);
         let failed = task(&store, &run, Vec::new());

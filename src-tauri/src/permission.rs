@@ -50,33 +50,32 @@ pub const TIMED_OUT: &str = "nobody answered in time";
 /// The reason a card the person answered with Deny is refused with.
 pub const DENIED: &str = "you denied it";
 
-/// OctiqFlow's own tools that never need a permission card of Claude's.
-///
-/// Read access is Claude's plan mode, and plan mode asks about every MCP tool
-/// not marked read-only BEFORE `--allowedTools` is read (the front desk met
-/// the same thing, 2f8aa87). So a read-only chat put a card up each time its
-/// agent saved a memory entry or reported its status. None of these touch the
-/// project: they keep the host's own bookkeeping (memory, status, the chat's
-/// plan, title, feedback, previews), or they already put their own card in
-/// front of the person (handover, registering an agent, the shared policy, a
-/// team), where a second card would only ask the same thing twice.
-///
-/// The two plan tools are here by the person's decision of 2026-10-13 (gate
-/// `gate_c0bf34a9…` of the task that added them): they read and write only
-/// the chat's plan record (`chat_plan.rs`), which the person reads beside
-/// the chat. Neither is on Claude's `--allowedTools`, a command line, so
-/// this list is what keeps a card off every change to a plan. Starting a
-/// plan is no tool at all.
+/// Host bookkeeping and tools whose own host approval remains authoritative.
+/// One list drives Claude's allow rules, its plan-mode exception, Codex's
+/// per-tool configuration. Actual elicitations still require a card. Starting work or
+/// widening a boundary is deliberately absent (even if the hook gates it too).
 pub const HOST_BOOKKEEPING: &[&str] = &[
     "vault_agent_memory_append",
+    "vault_agent_memory_read",
+    "vault_agent_memory_lessons",
     "task_status",
     "orchestration_worker_report",
+    "orchestration_message_send",
+    "orchestration_gate_create",
+    "orchestration_snapshot",
+    "orchestration_destinations",
+    "orchestration_peer_ask",
+    "orchestration_peer_request",
     "plan_read",
     "plan_update",
     "set_chat_title",
     "ask_user",
     "feedback_submit",
     "feedback_update",
+    "feedback_list",
+    "feedback_get",
+    "search_conversations",
+    "read_conversation",
     "preview_image",
     "preview_html",
     "island_propose",
@@ -87,6 +86,7 @@ pub const HOST_BOOKKEEPING: &[&str] = &[
     "handover",
     "handover_ask",
     "handover_outcome",
+    "agent_list",
     "agent_register",
     "agent_update",
     "agent_delete",
@@ -94,6 +94,11 @@ pub const HOST_BOOKKEEPING: &[&str] = &[
     "team_create",
     "team_update",
     "request_access",
+    "vault_info",
+    "vault_list",
+    "vault_search",
+    "vault_read",
+    "vault_receipt",
 ];
 
 pub fn host_bookkeeping(tool: &str) -> bool {

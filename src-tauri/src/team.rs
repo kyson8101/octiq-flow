@@ -158,6 +158,10 @@ pub struct LeadRecord {
     /// destination. Absent on every task handed out from a project.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cross_project: bool,
+    /// Fingerprint of the roster last included in this chat's brief. Legacy
+    /// records refresh once; unrelated edits and process restarts do not repeat it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roster_fingerprint: Option<String>,
     pub created_at: i64,
 }
 
@@ -1429,6 +1433,7 @@ pub fn record_lead(
         lead_name: lead.name.clone(),
         project_id: project_id.to_owned(),
         cross_project,
+        roster_fingerprint: None,
         created_at: now_ms(),
     });
     write(path, &stored)
@@ -3001,6 +3006,8 @@ Your direct reports:\n{roster}"
         )
     };
     record_lead(path, chat_key, &lead, project_id, cross_project)?;
+    // The initial brief already carries this roster and its peer context.
+    refresh_turn_brief(path, chat_key, String::new(), projects)?;
     // Its peers are whoever shares its team, wherever they work: the whole
     // roster, not the project's slice of it.
     let peers = lead_peers(path, &lead)
@@ -3078,10 +3085,20 @@ pub fn refresh_turn_brief(
     let peers = lead_peers(path, &lead)
         .map(|peers| format!("\n\n{peers}"))
         .unwrap_or_default();
-    Ok(format!(
-        "{text}{BRIEF_MARK}Current roster for {}\n\n{roster}{peers}",
-        lead.name
-    ))
+    let context = format!("Current roster for {}\n\n{roster}{peers}", lead.name);
+    use sha2::{Digest, Sha256};
+    let fingerprint = format!("{:x}", Sha256::digest(context.as_bytes()));
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut stored = read(path)?;
+    let Some(current) = stored.leads.iter_mut().find(|r| r.chat_key == chat_key) else {
+        return Ok(text);
+    };
+    if current.roster_fingerprint.as_ref() == Some(&fingerprint) {
+        return Ok(text);
+    }
+    current.roster_fingerprint = Some(fingerprint);
+    write(path, &stored)?;
+    Ok(format!("{text}{BRIEF_MARK}{context}"))
 }
 
 /// Appended to a worker's brief when its assignee manages agents and the task
@@ -3415,8 +3432,7 @@ mod tests {
         .unwrap();
         assert!(first.contains("You are on the team Leads."), "{first}");
         let later = refresh_turn_brief(&path, "chat:ada", "And now?".into(), &[]).unwrap();
-        assert!(later.contains("You are on the team Leads."), "{later}");
-        assert!(later.contains("orchestration_peer_request"));
+        assert_eq!(later, "And now?");
         let no_team = brief(&path, "chat:cy", "p1", &cy.id, "Check the NAS", false, &[]).unwrap();
         assert!(!no_team.contains("orchestration_peer_request"));
         // Neither brief wrote anything about who reports to whom.
@@ -4243,6 +4259,18 @@ mod tests {
             "{first}"
         );
 
+        let saved = std::fs::read(&path).unwrap();
+        assert_eq!(
+            refresh_turn_brief(&path, "chat:changing-roster", "Unchanged".into(), &projects)
+                .unwrap(),
+            "Unchanged"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            saved,
+            "no write for an unchanged roster"
+        );
+
         let maya = save(&path, under("Maya", Some("p2"), &ryan)).unwrap();
         let added = refresh_turn_brief(&path, "chat:changing-roster", "Continue".into(), &projects)
             .unwrap();
@@ -4250,6 +4278,24 @@ mod tests {
         assert!(added.contains(&format!("id `{}`", maya.id)), "{added}");
         assert!(added.contains("works only in project OctiqFlow"), "{added}");
         assert!(added.contains("supersedes any older roster"), "{added}");
+
+        assert_eq!(
+            refresh_turn_brief(&path, "chat:changing-roster", "Again".into(), &projects).unwrap(),
+            "Again"
+        );
+        let changed = save(
+            &path,
+            TeamDraft {
+                id: Some(maya.id.clone()),
+                role: "New role".into(),
+                ..under("Maya", Some("p2"), &ryan)
+            },
+        )
+        .unwrap();
+        let role =
+            refresh_turn_brief(&path, "chat:changing-roster", "Role".into(), &projects).unwrap();
+        assert!(role.contains("New role"));
+        assert_eq!(changed.id, maya.id);
 
         let mut reassigned = draft("Maya", Some("p2"));
         reassigned.id = Some(maya.id);
@@ -4873,7 +4919,7 @@ mod tests {
         assert!(lead_text.contains("Other — builds things"), "{lead_text}");
         // A later turn's roster.
         let later = refresh_turn_brief(&path, "chat:lead", "More".into(), &[]).unwrap();
-        assert!(later.contains("Other — builds things"), "{later}");
+        assert_eq!(later, "More");
         // A second-level manager's roster.
         let split = manager_brief(&path, "p1", &manager.id, "task_1", "run_1")
             .unwrap()

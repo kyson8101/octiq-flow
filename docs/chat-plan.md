@@ -213,6 +213,7 @@ Three things hold it:
 | --- | --- |
 | nothing: no try left a line, and this server did not hand it over | hands the turn over, under the same id |
 | handed over (written to the agent, in the host's queue or being carried into the next process, acknowledged, or its process ended before saying so) | sends nothing. If `told` was false it saves it. `state: "told"` |
+| envelope alone, with no delivery line, provider receipt, queue or host-memory evidence | refuses in words as uncertain; neither marks told nor resends |
 | gone (below) | hands over the next try, under the next id |
 
 - **What the server did, kept by the server.** Both receipts above are

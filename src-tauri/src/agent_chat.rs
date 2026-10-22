@@ -657,7 +657,10 @@ struct CodexAppSession {
     interrupt_when_started: bool,
     next_request: u64,
     /// Pending MCP confirmations, cancelled with this process/turn.
-    elicitations: HashMap<String, tokio::sync::oneshot::Sender<()>>,
+    elicitations: HashMap<String, codex_elicitation::Pending>,
+    // Native MCP items correlate Codex 0.163 approvals, which omit tool_name.
+    mcp_calls: HashMap<String, Value>,
+    mcp_refusals: HashMap<String, String>,
     model: Option<String>,
     effort: Option<String>,
     access: Option<Access>,
@@ -685,6 +688,8 @@ impl ChatSession {
     fn turn_ended(&mut self) {
         if let Some(codex) = self.codex.as_mut() {
             codex.elicitations.clear();
+            codex.mcp_calls.clear();
+            codex.mcp_refusals.clear();
         }
         self.busy = false;
         self.last_active = Instant::now();
@@ -1920,10 +1925,19 @@ impl ChatManager {
         if !writable {
             return Ok(());
         }
+        let owners = self.orchestrations.session_workspace_owners()?;
         let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         let starts = self.starts.lock().map_err(|e| e.to_string())?;
-        for key in sessions.keys() {
+        for (key, session) in sessions.iter() {
             if key == worker || key == coordinator {
+                continue;
+            }
+            let owner = owners.get(key);
+            if owner.is_some_and(|(_, _, settled)| *settled)
+                // Do not wait on a session while holding starts: a writer
+                // may hold that session and be reading its start context.
+                && session.try_lock().is_ok_and(|session| !session.busy)
+            {
                 continue;
             }
             let Some(start) = starts.get(key) else {
@@ -1934,7 +1948,15 @@ impl ChatManager {
             // processes instead of treating their next-turn setting as proof.
             for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
                 let other = crate::git_ops::workflow::held_checkout(path);
-                if crate::git_ops::workflow::shares_checkout(checkout, &other, managed_worktree) {
+                let other_managed = owner.is_some_and(|(root, managed, _)| {
+                    *managed && std::path::Path::new(&other).starts_with(root)
+                });
+                if crate::git_ops::workflow::leases_clash(
+                    checkout,
+                    managed_worktree,
+                    &other,
+                    other_managed,
+                ) {
                     return Err(if managed_worktree {
                         format!("Chat {key} is working inside this worktree ({other}). Stop it before starting another writer here.")
                     } else {
@@ -4152,6 +4174,8 @@ pub(crate) fn start_session(
             interrupt_when_started: false,
             next_request: 0,
             elicitations: HashMap::new(),
+            mcp_calls: HashMap::new(),
+            mcp_refusals: HashMap::new(),
             model: selected_model,
             effort: selected_effort,
             access,
@@ -4264,6 +4288,7 @@ pub(crate) fn start_session(
                 match serde_json::from_str::<Value>(trimmed) {
                     Ok(mut event) => {
                         if transport.is_app_server() {
+                            codex_elicitation::observe(&asking, &mut event);
                             if crate::codex_app_server::is_server_request(&event) {
                                 if let Err(error) = reading
                                     .orchestrations
@@ -4283,7 +4308,11 @@ pub(crate) fn start_session(
                             if event.get("method").and_then(Value::as_str)
                                 == Some("serverRequest/resolved")
                             {
-                                codex_elicitation::resolved(&asking, &event["params"]["requestId"]);
+                                codex_elicitation::resolved(
+                                    &asking,
+                                    &key,
+                                    &event["params"]["requestId"],
+                                );
                             }
                             let native_thread = if let Ok(session) = asking.lock() {
                                 session.codex.as_ref().map(|codex| codex.thread_id.clone())
@@ -4695,6 +4724,8 @@ pub(crate) fn start_session(
             if let Ok(mut session) = asking.lock() {
                 if let Some(codex) = session.codex.as_mut() {
                     codex.elicitations.clear();
+                    codex.mcp_calls.clear();
+                    codex.mcp_refusals.clear();
                 }
                 reading.questions.detach_launch(&session.launch_id);
                 record_delivery(&key, session.user_turn_id.take().as_deref(), "unknown");
@@ -5659,7 +5690,9 @@ pub(crate) enum HostTurn {
 ///   being carried into the next process, **gone** otherwise. The queue is
 ///   in memory, so that is a turn a server queued and did not live to hand
 ///   over.
-/// - Anything else: **handed**. That includes `unknown`, a process that
+/// - An envelope alone, with no queue or host-memory evidence: **uncertain**;
+///   the read fails in words, never marks it told and never resends it.
+/// - Other delivery evidence: **handed**. That includes `unknown`, a process that
 ///   ended before it said it had the turn: the words may have reached the
 ///   agent, so they are never sent a second time for the host.
 ///
@@ -5745,7 +5778,14 @@ pub(crate) fn host_turns(
     }
     Ok(seen
         .into_iter()
-        .map(|(id, turn)| {
+        .map(|(id, turn)| -> Result<_, String> {
+            // An envelope precedes the write. It is not a transport receipt:
+            // the failed-write line may itself have failed to append.
+            if !turn.taken_back && !turn.received && turn.delivery.is_none()
+                && !waits(&id)
+            {
+                return Err(format!("Host turn {id} has only an envelope; its handover is uncertain. It has not been marked told or sent again. Check the conversation before retrying."));
+            }
             let gone = turn.taken_back
                 || (!turn.received
                     && match turn.delivery.as_deref() {
@@ -5758,9 +5798,9 @@ pub(crate) fn host_turns(
             } else {
                 HostTurn::Handed
             };
-            (id, fate)
+            Ok((id, fate))
         })
-        .collect())
+        .collect::<Result<_, _>>()?)
 }
 
 fn send_turn(
@@ -6555,13 +6595,28 @@ fn answer_codex_user_input(
         if answers.is_none() {
             manager.questions.detach(&card_id);
         }
+        let claimed = answers.is_some();
         let mapped = native_ids
             .into_iter()
             .zip(answers.unwrap_or_default())
             .filter(|(id, _)| !id.is_empty())
             .map(|(id, answer)| (id, json!({ "answers": [answer] })))
             .collect::<Map<String, Value>>();
-        write_codex_response(&session, &request_id, json!({ "answers": mapped }));
+        let written = (|| {
+            let mut guard = session.lock().map_err(|e| e.to_string())?;
+            let stdin = guard
+                .stdin
+                .as_mut()
+                .ok_or("The native response pipe is closed.")?;
+            write_json_line(
+                stdin,
+                &crate::codex_app_server::response(&request_id, json!({ "answers": mapped })),
+            )
+            .map_err(|e| e.to_string())
+        })();
+        if claimed {
+            let _ = manager.questions.native_written(&card_id, written);
+        }
     });
 }
 
@@ -6666,6 +6721,7 @@ fn answer_permission(
     let ask = crate::permission::Request {
         chat_key: Some(key.to_string()),
         session_id: field("session_id"),
+        provider: Some(ChatAgent::Claude),
         tool_name: field("tool_name"),
         tool_input: request.get("input").cloned(),
         tool_use_id: field("tool_use_id"),
@@ -7572,6 +7628,8 @@ impl ChatManager {
             interrupt_when_started: false,
             next_request: 0,
             elicitations: HashMap::new(),
+            mcp_calls: HashMap::new(),
+            mcp_refusals: HashMap::new(),
             model: None,
             effort: None,
             access: Some(access),
@@ -7791,6 +7849,8 @@ fn end_process_when(
 fn stop_process(manager: &ChatManager, key: &str, session: &mut ChatSession) {
     if let Some(codex) = session.codex.as_mut() {
         codex.elicitations.clear();
+        codex.mcp_calls.clear();
+        codex.mcp_refusals.clear();
     }
     if let Err(error) = manager.background.interrupt(key, &session.launch_id,
         "The provider session was ended or switched. Background work is no longer attached; inspect retained output before retrying.") {
@@ -11022,6 +11082,8 @@ mod tests {
                 interrupt_when_started: false,
                 next_request: 0,
                 elicitations: HashMap::new(),
+                mcp_calls: HashMap::new(),
+                mcp_refusals: HashMap::new(),
                 model: None,
                 effort: None,
                 access: Some(Access::Read),
@@ -11234,6 +11296,8 @@ mod tests {
                 interrupt_when_started: false,
                 next_request: 0,
                 elicitations: HashMap::new(),
+                mcp_calls: HashMap::new(),
+                mcp_refusals: HashMap::new(),
                 model: None,
                 effort: None,
                 access: Some(Access::Read),
@@ -13487,6 +13551,8 @@ mod completion_tests {
                 interrupt_when_started: false,
                 next_request: 0,
                 elicitations: HashMap::new(),
+                mcp_calls: HashMap::new(),
+                mcp_refusals: HashMap::new(),
                 model: None,
                 effort: None,
                 access: Some(Access::Read),

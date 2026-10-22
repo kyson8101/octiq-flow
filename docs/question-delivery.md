@@ -47,6 +47,13 @@ description (`scripts/mcp/octiq-ask.cjs`). Codex never sees either; its
   explanation; it is not automatically executed again. A known launch failure
   offers an explicit retry. This is duplicate-safe dispatch, not a guarantee
   that arbitrary external actions performed by an agent are exactly-once.
+- Native Codex answers are claimed once as `dispatching`, retaining the live
+  waiter until the whole JSON response is written. Only a successful pipe write
+  marks them `delivered` and writes the answered line. A closed pipe or failed
+  write (possibly partial) leaves `uncertain`, visible with its answers and an
+  explanation, with no automatic replay or retry button. Check the conversation
+  and continue there, or dismiss the saved question. A restart during the write
+  uses the same unconfirmed-dispatch recovery rule.
 - Stop, cancellation, and conversation deletion cancel pending continuations.
   They do not undo an answer or action the agent has already received.
 

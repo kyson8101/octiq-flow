@@ -424,6 +424,41 @@ fn approved_plan(
 }
 
 impl OrchestrationStore {
+    /// Ownership facts for live-session admission, derived from the ledger.
+    /// A process remaining between turns is not itself an unsettled lease.
+    pub(crate) fn session_workspace_owners(
+        &self,
+    ) -> Result<BTreeMap<String, (String, bool, bool)>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        Ok(inner
+            .data
+            .attempts
+            .values()
+            .map(|attempt| {
+                (
+                    attempt.worker_chat_key.clone(),
+                    (
+                        inner
+                            .data
+                            .tasks
+                            .get(&attempt.task_id)
+                            .and_then(|t| t.workspace.as_ref())
+                            .filter(|ws| ws.plan.cwd == attempt.cwd)
+                            .map_or_else(
+                                || attempt.cwd.clone(),
+                                |ws| ws.plan.checkout_root.clone(),
+                            ),
+                        attempt_in_managed_worktree(&inner.data, attempt),
+                        !attempt_is_unsettled(&inner.data, attempt),
+                    ),
+                )
+            })
+            .collect())
+    }
+
     /// Give every unstarted task that has neither a workspace nor a proposal
     /// one: tasks created before proposals existed, so an open plan shows its
     /// branch too. Git runs outside the store lock; a task that gained either
@@ -1795,6 +1830,29 @@ pub(super) mod tests {
         assert!(again.conflict.unwrap().contains("already exists"));
     }
 
+    /// Feedback 6f1aa0d3: even a host-marked checkout without an attempt
+    /// remains a collision; its existence is not proof of a reserved launch.
+    #[test]
+    fn a_host_marked_orphan_is_refused_and_preserved_for_investigation() {
+        let repo = Repo::new();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Worktree);
+        let plan = proposed(&store, &task);
+        workflow::provision(&plan).unwrap(); // Reproduce the incident's disk state.
+        let err = prepare(&store, &task, Access::Auto).unwrap_err();
+        assert!(err.contains("already exist"), "{err}");
+        let attempts = store.snapshot(Some(&run.id)).unwrap().attempts;
+        assert_eq!(
+            attempts.len(),
+            1,
+            "reservation precedes the occupied-path check"
+        );
+        assert_eq!(attempts[0].number, 1);
+        assert_eq!(attempts[0].status, AttemptStatus::Preparing);
+        assert_eq!(stored(&store, &task).retries_used, 0);
+        assert!(stored(&store, &task).workspace.is_none());
+        workflow::verify(&plan).unwrap(); // Occupant was not changed or removed.
+    }
+
     #[test]
     fn current_checkout_plans_its_own_branch_and_refuses_one_switched_since() {
         let repo = Repo::new();
@@ -2496,6 +2554,70 @@ pub(super) mod tests {
         .unwrap_err()
         .contains("already leased"));
     }
+    /// Feedback 083d61d9: the session table uses both ownership identities,
+    /// and does not mistake a settled idle process for an active writer.
+    #[test]
+    fn live_session_admission_is_symmetric_and_releases_settled_idle_workers() {
+        let repo = Repo::new();
+        let (store, _, task) = setup(&repo, WorkspaceMode::Worktree);
+        let worker = prepare(&store, &task, Access::Auto).unwrap();
+        let mut chats = ChatManager::default();
+        chats.orchestrations = std::sync::Arc::new(store);
+        chats.test_launch(&worker.worker_chat_key);
+        chats.test_remember_start(&worker.worker_chat_key, &worker.cwd);
+        let parent = repo.dir.to_string_lossy();
+        assert!(chats
+            .require_workspace_available(&parent, "chat:new", "chat:master", true, false)
+            .is_ok());
+        assert!(chats
+            .require_workspace_available(&worker.cwd, "chat:new", "chat:master", true, true)
+            .unwrap_err()
+            .contains("working inside"));
+        report(&chats.orchestrations, &worker, WorkerOutcome::Completed);
+        assert!(chats
+            .require_workspace_available(&worker.cwd, "chat:new", "chat:master", true, true)
+            .is_ok());
+        // A settled ledger is no licence to overlap tools still running.
+        chats.test_busy(&worker.worker_chat_key, true);
+        assert!(chats
+            .require_workspace_available(&worker.cwd, "chat:new", "chat:master", true, true)
+            .is_err());
+        chats.test_end(&worker.worker_chat_key);
+    }
+
+    /// Feedback 6f1aa0d3: queued proposals are read-only; admission failures
+    /// neither provision a checkout nor spend the first attempt's retry.
+    #[test]
+    fn queued_plan_reads_do_not_provision_or_spend_an_attempt_before_admission() {
+        let repo = Repo::new();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Worktree);
+        let plan = proposed(&store, &task);
+        store
+            .mutate(|data| {
+                data.runs.get_mut(&run.id).unwrap().plan_approval =
+                    Some(PlanApproval::pending(now_ms()));
+                Ok(())
+            })
+            .unwrap();
+        for _ in 0..3 {
+            store.propose_missing_workspaces().unwrap();
+            assert!(prepare(&store, &task, Access::Auto).is_err());
+            assert!(!Path::new(&plan.checkout_root).exists());
+            assert!(store.snapshot(Some(&run.id)).unwrap().attempts.is_empty());
+            assert_eq!(stored(&store, &task).retries_used, 0);
+        }
+        store
+            .mutate(|data| {
+                data.runs.get_mut(&run.id).unwrap().plan_approval = None;
+                Ok(())
+            })
+            .unwrap();
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        assert_eq!(first.number, 1);
+        assert_eq!(stored(&store, &task).retries_used, 0);
+        assert_eq!(first.cwd, plan.cwd);
+    }
+
     #[test]
     fn independent_worktrees_can_write_in_parallel_and_auto_readers_reuse_root() {
         let repo = Repo::new();
