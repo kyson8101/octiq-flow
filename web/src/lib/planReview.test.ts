@@ -1,11 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
-  awaitingApproval, planDestination, planNumbers, planOwner, planPlaceKey, planPlaceNames, planStages, stageSummary,
+  awaitingApproval, nextPlanChanges, planDestination, planNumbers, planOwner, planPlaceKey, planPlaceNames, planStages, stageSummary,
 } from "./planReview";
 import type { OrchestrationTask } from "./orchestration";
 
 const task = (id: string, dependsOn: string[] = [], extra: Partial<OrchestrationTask> = {}): OrchestrationTask => ({
   id, runId: "run", title: id, spec: "", dependsOn, status: "pending", createdAt: 1, updatedAt: 1, ...extra,
+});
+
+describe("plan revision changes", () => {
+  it("names additions and withdrawals, keeping them after the settle interval", () => {
+    const initial = nextPlanChanges(null, "run", 1, [task("a"), task("b")]);
+    expect(initial.added).toEqual([]);
+    const changed = nextPlanChanges(initial, "run", 2, [task("a", [], { status: "cancelled" }), task("b"), task("c")]);
+    expect(changed.added).toEqual(["c"]);
+    expect(changed.withdrawn).toEqual(["a"]);
+    expect(nextPlanChanges(changed, "run", 2, [task("b"), task("c")])).toEqual(changed);
+    expect(nextPlanChanges(changed, "run", 3, [task("b"), task("c")]).added).toEqual([]);
+  });
+  it("does not invent a previous revision on reload, an older host, or another run", () => {
+    const first = nextPlanChanges(null, "one", undefined, [task("a")]);
+    expect(nextPlanChanges(first, "one", 2, [task("b")]).withdrawn).toEqual([]);
+    expect(nextPlanChanges(first, "two", 2, [task("b")]).added).toEqual([]);
+  });
 });
 
 describe("planStages", () => {

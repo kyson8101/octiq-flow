@@ -279,6 +279,10 @@ export class NowPlaying {
     el.addEventListener("play", () => this.played(el));
     el.addEventListener("pause", () => this.emit());
     el.addEventListener("ended", () => this.emit());
+    el.addEventListener("loadedmetadata", () => {
+      this.errors.delete(el);
+      this.emit();
+    });
     el.addEventListener("error", () => {
       this.errors.set(el, el.error?.message || "Could not load this media.");
       el.pause();

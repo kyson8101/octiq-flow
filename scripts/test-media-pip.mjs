@@ -438,8 +438,28 @@ async function lifecycleScene(browser, theme, size, scene) {
       await page.locator('.now-playing [role=alert]').waitFor();
       assert.equal(await page.locator('.now-playing').getByRole('button', {name: 'Play', exact: true}).isDisabled(), true, label);
       await page.locator('.now-playing-back').click();
-      await page.waitForFunction(() => !document.querySelector('.msgs video'));
+      await page.waitForFunction(() => document.querySelector('.msgs video') === window.playedElement);
+      const retry = page.locator('.prose-media').getByRole('button', {name: 'Retry', exact: true});
+      await retry.waitFor();
       assert.equal(await page.locator('.now-playing[data-shown=true]').count(), 0, label);
+      await page.screenshot({path: join(artifacts, `${theme}-error-retry-${size.name}.png`), fullPage: true});
+      // The failed file comes back. Retry reloads the retained element rather
+      // than replacing the element nowPlaying and the reply slot know.
+      FILES.set('/missing.mp4', FILES.get(VIDEO));
+      try {
+        await retry.click();
+        await page.waitForFunction(() => window.playedElement.readyState >= 1 && !window.playedElement.error);
+        await page.evaluate(() => window.playedElement.play());
+        await advances(page, 0);
+        assert.equal(await page.evaluate(() => document.querySelector('.msgs video') === window.playedElement), true, label);
+        assert.equal(await retry.count(), 0, label);
+        await pick(page, size.phone, 'Release notes');
+        await page.waitForFunction(() => document.querySelector('.now-playing video') === window.playedElement);
+        await advances(page, (await state(page)).time);
+        assert.equal(await page.locator('.now-playing [role=alert]').count(), 0, label);
+        assert.equal(await page.locator('.now-playing').getByRole('button', {name: 'Pause', exact: true}).isEnabled(), true, label);
+        await page.screenshot({path: join(artifacts, `${theme}-error-recovered-${size.name}.png`), fullPage: true});
+      } finally { FILES.delete('/missing.mp4'); }
     }
     if (scene === 'delete' || scene === 'clear') {
       assert.deepEqual(await page.evaluate(() => ({paused: window.playedElement.paused, src: window.playedElement.getAttribute('src'), connected: window.playedElement.isConnected})),

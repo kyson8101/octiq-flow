@@ -196,6 +196,8 @@ describe("the ledger's status in a task's details", () => {
     const [task] = hostFacts.reopenNoticeDelivered().tasks;
     expect(statusLine(task, null)).toBe("Ledger status: Ready");
     expect(statusLine({ status: "running" }, null)).toBe("Ledger status: Working");
+    expect(statusLine({ status: "completed" }, null)).toBe("Ledger status: Completed");
+    expect(statusLine({ status: "completed" }, REOPEN_LABEL)).toBe(`Task: ${REOPEN_LABEL} · ledger status: Completed`);
     expect(statusLine({ status: "failed" }, STOPPED_LABEL)).toBe(`Task: ${STOPPED_LABEL} · ledger status: Failed`);
     expect(statusLine({ status: "ready" }, PLAN_LABEL)).toBe(`Task: ${PLAN_LABEL} · ledger status: Ready`);
   });

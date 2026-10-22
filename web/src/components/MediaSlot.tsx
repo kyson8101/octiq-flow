@@ -4,6 +4,7 @@
 // on screen.
 import { createContext, useContext, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { nowPlaying, type MediaKind, type MediaLike, type MediaSource } from "../lib/nowPlaying";
+import { keepMediaFresh } from "../lib/mediaFreshness";
 
 /** Which chat a transcript is (`MessageList`): the chat its players belong to.
  *  Null outside a chat, where a player never floats. */
@@ -22,9 +23,10 @@ export function useHeldMedia(chat: string | null, path: string, reply: string) {
 /** A new player element, as the browser's own controls draw it. Pointed at
  *  `/file` directly so it streams in ranges; `preload="metadata"` asks for the
  *  length and the first frame, not the whole file. */
-export function createMedia(kind: MediaKind, url: string, label: string): HTMLMediaElement {
+export function createMedia(kind: MediaKind, url: string, label: string, path?: string): HTMLMediaElement {
   const el = document.createElement(kind);
-  el.src = url;
+  if (path) keepMediaFresh(el, path, url);
+  else el.src = url;
   el.controls = true;
   el.preload = "metadata";
   el.setAttribute("aria-label", label);
@@ -45,7 +47,7 @@ export function useMediaSlot<E extends HTMLMediaElement>(source: MediaSource, ur
     return nowPlaying.mount(
       slot,
       { chat, reply, path, kind, name },
-      () => createMedia(kind, latest.current.url, name) as unknown as MediaLike,
+      () => createMedia(kind, latest.current.url, name, path) as unknown as MediaLike,
       (el) => latest.current.bind(el as unknown as E),
     );
   }, [chat, reply, path, kind, name]);

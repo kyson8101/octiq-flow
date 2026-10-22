@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMedia } from "./MediaSlot";
 
+vi.mock("../lib/pathStore", () => ({ mediaRevision: vi.fn() }));
+
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("a player's element", () => {

@@ -24,6 +24,9 @@ const BATCH_MS = 40;
 /** A ceiling on what is remembered, so a very long day cannot grow this without
  *  bound. Far above what any real conversation reaches. */
 const MAX_ANSWERS = 4000;
+/** Missing outputs can appear while an agent is still writing them. */
+export const MISSING_PATH_MS = 5_000;
+const missingAt = new Map<string, number>();
 
 /** candidate + cwd → the real path, or null for "no such file". */
 const answers = new Map<string, string | null>();
@@ -38,6 +41,18 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 
 /** The two joined by a NUL, which neither of them can contain. */
 const keyOf = (raw: string, cwd: string) => `${cwd}\u0000${raw}`;
+
+/** An explicit playback request needs a fresh host answer, even for a path
+ *  already resolved in an earlier reply. stat_paths supplies the host's mtime
+ *  revision; neither lookup polls or downloads the media. */
+export async function mediaRevision(path: string): Promise<string | null> {
+  const resolved = await bridge.invoke<(string | null)[]>("resolve_paths", { paths: [path], cwd: "" });
+  const real = resolved?.[0];
+  if (!real) return null;
+  const stamps = await bridge.invoke<(number | null)[]>("stat_paths", { paths: [real] });
+  const stamp = stamps?.[0];
+  return typeof stamp === "number" ? `${real}\u0000${stamp}` : null;
+}
 
 /** What is known about one path: the file it turned out to be, `null` for a
  *  path that does not exist, or `undefined` for one nothing has asked about
@@ -63,7 +78,8 @@ export function askPaths(raws: string[], cwd: string): void {
   let added = false;
   for (const raw of raws) {
     const key = keyOf(raw, cwd);
-    if (answers.has(key) || inflight.has(key)) continue;
+    if (inflight.has(key)) continue;
+    if (answers.has(key) && (answers.get(key) !== null || Date.now() - (missingAt.get(key) ?? 0) < MISSING_PATH_MS)) continue;
     inflight.add(key);
     let waiting = queue.get(cwd);
     if (!waiting) queue.set(cwd, (waiting = new Set()));
@@ -96,8 +112,10 @@ function flush(): void {
           const key = keyOf(raw, cwd);
           inflight.delete(key);
           answers.set(key, resolved?.[i] ?? null);
+          if (resolved?.[i]) missingAt.delete(key);
+          else missingAt.set(key, Date.now());
         });
-        if (answers.size > MAX_ANSWERS) answers.clear();
+        if (answers.size > MAX_ANSWERS) { answers.clear(); missingAt.clear(); }
         for (const listener of listeners) listener();
       })
       .catch(() => {
@@ -112,6 +130,7 @@ function flush(): void {
 /** Forget everything. For tests — nothing in the app has a reason to. */
 export function resetPathStore(): void {
   answers.clear();
+  missingAt.clear();
   inflight.clear();
   queue.clear();
   listeners.clear();

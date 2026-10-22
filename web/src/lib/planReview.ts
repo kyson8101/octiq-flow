@@ -176,6 +176,29 @@ export function planTasks(tasks: OrchestrationTask[]): OrchestrationTask[] {
   return tasks.filter((task) => task.status !== "cancelled" || !!task.approvedAt);
 }
 
+export type PlanChanges = {
+  runId: string;
+  revision: number | undefined;
+  tasks: { id: string; title: string }[];
+  added: string[];
+  withdrawn: string[];
+};
+
+/** Only compare revisions this card actually saw; opening a newer revision
+ *  alone cannot tell us what its predecessor contained. */
+export function nextPlanChanges(previous: PlanChanges | null, runId: string, revision: number | undefined, tasks: OrchestrationTask[]): PlanChanges {
+  const current = planTasks(tasks).map(({ id, title }) => ({ id, title }));
+  const sameRun = previous?.runId === runId;
+  const replaced = sameRun && previous.revision !== undefined && revision !== previous.revision;
+  return {
+    runId, revision, tasks: current,
+    added: replaced ? current.filter(task => !previous.tasks.some(old => old.id === task.id)).map(task => task.title)
+      : sameRun ? previous.added : [],
+    withdrawn: replaced ? previous.tasks.filter(task => !current.some(now => now.id === task.id)).map(task => task.title)
+      : sameRun ? previous.withdrawn : [],
+  };
+}
+
 function folderName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
