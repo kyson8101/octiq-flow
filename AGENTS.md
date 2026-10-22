@@ -304,15 +304,21 @@ use a 15-minute cooldown. Registered agent defaults and identity do not change.
 
 Codex's native MCP approvals use the same `permission::HOST_BOOKKEEPING` list
 as the Claude hook; generate command-line tool approvals from that list.
-Front desks still approve only `route_chat`. The elicitation fallback accepts
-only an empty native `octiq` confirmation for a listed tool in the current
-thread/turn. Codex 0.163 names the tool in its message, not `_meta.tool_name`;
-use the captured fixture and `scripts/capture-codex-elicitation.mjs`.
+Front desks still approve only `route_chat`. Codex's per-tool
+`approval_mode="approve"` prevents the redundant native confirmation.
+Every elicitation that still arrives uses the normal card: an MCP server can
+forge the native message and `_meta` fields. Use the captured fixtures and
+`scripts/capture-codex-elicitation.mjs`.
 
-At Auto and Edits, linked-worktree commits get only shared objects/refs/logs
-and the current worktree's index, commit-message, HEAD and lock paths
+At Auto and Edits, linked-worktree commits get shared objects/, only the
+current existing branch's ref/reflog files and their locks, and the current
+worktree's index, commit-message, HEAD, logs/ and lock paths
 (`codex_git.rs`). Never grant the shared git dir or worktree admin dir:
-`hooks`, `config` and `config.worktree` must remain protected. Fresh starts,
+shared refs/ and logs/, other branches, packed-refs, hooks, config and
+config.worktree must remain protected. Detached, unborn or malformed HEADs
+get no branch ref grant. Ref files and parent paths must not be symlinks.
+Validate the original admin path without following symlinks, and require its
+gitdir back-pointer to name this worktree's .git file, before any grant. Fresh starts,
 resumes and turns keep all writable roots together; `--add-dir` is for
 directories, not these file roots. Native cards carry the actual provider.
 
