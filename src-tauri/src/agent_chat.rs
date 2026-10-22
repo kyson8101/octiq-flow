@@ -341,7 +341,11 @@ fn acknowledge_user_turn(event: &mut Value, agent: ChatAgent, pending: &mut Opti
             .map(str::to_string)
         {
             event.as_object_mut().unwrap().remove("octiq_user_turn_id");
-            event["octiq_orchestration_notification_id"] = json!(id);
+            let ids: Vec<_> = id.split('|').collect();
+            event["octiq_orchestration_notification_id"] = json!(ids[0]);
+            if ids.len() > 1 {
+                event["octiq_orchestration_notification_ids"] = json!(ids);
+            }
         }
     }
 }
@@ -1795,6 +1799,13 @@ impl ChatManager {
     /// would then be rebuilt. The claiming thread's own start goes through,
     /// because `chat_start` runs on one thread from the claim to the spawn.
     pub(crate) fn claim_start(&self, key: &str) -> Result<StartClaim<'_>, String> {
+        self.hold_start(key)?
+            .ok_or_else(|| format!("chat '{key}' is already running"))
+    }
+
+    /// Borrow this thread's recovery claim, or reserve a fresh launch. Even
+    /// a refused duplicate browser start must not rewrite resume settings.
+    fn hold_start(&self, key: &str) -> Result<Option<StartClaim<'_>>, String> {
         let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         let replacing = self
             .handoffs
@@ -1802,14 +1813,22 @@ impl ChatManager {
             .map_err(|e| e.to_string())?
             .contains(key);
         let mut claims = self.start_claims.lock().map_err(|e| e.to_string())?;
-        if sessions.contains_key(key) || replacing || claims.contains_key(key) {
+        if sessions.contains_key(key)
+            || replacing
+            || claims
+                .get(key)
+                .is_some_and(|owner| *owner != thread::current().id())
+        {
             return Err(format!("chat '{key}' is already running"));
         }
+        if claims.contains_key(key) {
+            return Ok(None);
+        }
         claims.insert(key.to_string(), thread::current().id());
-        Ok(StartClaim {
+        Ok(Some(StartClaim {
             manager: self,
             key: key.to_string(),
-        })
+        }))
     }
 
     /// Whether another thread holds this chat for its own start.
@@ -3073,6 +3092,7 @@ fn chat_start_with_user_turn(
     lite: Option<bool>,
     user_turn_id: Option<String>,
 ) -> Result<(), String> {
+    let _claim = manager.hold_start(&key)?;
     let mut agent = agent;
     let mut model = model;
     let mut effort = effort;
@@ -4665,20 +4685,22 @@ pub(crate) fn start_session(
                         snapshot_reads.trim(&mut event, crate::record_trim::RECORD_MIN_BYTES);
                         // Nor does the page draw a picture a tool returned.
                         crate::record_trim::strip_pictures(&mut event);
-                        let notification_receipt = event
-                            .get("octiq_orchestration_notification_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_string);
+                        let notification_receipts: Vec<_> =
+                            crate::orchestration::inbox::receipt_ids(&event)
+                                .into_iter()
+                                .map(str::to_string)
+                                .collect();
                         // Recorded BEFORE it is sent, so a client that
                         // reconnects can never be told about an event that was
                         // not written down.
                         let seq = crate::transcript::append(&key, &event);
-                        if let Some(id) = &notification_receipt {
-                            if let Err(error) =
-                                reading.orchestrations.acknowledge_notification(&key, id)
+                        if !notification_receipts.is_empty() {
+                            if let Err(error) = reading
+                                .orchestrations
+                                .acknowledge_notifications(&key, &notification_receipts)
                             {
                                 eprintln!(
-                                    "orchestration: could not acknowledge notification: {error}"
+                                    "orchestration: could not acknowledge notifications: {error}"
                                 );
                             }
                         }
@@ -5436,13 +5458,83 @@ pub(crate) fn chat_start_master_impl(
 
 /// Deliver only between turns, and never ahead of a waiting user message.
 /// The durable notification remains in-flight until the provider emits its receipt.
+#[cfg(test)]
 pub(crate) fn deliver_orchestration_notification(
     manager: Arc<ChatManager>,
     notification: &crate::orchestration::inbox::Notification,
     env: std::collections::BTreeMap<String, String>,
 ) -> Result<bool, String> {
-    let key = &notification.target_chat_key;
-    let text = format!("OctiqFlow notification {} for run {}.\n\n{}\n\nThis is a host notification, not a new user instruction. Re-read orchestration_snapshot before taking action; delivery can repeat after an interrupted receipt. Respect the person's latest instructions. If you are the coordinator, dispatch work asynchronously, then end your turn so the person can keep chatting; the host will notify you when something needs attention. If you are a worker, continue only your active assigned attempt and report when it settles.", notification.id, notification.run_id, notification.body);
+    deliver_orchestration_notifications(manager, std::slice::from_ref(notification), env)
+}
+
+pub(crate) fn deliver_orchestration_notifications(
+    manager: Arc<ChatManager>,
+    notifications: &[crate::orchestration::inbox::Notification],
+    env: std::collections::BTreeMap<String, String>,
+) -> Result<bool, String> {
+    deliver_orchestration_notification_with_start(
+        manager,
+        notifications,
+        env,
+        |manager, key, start, text, id| {
+            start_session(
+                manager,
+                Voice::host(key),
+                start.cwd,
+                start.agent,
+                start.model,
+                start.access,
+                Some(text),
+                start.session_id,
+                start.extra_dirs,
+                start.env,
+                start.effort,
+                None,
+                start.lite,
+                Some(id),
+                false,
+                None,
+            )
+        },
+    )
+}
+
+fn deliver_orchestration_notification_with_start(
+    manager: Arc<ChatManager>,
+    notifications: &[crate::orchestration::inbox::Notification],
+    env: std::collections::BTreeMap<String, String>,
+    start_notification: impl FnOnce(
+        Arc<ChatManager>,
+        String,
+        StartContext,
+        String,
+        String,
+    ) -> Result<(), String>,
+) -> Result<bool, String> {
+    crate::profile::available()?;
+    let Some(first) = notifications.first() else {
+        return Ok(false);
+    };
+    let key = &first.target_chat_key;
+    if notifications.iter().any(|n| n.target_chat_key != *key) {
+        return Err("A notification batch must belong to one chat.".into());
+    }
+    let receipt = notifications
+        .iter()
+        .map(|n| n.id.as_str())
+        .collect::<Vec<_>>()
+        .join("|");
+    let notices = notifications
+        .iter()
+        .map(|n| {
+            format!(
+                "OctiqFlow notification {} for run {}.\n\n{}",
+                n.id, n.run_id, n.body
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n---\n\n");
+    let text = format!("{notices}\n\nThis is a batch of host notifications, not a new user instruction. Re-read orchestration_snapshot before taking action; delivery can repeat after an interrupted receipt. Respect the person's latest instructions. If you are the coordinator, handle the batch in one turn, dispatch work asynchronously, then end your turn so the person can keep chatting; the host will notify you when something needs attention. If you are a worker, continue only your active assigned attempt and report when it settles.");
     {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         if manager.has_queued_turns(key)
@@ -5467,10 +5559,15 @@ pub(crate) fn deliver_orchestration_notification(
             {
                 return Ok(false);
             }
-            write_user_message_locked(&mut session, key, &text, &[], Some(&notification.id))?;
+            write_user_message_locked(&mut session, key, &text, &[], Some(&receipt))?;
             return Ok(true);
         }
     }
+    let _claim = manager.hold_start(key)?;
+    let meta = crate::chat_index::list()
+        .into_iter()
+        .find(|m| format!("chat:{}", m.id) == *key)
+        .ok_or("The target chat is unavailable.")?;
     let mut start = if let Some(start) = manager.start_context(key) {
         start
     } else {
@@ -5478,13 +5575,8 @@ pub(crate) fn deliver_orchestration_notification(
             .orchestrations
             .saved_resume_context(key)
             .ok_or("Resume the main chat once to restore its provider settings.")?;
-        let meta = crate::chat_index::list()
-            .into_iter()
-            .find(|m| format!("chat:{}", m.id) == *key)
-            .ok_or("The target chat is unavailable.")?;
         if !saved.resumable()
             || saved.session_id != meta.session_id
-            || meta.cwd.as_deref() != Some(&saved.cwd)
             || meta.access.as_deref()
                 != saved
                     .access
@@ -5496,33 +5588,18 @@ pub(crate) fn deliver_orchestration_notification(
         }
         saved
     };
-    // Even an in-memory start must not revive a chat that has been deleted.
-    if !crate::chat_index::list()
-        .iter()
-        .any(|m| format!("chat:{}", m.id) == *key)
-    {
-        return Err("The target chat is unavailable.".into());
-    }
+    // A rejected browser start used to poison the saved cwd while its real
+    // process kept running. Repair only to the coordinator's recorded run
+    // root when the index agrees, and never resume inside a worker's lease.
+    start.cwd = manager.orchestrations.notification_resume_cwd(
+        key,
+        &first.run_id,
+        &start.cwd,
+        meta.cwd.as_deref(),
+    )?;
     start.env = Some(env);
     manager.remember_start(key, start.clone());
-    start_session(
-        manager,
-        Voice::host(key.clone()),
-        start.cwd,
-        start.agent,
-        start.model,
-        start.access,
-        Some(text),
-        start.session_id,
-        start.extra_dirs,
-        start.env,
-        start.effort,
-        None,
-        start.lite,
-        Some(notification.id.clone()),
-        false,
-        None,
-    )?;
+    start_notification(manager.clone(), key.clone(), start, text, receipt)?;
     Ok(true)
 }
 
@@ -8805,6 +8882,285 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_duplicate_start_cannot_poison_a_coordinators_resume_checkout() {
+        use crate::orchestration::tests::run;
+        let home = crate::test_dir::TestDir::new("notification-drift");
+        let _profile = crate::profile::started_in(&home);
+        let manager = Arc::new(ChatManager::default());
+        let run = run(&manager.orchestrations);
+        let key = run.coordinator_chat_key.clone();
+        let original = StartContext::for_test(ChatAgent::Claude, Some("live-session"));
+        manager.remember_start(&key, original.clone());
+        hold(&manager, &key, claude_session(false));
+        let drifted = home.join("worker-checkout").to_string_lossy().into_owned();
+        let refused = chat_start_with_user_turn(
+            manager.clone(),
+            key.clone(),
+            drifted,
+            ChatAgent::Claude,
+            None,
+            Some(Access::Read),
+            Some("user turn".into()),
+            None,
+            Some("live-session".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(refused, Err(format!("chat '{key}' is already running")));
+        assert_eq!(manager.start_context(&key).unwrap().cwd, original.cwd);
+        assert_eq!(
+            manager
+                .orchestrations
+                .saved_resume_context(&key)
+                .unwrap()
+                .cwd,
+            original.cwd
+        );
+        end_process(&manager, &key).unwrap();
+    }
+
+    #[test]
+    fn notification_wakes_an_idle_reaped_coordinator_in_its_recorded_root() {
+        use crate::orchestration::tests::running_worker;
+        let home = crate::test_dir::TestDir::new("notification-wake");
+        let _profile = crate::profile::started_in(&home);
+        let manager = Arc::new(ChatManager::default());
+        let store = &manager.orchestrations;
+        let run = store
+            .create_run(
+                "chat:master".into(),
+                "test".into(),
+                "workspace".into(),
+                home.to_string_lossy().into_owned(),
+                Some(2),
+            )
+            .unwrap();
+        let worker = running_worker(store, &run);
+        let key = run.coordinator_chat_key.clone();
+        let mut start = StartContext::for_test(ChatAgent::Claude, Some("saved-session"));
+        start.cwd = home.join("saved-checkout").to_string_lossy().into_owned();
+        store.save_resume_context(&key, start.clone()).unwrap();
+        // An old rejected start poisoned the host's cwd. The browser and
+        // the run still agree on the coordinator's original root.
+        crate::chat_index::upsert(
+            serde_json::from_value(json!({
+                "id": "master", "projectId": "p1", "title": "coordinator",
+                "sessionId": "saved-session", "cwd": home.to_string_lossy(), "access": "read",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let session = claude_session(false);
+        hold(&manager, &key, session);
+        assert!(end_process_when(&manager, &key, Some(Duration::ZERO)).unwrap());
+        assert!(!manager.has_process(&key));
+        assert!(manager.notification_ready(&key));
+        store
+            .record_message(
+                &worker.worker_chat_key,
+                run.id.clone(),
+                "coordinator".into(),
+                "status".into(),
+                "Ready".into(),
+                "worker update".into(),
+            )
+            .unwrap();
+        let note = store.due_notifications(i64::MAX).unwrap().remove(0);
+        let mut launched = false;
+        assert_eq!(
+            deliver_orchestration_notification_with_start(
+                manager.clone(),
+                std::slice::from_ref(&note),
+                Default::default(),
+                |_, target, resumed, prompt, receipt| {
+                    launched = true;
+                    assert_eq!(target, key);
+                    assert_eq!(resumed.cwd, run.root_path);
+                    assert_eq!(resumed.session_id, start.session_id);
+                    assert_eq!(resumed.access, start.access);
+                    assert!(prompt.contains("worker update"));
+                    assert_eq!(receipt, note.id);
+                    Ok(())
+                }
+            ),
+            Ok(true)
+        );
+        assert!(launched);
+    }
+
+    #[test]
+    fn notification_to_a_live_coordinator_waits_for_its_profile_then_writes_one_turn() {
+        use crate::orchestration::tests::{run, running_worker};
+        use std::io::BufRead;
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _profile = crate::profile::started_in(&home.dir);
+        let manager = Arc::new(ChatManager::default());
+        let run = run(&manager.orchestrations);
+        let worker = running_worker(&manager.orchestrations, &run);
+        manager
+            .orchestrations
+            .record_message(
+                &worker.worker_chat_key,
+                run.id.clone(),
+                "coordinator".into(),
+                "status".into(),
+                "Ready".into(),
+                "live update".into(),
+            )
+            .unwrap();
+        let note = manager
+            .orchestrations
+            .due_notifications(i64::MAX)
+            .unwrap()
+            .remove(0);
+        let (session, mut written) = capturing_claude_session();
+        session.lock().unwrap().busy = false;
+        hold(&manager, &run.coordinator_chat_key, session.clone());
+        home.move_away();
+        assert!(
+            deliver_orchestration_notification(manager.clone(), &note, Default::default()).is_err()
+        );
+        assert!(!session.lock().unwrap().busy);
+        assert!(session.lock().unwrap().answering.is_none());
+        assert!(!home.profile().exists());
+        home.move_back();
+        assert!(manager.notification_ready(&run.coordinator_chat_key));
+        assert_eq!(
+            deliver_orchestration_notification(manager.clone(), &note, Default::default()),
+            Ok(true)
+        );
+        let mut line = String::new();
+        written.read_line(&mut line).unwrap();
+        assert!(line.contains("live update"));
+        assert_eq!(
+            session.lock().unwrap().answering.as_deref(),
+            Some(note.id.as_str())
+        );
+        end_process(&manager, &run.coordinator_chat_key).unwrap();
+    }
+
+    #[test]
+    fn notification_batch_is_one_turn_and_each_receipt_survives_reconciliation() {
+        use crate::orchestration::inbox::{deliver_pending, receipt_ids, DeliveryState};
+        use crate::orchestration::tests::{run, running_worker};
+        use std::io::BufRead;
+        let home = crate::test_dir::TestDir::new("notification-batch");
+        let _profile = crate::profile::started_in(&home);
+        let manager = Arc::new(ChatManager::default());
+        let store = &manager.orchestrations;
+        let run = run(store);
+        let worker = running_worker(store, &run);
+        let projects =
+            crate::workspaces::WorkspaceState::with_projects(vec![serde_json::from_value(
+                json!({"id":"workspace", "name":"test"}),
+            )
+            .unwrap()]);
+        for i in 0..40 {
+            store
+                .record_message(
+                    &worker.worker_chat_key,
+                    run.id.clone(),
+                    "coordinator".into(),
+                    "reply".into(),
+                    format!("Update {i}"),
+                    format!("body {i}"),
+                )
+                .unwrap();
+        }
+        let due = store.due_notifications(i64::MAX).unwrap();
+        assert_eq!(due.len(), 40, "one chat is never truncated");
+        let (session, mut written) = capturing_claude_session();
+        session.lock().unwrap().busy = false;
+        hold(&manager, &run.coordinator_chat_key, session.clone());
+        deliver_pending(&manager, &projects).unwrap();
+        let mut line = String::new();
+        written.read_line(&mut line).unwrap();
+        let sent: Value = serde_json::from_str(&line).unwrap();
+        let text = sent["message"]["content"][0]["text"].as_str().unwrap();
+        let mut previous = 0;
+        for n in &due {
+            let position = text.find(&n.id).unwrap();
+            assert!(position >= previous);
+            previous = position;
+        }
+        let mut event = json!({"type":"user", "message":{"content":"receipt"}});
+        acknowledge_user_turn(
+            &mut event,
+            ChatAgent::Claude,
+            &mut session.lock().unwrap().user_turn_id,
+        );
+        assert_eq!(receipt_ids(&event).len(), 40);
+        assert!(store
+            .snapshot(None)
+            .unwrap()
+            .notifications
+            .iter()
+            .all(|n| n.state == DeliveryState::Delivering));
+        crate::transcript::append(&run.coordinator_chat_key, &event).unwrap();
+        // Simulate a crash before the reader updated the ledger, and wait
+        // out its lease without sleeping. No second provider prompt is sent.
+        for n in &due {
+            store
+                .retry_notification(&n.id, Some("receipt reconciliation".into()), 0)
+                .unwrap();
+        }
+        deliver_pending(&manager, &projects).unwrap();
+        deliver_pending(&manager, &projects).unwrap();
+        let notes = store.snapshot(None).unwrap().notifications;
+        assert!(notes
+            .iter()
+            .all(|n| n.state == DeliveryState::Acknowledged && n.attempts == 1));
+        end_process(&manager, &run.coordinator_chat_key).unwrap();
+    }
+
+    #[test]
+    fn an_unwritable_notification_batch_acknowledges_nothing() {
+        use crate::orchestration::inbox::{deliver_pending, DeliveryState};
+        use crate::orchestration::tests::{run, running_worker};
+        let home = crate::test_dir::TestDir::new("notification-batch-failure");
+        let _profile = crate::profile::started_in(&home);
+        let manager = Arc::new(ChatManager::default());
+        let store = &manager.orchestrations;
+        let run = run(store);
+        let worker = running_worker(store, &run);
+        let projects =
+            crate::workspaces::WorkspaceState::with_projects(vec![serde_json::from_value(
+                json!({"id":"workspace", "name":"test"}),
+            )
+            .unwrap()]);
+        for i in 0..3 {
+            store
+                .record_message(
+                    &worker.worker_chat_key,
+                    run.id.clone(),
+                    "coordinator".into(),
+                    "reply".into(),
+                    format!("Update {i}"),
+                    "body".into(),
+                )
+                .unwrap();
+        }
+        let session = claude_session(false);
+        session.lock().unwrap().stdin.take();
+        hold(&manager, &run.coordinator_chat_key, session.clone());
+        deliver_pending(&manager, &projects).unwrap();
+        assert!(!session.lock().unwrap().busy);
+        let notes = store.snapshot(None).unwrap().notifications;
+        assert_eq!(notes.len(), 3);
+        assert!(notes
+            .iter()
+            .all(|n| n.state == DeliveryState::Pending && n.last_error.is_some()));
+        assert!(crate::transcript::every_line(&run.coordinator_chat_key)
+            .unwrap()
+            .is_empty());
+        end_process(&manager, &run.coordinator_chat_key).unwrap();
+    }
+
+    #[test]
     fn notifications_use_internal_receipts_for_both_providers() {
         for (agent, mut event) in [
             (ChatAgent::Codex, json!({"type":"turn.started"})),
@@ -11602,6 +11958,10 @@ mod start_claim_tests {
         let manager = Arc::new(ChatManager::default());
         let key = "chat:claimed";
         let claim = manager.claim_start(key).expect("nothing runs there");
+        assert!(
+            manager.hold_start(key).unwrap().is_none(),
+            "recovery borrows its own claim"
+        );
         assert!(!manager.claimed_elsewhere(key), "the claimant's own start");
 
         let other = manager.clone();
@@ -14204,6 +14564,7 @@ mod completion_tests {
             state: DeliveryState::Delivering,
             attempts: 0,
             coalesced: 0,
+            sequence: None,
             created_at: 0,
             updated_at: 0,
             next_attempt_at: 0,
@@ -14762,6 +15123,7 @@ mod leaving_tests {
             state: DeliveryState::Delivering,
             attempts: 0,
             coalesced: 0,
+            sequence: None,
             created_at: 0,
             updated_at: 0,
             next_attempt_at: 0,
