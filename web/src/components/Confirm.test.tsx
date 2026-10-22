@@ -19,6 +19,7 @@ import { STRAY_MS, STRAY_RADIUS } from "../lib/cardFold";
 import { confirmContent } from "../lib/chatComplete";
 import { heldKey, strayAnswer } from "../lib/pressGuard";
 import { stopConfirm } from "../lib/taskReopened";
+import { runConfirm } from "./RunCommand";
 import { ConfirmDialog } from "./Confirm";
 import { CompleteChatConfirm } from "./CompleteChat";
 import panelSource from "./OrchestrationPanel.tsx?raw";
@@ -106,6 +107,7 @@ describe("who asks through the shared question", () => {
       "components/IslandPage.tsx",     // Say goodbye to an island bot
       "components/ProjectSettings.tsx", // Delete a project
       "components/ReopenedNote.tsx",   // Stop a task's worker
+      "components/RunCommand.tsx",     // Run a reply's shell command
       "components/TerminalDrawer.tsx", // Delete a saved command
     ]);
   });
@@ -144,5 +146,24 @@ describe("the controls that start or stop a worker", () => {
       expect(plan, control).toMatch(new RegExp(`className="${control}"[^>]*?onClick=\\{\\(event\\) => \\{\\s*notePress\\(event\\)`));
     }
     expect(plan).not.toMatch(/useConfirm/);
+  });
+});
+
+
+describe("confirming a shell command", () => {
+  it("shows the whole command, folder name and path, with Cancel focused", () => {
+    const command = "printf '<hello>'\n" + "echo whole-command\n".repeat(100);
+    const folder = "/work/project with spaces/feature";
+    const html = renderToStaticMarkup(<ConfirmDialog options={runConfirm(command, folder)} onAnswer={() => {}} />);
+    expect(html).toContain("Run this command?");
+    expect(html).toContain(`Folder: feature\n${folder}`);
+    expect(html).toContain('class="ask-command"><code>printf &#x27;&lt;hello&gt;&#x27;\n');
+    expect(html.match(/echo whole-command/g)).toHaveLength(100);
+    const [cancel, run] = buttons(html);
+    expect(cancel).toContain('autofocus=""');
+    expect(cancel).toContain(">Cancel</button>");
+    expect(run).toContain(">Run</button>");
+    expect(run).toContain("is-primary");
+    expect(run).not.toContain("autofocus");
   });
 });

@@ -172,3 +172,31 @@ describe("what was saved last time", () => {
     expect(parseStore('{"p":{"tabs":[{"id":1}],"active":"","seq":0}}')).toEqual({});
   });
 });
+
+
+describe("a confirmed reply Run", () => {
+  const command = "  cat <<'END'\n  body\nEND\n";
+  it("consumes the exact command once across drawer/tab remounts", () => {
+    const tabs = addTab(tabsFor({}, PID), PID, { name: "Run", onceCommand: command, cwd: "/work/chat" });
+    const term = tabs.tabs.at(-1)!;
+    expect(term.cmd).toBeUndefined();
+    expect(term.takeCommand?.()).toBe(command);
+    expect(renameTab(tabs, term.id, "renamed").tabs.at(-1)?.takeCommand?.()).toBeUndefined();
+    expect(term.takeCommand?.()).toBeUndefined();
+  });
+  it("never persists a command, even before its first mount", () => {
+    const tabs = addTab(tabsFor({}, PID), PID, { name: "Run", onceCommand: command, cwd: "/work/chat" });
+    const saved = JSON.stringify({ [PID]: tabs });
+    expect(saved).not.toContain("cat");
+    const restored = parseStore(saved)[PID].tabs.at(-1)!;
+    expect(restored.cwd).toBe("/work/chat");
+    expect(restored.cmd).toBeUndefined();
+    expect(restored.takeCommand).toBeUndefined();
+  });
+  it("migrates old Run cmd+cwd tabs to plain shells, including renamed tabs", () => {
+    const tabs = addTab(tabsFor({}, PID), PID, { name: "renamed", cmd: command, cwd: "/work/chat" });
+    expect(parseStore(JSON.stringify({ [PID]: tabs }))[PID].tabs.at(-1)).toEqual({
+      id: tabs.active, name: "renamed", cwd: "/work/chat",
+    });
+  });
+});
