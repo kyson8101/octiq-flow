@@ -447,9 +447,33 @@ describe("Run on a reply's shell fence", () => {
     expect(html).toContain("code-copy");
     expect(html).not.toContain("code-run");
   });
+  it("checks closure for each fence inside blockquotes and lists", () => {
+    for (const text of [
+      "> ```bash\n> printf partial",
+      "> > ~~~~sh\n> > pwd",
+      "- step\n\n  ```bash\n  pwd",
+      "> - step\n>\n>   ```zsh\n>   pwd",
+      "> ```bash\n> pwd\n\nOutside",
+      "> ```bash\n> echo \"```\"",
+      "> ```bash\n> pwd\n> > ```",
+    ]) expect(withTerminal(text)).not.toContain("code-run");
+    for (const text of [
+      "> ```bash\n> pwd\n> ```",
+      "> > ~~~~sh\n> > pwd\n> > ~~~~",
+      "- step\n\n  ```bash\n  pwd\n  ```",
+      "> - step\n>\n>   ```zsh\n>   pwd\n>   ```",
+      "> ```bash\r\n> pwd\r\n> ```",
+    ]) expect(withTerminal(text)).toContain("code-run");
+    const mixed = "> ```sh\n> pwd\n> ```\n>\n> ```bash\n> partial";
+    expect(withTerminal(mixed).match(/code-run/g)).toHaveLength(1);
+  });
+  it("offers no Run for ambiguous console output", () => {
+    expect(withTerminal("```console\npwd\n/tmp\n```")).not.toContain("code-run");
+    expect(withTerminal("```console\n$ echo 'unfinished\n```")).not.toContain("code-run");
+  });
   it("requires a closed shell fence and a terminal capability", () => {
     for (const lang of ["bash", "sh", "zsh", "shell", "console"]) {
-      const text = `\`\`\`${lang}\nprintf hello\n\`\`\``;
+      const text = `\`\`\`${lang}\n${lang === "console" ? "$ " : ""}printf hello\n\`\`\``;
       expect(withTerminal(text)).toContain("code-run");
       expect(render(reply(text))).not.toContain("code-run");
     }

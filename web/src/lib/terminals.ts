@@ -19,7 +19,16 @@
  *  live shell is never disturbed, but one the server restarted out from under us
  *  is started again on the next attach — and a tab called "dev" that comes back
  *  empty is not the tab you left. */
-export type Term = { id: string; name: string; cmd?: string; cwd?: string };
+export type Term = {
+  id: string;
+  name: string;
+  cmd?: string;
+  cwd?: string;
+  /** A reply Run is a single confirmed launch, never a restored command.
+   * Functions are omitted by JSON.stringify; the shared closure also survives
+   * pane unmounts and can only be consumed once, even if spawning fails. */
+  takeCommand?: () => string | undefined;
+};
 
 /** One project's terminals. `seq` is the id counter — see `addTab`. */
 export type Tabs = { tabs: Term[]; active: string; seq: number };
@@ -87,7 +96,7 @@ export function tabsFor(store: Store, projectId: string): Tabs {
 export function addTab(
   tabs: Tabs,
   projectId: string,
-  open: { name?: string; cmd?: string; cwd?: string } = {},
+  open: { name?: string; cmd?: string; cwd?: string; onceCommand?: string } = {},
 ): Tabs {
   const id = `term:${projectId}:${tabs.seq}`;
   const label = (open.name ?? "").trim();
@@ -97,6 +106,14 @@ export function addTab(
     name: label ? uniqueName(label, tabs.tabs) : nextName(tabs.tabs),
   };
   if (cmd.trim()) term.cmd = cmd;
+  if (open.onceCommand?.trim()) {
+    let pending: string | undefined = open.onceCommand;
+    term.takeCommand = () => {
+      const command = pending;
+      pending = undefined;
+      return command;
+    };
+  }
   if (open.cwd) term.cwd = open.cwd;
   return { tabs: [...tabs.tabs, term], active: id, seq: tabs.seq + 1 };
 }
@@ -151,7 +168,10 @@ function asTabs(value: unknown): Tabs | null {
     // A command that is not a string is dropped on its own rather than taking
     // the tab with it: the shell is still reachable, it simply opens bare.
     const term: Term = { id, name };
-    if (typeof cmd === "string" && cmd) term.cmd = cmd;
+    // The first Run implementation stored cmd+cwd. Only Run tabs carried a
+    // cwd in that format; migrate them to plain shells, including renamed tabs.
+    // Saved project commands have no tab cwd and retain their replay behavior.
+    if (typeof cmd === "string" && cmd && !(typeof cwd === "string" && cwd)) term.cmd = cmd;
     if (typeof cwd === "string" && cwd) term.cwd = cwd;
     tabs.push(term);
   }

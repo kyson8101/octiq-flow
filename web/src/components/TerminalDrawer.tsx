@@ -269,6 +269,7 @@ export function TerminalDrawer({
         id={tabs.active}
         cwd={cwd}
         cmd={active?.cmd}
+        takeCommand={active?.takeCommand}
         env={project.env ?? {}}
       />
     </div>

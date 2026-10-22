@@ -44,7 +44,7 @@ import { rehypeWordFade } from "../lib/wordfade";
 import { ContextReport } from "./ContextReport";
 import { parseContextReport } from "../lib/contextReport";
 import { RunCommand, TerminalRunContext } from "./RunCommand";
-import { isShellFence, shellCommand } from "../lib/shellRun";
+import { fencedCodeClosed, isShellFence, shellCommand } from "../lib/shellRun";
 import { copyText } from "../lib/clipboard";
 import { clipMessage } from "../lib/clip";
 import { ConfigPanel, ConfigWorldProvider, isConfigUsage } from "./ConfigPanel";
@@ -73,15 +73,17 @@ import {
   type ChatPlace,
 } from "../lib/chatPlace";
 
-/** Whether every fence of the markdown block being drawn was closed by the
- *  reply itself. `closeFence` closes a half-arrived one so it draws as code,
- *  and a code block cannot tell that from one the agent closed. */
-const FencesClosed = createContext(true);
+/** Original source, before closeFence appends a synthetic closer. Each code
+ * node's parser positions identify its own fence, including list/quote nesting. */
+const FenceSource = createContext("");
 
 /** A fenced code block, with Copy and an optional confirmed shell Run.
  *  react-markdown hands us the <code> child, whose className carries the fence
  *  language ("language-rust"). */
-function CodeBlock({ children }: { children?: React.ReactNode }) {
+function CodeBlock({ children, node }: {
+  children?: React.ReactNode;
+  node?: { position?: { start: { offset?: number }; end: { offset?: number } } };
+}) {
   const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLPreElement>(null);
   const child = children as { props?: { className?: string; children?: unknown } } | undefined;
@@ -90,7 +92,9 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
   // A card diagram that is not a block of its own (inside a list, a quote):
   // `MarkdownBlock` never saw its fence, so it is read here. Anything that is
   // not a closed, whole, valid diagram stays the code block it also is.
-  const closed = useContext(FencesClosed);
+  const source = useContext(FenceSource);
+  const closed = typeof child?.props?.children === "string" &&
+    fencedCodeClosed(source, child.props.children, node?.position?.start.offset, node?.position?.end.offset);
   if (closed && lang === DIAGRAM_LANG && typeof child?.props?.children === "string") {
     const diagram = parseDiagram(child.props.children);
     if (diagram) return <CardDiagram diagram={diagram} />;
@@ -274,7 +278,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
 
   const whole = closeFence(text);
   return (
-    <FencesClosed.Provider value={whole === text}>
+    <FenceSource.Provider value={text}>
       <Markdown
         remarkPlugins={[remarkGfm]}
         // Paths first: the word fade cuts text into one span per word, and a
@@ -284,7 +288,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
       >
         {whole}
       </Markdown>
-    </FencesClosed.Provider>
+    </FenceSource.Provider>
   );
 });
 

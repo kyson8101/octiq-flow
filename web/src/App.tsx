@@ -2493,7 +2493,7 @@ export default function App() {
       folder: effectiveCwd,
       run: (command) => {
         if (terminalTargetRef.current !== terminalTarget) return;
-        terminals.update(sessionProject.id, (tabs) => addTab(tabs, sessionProject.id, { name: "Run", cmd: command, cwd: effectiveCwd }));
+        terminals.update(sessionProject.id, (tabs) => addTab(tabs, sessionProject.id, { name: "Run", onceCommand: command, cwd: effectiveCwd }));
         setTermOpen(true);
         remember(TERM_KEY, "1");
       },

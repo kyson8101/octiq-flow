@@ -44,11 +44,12 @@ function Scene() {
   const project = { id: "project:chat", name: "OctiqFlow", primary_path: folder };
   const terminal = useMemo(() => mode === "main" ? { folder, run: command => {
     if (current.current !== "main") return;
-    tabs.update(project.id, previous => addTab(previous, project.id, { name: "Run", cmd: command, cwd: folder }));
+    tabs.update(project.id, previous => addTab(previous, project.id, { name: "Run", onceCommand: command, cwd: folder }));
     setOpen(true);
   }} : null, [mode, tabs.update]);
   return <ConfirmProvider><main className="app" style={{ display: "flex", flexDirection: "column" }}>
     <nav style={{ display: "flex", gap: 8, padding: 12 }}>
+      <button onClick={() => setOpen(true)}>Open terminal</button>
       {["main", "worker", "beside task", "subagent", "no project"].map(value => <button key={value} onClick={() => setMode(value)}>{value}</button>)}
     </nav>
     <TerminalRunContext.Provider value={terminal}><MessageList messages={[reply]} busy={false} /></TerminalRunContext.Provider>
@@ -153,6 +154,17 @@ try {
     const store = await page.evaluate(() => JSON.parse(localStorage.getItem("octiq.v2.terminals")));
     assert.equal(store["project:chat"].tabs.length, 3);
     assert.equal(store["project:chat"].active, "term:project:chat:2");
+    assert.ok(store["project:chat"].tabs.every(tab => !tab.cmd && !tab.takeCommand));
+    await page.getByTitle("Hide the terminal (every shell keeps running)").click();
+    await page.getByRole("button", {name:"Open terminal",exact:true}).click();
+    await page.waitForFunction(() => window.__calls.filter(call => call.command === "pty_spawn").length === 3);
+    const restored = await page.evaluate(() => window.__calls.filter(call => call.command === "pty_spawn").at(-1).args);
+    assert.equal(restored.startCmd, undefined);
+    assert.equal(restored.cwd, "/work/OctiqFlow/feature-shell-run");
+    await page.reload();
+    await page.getByRole("button", {name:"Open terminal",exact:true}).click();
+    await page.waitForFunction(() => window.__calls?.some(call => call.command === "pty_spawn"));
+    assert.equal(await page.evaluate(() => window.__calls.find(call => call.command === "pty_spawn").args.startCmd), undefined);
     await page.getByTitle("Hide the terminal (every shell keeps running)").click();
     for (const mode of ["worker", "beside task", "subagent", "no project"]) {
       await page.getByRole("button", {name:mode,exact:true}).click();
