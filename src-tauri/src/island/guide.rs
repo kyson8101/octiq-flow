@@ -36,9 +36,9 @@ A part may sink 5 cm into the ground (y down to -0.05), except an accessory's.
 Furniture and decor can use seat, desk or bed; any placed asset can use read, paint, garden, perform, play or observe (none explicitly disables interaction). Functional gifts must declare a suitable use and reachable spot. With a use, a spot says where a robot sits (seat, bed: its hips) or stands (desk: its feet, facing the desk): {{"at": [x,y,z], "face": degrees}}, 0 facing +z, 90 facing +x.
 
 ## Buildings have no roof
-The person must always be able to watch inside, so a building is refused when:
+Keep the room visible. A building is refused when:
 1. a part whose top is above 1.2 m is more than 0.5 m thick both ways seen from above. Walls, posts, beams and door frames are thin one way; a slab, a solid block or a sloped roof is not.
-2. parts wholly above 1.5 m, or starting above 1.2 m and reaching past 1.5 m, cover more than 15% of the floor (x by z bounds), added together. Narrow strips count too.
+2. parts starting over 5 cm above the y=0 floor and reaching above 1.2 m cover more than 15% of the floor (x by z bounds), added together. Narrow strips count; grounded walls and posts do not.
 Floors are fine. Leave a doorway, and put furniture in as separate assets.
 
 ## Plots

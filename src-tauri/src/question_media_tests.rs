@@ -152,7 +152,12 @@ fn failed_calls_discard_only_their_own_unclaimed_snapshots() {
     let other = Chat::new();
     let pending = chat.upload("one.png", &png(), Purpose::Question).unwrap();
     let claimed = chat.upload("kept.png", &png(), Purpose::Question).unwrap();
-    resolve(&chat.key, &mut [asking(vec![claimed.clone()], vec![])]).unwrap();
+    // Preflight is validation only. A delivery that later fails must still
+    // be able to discard its snapshots; only a stored call adopts them.
+    resolve(&chat.key, &mut [asking(vec![pending.clone()], vec![])]).unwrap();
+    resolve(&chat.key, &mut [asking(vec![claimed.clone()], vec![])])
+        .unwrap()
+        .adopt();
     discard(&other.key, &[pending.id.clone()]).unwrap();
     assert!(Path::new(&pending.path).exists());
     discard(

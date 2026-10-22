@@ -19,7 +19,10 @@ use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Mutex, MutexGuard},
+};
 
 // Only uploads never adopted by a question can be rolled back. Keeping this
 // claim on the host prevents an agent from deleting media already in a record.
@@ -668,15 +671,34 @@ pub async fn receive(upload: Upload, body: axum::body::Body) -> Result<Media, St
     writer.await.map_err(|e| e.to_string())?
 }
 
-/// Rebuild every media entry of a call from the snapshots in the chat's own
-/// folder, or say why the call cannot be asked. Run on what an agent sent,
-/// before anything is asked.
-pub fn resolve(chat_key: &str, questions: &mut [Question]) -> Result<(), String> {
-    // Adoption and rollback exclude each other, including while files are read.
-    let mut pending = UNCLAIMED.lock().unwrap_or_else(|e| e.into_inner());
+/// Keep rollback out until the question (or worker gate) is stored. Merely
+/// validating a call does not adopt its uploads; a failed delivery can discard
+/// them. Drop without `adopt` leaves them unclaimed.
+#[derive(Debug)]
+pub struct Resolved {
+    pending: MutexGuard<'static, BTreeMap<(String, String), PathBuf>>,
+    keys: Vec<(String, String)>,
+}
+
+impl Resolved {
+    pub fn adopt(mut self) {
+        for key in &self.keys {
+            self.pending.remove(key);
+        }
+    }
+}
+
+/// Rebuild every media entry from the chat's own snapshots. Hold the returned
+/// guard through storage, then adopt; drop it after a validation-only pass.
+pub fn resolve(chat_key: &str, questions: &mut [Question]) -> Result<Resolved, String> {
+    let pending = UNCLAIMED.lock().unwrap_or_else(|e| e.into_inner());
+    let mut resolved = Resolved {
+        pending,
+        keys: Vec::new(),
+    };
     let shows = |q: &Question| !q.media.is_empty() || q.options.iter().any(|c| c.image.is_some());
     if !questions.iter().any(shows) {
-        return Ok(());
+        return Ok(resolved);
     }
     let profile = crate::profile::available()?;
     let dir = folder_in(&profile, chat_key)?;
@@ -717,10 +739,10 @@ pub fn resolve(chat_key: &str, questions: &mut [Question]) -> Result<(), String>
             .iter()
             .chain(question.options.iter().filter_map(|o| o.image.as_ref()))
         {
-            pending.remove(&(chat_key.to_owned(), media.id.clone()));
+            resolved.keys.push((chat_key.to_owned(), media.id.clone()));
         }
     }
-    Ok(())
+    Ok(resolved)
 }
 
 /// One entry, as the host's own snapshot says it is.

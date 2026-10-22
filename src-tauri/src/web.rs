@@ -1286,11 +1286,28 @@ async fn ask_handler(
             crate::outcome::Refusal::new(crate::outcome::ReasonClass::Validation, why),
         );
     }
-    batch.chat_key = Some(caller.chat_key);
+    let media_ids: Vec<String> = batch
+        .questions
+        .iter()
+        .flat_map(|q| {
+            q.media
+                .iter()
+                .chain(q.options.iter().filter_map(|o| o.image.as_ref()))
+                .map(|m| m.id.clone())
+        })
+        .collect();
+    batch.chat_key = Some(caller.chat_key.clone());
     batch.session_key = Some(caller.session_key);
     batch.launch_id = Some(caller.launch_id);
     let request = crate::question::Request::Many(batch);
     let answer = crate::question::ask_request(ctx.services.chats.clone(), request).await;
+    // The MCP receives delivery failures as answer text, not HTTP failures.
+    // Clean up here too: only uploads not adopted by a stored question can go.
+    if !media_ids.is_empty() {
+        if let Err(why) = crate::question_media::discard(&caller.chat_key, &media_ids) {
+            eprintln!("[question-media] could not discard undelivered uploads: {why}");
+        }
+    }
     axum::Json(json!({ "answer": answer })).into_response()
 }
 
@@ -3579,6 +3596,72 @@ mod tests {
         .unwrap()
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn late_question_delivery_failures_discard_only_the_calls_unclaimed_media() {
+        for fail_insert in [false, true] {
+            let dir = crate::test_dir::TestDir::new("question-media-late-failure");
+            let path = dir.join("questions.json");
+            let chats = Arc::new(crate::agent_chat::ChatManager::with_saved_questions(
+                path.clone(),
+            ));
+            let id = format!("late-media-{}", uuid::Uuid::new_v4().simple());
+            let key = format!("chat:{id}");
+            let cap = chats.test_launch(&key);
+            chats.test_busy(&key, fail_insert);
+            chats.test_remember_start(&key, dir.to_str().unwrap());
+            if fail_insert {
+                // The store loaded successfully, but its eventual save cannot
+                // replace a directory. No real provider process is started.
+                crate::profile::make_dir(&path).unwrap();
+                chats.question_origin(&key, None, None).unwrap();
+            }
+            let (_ctx, base) = test_server(
+                chats.clone(),
+                Arc::new(crate::orchestration::OrchestrationStore::default()),
+            )
+            .await;
+            let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"[..], &[3u8; 300][..]].concat();
+            let mut media = Vec::new();
+            for name in ["question.png", "option.png", "unrelated.png"] {
+                let (status, result) = post_media(
+                    &base,
+                    &cap,
+                    &format!("chatKey={key}&name={name}&bytes={}", png.len()),
+                    png.clone(),
+                )
+                .await;
+                assert_eq!(status, 200, "{result}");
+                media.push(result["result"].clone());
+            }
+            let (status, answer) = post_hook(
+                &base, "ask", None, Some(&cap),
+                json!({"chatKey": key, "questions": [{"question": "Which?",
+                    "media": [{"id": media[0]["id"], "name": "question.png"}],
+                    "options": [{"label": "This", "image": {"id": media[1]["id"], "name": "option.png"}}]
+                }]}),
+            ).await;
+            assert_eq!(status, 200, "{answer}");
+            let answer = answer["answer"].as_str().unwrap();
+            assert!(
+                answer.contains("The question could not be delivered:"),
+                "{answer}"
+            );
+            if !fail_insert {
+                assert!(answer.contains("turn has already ended"), "{answer}");
+            }
+            assert!(chats.questions.pending().unwrap().is_empty());
+            for snapshot in &media[..2] {
+                assert!(
+                    !Path::new(snapshot["path"].as_str().unwrap()).exists(),
+                    "{snapshot}"
+                );
+            }
+            assert!(Path::new(media[2]["path"].as_str().unwrap()).exists());
+            crate::question_media::forget(&id);
+            chats.test_end(&key);
+        }
+    }
+
     /// The whole road of a picture and a video an agent shows with a
     /// question: uploaded as the chat its capability proves, rebuilt from
     /// the snapshots when asked, listed for the page and carried on the
@@ -3798,6 +3881,12 @@ mod tests {
         assert_eq!(asked["media"], pending["media"]);
         assert_eq!(asked["options"][0]["image"], *face);
         assert_eq!(asked["answer"], "Keep");
+        for snapshot in [shot, take, face] {
+            assert!(
+                Path::new(snapshot["path"].as_str().unwrap()).exists(),
+                "stored media survives cleanup"
+            );
+        }
 
         crate::transcript::forget(&key);
         crate::question_media::forget(&id);

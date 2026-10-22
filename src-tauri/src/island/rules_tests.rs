@@ -360,7 +360,7 @@ fn a_sloped_roof_is_refused() {
 }
 
 #[test]
-fn beams_above_1_5_m_may_cover_15_percent_of_the_floor_and_no_more() {
+fn ungrounded_parts_above_1_2_m_may_cover_15_percent_of_the_floor_and_no_more() {
     // The walls' box is 5 × 4 = 20 m². The lintel is wholly above 1.5 m
     // already: 1.2 × 0.15 = 0.18 m². Two beams of 5 × 0.282 bring it to
     // exactly 3 m², 15%.
@@ -370,7 +370,7 @@ fn beams_above_1_5_m_may_cover_15_percent_of_the_floor_and_no_more() {
     let why = refused(building(&[beam(0.282, -1.0), beam(0.283, 1.0)]));
     assert!(why.starts_with(ROOFLESS), "{why}");
     assert!(
-        why.contains("the overhead parts reaching above 1.5 m cover 15.0% of the building's floor (3.005 of 20 m²), and at most 15% may be covered"),
+        why.contains("the overhead parts reaching above 1.2 m cover 15.0% of the building's floor (3.005 of 20 m²), and at most 15% may be covered"),
         "{why}"
     );
     assert!(
@@ -383,18 +383,44 @@ fn beams_above_1_5_m_may_cover_15_percent_of_the_floor_and_no_more() {
 
 #[test]
 fn narrow_strips_straddling_the_height_limit_cannot_tile_an_opaque_roof() {
-    for bottom in [1.4, 1.499, 1.5] {
+    // The original strips, both review probes, and pieces starting just
+    // above the grounded allowance all obey the same invariant.
+    for (height, centre) in [
+        (0.2, 1.5),
+        (0.2, 1.599),
+        (0.2, 1.6),
+        (0.6, 1.5),
+        (0.2, 1.3),
+        (1.2, 0.651),
+    ] {
         let mut parts = vec![block([8.0, 0.06, 8.0], [0.0, 0.03, 0.0])];
         for i in 0..20 {
             parts.push(block(
-                [0.4, 0.2, 8.0],
-                [-3.8 + i as f64 * 0.4, bottom + 0.1, 0.0],
+                [0.4, height, 8.0],
+                [-3.8 + i as f64 * 0.4, centre, 0.0],
             ));
         }
         let why = refused(asset("building", json!(parts)));
         assert!(why.starts_with(ROOFLESS), "{why}");
         assert!(why.contains("cover 100.0%"), "{why}");
     }
+}
+
+#[test]
+fn grounded_walls_and_posts_do_not_spend_the_overhead_cover_budget() {
+    // Many walls exceed 15% in aggregate but remain legal when grounded,
+    // including at the exact 5 cm allowance. A 1 mm gap beyond it counts.
+    for bottom in [-0.05, 0.0, 0.05] {
+        let mut parts = vec![block([8.0, 0.06, 8.0], [0.0, 0.03, 0.0])];
+        for i in 0..20 {
+            parts.push(block(
+                [0.4, 1.8, 8.0],
+                [-3.8 + i as f64 * 0.4, bottom + 0.9, 0.0],
+            ));
+        }
+        check_asset(asset("building", json!(parts))).unwrap();
+    }
+    check_asset(building(&[block([0.5, 2.0, 0.5], [0.0, 1.05, 0.0])])).unwrap();
 }
 
 #[test]

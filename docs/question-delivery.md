@@ -135,6 +135,13 @@ Media is never dropped: a question that says "pick by the picture" with the
 picture gone would mislead. The MCP tool result is then `Nothing was asked:
 <the sentence>`, an error with outcome `validation`.
 
+Validation alone does not adopt an upload. The host excludes discard while
+rechecking and storing the question (or worker gate), then adopts its media
+only after storage succeeds. After delivery returns, the HTTP handler discards
+this call's still-unclaimed snapshots, including when a late origin check or
+question-store write failed and the answer is delivery-failure text. Adopted
+snapshots and unrelated uploads remain untouched.
+
 **What is stored and sent to the page** (camelCase), on a question as
 `media` (absent when none) and on an option as `image` (absent when none):
 
