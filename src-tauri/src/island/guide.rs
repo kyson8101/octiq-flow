@@ -38,7 +38,7 @@ Furniture and decor can use seat, desk or bed; any placed asset can use read, pa
 ## Buildings have no roof
 The person must always be able to watch inside, so a building is refused when:
 1. a part whose top is above 1.2 m is more than 0.5 m thick both ways seen from above. Walls, posts, beams and door frames are thin one way; a slab, a solid block or a sloped roof is not.
-2. the parts wholly above 1.5 m (beams, lintels, signs, lamps) cover more than 15% of the building's floor, the x by z area of its bounding box.
+2. parts wholly above 1.5 m, or starting above 1.2 m and reaching past 1.5 m, cover more than 15% of the floor (x by z bounds), added together. Narrow strips count too.
 Floors are fine. Leave a doorway, and put furniture in as separate assets.
 
 ## Plots

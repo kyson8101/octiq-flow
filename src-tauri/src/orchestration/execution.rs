@@ -1023,7 +1023,9 @@ impl OrchestrationStore {
                 launch,
                 StartedBy::Recovery(&attempt.id),
             ) {
-                if error.starts_with("Provider choice pending:") {
+                if error.starts_with("Provider choice pending:")
+                    || error.starts_with("Provider quota pending:")
+                {
                     continue;
                 }
                 // A vanished project or invalid settings can fail before a

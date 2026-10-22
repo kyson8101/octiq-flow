@@ -370,15 +370,31 @@ fn beams_above_1_5_m_may_cover_15_percent_of_the_floor_and_no_more() {
     let why = refused(building(&[beam(0.282, -1.0), beam(0.283, 1.0)]));
     assert!(why.starts_with(ROOFLESS), "{why}");
     assert!(
-        why.contains("the parts wholly above 1.5 m cover 15.0% of the building's floor (3.005 of 20 m²), and at most 15% may be covered"),
+        why.contains("the overhead parts reaching above 1.5 m cover 15.0% of the building's floor (3.005 of 20 m²), and at most 15% may be covered"),
         "{why}"
     );
     assert!(
         why.contains("The largest is part 9 (box, 5 × 0.1 × 0.283 m, from 1.85 to 1.95 m up)"),
         "{why}"
     );
-    // A part that starts below 1.5 m does not count, however wide.
+    // A sparse beam straddling 1.5 m still fits within the aggregate budget.
     check_asset(building(&[block([5.0, 0.4, 0.45], [0.0, 1.6, 0.0])])).unwrap();
+}
+
+#[test]
+fn narrow_strips_straddling_the_height_limit_cannot_tile_an_opaque_roof() {
+    for bottom in [1.4, 1.499, 1.5] {
+        let mut parts = vec![block([8.0, 0.06, 8.0], [0.0, 0.03, 0.0])];
+        for i in 0..20 {
+            parts.push(block(
+                [0.4, 0.2, 8.0],
+                [-3.8 + i as f64 * 0.4, bottom + 0.1, 0.0],
+            ));
+        }
+        let why = refused(asset("building", json!(parts)));
+        assert!(why.starts_with(ROOFLESS), "{why}");
+        assert!(why.contains("cover 100.0%"), "{why}");
+    }
 }
 
 #[test]

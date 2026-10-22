@@ -2873,9 +2873,9 @@ or shows a process already running with the MCP `job_register`; the page reads
 
 ### The island
 
-A 3D island on its own page (sidebar → Island): every registered agent and
-every 波特 (the person's name for the island bots) lives there as a chibi
-robot, on a honeycomb of hexagonal plots round a plaza with a wish tree and a
+A 3D island on its own page (sidebar → Island): every registered agent,
+called 波特 on the island, lives there as a chibi robot, on a honeycomb of
+hexagonal plots round a plaza with a wish tree and a
 playground. The contract is `docs/island.md`; three owners, and nothing
 crosses between them:
 
@@ -2910,16 +2910,18 @@ Rules that hold:
   desk, a card waiting on the person is a hand up in `--decide`, a failure is
   trouble. Nothing on the island reads the ledger or the card lists itself;
   `lib/runWaits.wiring.test.ts` holds `held={pendingHeld}` on the page.
-- **A wish is granted by a chat the person starts.** Grant opens a new chat
-  with the host's brief in the box (`seeded` in `App`, through the composer's
-  `putBack`); nothing is sent for them. An agent's own wish opens a chat with
-  that agent when the person can talk to it directly.
+- **Grant starts a background island task.** The page calls
+  `island_wish_start`; the host reads the stored brief and immediately starts
+  a conversation with an installed provider that has Octiq MCP and guarded
+  Edits access (Claude, Codex or Antigravity). The island stays open; the
+  normal chat lifecycle owns the process, record and permission cards.
 - **Agents' looks are their persona hue and model family until they choose**
   (`lib/island/model.defaultAgentLook`): the trim is the colour of their face
   everywhere else in the app.
 - **The playground's cell `(−1, 0)` and the plaza `(0, 0)` are never plots.**
-  波特 share homes of up to four, designed together; agents have one plot
-  each.
+  波特 are the registered agents. Each team shares an office; unteamed
+  agents share the Agent Tower. Old personal plots are storage anchors,
+  and granted public projects get their own plots.
 - **three.js loads with the page and with no other** (`lazy` in `App`); the
   view owns its canvas and lets its context go on dispose
   (`renderer.forceContextLoss`), because a browser keeps only a few and the

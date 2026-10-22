@@ -44,6 +44,40 @@ impl State {
         self.alternative_using(source, source, now)
     }
 
+    /// The first installed, access-compatible account that can run again.
+    /// Unknown resets were assigned the 15-minute default by `limited`.
+    pub(crate) fn next_reset(&self, source: &Settings, now: i64) -> i64 {
+        let installed = crate::agents::agent_installs(None);
+        self.next_reset_using(source, now, |agent| {
+            installed
+                .iter()
+                .any(|row| row.id == agent.id() && row.installed)
+        })
+    }
+
+    fn next_reset_using(
+        &self,
+        source: &Settings,
+        now: i64,
+        installed: impl Fn(AgentKind) -> bool,
+    ) -> i64 {
+        let blocked = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        [
+            source.agent,
+            AgentKind::Claude,
+            AgentKind::Codex,
+            AgentKind::Antigravity,
+        ]
+        .into_iter()
+        .filter(|agent| {
+            *agent == source.agent || (installed(*agent) && equivalent(source, *agent).is_some())
+        })
+        .filter_map(|agent| blocked.get(account(agent)).copied())
+        .filter(|until| *until > now)
+        .min()
+        .unwrap_or(now + 15 * 60)
+    }
+
     pub(crate) fn alternative_using(
         &self,
         source: &Settings,
@@ -286,4 +320,24 @@ mod tests {
         assert!(state.choose(&source, 101, |_| true).is_none());
         assert!(!state.blocked(AgentKind::Codex, 501));
     }
+}
+#[test]
+fn exhausted_accounts_wait_for_the_first_compatible_reset_or_default() {
+    let state = State::default();
+    let source = Settings {
+        agent: AgentKind::Codex,
+        model: None,
+        effort: None,
+        access: Access::Auto,
+    };
+    state.limited(AgentKind::Codex, None, 100);
+    state.limited(AgentKind::Claude, Some(600), 100);
+    state.limited(AgentKind::Antigravity, Some(200), 100);
+    assert_eq!(state.next_reset_using(&source, 101, |_| true), 600);
+    assert_eq!(state.next_reset_using(&source, 101, |_| false), 1000);
+    let edits = Settings {
+        access: Access::Edits,
+        ..source
+    };
+    assert_eq!(state.next_reset_using(&edits, 101, |_| true), 200);
 }
