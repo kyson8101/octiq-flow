@@ -48,12 +48,12 @@ describe("host notification reader", () => {
 
   it("folds unknown/malformed shapes while keeping their answer outside", () => {
     const notice = readNoticeTurn("octiq-notification-a", "A new host format with an arbitrarily long body");
-    expect(notice).toEqual([{ id: "octiq-notification-a", kind: "unknown", subject: "update", text: "A new host format with an arbitrarily long body" }]);
+    expect(notice).toEqual([{ id: "octiq-notification-a", kind: "unknown", subject: "update", text: "A new host format with an arbitrarily long body", body: "A new host format with an arbitrarily long body" }]);
     expect(statusOnly(notice)).toBe(false);
     expect(readNoticeTurn("octiq-notification-a|octiq-notification-b", noticeText([read(0).message]))[0].kind).toBe("unknown");
     const batch = read(2).message;
     const malformed = noticeText([batch]).replace("\n\n---\n\n", "\n\n");
-    expect(readNoticeTurn(batch.turnId, malformed)).toEqual([{ id: batch.turnId, kind: "unknown", subject: "update", text: malformed }]);
+    expect(readNoticeTurn(batch.turnId, malformed)).toEqual([{ id: batch.turnId, kind: "unknown", subject: "update", text: malformed, body: malformed }]);
   });
 
   it("uses registered names, with short identity fallbacks", () => {
@@ -79,30 +79,52 @@ describe("host notification reader", () => {
     const person: Message = { id: "person", role: "user", streaming: false, blocks: [] };
     const turns = [[a], [reply("First")], [reply("Second")], [person], [reply("Person's answer")], [b], [reply("Reply notice's answer")]];
     expect(foldNoticeReplies(turns).map((t) => t.map((m) => m.id))).toEqual([
-      [a.id, "First", "Second"], [person.id], ["Person's answer"], [b.id], ["Reply notice's answer"],
+      [a.id, "First"], ["Second"], [person.id], ["Person's answer"], [b.id], ["Reply notice's answer"],
     ]);
   });
 
-  it("keeps calls, cards, questions and host events outside the reply fold", () => {
-    const tool = { kind: "tool", id: "ask", name: "request_user_input", argsJson: "{}", args: {}, state: "running" } as const;
-    const question = { kind: "text", text: "继续吗？" } as const;
+  it("folds only a whole short plain paragraph, without semantic question guessing", () => {
+    expect(noticeReply([reply("检查已完成，等待其余结果。")])).toBe("检查已完成，等待其余结果。");
+    expect(noticeReply([reply("继续吗？")])).toBe("继续吗？");
+    expect(noticeReply([reply("x".repeat(160))])).toBe("x".repeat(160));
+    expect(noticeReply([reply("x".repeat(161))])).toBeNull();
+    for (const text of ["状态已收到。\n\n请选择继续检查或暂停，收到选择后才会继续。",
+      "Status received.\n\nPlease choose continue or pause before I proceed.",
+      "First\nSecond", "- Item", "1. Item", "# Heading", "**Bold**", "[Link](https://example.com)",
+      '```octiq-diagram\n{"rows":[[{"title":"Decision"}]]}\n```',
+      'visualize{"path":"/tmp/report.html"}']) {
+      const message = reply(text);
+      expect(noticeReply([message])).toBeNull();
+      expect(foldNoticeReplies([[read(0).message], [message]])).toEqual([[read(0).message], [message]]);
+    }
+  });
+
+  it("leaves tools, events, thinking and progress in their original reply", () => {
+    const tool = { kind: "tool", id: "read", name: "Read", argsJson: "{}", args: {}, state: "done" } as const;
+    const prose = { kind: "text", text: "状态汇总如下。" } as const;
     const card = { kind: "text", text: '```octiq-diagram\n{"rows":[[{"title":"Decision"}]]}\n```' } as const;
-    const event = { kind: "notice", text: "Waiting for permission" } as const;
-    const message = { ...reply("Status done"), blocks: [...reply("Status done").blocks, tool, question, card, event] };
-    const result = noticeReply([message]);
-    expect(result.visible).toEqual([tool, question, card, event]);
-    expect(result.text).toBe(`Status done\n\n继续吗？\n\n${card.text}`);
+    const message = { ...reply(""), blocks: [tool, prose, card] };
+    expect(noticeReply([message])).toBeNull();
+    expect(foldNoticeReplies([[read(0).message], [message]])[1]).toBeDefined();
+    for (const change of [{ streaming: true }, { progress: ["Checking"] }, { codexCandidate: "Proceed" },
+      { blocks: [{ kind: "notice" as const, text: "Waiting for permission" }] },
+      { blocks: [{ kind: "thinking" as const, text: "Thinking" }, prose] }, { blocks: [prose, prose] }]) {
+      expect(noticeReply([{ ...reply("Done"), ...change }])).toBeNull();
+    }
   });
 
-  it("keeps text that renders interactive controls visible", () => {
-    const config = { kind: "text", text: "Usage: /config key=value [key=value ...]\n  theme=auto|dark|light" } as const;
-    const visualization = { kind: "text", text: 'visualize{"path":"/tmp/report.html"}' } as const;
-    expect(noticeReply([{ ...reply("Settings"), blocks: [config, visualization] }]).visible).toEqual([config, visualization]);
-  });
-
-  it("keeps a streaming commentary question visible as well", () => {
-    const result = noticeReply([{ ...reply("Done"), progress: ["Checking", "Proceed?"], codexCandidate: "继续吗？" }]);
-    expect(result.visible).toEqual([{ kind: "text", text: "Proceed?" }, { kind: "text", text: "继续吗？" }]);
-    expect(result.text).toBe("Checking\n\nProceed?\n\n继续吗？\n\nDone");
+  it("separates message bodies from raw host text, including batch and report footers", () => {
+    const notices = read(2).notices;
+    expect(notices[0].body).toBe("已反转 gradient 为左淡右实。现有 Usage.test.tsx 对 width:42% 的字符串断言需同步 max(3px, 42%)，已修改。tsc/full Vitest 和 real App screenshot harness 仍运行中；当前机器运行偏慢。");
+    expect(notices[1].body).toContain("instructions.test.cjs 8/8 PASS");
+    for (const n of notices) {
+      expect(n.body).not.toMatch(/OctiqFlow notification|Subject:|From:|This is a batch/);
+      expect(n.text).toContain("OctiqFlow notification");
+    }
+    const state = reduceChat(emptyChat(), JSON.parse(capturedReport.trim()));
+    const report = readNoticeTurn(state.messages[0].turnId, noticeText(state.messages))[0];
+    expect(report.body).toMatch(/^完成并 commit/);
+    expect(report.body).not.toMatch(/Worker reported|Read orchestration_snapshot|This is a batch/);
+    expect(report.text).toContain("Read orchestration_snapshot");
   });
 });

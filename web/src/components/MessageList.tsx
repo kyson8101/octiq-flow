@@ -59,7 +59,7 @@ import { useJob } from "./Background";
 import { isJobTurn, jobIdOfTurn, jobTurnBubble } from "../lib/jobs";
 import { wrapUpBubble } from "../lib/chatComplete";
 import { planStartBubble } from "../lib/planTurn";
-import { foldNoticeReplies, isNoticeTurn, noticeReply, noticeText, readNoticeTurn, statusOnly } from "../lib/hostNotice";
+import { foldNoticeReplies, isNoticeTurn, noticeReply, noticeText, readNoticeTurn } from "../lib/hostNotice";
 import { ChatPersonaContext } from "../lib/agentRoster";
 import { HostNotice } from "./HostNotice";
 import { initialTurn, turnWindowStart, TURN_BATCH } from "../lib/messageWindow";
@@ -983,14 +983,11 @@ function TurnView({
 
   if (role === "user" && isNoticeTurn(message.turnId)) {
     const notices = readNoticeTurn(message.turnId, noticeText(messages));
-    const reply = statusOnly(notices) ? noticeReply(messages) : { text: "", visible: [] };
+    const reply = noticeReply(messages);
     return <article className={`msg msg-host ${fresh ? "is-new" : ""}`} aria-label="OctiqFlow host notifications">
       <div className="msg-body">
-        <HostNotice notices={notices} coordinator={hostPersona?.name || "Coordinator"} nameOf={nameOf} reply={reply.text} />
+        <HostNotice notices={notices} coordinator={hostPersona?.name || "Coordinator"} nameOf={nameOf} reply={reply ?? undefined} />
         <SentFiles files={files} />
-        <MediaReplyContext.Provider value={messages.find((m) => m.role === "assistant")?.id ?? message.id}>
-          <Blocks blocks={reply.visible} streaming={streaming} kids={kids} agentByTool={agentByTool} onOpenAgent={onOpenAgent} />
-        </MediaReplyContext.Provider>
       </div>
     </article>;
   }

@@ -14,3 +14,12 @@
 .host-notice-text { margin: 4px 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-2); font: inherit; font-size: 12px; line-height: 1.6; }
 @media (hover: hover) { .host-notice-toggle:hover { color: var(--fg-0); } }
 @media (pointer: coarse) { .host-notice-toggle { min-height: 44px; } }
+
+/* The entire reply is already visible; it is neither a button nor clipped. */
+.host-notice-reply { padding: 5px 0; color: var(--fg-2); font-size: 12px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+.host-notice-raw-toggle { display: flex; align-items: center; gap: 8px; padding: 4px 0; border: 0; background: transparent; color: var(--fg-3); font: inherit; font-size: 11px; cursor: pointer; }
+.host-notice-raw-toggle .card-fold-chevron { width: 5px; height: 5px; }
+.host-notice-raw-toggle[aria-expanded="true"] .card-fold-chevron { transform: translateY(2px) rotate(-135deg); }
+.host-notice-raw-toggle:focus-visible { outline: 2px solid var(--fg-2); outline-offset: 2px; }
+.host-notice-raw { font-size: 11px; color: var(--fg-3); }
+@media (pointer: coarse) { .host-notice-raw-toggle { min-height: 44px; } }

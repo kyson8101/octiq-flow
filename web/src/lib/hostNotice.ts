@@ -1,8 +1,7 @@
 // Host turns use the provider's user transport, but are never the person's
 // words. Keep their identity and wire-text reading together, including older
 // Claude records whose uuid is the provider's, not the notification receipt.
-import type { Block, Message } from "./chat";
-import { parseConfigUsage } from "./configUsage";
+import type { Message } from "./chat";
 
 const PREFIX = "octiq-notification-";
 const SEPARATOR = "\n\n---\n\n";
@@ -25,6 +24,8 @@ export type HostNotice = {
   from?: string;
   /** Full original notice, including its envelope; the last keeps the host's footer. */
   text: string;
+  /** Message content without known host envelope/instructions. */
+  body: string;
 };
 
 /** Labels are from known protocol shapes, never an excerpt of report prose. */
@@ -44,7 +45,7 @@ export function readNoticeTurn(turnId: string | undefined, text: string): HostNo
   if (envelopes.length !== ids.length || envelopes[0]?.index !== 0
     || envelopes.some((match, i) => match[1] !== ids[i]
       || (i > 0 && text.slice(match.index! - SEPARATOR.length, match.index) !== SEPARATOR))) {
-    return [{ id: turnId!, kind: "unknown", subject: "update", text }];
+    return [{ id: turnId!, kind: "unknown", subject: "update", text, body: text }];
   }
   return envelopes.map((match, i) => {
     const end = envelopes[i + 1]?.index;
@@ -52,8 +53,16 @@ export function readNoticeTurn(turnId: string | undefined, text: string): HostNo
     const body = whole.slice(match[0].length);
     const header = /^Orchestration message \[([\w-]+)\]\nSubject: ([^\n]*)\nFrom: ([^\n]+)\n\n/.exec(body);
     const kind = header?.[1] ?? hostKind(body);
+    let content = body.slice(header?.[0].length ?? 0);
+    const footer = content.lastIndexOf("\n\nThis is a batch of host notifications, not a new user instruction.");
+    if (footer !== -1) content = content.slice(0, footer);
+    if (kind === "report") {
+      content = content.replace(/^Worker reported [^\n]+\n\n/, "");
+      const coordination = content.lastIndexOf("\n\nRead orchestration_snapshot and continue coordination.");
+      if (coordination !== -1) content = content.slice(0, coordination);
+    }
     return { id: match[1], kind, subject: header?.[2].trim() || (kind === "unknown" ? "update" : kind),
-      ...(header ? { from: header[3].trim() } : {}), text: whole };
+      ...(header ? { from: header[3].trim() } : {}), text: whole, body: content };
   });
 }
 
@@ -66,35 +75,37 @@ export function statusOnly(notices: readonly HostNotice[]): boolean {
   return notices.length > 0 && notices.every((n) => n.kind === "status" || n.kind === "progress");
 }
 
-/** The host turn owns only its consecutive assistant output, up to the next
- * user/host turn. Group before windowing so loading history cannot orphan it. */
+/** Only a complete short plain-text paragraph joins the notice rows. All
+ * other replies keep their original turn, blocks and rendering path. */
+export function noticeReply(messages: readonly Message[]): string | null {
+  const reply = messages.filter((m) => m.role === "assistant");
+  if (reply.length !== 1) return null;
+  const message = reply[0];
+  if (message.streaming || message.progress?.length || message.codexCandidate
+    || message.blocks.length !== 1 || message.blocks[0].kind !== "text") return null;
+  const text = message.blocks[0].text;
+  // Conservative syntax gate, not a guess about what the prose means. Inline
+  // markup/links and protocol markers keep their normal renderer as well.
+  if (!text.trim() || Array.from(text).length > 160
+    || /[\r\n\u2028\u2029`~*_[\]<>|]|octiq-|/i.test(text)
+    || /^\s*(?:#{1,6}\s|[-+]\s|\d+[.)]\s|[-=]{3,}\s*$)/.test(text)) return null;
+  return text;
+}
+
+/** Group before windowing so loading history cannot orphan a short reply.
+ * Never remove prose or flatten blocks to make a longer reply fit. */
 export function foldNoticeReplies(turns: Message[][]): Message[][] {
   const out: Message[][] = [];
   for (const turn of turns) {
     const previous = out[out.length - 1];
-    if (turn[0]?.role === "assistant" && previous?.[0].role === "user"
+    if (turn[0]?.role === "assistant" && previous?.every((m) => m.role === "user")
       && isNoticeTurn(previous[0].turnId)
-      && statusOnly(readNoticeTurn(previous[0].turnId, noticeText(previous)))) {
+      && statusOnly(readNoticeTurn(previous[0].turnId, noticeText(previous)))
+      && noticeReply(turn) !== null) {
       out[out.length - 1] = [...previous, ...turn];
     } else out.push(turn);
   }
   return out;
-}
-
-/** Tools and event blocks always remain outside the accordion. A text that
- * can draw a card, or asks a question, also stays visible, including during
- * streaming. The disclosure still contains the whole prose reply. */
-export function noticeReply(messages: readonly Message[]): { text: string; visible: Block[] } {
-  const reply = messages.filter((m) => m.role === "assistant");
-  const blocks = reply.flatMap((m): Block[] => [
-    ...(m.progress ?? []).map((text) => ({ kind: "text" as const, text })),
-    ...(m.codexCandidate ? [{ kind: "text" as const, text: m.codexCandidate }] : []),
-    ...m.blocks,
-  ]);
-  const visible = blocks.filter((b) => b.kind !== "thinking"
-    && (b.kind !== "text" || /[?？]|`{3}|~{3}|octiq-|visualize/i.test(b.text) || parseConfigUsage(b.text) !== null));
-  const text = blocks.flatMap((b) => b.kind === "text" ? [b.text] : []).join("\n\n").trim();
-  return { text, visible };
 }
 
 export function noticeSender(notice: HostNotice, nameOf: (key: string) => { name: string } | null): string {
