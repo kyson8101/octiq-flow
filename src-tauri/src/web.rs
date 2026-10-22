@@ -1833,7 +1833,10 @@ async fn orchestration_handler(
     }
     // A worker may not settle past an instruction it has not read: the first
     // report hands the instruction over instead, and the next one settles.
-    if command == "orchestration_worker_report" {
+    if matches!(
+        command,
+        "orchestration_worker_report" | "orchestration_peer_request"
+    ) {
         let waiting = waiting_messages(&ctx, &actor);
         if !waiting.is_null() {
             // A peer request's worker is sent nothing by a coordinator.
@@ -1846,7 +1849,14 @@ async fn orchestration_handler(
                 StatusCode::CONFLICT,
                 crate::outcome::Refusal::new(
                     crate::outcome::ReasonClass::Validation,
-                    format!("Not reported yet: {unseen}\n{waiting}"),
+                    format!(
+                        "{}: {unseen}\n{waiting}",
+                        if command == "orchestration_worker_report" {
+                            "Not reported yet"
+                        } else {
+                            "Peer request not recorded"
+                        }
+                    ),
                 ),
             );
         }

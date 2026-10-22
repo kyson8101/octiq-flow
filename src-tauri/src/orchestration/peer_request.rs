@@ -646,6 +646,20 @@ fn asking(
         if task.active_attempt_id.as_deref() != Some(attempt.id.as_str()) {
             return Err("This attempt is no longer the task's current one.".into());
         }
+        if data.notifications.values().any(|n| {
+            n.target_chat_key == actor
+                && n.run_id == attempt.run_id
+                && data
+                    .runs
+                    .get(&n.run_id)
+                    .is_some_and(|run| n.from_chat_key == run.coordinator_chat_key)
+                && matches!(
+                    n.state,
+                    inbox::DeliveryState::Pending | inbox::DeliveryState::Delivering
+                )
+        }) {
+            return Err("Peer request not recorded: read the waiting coordinator instructions in orchestration_snapshot before requesting more work.".into());
+        }
         if task.peer_request.is_some() {
             return Err("Your own task is a peer request, and a peer request goes no further. Do the work yourself; you may still ask a teammate a question with orchestration_peer_ask.".into());
         }
@@ -775,7 +789,6 @@ impl OrchestrationStore {
             asking(&inner.data, actor, lead, agents)?
         };
         let peer = choose_peer(agents, teams, &before.requester.id, &work.peer)?;
-        over_limit(&before)?;
         let now = now_ms();
         let run_created = before.run.is_none();
         let run = match (&before.run, lead) {
@@ -849,6 +862,18 @@ impl OrchestrationStore {
         let mut reopened_plan = false;
         let (task, left, waits_for_requester) = self.mutate(|data| {
             let current = asking(data, actor, lead, agents)?;
+            if let Some(existing) = data.tasks.values().find(|task| {
+                task.run_id == run.id && task.title == title && task.spec == spec
+                    && task.assignee.as_ref() == Some(&teammate)
+                    && task.destination == destination
+                    && task.peer_request.as_ref().is_some_and(|request| {
+                        request.requester_chat_key == actor
+                            && request.requester_attempt_id == current.attempt_id
+                            && request.max_minutes == max_minutes
+                    })
+            }) {
+                return Err(format!("This exact peer request already exists as task {} ({:?}). Read its state instead of recording it again; its approval has not been changed.", existing.id, existing.status));
+            }
             over_limit(&current)?;
             // Routed and planned against `run`: a run that appeared or went
             // away meanwhile would put the task somewhere nobody checked.
@@ -1653,7 +1678,14 @@ pub(crate) mod tests {
         // second run was opened for it.
         let second = from_lead(&store, work("di")).unwrap_err();
         assert!(second.contains("no longer registered"), "{second}");
-        let second = from_lead(&store, work("BO")).unwrap();
+        let second = from_lead(
+            &store,
+            PeerWork {
+                title: "Report another volume".into(),
+                ..work("BO")
+            },
+        )
+        .unwrap();
         assert!(!second.run_created);
         assert_eq!(second.run_id, first.run_id);
         assert_eq!(store.snapshot(None).unwrap().runs.len(), 1);
@@ -1721,7 +1753,15 @@ pub(crate) mod tests {
         let run = run(&store);
         let worker = worker_ada(&store, &run);
         let first = from_worker(&store, &worker, work("bo")).unwrap();
-        let second = from_worker(&store, &worker, work("bo")).unwrap();
+        let second = from_worker(
+            &store,
+            &worker,
+            PeerWork {
+                title: "Report another volume".into(),
+                ..work("bo")
+            },
+        )
+        .unwrap();
         // The person rejects the amendment: both new tasks are withdrawn, and
         // the worker hears it instead of waiting for reports.
         store
@@ -1926,12 +1966,75 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn unread_instructions_refuse_a_peer_request_before_plan_mutation() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = worker_ada(&store, &run);
+        store
+            .record_message(
+                &run.coordinator_chat_key,
+                run.id.clone(),
+                worker.id.clone(),
+                "instruction".into(),
+                "Withdraw".into(),
+                "Do not create another peer request".into(),
+            )
+            .unwrap();
+        let count = store.snapshot(Some(&run.id)).unwrap().tasks.len();
+        let err = from_worker(&store, &worker, work("bo")).unwrap_err();
+        assert!(err.contains("waiting coordinator instructions"), "{err}");
+        assert_eq!(store.snapshot(Some(&run.id)).unwrap().tasks.len(), count);
+        assert!(!store
+            .take_for_working_worker(&worker.worker_chat_key)
+            .unwrap()
+            .is_empty());
+        assert!(from_worker(&store, &worker, work("bo")).is_ok());
+    }
+
+    #[test]
+    fn duplicate_peer_request_preserves_the_existing_task_and_plan_approval() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = worker_ada(&store, &run);
+        let work = work("bo");
+        let made = from_worker(&store, &worker, work.clone()).unwrap();
+        store
+            .mutate(|data| {
+                data.runs
+                    .get_mut(&run.id)
+                    .unwrap()
+                    .plan_approval
+                    .as_mut()
+                    .unwrap()
+                    .status = PlanStatus::Approved;
+                Ok(())
+            })
+            .unwrap();
+        let before = serde_json::to_value(run_of(&store, &run.id).plan_approval).unwrap();
+        let err = from_worker(&store, &worker, work).unwrap_err();
+        assert!(err.contains(&made.task_id), "{err}");
+        assert_eq!(
+            serde_json::to_value(run_of(&store, &run.id).plan_approval).unwrap(),
+            before
+        );
+        assert_eq!(store.snapshot(Some(&run.id)).unwrap().tasks.len(), 2);
+    }
+
+    #[test]
     fn requests_are_bounded_in_number_and_size() {
         let store = OrchestrationStore::default();
         let run = run(&store);
         let worker = worker_ada(&store, &run);
-        for _ in 0..MAX_REQUESTS_PER_ATTEMPT {
-            from_worker(&store, &worker, work("bo")).unwrap();
+        for n in 0..MAX_REQUESTS_PER_ATTEMPT {
+            from_worker(
+                &store,
+                &worker,
+                PeerWork {
+                    title: format!("Volume {n}"),
+                    ..work("bo")
+                },
+            )
+            .unwrap();
         }
         let third = from_worker(&store, &worker, work("bo")).unwrap_err();
         assert!(
@@ -1945,8 +2048,17 @@ pub(crate) mod tests {
 
         let store = OrchestrationStore::default();
         let mut made = Vec::new();
-        for _ in 0..MAX_OPEN_REQUESTS_PER_LEAD_CHAT {
-            made.push(from_lead(&store, work("bo")).unwrap());
+        for n in 0..MAX_OPEN_REQUESTS_PER_LEAD_CHAT {
+            made.push(
+                from_lead(
+                    &store,
+                    PeerWork {
+                        title: format!("Volume {n}"),
+                        ..work("bo")
+                    },
+                )
+                .unwrap(),
+            );
         }
         let fourth = from_lead(&store, work("bo")).unwrap_err();
         assert!(
@@ -4086,7 +4198,15 @@ pub(crate) mod tests {
         );
         assert!(!brief.contains("a message or a decision asks"), "{brief}");
         // The withdraw the refusal names still works on one not yet started.
-        let spare = from_worker(&store, &worker, work("bo")).unwrap();
+        let spare = from_worker(
+            &store,
+            &worker,
+            PeerWork {
+                title: "Spare volume report".into(),
+                ..work("bo")
+            },
+        )
+        .unwrap();
         let withdrawn = store
             .revise_task(
                 "chat:master",
@@ -4873,7 +4993,10 @@ pub(crate) mod tests {
             .peer_request(
                 &worker.worker_chat_key,
                 None,
-                work("bo"),
+                PeerWork {
+                    title: "Read-only volume audit".into(),
+                    ..work("bo")
+                },
                 &agents,
                 &teams,
                 &[project("workspace", "/tmp")],
