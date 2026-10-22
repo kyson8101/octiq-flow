@@ -380,6 +380,24 @@ fn carry(
 /// It makes no claim about access: the chat runs at its agent's own level.
 pub const DISCUSSION_NOTE: &str = "This chat is a discussion, not a task: the person wants to talk it through first. Read whatever helps the conversation, and change nothing unless they ask you to.";
 
+fn path_start(previous: Option<char>) -> bool {
+    previous.is_none_or(|ch| !ch.is_alphanumeric() && !matches!(ch, '/' | '\\' | '.' | '-' | '_'))
+}
+
+fn path_character(ch: char) -> bool {
+    ch.is_alphanumeric() || matches!(ch, '/' | '\\' | '-' | '_' | '~' | '%' | '+' | '.')
+}
+
+fn path_end(rest: &str) -> bool {
+    let mut chars = rest.chars();
+    match chars.next() {
+        None => true,
+        // A sentence-final dot ends the token; an extension continues it.
+        Some('.') => !chars.next().is_some_and(path_character),
+        Some(ch) => !path_character(ch),
+    }
+}
+
 /// The visible part of the routed chat's first message.
 pub fn render(desk: &str, brief: &str, files: &[RouteFile], discuss: bool) -> String {
     // Match the longest path first, in one pass over the original text:
@@ -392,17 +410,19 @@ pub fn render(desk: &str, brief: &str, files: &[RouteFile], discuss: bool) -> St
         .collect();
     paths.sort_by_key(|(path, _)| std::cmp::Reverse(path.len()));
     let mut rest = brief.trim();
+    let mut previous = None;
     let mut out = String::new();
     while !rest.is_empty() {
-        if let Some((path, name)) = paths
-            .iter()
-            .find(|(path, _)| rest.starts_with(path.as_str()))
-        {
+        if let Some((path, name)) = paths.iter().find(|(path, _)| {
+            path_start(previous) && rest.starts_with(path.as_str()) && path_end(&rest[path.len()..])
+        }) {
             out.push_str(name);
+            previous = path.chars().next_back();
             rest = &rest[path.len()..];
         } else {
             let ch = rest.chars().next().unwrap();
             out.push(ch);
+            previous = Some(ch);
             rest = &rest[ch.len_utf8()..];
         }
     }
@@ -787,6 +807,83 @@ mod tests {
             false,
         );
         assert!(message.starts_with("long.webp short.png long.webp short.png\n"));
+    }
+
+    #[test]
+    fn attachment_paths_inside_larger_tokens_are_unchanged() {
+        for file in [
+            picture("/uploads/id-shot.png", "/route/id-shot.png", "shot.png"),
+            picture(
+                r"C:\uploads\id-shot.png",
+                r"C:\route\id-shot.png",
+                "shot.png",
+            ),
+        ] {
+            for path in [&file.source, &file.path] {
+                for brief in [
+                    format!("{path}.webp"),
+                    format!("{path}.backup"),
+                    format!("{path}~backup"),
+                    format!("{path}%20backup"),
+                    format!("{path}+backup"),
+                    format!("{path}-backup"),
+                    format!("{path}_backup"),
+                    format!("{path}/child"),
+                    format!("{path}\\child"),
+                    format!("/other{path}"),
+                    format!(r"D:\other\{path}"),
+                    format!(".{path}"),
+                    format!("-{path}"),
+                    format!("_{path}"),
+                    format!("a{path}"),
+                    format!("字{path}"),
+                ] {
+                    let message = render("Desk", &brief, std::slice::from_ref(&file), false);
+                    assert_eq!(
+                        message.split("\n\nAttachments:").next(),
+                        Some(brief.as_str())
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn whole_attachment_paths_allow_sentence_punctuation_and_wrappers() {
+        for file in [
+            picture("/uploads/id-shot.png", "/route/id-shot.png", "shot.png"),
+            picture(
+                r"C:\uploads\id-shot.png",
+                r"C:\route\id-shot.png",
+                "shot.png",
+            ),
+        ] {
+            for path in [&file.source, &file.path] {
+                for (before, after) in [
+                    ("", ""),
+                    ("Inspect ", "."),
+                    ("检查：", "。"),
+                    ("附件：", "，请看"),
+                    ("", ",next"),
+                    ("", "。请看"),
+                    ("(", ")"),
+                    ("\"", "\""),
+                    ("'", "'"),
+                    ("[", "]"),
+                    ("<", ">"),
+                    ("附件，", ", next"),
+                    ("Inspect (", "). Next"),
+                ] {
+                    let brief = format!("{before}{path}{after}");
+                    let expected = format!("{before}shot.png{after}");
+                    let message = render("Desk", &brief, std::slice::from_ref(&file), false);
+                    assert_eq!(
+                        message.split("\n\nAttachments:").next(),
+                        Some(expected.as_str())
+                    );
+                }
+            }
+        }
     }
 
     #[test]
