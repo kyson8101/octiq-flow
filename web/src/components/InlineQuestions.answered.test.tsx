@@ -140,7 +140,7 @@ describe("a question the provider asked by itself", () => {
     // The transcript item is the host's, in the reply's own column: it is
     // never grouped as a person's turn, and the map draws only those.
     expect(heard(TALK, line).messages[1].role).toBe("assistant");
-    expect(listSource).toMatch(/mapTurnId=\{turn\[0\]\.role === "user" && !isAnswerTurn\(turn\[0\]\.turnId\) \? turn\[0\]\.id : undefined\}/);
+    expect(listSource).toMatch(/mapTurnId=\{turn\[0\]\.role === "user" && !isAnswerTurn\(turn\[0\]\.turnId\) && !isNoticeTurn\(turn\[0\]\.turnId\) \? turn\[0\]\.id : undefined\}/);
     expect(html).not.toContain("data-map-turn");
     // No name over a block that is only the host's record.
     expect(listSource).toMatch(/b\.kind === "reopened" \|\| b\.kind === "answered"\);/);

@@ -59,6 +59,9 @@ import { useJob } from "./Background";
 import { isJobTurn, jobIdOfTurn, jobTurnBubble } from "../lib/jobs";
 import { wrapUpBubble } from "../lib/chatComplete";
 import { planStartBubble } from "../lib/planTurn";
+import { foldNoticeReplies, isNoticeTurn, noticeReply, noticeText, readNoticeTurn, statusOnly } from "../lib/hostNotice";
+import { ChatPersonaContext } from "../lib/agentRoster";
+import { HostNotice } from "./HostNotice";
 import { initialTurn, turnWindowStart, TURN_BATCH } from "../lib/messageWindow";
 import { parseVisualizationReference, VisualizationLink } from "./Visualization";
 import {
@@ -863,6 +866,7 @@ function TurnView({
   mapTurnId?: string;
 }) {
   const role = messages[0].role;
+  const nameOf = useContext(ChatPersonaContext);
   // One turn is one voice — `groupTurns` breaks on the seat, so every message
   // here has the same one.
   const speaker = messages[0].speaker;
@@ -975,6 +979,20 @@ function TurnView({
         </div>
       </article>
     );
+  }
+
+  if (role === "user" && isNoticeTurn(message.turnId)) {
+    const notices = readNoticeTurn(message.turnId, noticeText(messages));
+    const reply = statusOnly(notices) ? noticeReply(messages) : { text: "", visible: [] };
+    return <article className={`msg msg-host ${fresh ? "is-new" : ""}`} aria-label="OctiqFlow host notifications">
+      <div className="msg-body">
+        <HostNotice notices={notices} coordinator={hostPersona?.name || "Coordinator"} nameOf={nameOf} reply={reply.text} />
+        <SentFiles files={files} />
+        <MediaReplyContext.Provider value={messages.find((m) => m.role === "assistant")?.id ?? message.id}>
+          <Blocks blocks={reply.visible} streaming={streaming} kids={kids} agentByTool={agentByTool} onOpenAgent={onOpenAgent} />
+        </MediaReplyContext.Provider>
+      </div>
+    </article>;
   }
 
   if (relay && !wrapUp) {
@@ -1791,7 +1809,7 @@ const MessageListBody = function MessageList({
       if (own) own.push(m);
       else kids.set(m.parent, [m]);
     }
-    return { turns: groupTurns(top), kids };
+    return { turns: foldNoticeReplies(groupTurns(top)), kids };
   }, [messages]);
 
   const initialWindow = () => ({
@@ -1984,7 +2002,7 @@ const MessageListBody = function MessageList({
               busy={busy}
               tints={tints}
               fresh={fresh.has(turn[0].id)}
-              mapTurnId={turn[0].role === "user" && !isAnswerTurn(turn[0].turnId) ? turn[0].id : undefined}
+              mapTurnId={turn[0].role === "user" && !isAnswerTurn(turn[0].turnId) && !isNoticeTurn(turn[0].turnId) ? turn[0].id : undefined}
               hostName={hostName}
               hostPersona={hostPersona}
               onCancelQueued={onCancelQueued}

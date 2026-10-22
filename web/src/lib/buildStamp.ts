@@ -37,7 +37,10 @@
  *      back out under a stamp of its own. */
 // 4 — rerun the echoed-handback repair for rows already stamped 3 before
 // the migration stopped treating an echo as proof of human authorship.
-export const CACHE_SCHEMA = 4;
+// 5 — keep host notification receipts as their own turn boundaries. Existing
+// messages migrate unchanged: the previous reader discarded receipt events,
+// so their missing text cannot be recovered from a message-only checkpoint.
+export const CACHE_SCHEMA = 5;
 
 /** What a cache WRITES. Required on purpose — a stamp a writer could leave off
  *  is worse than no stamp, because what it leaves behind reads as this

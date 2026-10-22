@@ -105,6 +105,7 @@ import { RemovedFolderBanner } from "./components/RemovedFolderBanner";
 import { ChatStatus, StatusChevron } from "./components/ChatStatus";
 import { ChatQuestionsContext, QuestionWaitingRow, type ChatQuestions } from "./components/InlineQuestions";
 import { isAnswerTurn } from "./lib/questionBlock";
+import { isNoticeTurn } from "./lib/hostNotice";
 import { Arrive } from "./components/Arrive";
 import { useEntry, entryClass, useLateKeys } from "./lib/useArrival";
 import { backgroundCalls } from "./lib/background";
@@ -1687,7 +1688,7 @@ export default function App() {
     // Nor was an answer to the agent's question: it is never the composer's.
     // Nor the turn that tells an agent its plan was started, or that a job
     // it registered ended.
-    if (!message || isWrapUpTurn(turnId) || isAnswerTurn(turnId) || isPlanStartTurn(turnId) || isJobTurn(turnId) || reclaimedIds.current.includes(turnId)) return;
+    if (!message || isWrapUpTurn(turnId) || isAnswerTurn(turnId) || isPlanStartTurn(turnId) || isJobTurn(turnId) || isNoticeTurn(turnId) || reclaimedIds.current.includes(turnId)) return;
     const words = reclaimedMessage(message);
     reclaimedIds.current = [...reclaimedIds.current.slice(-199), turnId];
     setReclaimed((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), words] }));

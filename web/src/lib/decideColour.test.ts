@@ -26,6 +26,7 @@ import completeCss from "../components/CompleteChat.css?raw";
 import runPanelCss from "../components/OrchestrationPanel.css?raw";
 import workflowBarCss from "../components/ChatWorkflowBar.css?raw";
 import runProgressCss from "../components/RunProgress.css?raw";
+import hostNoticeCss from "../components/HostNotice.css?raw";
 import pendingBadgeCss from "../components/PendingActionBadge.css?raw";
 import { pendingLabel, pendingTone, type PendingAction, type PendingActionKind } from "./pendingActions";
 import { MANAGED, mapTokens, parseOklch, parseThemeCss } from "./theme";
@@ -593,6 +594,9 @@ describe("Cyberpunk keeps colour's meaning under its neon", () => {
 /* ---- A run: what waits on the person, and what is only a problem ------- */
 
 describe("a run's own surfaces", () => {
+  it("keeps host notification bookkeeping neutral, including its focus cue", () => {
+    expect(hostNoticeCss).not.toMatch(/var\(--(?:accent|decide|warn|danger)/);
+  });
   const run = [
     ...rules(runPanelCss, "OrchestrationPanel.css"),
     ...rules(workflowBarCss, "ChatWorkflowBar.css"),
