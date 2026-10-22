@@ -35,6 +35,20 @@ describe("roofless interior lighting", () => {
     expect(buildingLightPools({ ...home, kind: "furniture" })).toEqual([]);
     expect(buildingLightPools(building([]))).toEqual([]);
   });
+
+  it.each([0.1, 0.4, 1.2, 1.2 + 0.5e-6])("places the pool above an accepted %s m floor", thickness => {
+    const pools = buildingLightPools(building([part([4, thickness, 4], [0, thickness / 2, 0])]));
+    expect(pools).toHaveLength(1);
+    expect(pools[0].y).toBeCloseTo(thickness + 0.012);
+    const lights = new NightLighting();
+    lights.replace(pools);
+    lights.update(timeOfDay(23).night);
+    const mesh = lights.group.children[0] as Mesh;
+    mesh.geometry.computeBoundingBox();
+    expect(lights.group.visible).toBe(true);
+    expect(mesh.geometry.boundingBox!.min.y).toBeCloseTo(thickness + 0.012);
+    lights.dispose();
+  });
 });
 
 describe("shared night light layer", () => {
@@ -102,5 +116,24 @@ describe("shared night light layer", () => {
       setFinishNight(0);
       expect(glow.color.toArray()).toEqual([1, 1, 1]);
     } finally { setFinishNight(0); }
+  });
+
+  it.each([12, 23])("keeps camera-fade clones made at hour %s in sync across night and noon", hour => {
+    const glow = finishMaterials().glow as MeshBasicMaterial;
+    setFinishNight(timeOfDay(hour).night);
+    const faded = glow.clone();
+    faded.transparent = true;
+    faded.opacity = 0.2;
+    faded.depthWrite = false;
+    try {
+      for (const nextHour of [23, 19, 12]) {
+        setFinishNight(timeOfDay(nextHour).night);
+        expect(faded.color.toArray()).toEqual(glow.color.toArray());
+        expect(faded.color.r).toBe(1 + timeOfDay(nextHour).night * 1.6);
+      }
+      expect(faded.color.toArray()).toEqual([1, 1, 1]);
+      expect(faded.opacity).toBe(0.2);
+      expect(glow.opacity).toBe(1);
+    } finally { faded.dispose(); setFinishNight(0); }
   });
 });

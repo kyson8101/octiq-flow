@@ -1,6 +1,6 @@
 // Night-only light painted onto surfaces, with no per-building GPU lights.
 // All pools in a layer share one material and one merged draw call.
-import { AdditiveBlending, Color, Group, Matrix4, Mesh, PlaneGeometry, ShaderMaterial } from "three";
+import { AdditiveBlending, Color, Group, Matrix4, Mesh, NormalBlending, PlaneGeometry, ShaderMaterial } from "three";
 import type { BufferGeometry } from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { assetBox, partBox } from "./assets";
@@ -16,7 +16,9 @@ export type LightPool = {
 export function buildingLightPools(asset: Pick<Asset, "kind" | "parts">): LightPool[] {
   if (asset.kind !== "building" || !asset.parts.length) return [];
   const floors = asset.parts.map(partBox).filter(({ min, max }) =>
-    max[1] - min[1] < 0.3 && max[0] - min[0] > 1 && max[2] - min[2] > 1);
+    // The host accepts slabs of any thickness below its 1.2 m roofless
+    // boundary. Keep the Tower's thin upper floors as well.
+    (max[1] <= 1.2 + 1e-6 || max[1] - min[1] < 0.3) && max[0] - min[0] > 1 && max[2] - min[2] > 1);
   if (!floors.length) {
     const box = assetBox(asset);
     floors.push({ min: [box.min[0], 0, box.min[2]], max: [box.max[0], 0, box.max[2]] });
@@ -30,14 +32,14 @@ export function buildingLightPools(asset: Pick<Asset, "kind" | "parts">): LightP
 export class NightLighting {
   readonly group = new Group();
   readonly material = new ShaderMaterial({
-    uniforms: { night: { value: 0 }, warmth: { value: new Color("#ffb24d") } },
+    uniforms: { night: { value: 0 }, warmth: { value: new Color("#ffb24d") }, strength: { value: 0.34 } },
     vertexShader: `varying vec2 lightUv;
       void main() { lightUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-    fragmentShader: `uniform float night; uniform vec3 warmth; varying vec2 lightUv;
+    fragmentShader: `uniform float night; uniform vec3 warmth; uniform float strength; varying vec2 lightUv;
       void main() {
         vec2 p = lightUv * 2.0 - 1.0;
         float falloff = pow(max(0.0, 1.0 - dot(p, p)), 2.0);
-        gl_FragColor = vec4(warmth, night * 0.34 * falloff);
+        gl_FragColor = vec4(warmth, night * strength * falloff);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
       }`,
@@ -45,7 +47,14 @@ export class NightLighting {
   });
   private geometry?: BufferGeometry;
 
-  constructor() {
+  constructor({ interior = false }: { interior?: boolean } = {}) {
+    if (interior) {
+      // Alpha compositing keeps amber over blue floors and behind glass;
+      // adding RGB to a bright surface washed the pool toward white.
+      this.material.blending = NormalBlending;
+      this.material.uniforms.warmth.value.set("#ffa62e");
+      this.material.uniforms.strength.value = 0.68;
+    }
     this.group.name = "night-light-pools";
     this.group.visible = false;
   }

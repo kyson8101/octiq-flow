@@ -132,7 +132,7 @@ export class IslandView {
   private society = buildSociety();
   private scenery: Scenery | null = null;
   private sceneryKey = "";
-  private buildingLights = new NightLighting();
+  private buildingLights = new NightLighting({ interior: true });
   private buildingLightsKey = "";
   private cache = new AssetCache();
   private placed = new Map<string, PlacedView>();

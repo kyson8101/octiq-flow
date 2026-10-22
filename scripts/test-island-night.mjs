@@ -135,8 +135,97 @@ try {
     v.controls.update();
   });
   await page.screenshot({path: join(evidence, 'granted-project-close-23.png')});
+
+  // Review regressions: final glass compositing, legal thick floors and the
+  // actual camera-fade cache across both directions of the clock change.
+  await page.evaluate(() => {
+    const v = window.islandView;
+    v.stop(); v.setReducedMotion(true);
+    const office = v.placed.get('office:general');
+    const world = office.object.position;
+    v.camera.position.copy(world).add(v.camera.position.clone().set(11, 8, -10));
+    v.controls.target.copy(world).add(v.camera.position.clone().set(0, 2, -.7));
+    v.controls.update(); v.renderer.render(v.scene, v.camera);
+  });
+  await page.screenshot({path: join(evidence, 'tower-glass-23.png')});
+  // Start the boundary probe with the small fixture. Generated office layouts
+  // are output, not host input for a subsequent setIsland call.
+  await page.evaluate(() => window.islandView.dispose());
+  await page.goto(`${base}/island.html?hour=23`);
+  await page.waitForFunction(() => window.islandView?.hour === 23 && window.islandView.hourAt >= 0);
+  const regressions = await page.evaluate(async () => {
+    const v = window.islandView;
+    v.stop(); v.setReducedMotion(true); v.setWeather('sunny');
+    const {finishMaterials} = await import('/src/lib/island/assets.ts');
+    const {buildingLightPools} = await import('/src/lib/island/lighting.ts');
+    const source = {...v.island,
+      plots: v.island.plots.filter(p => !p.id.startsWith('office:')),
+      placed: v.island.placed.filter(p => !p.id.startsWith('office:') && !p.id.startsWith('office-desk:')),
+      assets: v.island.assets.filter(a => !a.id.startsWith('office:') && !a.id.startsWith('office-desk:'))};
+    const people = v.residents;
+    const outdoors = v.scenery.group.getObjectByName('night-light-pools');
+    const fixtures = v.scenery.group.getObjectByName('night-lanterns');
+    v.renderer.render(v.scene, v.camera); const litCalls = v.renderer.info.render.calls;
+    for (const g of [outdoors, fixtures, v.buildingLights.group]) g.visible = false;
+    v.renderer.render(v.scene, v.camera); const unlitCalls = v.renderer.info.render.calls;
+    for (const g of [outdoors, fixtures, v.buildingLights.group]) g.visible = true;
+    const part = (size, at, color = '#d6dce5', finish = 'matte') => ({shape: 'box', size, at, color, finish});
+    const asset = {id: 'qa-thick', rev: 1, name: 'Thick floor pavilion', kind: 'building',
+      by: {name: 'QA'}, madeAt: 0, updatedAt: 0,
+      parts: [part([4, .4, 4], [0, .2, 0]), part([.6, .5, .1], [0, .85, 0], '#559966', 'glow')]};
+    const plot = {...source.plots[0], id: 'qa-thick-plot', owner: {kind: 'home', id: 'public:qa-thick'}};
+    const placement = {id: 'qa-thick-placement', plot: plot.id, asset: asset.id, x: 0, z: 0, y: 0, turn: 0};
+    const withAsset = a => ({...source, assets: [...source.assets, a], plots: [...source.plots, plot],
+      placed: [...source.placed, placement]});
+    v.setIsland(withAsset(asset), people);
+    const view = v.placed.get(placement.id), world = view.object.position;
+    const tick = hour => {v.setHourOverride(hour); v.draw(performance.now()); v.stop();};
+    const glow = view.object.children.find(o => o.userData.finish === 'glow');
+    const clones = [];
+    for (const hour of [12, 23]) {
+      tick(hour);
+      v.camera.position.set(world.x, .9, world.z + 6);
+      v.camera.lookAt(world.x, .85, world.z);
+      v.scene.updateMatrixWorld(true); v.fadeOccluders(world.x, world.z - 2);
+      const clone = glow.material;
+      const realFade = v.faded.has(glow) && clone !== finishMaterials().glow;
+      const values = [];
+      for (const next of [23, 19, 12]) {
+        tick(next);
+        values.push({hour: next, faded: clone.color.toArray(), shared: finishMaterials().glow.color.toArray()});
+      }
+      clones.push({hour, realFade, values});
+      v.restoreFaded(); v.fadedMaterials.delete(finishMaterials().glow); clone.dispose();
+    }
+    tick(23);
+    const floors = [];
+    window.qaFloorShot = thickness => {
+      const revised = {...asset, rev: thickness === .4 ? 1 : 2,
+        parts: [part([4, thickness, 4], [0, thickness / 2, 0]), asset.parts[1]]};
+      v.setIsland(withAsset(revised), people);
+      const pool = buildingLightPools(revised)[0];
+      v.camera.position.copy(v.placed.get(placement.id).object.position).add(v.camera.position.clone().set(6, 8, 8));
+      v.controls.target.copy(v.placed.get(placement.id).object.position); v.controls.update();
+      v.renderer.render(v.scene, v.camera);
+      return {thickness, y: pool.y};
+    };
+    for (const thickness of [.4, .1]) floors.push(window.qaFloorShot(thickness));
+    return {calls: {lit: litCalls, unlit: unlitCalls, delta: litCalls - unlitCalls}, clones, floors};
+  });
+  assert.equal(regressions.calls.delta, 4);
+  for (const clone of regressions.clones) {
+    assert.equal(clone.realFade, true);
+    for (const value of clone.values) assert.deepEqual(value.faded, value.shared);
+    assert.deepEqual(clone.values.at(-1).faded, [1, 1, 1]);
+    assert.ok(clone.values[0].faded[0] > 1);
+  }
+  for (const floor of regressions.floors) assert.ok(Math.abs(floor.y - floor.thickness - .012) < 1e-9);
+  for (const thickness of [.4, .1]) {
+    await page.evaluate(thickness => window.qaFloorShot(thickness), thickness);
+    await page.screenshot({path: join(evidence, `floor-${thickness}-23.png`)});
+  }
   assert.deepEqual(errors, []);
-  await writeFile(join(evidence, 'metrics.json'), JSON.stringify({matrix: metrics, transitions, populated, project, errors}, null, 2));
+  await writeFile(join(evidence, 'metrics.json'), JSON.stringify({matrix: metrics, transitions, populated, project, regressions, errors}, null, 2));
   await page.evaluate(() => window.islandView.dispose());
   console.log('PASS ' + evidence, populated);
 } finally {
