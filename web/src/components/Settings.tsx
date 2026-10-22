@@ -17,10 +17,9 @@ import { MemoryVaultSettings } from "./MemoryVaultSettings";
 import { AgentsSettings } from "./AgentsSettings";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 
-import { SandboxSettings } from "./SandboxSettings";
 import { PreferencesSettings } from "./PreferencesSettings";
 
-export type SettingsSection = "projects" | "preferences" | "agents" | "notifications" | "appearance" | "memory" | "sandbox";
+export type SettingsSection = "projects" | "preferences" | "agents" | "notifications" | "appearance" | "memory";
 
 const projectNameCollator = new Intl.Collator(undefined, {
   numeric: true,
@@ -170,7 +169,6 @@ export function Settings({ current, onPick, chatWidth = CHAT_WIDTH_DEFAULT, onCh
                   onPick={setSection}
                 />
               )}
-              <SettingsNavButton section="sandbox" label="Sandbox" detail="Local test environments" active={section === "sandbox"} onPick={setSection} />
               <SettingsNavButton section="memory" label="Memory Vault" detail="Shared agent knowledge" active={section === "memory"} onPick={setSection} />
               <SettingsNavButton
                 section="appearance"
@@ -197,7 +195,6 @@ export function Settings({ current, onPick, chatWidth = CHAT_WIDTH_DEFAULT, onCh
 
           <div className="settings-content">
             {section === "preferences" && <PreferencesSettings />}
-            {section === "sandbox" && <SandboxSettings />}
             {section === "memory" && <MemoryVaultSettings />}
             {section === "agents" && onAgentsMode && (
               <AgentsSettings on={agentsMode} onToggle={onAgentsMode} projects={orderedProjects} />
@@ -413,9 +410,6 @@ function SettingsIcon({ section }: { section: SettingsSection }) {
   }
   if (section === "projects") {
     return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 7.5h7l2 2h9v9.5H3z" /><path d="M3 7.5V5h7l2 2h6" /></svg>;
-  }
-  if (section === "sandbox") {
-    return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4 7.5 8 4.5 8-4.5" /><path d="M12 12v9" /></svg>;
   }
   if (section === "preferences") {
     return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7" /></svg>;

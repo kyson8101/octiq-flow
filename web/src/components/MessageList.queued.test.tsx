@@ -23,7 +23,6 @@ const draw = (extra: Partial<Message> = {}, busy = true) => renderToStaticMarkup
 describe("turns triggered by the person", () => {
   it.each([
     ["octiq-complete-7f", "Wrap-up", "Cancel completing this chat"],
-    ["octiq-plan-start-7f", "Plan started", "Cancel telling the agent its plan was started"],
   ])("keeps %s in its bubble with the existing queue controls and receipt", (turnId, label, cancel) => {
     const queued = draw({ turnId });
     expect(queued).toContain("msg-user");
@@ -36,32 +35,16 @@ describe("turns triggered by the person", () => {
   });
 });
 
-describe("the host's turn that tells an agent its plan was started", () => {
-  // The bubble said `The agent was told to begin` whatever became of the
-  // turn, under a Plan panel that said it was not sent.
-  const start = (extra: Partial<Message>) => draw({ turnId: "octiq-plan-start-7f", blocks: [{ kind: "text", text: "The person started the plan. Begin." }], ...extra }, false);
-  const detail = (html: string) => /<span class="wrap-up-note-detail">([^<]*)<\/span>/.exec(html)?.[1];
-
-  it("says a turn whose send failed did not reach the agent", () => {
-    const html = start({ delivery: "failed" });
-    expect(html).toContain('<span class="wrap-up-note-label">Plan started</span>');
-    expect(detail(html)).toBe("Not sent · this turn did not reach the agent");
-    expect(html).not.toContain("The agent was told to begin");
-    // The host's words are still behind the disclosure, and still its own.
-    expect(html).toContain("The person started the plan. Begin.");
-  });
-
-  it("says a turn lost from the queue did not reach the agent", () => {
-    const html = start({ delivery: "queued", queueLost: true });
-    expect(detail(html)).toBe("Lost from the queue · this turn did not reach the agent");
-    expect(html).not.toContain("The agent was told to begin");
-    expect(html).not.toContain("Telling the agent after the current reply");
-  });
-
-  it("says told only of a turn that was handed over, and waiting of one still queued", () => {
-    expect(detail(start({ delivery: "dispatched" }))).toBe("The agent was told to begin");
-    expect(detail(start({ delivery: "failed", echo: "e1" }))).toBe("The agent was told to begin");
-    expect(detail(start({ delivery: "queued" }))).toBe("Telling the agent after the current reply");
+describe("historical plan-start turns", () => {
+  it.each(["queued", "failed", "dispatched"] as const)("keeps ordinary delivery controls for a %s turn", (delivery) => {
+    const html = draw({ turnId: "octiq-plan-start-7f", delivery });
+    expect(html).toContain("do the thing");
+    expect(html).not.toContain("wrap-up-note");
+    expect(html).not.toContain("Plan started");
+    if (delivery === "queued") {
+      expect(html).toContain(">Send now</button>");
+      expect(html).toContain(">Edit</button>");
+    }
   });
 });
 

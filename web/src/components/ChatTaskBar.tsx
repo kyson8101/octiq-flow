@@ -49,7 +49,7 @@ type Live = { busy?: boolean; waiting?: ChatHold | boolean | null };
 export const SETTLED_AFTER_MS = 5_000;
 
 /** What the panel knows beyond `chat_task`: the plan the chat was started
- *  with, the orchestration task a worker runs, its sandbox, and who it is. */
+ *  with, the orchestration task a worker runs, and who it is. */
 export type PanelContext = Omit<EnvironmentInput, "status"> & {
   persona?: Persona | null;
   /** The agent's provider and model, for the details only. */

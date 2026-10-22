@@ -935,7 +935,6 @@ impl OrchestrationStore {
                 status: TaskStatus::Ready,
                 active_attempt_id: None,
                 result: None,
-                environment: TaskEnvironment::None,
                 kind: TaskKind::Work,
                 verdict: None,
                 handoffs: Vec::new(),
@@ -2071,7 +2070,6 @@ pub(crate) mod tests {
                     repository: run.root_path.clone(),
                 }),
                 None,
-                TaskEnvironment::None,
                 None,
                 TaskKind::Check,
             )

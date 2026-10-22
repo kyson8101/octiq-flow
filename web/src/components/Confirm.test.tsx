@@ -133,20 +133,6 @@ describe("the controls that start or stop a worker", () => {
     expect(noteSource).toMatch(/className="reopened-note-stop"[^>]*onKeyDown=\{dropHeld\}/);
   });
 
-  it("the Plan panel's Start is one of them, and asks through no question", () => {
-    // It starts work with no confirm in front of it, like the run panel's
-    // starts: the button that brings it on screen and every disclosure of
-    // the panel are remembered by the same guard, it drops a held key, and
-    // it drops a press that repeats the one the panel was opened with.
-    const plan = sources["./PlanPanel.tsx"];
-    expect(plan).toMatch(/className="cplan-start"[^>]*\s+onKeyDown=\{dropHeld\} onClick=\{press\}/);
-    expect(plan).toMatch(/strayAnswer\(opener, /);
-    expect(plan).toMatch(/plan-toggle[^>]*\s+onClick=\{\(event\) => \{ notePress\(event\); onToggle\(\); \}\}/);
-    for (const control of ["cplan-more", "cplan-progress", "cplan-more cplan-why"]) {
-      expect(plan, control).toMatch(new RegExp(`className="${control}"[^>]*?onClick=\\{\\(event\\) => \\{\\s*notePress\\(event\\)`));
-    }
-    expect(plan).not.toMatch(/useConfirm/);
-  });
 });
 
 

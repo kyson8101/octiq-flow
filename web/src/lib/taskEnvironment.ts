@@ -8,14 +8,13 @@
 //     destination and the workspace plan the host drew up for it.
 //   * Confirmed: `chat_task`'s git verification of the chat's own directory
 //     (branch, primary checkout vs worktree, paths), stamped with when it was
-//     checked, and the sandbox's own state.
+//     checked.
 //
 // A row whose fact the host has not checked says so. A worktree that has been
 // removed, or a verification read from the primary checkout because the chat's
 // directory is gone (`stale`), is never drawn as verified.
 import { locationOf, type TaskStatus } from "./chatTask";
 import type { OrchestrationAttempt, OrchestrationTask } from "./orchestration";
-import type { SandboxEnvironment } from "./sandbox";
 
 export type LaunchPlan = {
   projectId: string;
@@ -23,7 +22,6 @@ export type LaunchPlan = {
   path?: string;
   baseBranch?: string;
   newWorktree?: boolean;
-  useSandbox?: boolean;
   prepare?: boolean;
   chosenBy: "auto" | "advanced" | "person";
   reason?: string;
@@ -34,7 +32,7 @@ export type LaunchPlan = {
 export type Evidence = "confirmed" | "planned" | "stale" | "removed" | "unknown";
 
 export type EnvRow = {
-  key: "project" | "repository" | "directory" | "branch" | "base" | "target" | "checkout" | "sandbox";
+  key: "project" | "repository" | "directory" | "branch" | "base" | "target" | "checkout";
   label: string;
   /** The value shown: confirmed when there is one, else the plan. */
   value: string;
@@ -50,24 +48,13 @@ export type EnvironmentInput = {
   launch?: LaunchPlan | null;
   /** The worker task this chat runs, with its latest attempt. */
   worker?: { task: OrchestrationTask; attempt?: OrchestrationAttempt } | null;
-  sandbox?: SandboxEnvironment | null;
   projectName?: (id: string) => string | undefined;
 };
 
 const CHECKOUT_PLANNED = (worktree?: boolean) => (worktree ? "New worktree" : "Primary checkout");
 
-function sandboxLabel(env: SandboxEnvironment): string {
-  switch (env.state) {
-    case "ready": return "Ready";
-    case "preparing": return "Preparing";
-    case "stopped": return "Stopped";
-    case "error": return env.error ? `Failed: ${env.error}` : "Failed";
-    default: return "Not verified";
-  }
-}
-
 export function taskEnvironment(input: EnvironmentInput): { rows: EnvRow[]; checkedAt?: number; stale: boolean } {
-  const { status, launch, worker, sandbox } = input;
+  const { status, launch, worker } = input;
   const workspace = status?.workspace;
   const delivery = status?.delivery;
   const stale = !!delivery?.stale;
@@ -159,16 +146,6 @@ export function taskEnvironment(input: EnvironmentInput): { rows: EnvRow[]; chec
     evidence: actualCheckout && actualCheckout !== "Unknown" ? liveEvidence : plannedCheckout ? "planned" : "unknown",
     planned: plannedCheckout,
     path: live?.isWorktree ? live.repoRoot : undefined,
-  });
-
-  // Sandbox: its own state machine; "requested" is only a plan.
-  const plannedSandbox = launch ? (launch.useSandbox ? "Requested" : "Off") : undefined;
-  push({
-    key: "sandbox",
-    label: "Sandbox",
-    value: sandbox ? (sandbox.enabled ? sandboxLabel(sandbox) : "Off") : plannedSandbox ?? "Unknown",
-    evidence: sandbox ? (sandbox.state === "ready" && sandbox.checkedAt ? "confirmed" : sandbox.enabled ? "unknown" : "confirmed") : plannedSandbox ? "planned" : "unknown",
-    planned: plannedSandbox,
   });
 
   return { rows, checkedAt: delivery?.checkedAt, stale };

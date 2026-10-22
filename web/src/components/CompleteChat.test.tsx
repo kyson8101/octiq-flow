@@ -283,17 +283,11 @@ describe("the wrap-up's bubble", () => {
     expect(conversationMapTurns([[wrapUp()]])[0].prompt).toBe("Wrap-up");
   });
 
-  it("keeps the flag for a completion, and gives a plan's Start a mark of its own", () => {
-    // A plan's Start is drawn through this note too (`lib/planTurn`). It is
-    // work set going, not a chat finished: it does not wear the flag.
+  it("keeps distinct marks for completion and job turns", () => {
     const flag = /<path d="M5 21V4"><\/path>/;
     const done = renderToStaticMarkup(<WrapUpNote label="Wrap-up" detail="Completing this chat" text="Wrap up." />);
     expect(done).toContain('data-mark="complete"');
     expect(done).toMatch(flag);
-    const started = renderToStaticMarkup(<WrapUpNote label="Plan started" detail="The agent was told to begin" text="Begin." mark="start" />);
-    expect(started).toContain('data-mark="start"');
-    expect(started).not.toMatch(flag);
-    expect(started).toContain('<circle cx="12" cy="12" r="8.5"></circle>');
     // A job's end (`lib/jobs`) is neither: it has its own mark too.
     const job = renderToStaticMarkup(<WrapUpNote label="Job finished" detail="Render mp4 · exit 0" text="It finished." mark="job" />);
     expect(job).toContain('data-mark="job"');
@@ -301,8 +295,16 @@ describe("the wrap-up's bubble", () => {
     expect(job).toContain("What the agent was told");
     // The transcript selects each mark, including the separate host job line.
     expect(draw(wrapUp())).toContain('data-mark="complete"');
-    expect(draw({ ...wrapUp(), turnId: "octiq-plan-start-1" })).toContain('data-mark="start"');
     expect(draw({ ...wrapUp(), turnId: "octiq-job-job_1" })).toContain('data-mark="job"');
+  });
+
+  it("renders historical plan-start turns as ordinary transcript messages", () => {
+    const legacy = { ...wrapUp(), turnId: "octiq-plan-start-1" };
+    const html = draw(legacy);
+    expect(html).not.toContain('data-mark="start"');
+    expect(html).not.toContain('class="wrap-up-note"');
+    expect(html).toContain('class="message-bubble"');
+    expect(conversationMapTurns([[legacy]])[0].prompt).not.toBe("Plan started");
   });
 
   it("draws the note without a disclosure when there is no text to open", () => {

@@ -29,8 +29,6 @@
   .viewer-comments .media-comments { min-height: 0; }
   .viewer.has-comments .viewer-img { max-height: 48vh; }
 }
-.image-preview-comments { flex: 0 1 auto; min-height: 0; max-height: 50vh; overflow: auto; }
-.image-preview-panel .image-preview-tools { flex-wrap: wrap; }
 .ws-image.ws-image-review { flex-direction: column; justify-content: flex-start; gap: 12px; }
 .ws-image-review > img { flex: 0 0 auto; max-height: 55vh; }
 .ws-image-review > .media-comments { align-self: stretch; flex: 0 0 auto; }

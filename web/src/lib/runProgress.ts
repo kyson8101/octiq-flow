@@ -427,10 +427,6 @@ export function taskReading(
   // worker was told and goes on, so the row says what the worker is doing.
   if (task.status === "running") {
     if (live && attempt.execution) {
-      const environment = attempt.execution.pendingTools?.["octiq:environment"];
-      if (environment) {
-        return { state: "running", why: environment.startsWith("Waiting for environment capacity") ? "Waiting for an environment slot" : "Preparing environment", tone: null };
-      }
       // Stalled, disconnected, out of capacity: a warning about a worker
       // that is still the task's own, so it stays with what is running.
       if (executionNeedsAttention(attempt) || attempt.execution.state === "retrying") {

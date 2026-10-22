@@ -382,8 +382,6 @@ export function Composer({
   onBranch,
   newWorktree,
   onNewWorktree,
-  useSandbox,
-  onUseSandbox,
   showWorkLocation,
   cwd,
   onTerminal,
@@ -506,8 +504,6 @@ export function Composer({
   onBranch?: (branch: string) => void;
   newWorktree?: boolean;
   onNewWorktree?: (enabled: boolean) => void;
-  useSandbox?: boolean;
-  onUseSandbox?: (enabled: boolean) => void;
   /** The execution-location shelf belongs only to the unsaved new-chat page. */
   showWorkLocation?: boolean;
   /** The project folder, so the file picker opens where the work is. */
@@ -1650,8 +1646,6 @@ export function Composer({
           branch={branch ?? ""}
           branches={branches}
           onBranch={onBranch ?? (() => undefined)}
-          useSandbox={useSandbox}
-          onUseSandbox={onUseSandbox}
           newWorktree={!!newWorktree}
           onNewWorktree={onNewWorktree ?? (() => undefined)}
         />

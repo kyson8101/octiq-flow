@@ -49,12 +49,6 @@ describe("a task row's state word (feedback ee0a43b0)", () => {
     expect(taskStateLabel({ ...withAttempt, kind: undefined }, settled)).toBe("Completed");
   });
 
-  it("says the host is preparing, or queueing for, the task's environment rather than a tool", () => {
-    const on = (label: string) => ({ ...attempt, execution: { state: "waiting_tool", pendingTools: { "octiq:environment": label } } }) as unknown as OrchestrationAttempt;
-    expect(taskStateLabel(task, on("Preparing test environment"))).toBe("Preparing environment");
-    expect(taskStateLabel(task, on("Waiting for environment capacity: 3 of 3 in use, position 1 in line"))).toBe("Waiting for an environment slot");
-  });
-
   it("names the native decision only when one was observed", () => {
     const decisions = [{ attemptId: "a", status: "pending", id: "nd_1" }, { attemptId: "b", status: "pending", id: "nd_2" }];
     expect(pendingDecision(attempt, decisions)?.id).toBe("nd_1");

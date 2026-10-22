@@ -1073,9 +1073,6 @@ pub struct ChatManager {
     /// queue while they could not be written (`record_unsent`), as (chat,
     /// turn id): written once the profile folder is back (`settle_unsent`).
     unsent: Mutex<Vec<(String, String)>>,
-    /// The turns this server handed chats' agents for their plans' Starts
-    /// (`chat_plan::StartTurns`): what it did, whatever the files took.
-    pub(crate) plan_starts: crate::chat_plan::StartTurns,
     /// What the person sent, as the browser handed it over — see
     /// `TurnEvidence`. Newest last, bounded.
     evidence: Mutex<VecDeque<TurnEvidence>>,
@@ -1767,20 +1764,6 @@ impl ChatManager {
     /// The background work this chat's agent left running, `(id, description)`.
     pub(crate) fn running_background(&self, key: &str) -> Vec<(String, String)> {
         self.background.running(key)
-    }
-
-    /// Whether a turn sent to this chat now would be taken: it has a
-    /// process, one is being replaced, or its queue waits for the profile
-    /// folder. Without any of them a send answers `no such chat` and the
-    /// chat has to be started.
-    pub(crate) fn takes_turns(&self, key: &str) -> bool {
-        self.has_process(key)
-            || self
-                .handoffs
-                .lock()
-                .map(|handoffs| handoffs.contains(key))
-                .unwrap_or(true)
-            || self.waits_because(key).is_some()
     }
 
     pub(crate) fn has_process(&self, key: &str) -> bool {
@@ -3821,25 +3804,6 @@ pub(crate) fn start_session(
         std::iter::once(&cwd),
         access != Some(Access::Read),
     )?;
-    // Hold ownership through launch: reset/stop cannot race preparation.
-    let sandbox = crate::sandbox::prepare_for_start(&key, &cwd)?;
-    let mut env = env;
-    let (prompt, visible_prompt) = if let Some(sandbox) = &sandbox {
-        let vars = env.get_or_insert_with(Default::default);
-        vars.insert("OCTIQ_SANDBOX_ID".into(), sandbox.id.clone());
-        vars.insert(
-            "OCTIQ_SANDBOX_HANDOFF".into(),
-            sandbox.handoff.to_string_lossy().into(),
-        );
-        let visible = visible_prompt.or_else(|| prompt.clone());
-        let context = format!("OctiqFlow prepared this chat's local test services. Read {} for URLs and readiness evidence. Use these services for testing; preserve this chat's database on resume. Task completion alone does not verify the application.", sandbox.handoff.display());
-        (
-            Some(format!("{context}\n\n{}", prompt.unwrap_or_default())),
-            visible,
-        )
-    } else {
-        (prompt, visible_prompt)
-    };
     let manager_for_exit = manager.clone();
     let session_key_for_exit = session_key.clone();
     // Keep creation and insertion atomic with other starts and sends.
@@ -5640,42 +5604,6 @@ fn chat_send_with_user_turn(
     send_turn(manager, key, text, images, to, user_turn_id).map(|_| ())
 }
 
-/// Hand a chat's agent a turn in the host's own words, recorded under
-/// `turn_id`, which is the host's and not a person's (`is_person_turn_id`):
-/// the turn that tells it the person started its plan (`chat_plan`).
-///
-/// It waits like any message. With a turn in flight, a stopped one that has
-/// not sent its full stop, or anything queued, it joins the host's queue
-/// and answers `queued`; otherwise the agent has it, `started`. `Ok(None)`
-/// is a chat with no process: the caller starts it with this turn as its
-/// first message, the way a completion of a chat that is not running does.
-pub(crate) fn chat_host_turn_impl(
-    manager: &Arc<ChatManager>,
-    key: &str,
-    text: &str,
-    turn_id: &str,
-) -> Result<Option<&'static str>, String> {
-    cancel_auto_resume(manager, key, "superseded by the plan's Start");
-    let sent = send_turn(
-        manager.clone(),
-        key.to_string(),
-        text.to_string(),
-        None,
-        None,
-        Some(turn_id.to_string()),
-    );
-    let state = match sent {
-        Ok(Sent::Queued) => "queued",
-        Ok(Sent::Written | Sent::Already) => "started",
-        Err(why) if why == "no such chat" => return Ok(None),
-        Err(why) => return Err(why),
-    };
-    // A turn the person set going supersedes a refusal card, as a message
-    // of theirs does.
-    crate::safety_block::forget_chat(key);
-    Ok(Some(state))
-}
-
 /// What became of a host turn `wake_chat` tried to hand over.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Woken {
@@ -5750,7 +5678,7 @@ pub(crate) fn wake_chat(
 }
 
 /// What became of a turn the host handed, or tried to hand, a chat's agent
-/// under an id of its own (`chat_host_turn_impl`).
+/// under an id of its own (`wake_chat`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum HostTurn {
     /// The agent has it, or it waits in the host's queue for it.
@@ -5793,7 +5721,7 @@ pub(crate) enum HostTurn {
 /// again.
 ///
 /// **`here` is a turn this server knows it handed over itself**
-/// (`chat_plan::StartTurns`), and the record is not asked whether it did.
+/// and the record is not asked whether it did.
 /// The turn's lines are written best effort, so a record that took none of
 /// them, or took `queued` and not the `dispatched` that followed, says
 /// nothing or says less than happened. For that turn only a line that says
@@ -7535,26 +7463,6 @@ pub fn chat_restart_impl(manager: &ChatManager, key: String) -> Result<usize, St
     Ok(usize::from(end_process(manager, &key)?))
 }
 
-/// Called while sandbox ownership is held, so no replacement process can start.
-pub fn end_idle_for_sandbox(manager: &ChatManager, key: &str) -> Result<(), String> {
-    if manager.has_queued_turns(key) {
-        return Err("Wait for this chat's queued messages before changing its sandbox.".into());
-    }
-    end_process_when(manager, key, Some(Duration::ZERO))?;
-    if manager
-        .sessions
-        .lock()
-        .map_err(|e| e.to_string())?
-        .contains_key(key)
-    {
-        return Err(
-            "Wait for this chat's current turn and background work before changing its sandbox."
-                .into(),
-        );
-    }
-    Ok(())
-}
-
 /// End one chat process while preserving its transcript and remembered settings.
 ///
 /// Unlike stopping a chat, this intentionally retains standing permissions and
@@ -8493,8 +8401,6 @@ fn purge_deleted_chats() -> Result<usize, String> {
         // the trash window, so a restore brings back a chat that still knows
         // where its work went.
         crate::chat_task::forget(id);
-        // And so does its plan, kept through the same window.
-        crate::chat_plan::forget(id);
         // And the pictures, recordings and sounds its questions showed.
         crate::question_media::forget(id);
         announce_index_change(id, true);

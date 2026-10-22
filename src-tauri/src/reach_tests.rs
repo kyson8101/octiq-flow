@@ -1,18 +1,13 @@
-//! Review of b894867 (P3): H6, H7 and H9, with the profile folder away.
+//! Review of b894867 (P3): H7 and H9, with the profile folder away.
 //!
-//! * **H6.** The Sandbox panel's Stop answered the profile's sentence and
-//!   the started services kept running: it read its state from the profile
-//!   and saved before it asked Docker for anything.
 //! * **H7.** A Stop on an agent that goes on only in a new process killed
 //!   the process, answered an error, and forgot every message queued behind
 //!   the stopped turn, with nothing in the record to say so.
 //! * **H9.** An answer that reached its agent and could not be saved was
 //!   answered `saved: true`, and the page said "Answers saved".
 //!
-//! Through the real `dispatch` commands, against the stores a server loads
-//! from its profile folder. An agent is a live stand-in process; Docker is
-//! a stand-in driver (`sandbox::stand_in`), because the suite has no Docker
-//! it can run without one. H8 is in `orchestration/raise_tests.rs`.
+//! Through real `dispatch` commands, against the stores a server loads.
+//! H8 is in `orchestration/raise_tests.rs`.
 use super::*;
 use crate::dispatch::{dispatch, settle_owed, told, Services, Told};
 use crate::profile::tests::Home;
@@ -562,101 +557,6 @@ fn every_other_way_of_ending_a_chats_agent_ends_it_while_the_profile_is_away() {
     );
     assert!(agent.gone());
     world.folder_returns();
-}
-
-// ---- H6: the Sandbox panel's Stop ----------------------------------------
-
-/// A chat's sandbox as a start leaves it: enabled, frozen, ready.
-fn started_sandbox(world: &World, key: &str) -> crate::sandbox::Environment {
-    let project = world.home.dir.join("project");
-    std::fs::create_dir_all(&project).unwrap();
-    let sandboxes = crate::sandbox::Store::profile();
-    sandboxes
-        .select(key, project.to_str().unwrap(), Some(true), false)
-        .unwrap();
-    sandboxes.start_for_test(key)
-}
-
-/// What the sandbox state file says of `key`.
-fn sandbox_on_disk(key: &str) -> Value {
-    let path = crate::profile::profile_dir()
-        .join("sandboxes")
-        .join("state.json");
-    let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    saved["environments"][key].clone()
-}
-
-/// The reviewer's probe: a started sandbox, the folder away, Stop from the
-/// panel. Docker is asked to take that project down, the answer is the
-/// stopped environment, and the record follows when the folder is back.
-#[test]
-fn the_sandbox_panels_stop_takes_the_services_down_while_the_profile_is_away() {
-    let world = World::new();
-    let key = fresh("sandbox");
-    let env = started_sandbox(&world, &key);
-    let (_docker, asked) = crate::sandbox::stand_in::recording();
-
-    let why = world.folder_goes();
-    let stopped = told(
-        &world.svc,
-        "sandbox_action",
-        json!({ "key": key, "action": "stop" }),
-    );
-    let answer = stopped
-        .result
-        .clone()
-        .expect("a Stop that reached Docker is not an error");
-    assert_eq!(
-        crate::sandbox::stand_in::taken_down(&asked),
-        [env.id.clone()],
-        "Docker was not asked to take the services down"
-    );
-    assert_eq!(answer["state"], "stopped", "{answer}");
-    assert_eq!(answer["stopped"]["by"], "person", "{answer}");
-    not_recorded(&stopped, "the stopped sandbox", &why);
-    let status = dispatch(&world.svc, "profile_status", json!({})).unwrap();
-    assert_eq!(status["owed"], json!(["sandboxes"]), "{status}");
-    assert_eq!(settle_owed(&world.svc), ["sandboxes"]);
-    assert!(!world.home.profile().exists(), "the folder was made again");
-
-    world.folder_returns();
-    assert_eq!(
-        sandbox_on_disk(&key)["state"],
-        "ready",
-        "the state file was written while its folder was away"
-    );
-    assert!(settle_owed(&world.svc).is_empty());
-    let saved = sandbox_on_disk(&key);
-    assert_eq!(saved["state"], "stopped", "{saved}");
-    assert_eq!(saved["stopped"]["by"], "person", "{saved}");
-    // And every later read agrees with the file.
-    let read = crate::sandbox::Store::profile().snapshot().unwrap();
-    assert_eq!(read.environments[&key].state, "stopped");
-}
-
-/// Starting is not stopping: a start makes services and writes what it
-/// made, so it is refused while the folder is away, and nothing is asked
-/// of Docker.
-#[test]
-fn a_sandbox_start_is_still_refused_while_the_profile_is_away() {
-    let world = World::new();
-    let key = fresh("sandbox-start");
-    started_sandbox(&world, &key);
-    let (_docker, asked) = crate::sandbox::stand_in::recording();
-
-    let why = world.folder_goes();
-    for action in ["start", "check"] {
-        let refused = told(
-            &world.svc,
-            "sandbox_action",
-            json!({ "key": key, "action": action }),
-        );
-        assert_eq!(refused.result, Err(why.clone()), "{action}");
-        assert!(refused.unsaved.is_empty(), "{:?}", refused.unsaved);
-    }
-    assert!(asked.borrow().is_empty(), "{:?}", asked.borrow());
-    world.folder_returns();
-    assert_eq!(sandbox_on_disk(&key)["state"], "ready");
 }
 
 // ---- H9: an answer that was delivered and not saved ----------------------

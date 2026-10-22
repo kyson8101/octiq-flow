@@ -89,7 +89,7 @@ function mock(duplicate = false) {
       case "chat_page": return { events: [], context: [], before: null };
       case "resolve_paths": return (request.args?.paths ?? []).map((path) => (FILES.has(path) ? path : null));
       case "chat_list": case "chat_activity": case "permission_pending": case "safety_block_pending": case "question_pending":
-      case "pr_repositories": case "codex_skills": case "image_preview_list": case "access_request_pending": case "team_list":
+      case "pr_repositories": case "codex_skills": case "access_request_pending": case "team_list":
       case "provider_fallback_choices":
         return [];
       case "chat_queue_state": return { live: false, queuedTurnIds: [] };
@@ -98,11 +98,9 @@ function mock(duplicate = false) {
       case "usage_summary": return { claude: { available: true, fiveHour: { percent: 12 } }, codex: { available: true, weekly: { percent: 23 } } };
       case "agent_installs": return [{ id: "claude", installed: true, path: "/mock/claude" }];
       case "pr_local_list": case "pr_remote_list": return { items: [], warnings: [] };
-      case "sandbox_snapshot": return { defaultEnabled: false, environments: {} };
       case "git_status_summary": return [{ path: repoRoot, repo_root: repoRoot, is_repo: true, branch: "develop", changed: 0, ahead: 0, behind: 0 }];
       case "git_local_branches": return { is_repo: true, current: "develop", branches: ["develop"], is_worktree: false };
       case "chat_task": return { chatId: request.args?.chatId, projectId: "octiq" };
-      case "chat_plan_get": return { chatId: request.args?.chatId, revision: 0, items: [], decisions: [], awaitsStart: false };
       case "media_comments_list": return { target: { path: request.args?.path, revision: "v1", kind: "video" }, comments: [] };
       case "chat_jobs": return [];
       default: return null;
