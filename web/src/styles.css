@@ -9497,8 +9497,19 @@ body.is-ultra .eff {
 .usage-cell.is-stale { opacity: 0.55; }
 .usage-cell-label,
 .usage-cell-none { color: var(--fg-3); }
-.usage-cell .usage-track { flex: 0 0 44px; width: 44px; height: 4px; }
-.usage-cell .usage-fill { background: var(--fg-3); }
+.usage-cell .usage-track {
+  --usage-fill-colour: var(--fg-3);
+  flex: 0 0 44px;
+  width: 44px;
+  height: 4px;
+  background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat;
+}
+.usage-cell .usage-track.is-warn { --usage-fill-colour: var(--warn); }
+.usage-cell .usage-track.is-danger { --usage-fill-colour: var(--danger); }
+.usage-cell .usage-track .usage-fill {
+  background: linear-gradient(to right,
+    color-mix(in srgb, var(--usage-fill-colour) 35%, transparent), var(--usage-fill-colour));
+}
 .usage-cell .usage-val { font-size: 11px; }
 .usage-strip .usage-pop { top: calc(100% + 4px); right: 8px; }
 

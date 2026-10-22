@@ -33,7 +33,7 @@ describe("the desktop usage row", () => {
     expect(html.match(/class="usage-cell"/g)).toHaveLength(4);
     expect(html.match(/class="usage-fill"/g)).toHaveLength(4);
     expect(html).toContain('title="Claude 5-hour window: 42% used · resets in 2h 40m"');
-    expect(html).toContain('style="width:42%"');
+    expect(html).toContain('style="width:max(3px, 42%)"');
   });
 
   it("is calm below 60, the warning colour from 60 and hot from 85", () => {
