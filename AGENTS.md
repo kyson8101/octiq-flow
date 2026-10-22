@@ -2900,7 +2900,8 @@ crosses between them:
 Rules that hold:
 
 - **Buildings have no roof.** The host refuses a building with a wide part
-  above 1.2 m or too much cover above 1.5 m (`docs/island.md`), so the person
+  above 1.2 m or too much cover above 1.2 m from parts that do not stand on
+  the floor (`docs/island.md`), so the person
   can always see inside; the page also fades whatever stands between the
   camera and the robot being watched. A new way to make a building goes
   through the same check.
