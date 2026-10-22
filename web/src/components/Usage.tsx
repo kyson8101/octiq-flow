@@ -185,7 +185,7 @@ export function UsageRowView({ feed, onAsk, now = Date.now(), initiallyOpen = fa
                 <span className="usage-cell-label">{cell.label}</span>
                 {cell.percent === null ? <span className="usage-cell-none">—</span> : <>
                   <span className={`usage-track ${level}`}>
-                    <span className="usage-fill" style={{ width: `${cell.percent}%` }} />
+                    <span className="usage-fill" style={{ width: cell.percent > 0 ? `max(3px, ${cell.percent}%)` : "0%" }} />
                   </span>
                   <span className={`usage-val ${level}`}>
                     <RollingText>{`${Math.round(cell.percent)}%`}</RollingText>
