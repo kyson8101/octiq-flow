@@ -20,7 +20,6 @@ import {
   activate,
   addTab,
   closeTab,
-  parseStore,
   renameTab,
   tabsFor,
   type Store,
@@ -29,11 +28,6 @@ import {
 import { useConfirm } from "./Confirm";
 import type { Project } from "./Sidebar";
 import { TerminalPane } from "./Terminal";
-
-/** Which terminals each project has. This browser's, like the rest of the
- *  appearance settings — the shells themselves are on the server and are found
- *  again by id, so another device simply opens its own tabs onto them. */
-const TERMS_KEY = "octiq.v2.terminals";
 
 /** The project as the drawer needs it: the saved commands ride along with it on
  *  `list_workspaces`, in the same `actions` field the desktop UI has always
@@ -46,24 +40,20 @@ type Editing = Command | "new" | null;
 
 export function TerminalDrawer({
   project,
+  store,
+  onTabsChange,
   onCommandsChanged,
   onHide,
 }: {
   project: DrawerProject;
+  store: Store;
+  onTabsChange: (projectId: string, change: (tabs: Tabs) => Tabs) => void;
   /** A command was added, changed, or deleted: the project list is the store's
    *  only view, so it has to be read again. */
   onCommandsChanged: () => void;
   /** Called when the drawer should go away — the ✕, or the last tab closing. */
   onHide: () => void;
 }) {
-  const [store, setStore] = useState<Store>(() => {
-    try {
-      return parseStore(localStorage.getItem(TERMS_KEY));
-    } catch {
-      // Private browsing, or storage full. Tabs for this session only.
-      return {};
-    }
-  });
   /** The tab whose name is being edited, if any. */
   const [renaming, setRenaming] = useState<string | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
@@ -72,24 +62,15 @@ export function TerminalDrawer({
   const confirm = useConfirm();
 
   const tabs = tabsFor(store, project.id);
-  const cwd = project.primary_path ?? "";
   const commands = parseCommands(project.actions);
   const active = tabs.tabs.find((t) => t.id === tabs.active);
+  const cwd = active?.cwd ?? project.primary_path ?? "";
 
   const write = useCallback(
     (next: Tabs) => {
-      setStore((prev) => {
-        const merged = { ...prev, [project.id]: next };
-        try {
-          localStorage.setItem(TERMS_KEY, JSON.stringify(merged));
-        } catch {
-          // Not worth interrupting anyone over: the tabs still work, they just
-          // will not be here next time.
-        }
-        return merged;
-      });
+      onTabsChange(project.id, () => next);
     },
-    [project.id],
+    [project.id, onTabsChange],
   );
 
   const close = useCallback(
@@ -110,9 +91,9 @@ export function TerminalDrawer({
    *  having tabs at all. */
   const run = useCallback(
     (row: Command) => {
-      write(addTab(tabs, project.id, { name: row.label, cmd: row.command }));
+      onTabsChange(project.id, (current) => addTab(current, project.id, { name: row.label, cmd: row.command }));
     },
-    [tabs, project.id, write],
+    [project.id, onTabsChange],
   );
 
   const save = useCallback(

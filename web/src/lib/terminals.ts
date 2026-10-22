@@ -19,7 +19,7 @@
  *  live shell is never disturbed, but one the server restarted out from under us
  *  is started again on the next attach — and a tab called "dev" that comes back
  *  empty is not the tab you left. */
-export type Term = { id: string; name: string; cmd?: string };
+export type Term = { id: string; name: string; cmd?: string; cwd?: string };
 
 /** One project's terminals. `seq` is the id counter — see `addTab`. */
 export type Tabs = { tabs: Term[]; active: string; seq: number };
@@ -87,16 +87,17 @@ export function tabsFor(store: Store, projectId: string): Tabs {
 export function addTab(
   tabs: Tabs,
   projectId: string,
-  open: { name?: string; cmd?: string } = {},
+  open: { name?: string; cmd?: string; cwd?: string } = {},
 ): Tabs {
   const id = `term:${projectId}:${tabs.seq}`;
   const label = (open.name ?? "").trim();
-  const cmd = (open.cmd ?? "").trim();
+  const cmd = open.cmd ?? "";
   const term: Term = {
     id,
     name: label ? uniqueName(label, tabs.tabs) : nextName(tabs.tabs),
   };
-  if (cmd) term.cmd = cmd;
+  if (cmd.trim()) term.cmd = cmd;
+  if (open.cwd) term.cwd = open.cwd;
   return { tabs: [...tabs.tabs, term], active: id, seq: tabs.seq + 1 };
 }
 
@@ -145,11 +146,14 @@ function asTabs(value: unknown): Tabs | null {
   const tabs: Term[] = [];
   for (const entry of v.tabs) {
     if (!entry || typeof entry !== "object") return null;
-    const { id, name, cmd } = entry as { id?: unknown; name?: unknown; cmd?: unknown };
+    const { id, name, cmd, cwd } = entry as { id?: unknown; name?: unknown; cmd?: unknown; cwd?: unknown };
     if (typeof id !== "string" || !id || typeof name !== "string") return null;
     // A command that is not a string is dropped on its own rather than taking
     // the tab with it: the shell is still reachable, it simply opens bare.
-    tabs.push(typeof cmd === "string" && cmd ? { id, name, cmd } : { id, name });
+    const term: Term = { id, name };
+    if (typeof cmd === "string" && cmd) term.cmd = cmd;
+    if (typeof cwd === "string" && cwd) term.cwd = cwd;
+    tabs.push(term);
   }
   return {
     tabs,

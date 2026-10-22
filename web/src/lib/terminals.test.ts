@@ -172,3 +172,12 @@ describe("what was saved last time", () => {
     expect(parseStore('{"p":{"tabs":[{"id":1}],"active":"","seq":0}}')).toEqual({});
   });
 });
+
+
+it("keeps the confirmed multiline command byte for byte", () => {
+  const command = "  cat <<'END'\n  body\nEND\n";
+  const tabs = addTab(tabsFor({}, PID), PID, { name: "Run", cmd: command, cwd: "/work/chat" });
+  expect(tabs.tabs.at(-1)?.cmd).toBe(command);
+  expect(parseStore(JSON.stringify({ [PID]: tabs }))[PID].tabs.at(-1)?.cwd).toBe("/work/chat");
+  expect(parseStore(JSON.stringify({ [PID]: tabs }))[PID].tabs.at(-1)?.cmd).toBe(command);
+});

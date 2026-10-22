@@ -19,7 +19,8 @@ vi.mock("../lib/pathStore", () => ({
   subscribePaths: () => () => {},
 }));
 import type { Message } from "../lib/chat";
-import { MessageList } from "./MessageList";
+import { TerminalRunContext } from "./RunCommand";
+import { AgentTranscript, MessageList } from "./MessageList";
 
 const said = (text: string): Message => ({
   id: "u0",
@@ -427,5 +428,32 @@ describe("a table in a reply", () => {
     // `---:` is how an agent says "this column is numbers". Losing it puts a
     // column of figures back on the left, where they no longer line up.
     expect(reply(table)).toContain("text-align:right");
+  });
+});
+
+
+describe("Run on a reply's shell fence", () => {
+  const reply = (text: string): Message => ({ id: "shell-reply", role: "assistant", streaming: false, blocks: [{ kind: "text", text }] });
+  const withTerminal = (text: string) => renderToStaticMarkup(
+    <TerminalRunContext.Provider value={{ folder: "/work/chat", run: () => {} }}>
+      <MessageList messages={[reply(text)]} busy={false} />
+    </TerminalRunContext.Provider>,
+  );
+  it("never inherits Run into a subagent's transcript", () => {
+    const message = { ...reply("```sh\npwd\n```"), parent: "tool-agent" };
+    const html = renderToStaticMarkup(<TerminalRunContext.Provider value={{ folder: "/work/chat", run: () => {} }}>
+      <AgentTranscript messages={[message]} parent="tool-agent" />
+    </TerminalRunContext.Provider>);
+    expect(html).toContain("code-copy");
+    expect(html).not.toContain("code-run");
+  });
+  it("requires a closed shell fence and a terminal capability", () => {
+    for (const lang of ["bash", "sh", "zsh", "shell", "console"]) {
+      const text = `\`\`\`${lang}\nprintf hello\n\`\`\``;
+      expect(withTerminal(text)).toContain("code-run");
+      expect(render(reply(text))).not.toContain("code-run");
+    }
+    for (const text of ["```bash\nprintf hello", "```js\nprintf hello\n```", "```\nprintf hello\n```", "```bash\n\n```"])
+      expect(withTerminal(text)).not.toContain("code-run");
   });
 });

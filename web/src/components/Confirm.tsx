@@ -35,6 +35,8 @@ export type ConfirmOptions = {
   title: string;
   /** The consequence, in a sentence. Skip it when the title says everything. */
   body?: string;
+  /** Whole command to inspect before starting work. */
+  command?: string;
   confirmLabel?: string;
   cancelLabel?: string;
   /** Paints the confirm button as destructive. For anything that deletes. */
@@ -136,6 +138,7 @@ export function ConfirmDialog({
       >
         <h2 className="ask-title">{options.title}</h2>
         {options.body && <p className="ask-body">{options.body}</p>}
+        {options.command !== undefined && <pre className="ask-command"><code>{options.command}</code></pre>}
         <div className="ask-buttons">
           {/* The safe answer has the focus: a key pressed again cancels. */}
           <button className="ask-btn" type="button" autoFocus onClick={() => onAnswer(false)}>

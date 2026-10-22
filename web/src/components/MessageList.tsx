@@ -43,6 +43,8 @@ import { closeFence, splitBlocks } from "../lib/blocks";
 import { rehypeWordFade } from "../lib/wordfade";
 import { ContextReport } from "./ContextReport";
 import { parseContextReport } from "../lib/contextReport";
+import { RunCommand, TerminalRunContext } from "./RunCommand";
+import { isShellFence, shellCommand } from "../lib/shellRun";
 import { copyText } from "../lib/clipboard";
 import { clipMessage } from "../lib/clip";
 import { ConfigPanel, ConfigWorldProvider, isConfigUsage } from "./ConfigPanel";
@@ -76,7 +78,7 @@ import {
  *  and a code block cannot tell that from one the agent closed. */
 const FencesClosed = createContext(true);
 
-/** A fenced code block, with the one control that matters: copy.
+/** A fenced code block, with Copy and an optional confirmed shell Run.
  *  react-markdown hands us the <code> child, whose className carries the fence
  *  language ("language-rust"). */
 function CodeBlock({ children }: { children?: React.ReactNode }) {
@@ -98,22 +100,26 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
     <div className="code">
       <div className="code-head">
         <span className="code-lang">{lang || "text"}</span>
-        <button
-          className="code-copy"
-          type="button"
-          onClick={async () => {
-            // Through the shared helper, which falls back to the old copy API
-            // where `navigator.clipboard` does not exist — reaching this app
-            // from a phone means a plain-http origin, and this button used to
-            // do nothing at all there.
-            if (await copyText(ref.current?.innerText ?? "")) {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1400);
-            }
-          }}
-        >
-          {copied ? "copied" : "copy"}
-        </button>
+        <div className="code-actions">
+          {closed && isShellFence(lang) && typeof child?.props?.children === "string" &&
+            <RunCommand command={shellCommand(lang, child.props.children)} />}
+          <button
+            className="code-copy"
+            type="button"
+            onClick={async () => {
+              // Through the shared helper, which falls back to the old copy API
+              // where `navigator.clipboard` does not exist — reaching this app
+              // from a phone means a plain-http origin, and this button used to
+              // do nothing at all there.
+              if (await copyText(ref.current?.innerText ?? "")) {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1400);
+              }
+            }}
+          >
+            {copied ? "copied" : "copy"}
+          </button>
+        </div>
       </div>
       <pre ref={ref}>{children}</pre>
     </div>
@@ -475,6 +481,7 @@ function SubAgent({
   const blocks = messages.flatMap((m) => m.blocks);
   const streaming = messages.some((m) => m.streaming);
   return (
+    <TerminalRunContext.Provider value={null}>
     <div className="subagent">
       <Blocks
         blocks={blocks}
@@ -485,6 +492,7 @@ function SubAgent({
       />
       {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
     </div>
+    </TerminalRunContext.Provider>
   );
 }
 

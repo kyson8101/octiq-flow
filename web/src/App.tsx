@@ -228,6 +228,9 @@ import { BesideBar, BesideMainHead, TaskChatPane } from "./components/TaskChatPa
 import { besideFor, besideTask, readBeside, roomBeside, type Beside } from "./lib/chatBeside";
 import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
+import { TerminalRunContext, type TerminalRun } from "./components/RunCommand";
+import { useTerminalStore } from "./lib/useTerminalStore";
+import { addTab } from "./lib/terminals";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { ChatRequests, SafetyLines } from "./components/ChatRequests";
 import { NowPlaying } from "./components/NowPlaying";
@@ -688,6 +691,7 @@ export default function App() {
   // tick in the sheet has something to read.
   const [appSettings, setAppSettings] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const terminals = useTerminalStore();
   const orchestrationState = useOrchestrationFeed();
   const orchestration = orchestrationState.snapshot ?? EMPTY_ORCHESTRATION;
   // Read by the send path, which must not re-create itself on every ledger
@@ -2477,6 +2481,24 @@ export default function App() {
       primary_path: effectiveCwd || project.primary_path,
     };
   }, [project, conversationId, effectiveCwd]);
+  // Only this main transcript gets the capability. A pending answer cannot run
+  // after navigation, a cwd change, or a worker/subagent taking its place.
+  const terminalTarget = sessionProject && effectiveCwd && ledgerRead && !workerChat && !focusedAgent
+    ? `${sessionProject.id}\n${effectiveCwd}` : null;
+  const terminalTargetRef = useRef(terminalTarget);
+  terminalTargetRef.current = terminalTarget;
+  const terminalRun = useMemo<TerminalRun | null>(() => {
+    if (!terminalTarget || !sessionProject) return null;
+    return {
+      folder: effectiveCwd,
+      run: (command) => {
+        if (terminalTargetRef.current !== terminalTarget) return;
+        terminals.update(sessionProject.id, (tabs) => addTab(tabs, sessionProject.id, { name: "Run", cmd: command, cwd: effectiveCwd }));
+        setTermOpen(true);
+        remember(TERM_KEY, "1");
+      },
+    };
+  }, [terminalTarget, sessionProject, effectiveCwd, terminals.update]);
 
   useEffect(() => {
     if (!project || !effectiveCwd) {
@@ -5984,6 +6006,7 @@ export default function App() {
                     {/* The agent's questions are drawn in the transcript, where
                         they were asked, in a chat the person can answer in. */}
                     <ChatQuestionsContext.Provider value={chatQuestions}>
+                    <TerminalRunContext.Provider value={terminalRun}>
                     <MessageList
                       messages={chat.messages}
                       tail={planTail}
@@ -6025,6 +6048,7 @@ export default function App() {
                       agentByTool={agentByTool}
                       onOpenAgent={setFocusedAgent}
                     />
+                    </TerminalRunContext.Provider>
                     </ChatQuestionsContext.Provider>
                     {!workerChat && (
                       <SafetyToast toast={safetyToast} onDetails={showSafetyLine} onDone={clearSafetyNotice} />
@@ -6140,6 +6164,8 @@ export default function App() {
             <TerminalDrawer
               key={sessionProject.id}
               project={sessionProject}
+              store={terminals.store}
+              onTabsChange={terminals.update}
               onCommandsChanged={loadWorkspaces}
               onHide={() => {
                 setTermOpen(false);
