@@ -48,6 +48,7 @@ async function host(t, answers = []) {
       const body = Buffer.concat(chunks);
       heard.push({ path: url.pathname, query: Object.fromEntries(url.searchParams), headers: req.headers, body });
       const next = answers.shift() ?? { result: { id: `snap${heard.length}`.padEnd(32, "0"), name: url.searchParams.get("name") } };
+      if (typeof next === "function") return next(res);
       res.writeHead(next.status ?? 200, { "content-type": "application/json" });
       res.end(JSON.stringify(next.status ? { error: next.error, outcome: { origin: "octiqflow", reasonClass: "validation", severity: "error" } } : next));
     });
@@ -210,3 +211,33 @@ test("ask_user asks nothing when a file cannot be shown, and says which", async 
   assert.equal(refusedHeard[2].path, "/hook/question-media/discard");
   assert.deepEqual(JSON.parse(refusedHeard[2].body).ids, ["b".repeat(32)]);
 });
+
+for (const [failure, respond, answer] of [
+  ["reset before response", (res) => res.destroy(), "OctiqFlow could not be reached."],
+  ["reset during response", (res) => {
+    res.writeHead(200, { "content-type": "application/json", "content-length": 100 });
+    res.write('{"answer":');
+    // Flush headers first so this exercises IncomingMessage's aborted path.
+    setImmediate(() => res.destroy());
+  }, "OctiqFlow could not be reached."],
+  ["empty response", (res) => res.end(), "OctiqFlow gave no answer."],
+  ["missing answer", (res) => res.end("{}"), "OctiqFlow gave no answer."],
+]) {
+  test(`ask_user discards its uploaded snapshots after ${failure}`, async (t) => {
+    const { file } = scratch(t);
+    const id = "c".repeat(32);
+    const optionId = "d".repeat(32);
+    const { port, heard } = await host(t, [
+      { result: { id, name: "shot.png" } },
+      { result: { id: optionId, name: "option.png" } },
+      respond,
+      { result: true },
+    ]);
+    const result = await call(port, { question: "Q", media: [file("shot.png")], options: [{ label: "A", image: file("option.png") }] });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    assert.equal(result.content[0].text, answer);
+    assert.deepEqual(heard.map((h) => h.path), ["/hook/question-media", "/hook/question-media", "/hook/ask", "/hook/question-media/discard"]);
+    assert.deepEqual(JSON.parse(heard[3].body), { chatKey: "chat:media", sessionKey: "chat:media", ids: [id, optionId] });
+    assert.equal(heard[3].headers["x-octiq-chat-capability"], "cap-1");
+  });
+}
