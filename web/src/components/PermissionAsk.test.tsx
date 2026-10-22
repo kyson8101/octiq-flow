@@ -25,6 +25,14 @@ afterEach(() => {
 });
 
 describe("PermissionAsk", () => {
+  it("names the host-stamped provider on native Codex cards", () => {
+    for (const toolName of ["mcp__octiq__orchestration_validation_create", "Bash"]) {
+      const html = draw({ id: "codex", provider: "codex", toolName, toolInput: { command: "git commit -m fix" } });
+      expect(html).toContain("Codex wants to use");
+      expect(html).not.toContain("Claude wants to use");
+    }
+  });
+
   it("puts an agent's proposed roster change on a one-off card, shown whole", () => {
     // The host asks about this one change (team_tools): "Always" would wave
     // through the next agent the chat invents, so the card does not offer it.

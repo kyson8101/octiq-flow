@@ -152,6 +152,8 @@ pub struct AgentCommand<'a> {
     pub prompt: &'a str,
     pub resume: Option<&'a str>,
     pub extra_dirs: &'a [String],
+    /// Additional sandbox paths, including Git index/lock files. Not workspaces.
+    pub sandbox_roots: &'a [String],
     pub effort: Option<&'a str>,
     pub images: &'a [String],
     pub lite: bool,
@@ -795,36 +797,20 @@ fn append_codex_mcp(cmd: &mut String, mcp: Option<&Path>, front_desk: bool) {
         sh_quote(&args),
         sh_quote(&env_vars),
     ));
-    // Read-only is approval policy `never`, and under it Codex fails an MCP
-    // call that wants approval. Each tool named here only puts a card in front
-    // of the person, who decides it there, so it is approved, as Claude's
-    // `--allowedTools` does: a front desk's `route_chat`, and an ordinary
-    // chat's `request_access`, which a read-only chat is the one to need.
+    // One host bookkeeping list for Claude hooks and Codex native approvals.
+    // Front desks still expose and approve only their routing tool.
     let approved = if front_desk {
-        "route_chat"
+        &["route_chat"][..]
     } else {
-        "request_access"
+        crate::permission::HOST_BOOKKEEPING
     };
-    cmd.push_str(&format!(
-        " -c {}",
-        sh_quote(&format!(
-            "mcp_servers.octiq.tools.{approved}.approval_mode=\"approve\""
-        ))
-    ));
-    if !front_desk {
-        for tool in [
-            "island_look",
-            "island_build",
-            "island_grant",
-            "island_propose",
-        ] {
-            cmd.push_str(&format!(
-                " -c {}",
-                sh_quote(&format!(
-                    "mcp_servers.octiq.tools.{tool}.approval_mode=\"approve\""
-                ))
-            ));
-        }
+    for tool in approved {
+        cmd.push_str(&format!(
+            " -c {}",
+            sh_quote(&format!(
+                "mcp_servers.octiq.tools.{tool}.approval_mode=\"approve\""
+            ))
+        ));
     }
 }
 
@@ -882,13 +868,34 @@ fn codex_exec_command(request: &AgentCommand<'_>, provider: &CodexProvider) -> S
     } else {
         request.extra_dirs
     };
-    for dir in extra_dirs {
-        if resuming.is_some() {
+    let sandbox_roots = if request.front_desk {
+        &[][..]
+    } else {
+        request.sandbox_roots
+    };
+    if resuming.is_some() || !sandbox_roots.is_empty() {
+        let mut roots = extra_dirs.to_vec();
+        for root in sandbox_roots {
+            if !roots.contains(root) {
+                roots.push(root.clone());
+            }
+        }
+        if !roots.is_empty() {
+            // One assignment on resumes. File roots cannot use --add-dir.
+            let roots = roots
+                .iter()
+                .map(|dir| toml_string(dir))
+                .collect::<Vec<_>>()
+                .join(",");
             cmd.push_str(&format!(
-                " -c sandbox_workspace_write.writable_roots={}",
-                sh_quote(&format!("[{}]", toml_string(dir)))
+                " -c {}",
+                sh_quote(&format!("sandbox_workspace_write.writable_roots=[{roots}]"))
             ));
-        } else {
+        }
+    }
+    if resuming.is_none() {
+        // Preserve Codex's workspace context for the person's extra folders.
+        for dir in extra_dirs {
             cmd.push_str(&format!(" --add-dir {}", sh_quote(dir)));
         }
     }
@@ -1978,6 +1985,7 @@ pub(crate) mod tests {
             prompt: "hello",
             resume: None,
             extra_dirs: &[],
+            sandbox_roots: &[],
             effort: Some("high"),
             images: &[],
             lite: false,
@@ -2223,6 +2231,7 @@ pub(crate) mod tests {
             prompt: "work",
             resume: None,
             extra_dirs: &[],
+            sandbox_roots: &[],
             effort: None,
             images: &[],
             lite: false,
@@ -2246,6 +2255,7 @@ pub(crate) mod tests {
             prompt: "where do I take this",
             resume: None,
             extra_dirs: &["/tmp/extra".to_owned()],
+            sandbox_roots: &[],
             effort: Some("low"),
             images: &[],
             lite: true,
@@ -2290,6 +2300,7 @@ pub(crate) mod tests {
             prompt: "where do I take this",
             resume: None,
             extra_dirs: &[],
+            sandbox_roots: &[],
             effort: Some("low"),
             images: &[],
             lite: true,
@@ -2299,6 +2310,40 @@ pub(crate) mod tests {
             front_desk,
             codex_user_mcp: servers,
             preferences: None,
+        }
+    }
+
+    #[test]
+    fn codex_exec_keeps_all_roots_on_fresh_start_and_resume() {
+        let folders = vec!["/repo/other side".into(), "/repo/docs".into()];
+        let git = vec![
+            "/repo/.git/objects".into(),
+            "/repo/.git/worktrees/task/index.lock".into(),
+        ];
+        for resume in [None, Some("native-session")] {
+            let request = AgentCommand {
+                extra_dirs: &folders,
+                sandbox_roots: &git,
+                resume,
+                access: Some(Access::Auto),
+                ..codex_request(false, &[])
+            };
+            let command = codex_exec_command(&request, &CODEX);
+            assert_eq!(
+                command
+                    .matches("sandbox_workspace_write.writable_roots=")
+                    .count(),
+                1
+            );
+            for root in folders.iter().chain(&git) {
+                assert!(command.contains(root), "{command}");
+            }
+            assert!(!command.contains("--add-dir '/repo/.git"));
+            assert_eq!(
+                command.contains("--add-dir '/repo/other side'"),
+                resume.is_none()
+            );
+            assert!(command.contains("approval_policy='on-request'"));
         }
     }
 
@@ -2347,7 +2392,30 @@ pub(crate) mod tests {
             assert!(!line.contains("route_chat"), "{line}");
             // Access requests use a card; the three island present tools are host-only.
             assert!(line.contains(ask_access), "{line}");
-            assert_eq!(line.matches("approval_mode").count(), 5, "{line}");
+            assert_eq!(
+                line.matches("approval_mode").count(),
+                crate::permission::HOST_BOOKKEEPING.len(),
+                "{line}"
+            );
+            for tool in crate::permission::HOST_BOOKKEEPING {
+                assert!(
+                    line.contains(&format!(
+                        "mcp_servers.octiq.tools.{tool}.approval_mode=\"approve\""
+                    )),
+                    "{tool}: {line}"
+                );
+            }
+            for tool in [
+                "orchestration_validation_create",
+                "orchestration_worker_start",
+                "vault_write",
+                "orchestration_run_create",
+            ] {
+                assert!(
+                    !line.contains(&format!("tools.{tool}.approval_mode")),
+                    "{tool}: {line}"
+                );
+            }
             assert!(line.contains("\"OCTIQ_HOOK_PORT\"]"), "{line}");
         }
         // With no MCP config written there is no server to approve a tool on;
@@ -2483,6 +2551,7 @@ pub(crate) mod tests {
             prompt: "work",
             resume: None,
             extra_dirs: &[],
+            sandbox_roots: &[],
             effort: None,
             images: &[],
             lite: false,
@@ -2513,6 +2582,7 @@ pub(crate) mod tests {
             prompt: "work",
             resume: None,
             extra_dirs: &[],
+            sandbox_roots: &[],
             effort: None,
             images: &[],
             lite: false,
@@ -2561,6 +2631,7 @@ pub(crate) mod tests {
                     prompt: "work",
                     resume: Some("session-1"),
                     extra_dirs: &[],
+                    sandbox_roots: &[],
                     effort: None,
                     images: &[],
                     lite: true,
@@ -2623,6 +2694,7 @@ pub(crate) mod tests {
             prompt: "inspect it",
             resume: Some("pi-session-123"),
             extra_dirs: &[],
+            sandbox_roots: &[],
             effort: Some("minimal"),
             images: &["/tmp/screen shot.png".into()],
             lite: false,
@@ -2810,6 +2882,7 @@ pub(crate) mod tests {
             prompt: "fix it",
             resume: None,
             extra_dirs: &[],
+            sandbox_roots: &[],
             effort: Some("high"),
             images: &[],
             lite: false,
@@ -2828,6 +2901,7 @@ pub(crate) mod tests {
         let line = ANTIGRAVITY.build_command(&AgentCommand {
             resume: Some("bb35e2e1-d2c3-4b8b-913d-7554783273ff"),
             extra_dirs: &dirs,
+            sandbox_roots: &[],
             ..agy_request(Some(Access::Full), None)
         });
         assert!(
@@ -2944,6 +3018,7 @@ pub(crate) mod tests {
         let desk = ANTIGRAVITY.build_command(&AgentCommand {
             front_desk: true,
             extra_dirs: &dirs,
+            sandbox_roots: &[],
             ..agy_request(Some(Access::Full), Some(mcp))
         });
         assert!(desk.contains(" --mode plan"), "{desk}");
@@ -3038,14 +3113,17 @@ pub(crate) mod tests {
     /// chat agent gets its host rules without a command line carrying it,
     /// and never to a worker or a front desk, which keep none.
     #[test]
-    fn a_chat_agent_is_told_when_to_keep_a_plan_and_no_command_line_carries_it() {
+    fn a_chat_agent_is_told_when_to_keep_a_plan_and_no_command_line_carries_its_instructions() {
         // The MCP server's instructions hold the sentence word for word:
         // that is where Claude reads it, over stdio.
         assert!(ASK_MCP.contains(PLAN_PROMPT));
         for kind in [AgentKind::Claude, AgentKind::Codex, AgentKind::Pi] {
             let line = command(kind, Some(Path::new("/tmp/octiq-ask.json")));
-            assert!(!line.contains("plan_update"), "{line}");
-            assert!(!line.contains("plan_read"), "{line}");
+            assert!(!line.contains(PLAN_PROMPT), "{line}");
+            if kind != AgentKind::Codex {
+                assert!(!line.contains("plan_update"), "{line}");
+                assert!(!line.contains("plan_read"), "{line}");
+            }
         }
         let said = |app_server: bool, worker: bool| {
             codex_developer_instructions(

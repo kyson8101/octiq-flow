@@ -21,14 +21,37 @@ fn response(action: &str) -> Value {
     json!({ "action": action, "content": if action == "accept" { json!({}) } else { Value::Null } })
 }
 
-// Only Codex's native approval for our settlement tool is bookkeeping.
-// A server-authored form, another server, or a message mentioning the tool
-// must still go through the ordinary confirmation/data-form path.
-fn worker_report_confirmation(params: &Value) -> bool {
-    confirmation(params)
-        && params["serverName"] == "octiq"
-        && params["_meta"]["codex_approval_kind"] == "mcp_tool_call"
-        && params["_meta"]["tool_name"] == "orchestration_worker_report"
+// Codex 0.163 supplies tool_params but names the tool only in this exact
+// native message. A server-authored form/another server must still ask.
+fn native_tool(params: &Value) -> Option<&str> {
+    if !confirmation(params) || params["_meta"]["codex_approval_kind"] != "mcp_tool_call" {
+        return None;
+    }
+    let server = params["serverName"].as_str()?;
+    let message = params["message"].as_str()?;
+    let prefix = format!("Allow the {server} MCP server to run tool \"");
+    let named = message.strip_prefix(&prefix)?.strip_suffix("\"?")?;
+    if named.is_empty()
+        || !named
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return None;
+    }
+    // Reject contradictory metadata rather than using a convenient field.
+    if params["_meta"]
+        .get("tool_name")
+        .is_some_and(|name| name.as_str() != Some(named))
+    {
+        return None;
+    }
+    Some(named)
+}
+
+fn bookkeeping_confirmation(params: &Value) -> bool {
+    params["serverName"] == "octiq"
+        && native_tool(params)
+            .is_some_and(|tool| crate::permission::host_bookkeeping(&format!("mcp__octiq__{tool}")))
 }
 
 pub(super) fn resolved(session: &Arc<Mutex<ChatSession>>, request_id: &Value) {
@@ -56,7 +79,7 @@ pub(super) fn answer(
         write_codex_response(session, &request_id, response("cancel"));
         return;
     }
-    if worker_report_confirmation(&params) {
+    if bookkeeping_confirmation(&params) {
         // This permits the MCP call, not its contents. The hook still proves
         // the caller and the ledger validates the exact current attempt,
         // unread instructions, open gates and settlement state.
@@ -70,7 +93,9 @@ pub(super) fn answer(
                     .is_none_or(|id| Some(id) == codex.active_turn_id.as_deref())
                 && codex.active_turn_id.is_some()
         });
-        let allowed = current && guard.cut_off == CutOff::No;
+        let allowed = current
+            && guard.cut_off == CutOff::No
+            && !crate::team::is_front_desk_chat(&crate::team::default_path(), key);
         if let Some(stdin) = guard.stdin.as_mut() {
             let _ = write_json_line(
                 stdin,
@@ -104,7 +129,7 @@ pub(super) fn answer(
 
     let server = params["serverName"].as_str().unwrap_or("MCP server");
     let meta = &params["_meta"];
-    let tool = meta["tool_name"].as_str();
+    let tool = native_tool(&params);
     let name = tool.map_or_else(
         || format!("{server} confirmation"),
         |tool| format!("mcp__{server}__{tool}"),
@@ -122,6 +147,7 @@ pub(super) fn answer(
         // Elicitation identifies a server request, not an item. Do not
         // invent an item id: standalone cards are supported by the page.
         once: true,
+        provider: Some(ChatAgent::Codex),
         ..Default::default()
     };
     let session = session.clone();
@@ -261,26 +287,25 @@ mod tests {
     }
 
     fn approval() -> Value {
-        // The native tool-approval form in Codex 0.163.0: no user data
-        // fields; the action itself is the answer. Do not return decision.
-        json!({
-            "threadId": "thread-1", "turnId": "turn-1", "serverName": "octiq",
-            "mode": "form", "message": "Allow orchestration_run_create?",
-            "requestedSchema": { "type": "object", "properties": {} },
-            "_meta": { "codex_approval_kind": "mcp_tool_call", "tool_name": "orchestration_run_create",
-                "tool_params": { "objective": "Resume the roadmap", "worker_defaults": { "access": "auto" } } },
-        })
+        let fixture: Value =
+            serde_json::from_str(include_str!("fixtures/codex-0.163.0-elicitation.json")).unwrap();
+        let mut params = fixture["params"].clone();
+        params["threadId"] = json!("thread-1");
+        params["turnId"] = json!("turn-1");
+        params["message"] =
+            json!("Allow the octiq MCP server to run tool \"orchestration_run_create\"?");
+        params["_meta"]["tool_params"] = json!({"objective":"Resume the roadmap"});
+        params
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn worker_settlement_confirmation_returns_accept_without_a_card() {
         let mut chat = Chat::new();
         let mut params = approval();
-        params["_meta"]["tool_name"] = json!("orchestration_worker_report");
         params["_meta"]["tool_params"] =
             json!({"attempt_id": "attempt-current", "outcome": "completed"});
         params["message"] =
-            json!("Allow the octiq MCP server to run tool orchestration_worker_report?");
+            json!("Allow the octiq MCP server to run tool \"orchestration_worker_report\"?");
         chat.ask(json!(30), params.clone(), false);
         assert_eq!(
             chat.written().await,
@@ -302,14 +327,37 @@ mod tests {
             json!({"id":31,"result":response("cancel")})
         );
         assert!(chat.cards().is_empty());
+        params = approval();
+        params["message"] = json!("Allow the octiq MCP server to run tool \"task_status\"?");
+        params["threadId"] = json!("old-thread");
+        chat.ask(json!(33), params.clone(), false);
+        assert_eq!(
+            chat.written().await,
+            json!({"id":33,"result":response("cancel")})
+        );
+        params["threadId"] = json!("thread-1");
+        chat.session
+            .lock()
+            .unwrap()
+            .codex
+            .as_mut()
+            .unwrap()
+            .active_turn_id = None;
+        chat.ask(json!(34), params, false);
+        assert_eq!(
+            chat.written().await,
+            json!({"id":34,"result":response("cancel")})
+        );
+        assert!(chat.cards().is_empty());
     }
 
     #[test]
     fn settlement_exception_does_not_match_unrelated_or_data_requests() {
         let mut params = approval();
-        assert!(!worker_report_confirmation(&params));
-        params["_meta"]["tool_name"] = json!("orchestration_worker_report");
-        assert!(worker_report_confirmation(&params));
+        assert!(!bookkeeping_confirmation(&params));
+        params["message"] =
+            json!("Allow the octiq MCP server to run tool \"orchestration_worker_report\"?");
+        assert!(bookkeeping_confirmation(&params));
         for (field, value) in [
             ("serverName", json!("other")),
             ("_meta", json!({})),
@@ -320,8 +368,36 @@ mod tests {
         ] {
             let mut different = params.clone();
             different[field] = value;
-            assert!(!worker_report_confirmation(&different));
+            assert!(!bookkeeping_confirmation(&different));
         }
+    }
+
+    #[test]
+    fn captured_native_payload_matches_only_the_shared_bookkeeping_list() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("fixtures/codex-0.163.0-elicitation.json")).unwrap();
+        let mut params = fixture["params"].clone();
+        assert!(params["_meta"].get("tool_name").is_none());
+        assert!(bookkeeping_confirmation(&params));
+        for tool in crate::permission::HOST_BOOKKEEPING {
+            params["message"] = json!(format!(
+                "Allow the octiq MCP server to run tool \"{tool}\"?"
+            ));
+            assert!(bookkeeping_confirmation(&params), "{tool}");
+        }
+        for message in [
+            "Allow the octiq MCP server to run tool \"orchestration_validation_create\"?",
+            "Allow the octiq MCP server to run tool \"orchestration_worker_start\"?",
+            "Please allow orchestration_worker_report",
+            "Allow the octiq MCP server to run tool \"orchestration_worker_report\"? extra",
+            "Allow the other MCP server to run tool \"orchestration_worker_report\"?",
+        ] {
+            params["message"] = json!(message);
+            assert!(!bookkeeping_confirmation(&params), "{message}");
+        }
+        params = fixture["params"].clone();
+        params["_meta"]["tool_name"] = json!("vault_write");
+        assert!(!bookkeeping_confirmation(&params));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -343,6 +419,7 @@ mod tests {
             let card = chat.card().await;
             assert_eq!(card["toolName"], "mcp__octiq__orchestration_run_create");
             assert_eq!(card["once"], true);
+            assert_eq!(card["provider"], "codex");
             assert!(card["toolInput"]["content"]
                 .as_str()
                 .unwrap()

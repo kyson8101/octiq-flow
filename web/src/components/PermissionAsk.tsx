@@ -42,6 +42,7 @@ import { DiffView, FIRST_OPENED } from "./DiffView";
 import { ToolIcon } from "./ToolIcon";
 
 export type Ask = {
+  provider?: "claude" | "codex" | "pi" | "antigravity";
   id: string;
   chatKey?: string;
   sessionId?: string;
@@ -206,6 +207,7 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
   // The same icon and the same name the chat's own tool cards use. The question
   // is about a call that is one second away from appearing there, so it should
   // already look like it.
+  const provider = ask.provider === "codex" ? "Codex" : ask.provider === "pi" ? "Pi" : ask.provider === "antigravity" ? "Antigravity" : "Claude";
   const look = toolLook(ask.toolName ?? "", ask.toolInput);
   // An MCP tool is the exception: it is asked about in words, with its server
   // and its id beside them. The chat's cards keep `mcp(server:tool)`.
@@ -319,7 +321,7 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
         {mcp ? (
           <span className="ask-card-title">
             {/* The whole name stays a hover away: it is what "Always" grants. */}
-            Claude wants to use <strong title={ask.toolName}>{toolWords(mcp.tool)}</strong>
+            {provider} wants to use <strong title={ask.toolName}>{toolWords(mcp.tool)}</strong>
             <span className="ask-card-chips">
               <span className="label-pill">{mcp.serverLabel}</span>
               <span className="label-pill is-mono">{mcp.tool}</span>
@@ -332,12 +334,12 @@ export function PermissionAsk({ ask, onAnswered, startOpen = false }: {
             {/* The tool and how much it runs. `bash(echo)` over a script whose
                 second line is `rm -rf`, or over one line too long to draw, was
                 the card naming the harmless part. */}
-            Claude wants to use <strong>{ask.toolName || "a tool"}</strong>
+            {provider} wants to use <strong>{ask.toolName || "a tool"}</strong>
             <span className="ask-card-script">{sized}</span>
           </span>
         ) : (
           <span className="ask-card-title">
-            Claude wants to use <strong>{ask.toolName ? look.label : "a tool"}</strong>
+            {provider} wants to use <strong>{ask.toolName ? look.label : "a tool"}</strong>
             {look.scope && <span className="tool-scope">{look.scope}</span>}
           </span>
         )}
