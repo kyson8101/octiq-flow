@@ -6569,13 +6569,28 @@ fn answer_codex_user_input(
         if answers.is_none() {
             manager.questions.detach(&card_id);
         }
+        let claimed = answers.is_some();
         let mapped = native_ids
             .into_iter()
             .zip(answers.unwrap_or_default())
             .filter(|(id, _)| !id.is_empty())
             .map(|(id, answer)| (id, json!({ "answers": [answer] })))
             .collect::<Map<String, Value>>();
-        write_codex_response(&session, &request_id, json!({ "answers": mapped }));
+        let written = (|| {
+            let mut guard = session.lock().map_err(|e| e.to_string())?;
+            let stdin = guard
+                .stdin
+                .as_mut()
+                .ok_or("The native response pipe is closed.")?;
+            write_json_line(
+                stdin,
+                &crate::codex_app_server::response(&request_id, json!({ "answers": mapped })),
+            )
+            .map_err(|e| e.to_string())
+        })();
+        if claimed {
+            let _ = manager.questions.native_written(&card_id, written);
+        }
     });
 }
 

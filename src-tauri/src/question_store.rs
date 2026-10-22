@@ -294,6 +294,8 @@ struct State {
     /// The answered questions whose line is not in their chat's record, by
     /// record id. In memory, like every owed save: a restart loses them.
     notes: BTreeMap<String, Note>,
+    /// History the native answer was claimed in, before its transport write.
+    native_seen: BTreeMap<String, Option<crate::transcript::Generation>>,
 }
 
 #[derive(Default)]
@@ -522,6 +524,11 @@ impl QuestionStore {
     /// took and could not be synced with its folder, is said (`unsaved`)
     /// and owed: `settle_notes` sees to it.
     fn note(state: &mut State, id: &str, via: Via) {
+        let seen = crate::transcript::generation(&state.records[id].origin.chat_key);
+        Self::note_in(state, id, via, seen);
+    }
+
+    fn note_in(state: &mut State, id: &str, via: Via, seen: Option<crate::transcript::Generation>) {
         use crate::transcript::Held;
         let record = &state.records[id];
         let chat = record.origin.chat_key.clone();
@@ -529,7 +536,6 @@ impl QuestionStore {
         // Which record the answer is handed over in, taken before the line
         // is written and handed to the write, which puts the line in that
         // record or in none and answers for its sync.
-        let seen = crate::transcript::generation(&chat);
         match crate::agent_chat::record_chat_event_in(&chat, seen.as_ref(), event.clone()) {
             // On disk, with its folder. Or the chat was cleared as the
             // answer was handed over: its history is gone, and this line
@@ -674,7 +680,8 @@ impl QuestionStore {
         Ok(Some(answer))
     }
 
-    /// Commit a completed card to a live native provider request.
+    /// Claim a native answer once. Until the transport confirms its write,
+    /// the answer is uncertain and must never be replayed automatically.
     ///
     /// Unlike the MCP tool path, app-server needs each answer separately so it
     /// can map them back to Codex's question ids. An empty vector means the
@@ -692,15 +699,49 @@ impl QuestionStore {
             return Ok(None);
         }
         let answers = record.answers.iter().flatten().cloned().collect::<Vec<_>>();
+        let seen = crate::transcript::generation(&record.origin.chat_key);
         let mut next = state.records.clone();
-        next.get_mut(id).unwrap().delivery = Delivery::Delivered;
+        let record = next.get_mut(id).unwrap();
+        record.delivery = Delivery::Dispatching;
+        record.error = None;
         if let Some(why) = self.keep(&mut state, next) {
-            crate::unsaved::say(DELIVERED, why);
+            crate::unsaved::say("the native answer handover", why);
         }
-        state.waiters.remove(id);
-        Self::note(&mut state, id, Via::Native);
+        state.native_seen.insert(id.to_string(), seen);
         publish(&state.records[id], state.owed.as_deref());
         Ok(Some(answers))
+    }
+
+    /// A successful whole-line write hands the answer to the native pipe.
+    /// Failed writes may be partial: leave them uncertain, including on reload.
+    pub fn native_written(&self, id: &str, result: Result<(), String>) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        let mut next = state.records.clone();
+        let record = next.get_mut(id).ok_or("Unknown question")?;
+        if record.delivery != Delivery::Dispatching {
+            state.native_seen.remove(id);
+            return Ok(());
+        }
+        match result {
+            Ok(()) => {
+                record.delivery = Delivery::Delivered;
+                record.error = None;
+            }
+            Err(why) => {
+                record.delivery = Delivery::Uncertain;
+                record.error = Some(format!("Native answer handover is uncertain: {why}. Check the conversation before continuing; it will not be sent again automatically."));
+            }
+        }
+        if let Some(why) = self.keep(&mut state, next) {
+            crate::unsaved::say("the native answer handover", why);
+        }
+        state.waiters.remove(id);
+        let seen = state.native_seen.remove(id).flatten();
+        if state.records[id].delivery == Delivery::Delivered {
+            Self::note_in(&mut state, id, Via::Native, seen);
+        }
+        publish(&state.records[id], state.owed.as_deref());
+        Ok(())
     }
 
     pub fn detach(&self, id: &str) {
@@ -927,6 +968,42 @@ mod tests {
         );
         assert!(store.take_native(&id).unwrap().is_none());
         assert!(store.outbox().unwrap().is_empty());
+        store.native_written(&id, Ok(())).unwrap();
+        assert_eq!(
+            store.state.lock().unwrap().records[&id].delivery,
+            Delivery::Delivered
+        );
+    }
+
+    #[tokio::test]
+    async fn native_pipe_failure_is_uncertain_on_reload_and_is_never_auto_replayed() {
+        let path = path();
+        let store = QuestionStore::load(path.to_path_buf());
+        let (id, _rx) = store
+            .insert(test_origin("chat:pipe-failed"), questions())
+            .unwrap();
+        store.answer(&answers(&store)).unwrap();
+        assert!(store.take_native(&id).unwrap().is_some());
+        assert_eq!(
+            store.state.lock().unwrap().records[&id].delivery,
+            Delivery::Dispatching
+        );
+        store
+            .native_written(&id, Err("Broken pipe".into()))
+            .unwrap();
+        let reloaded = QuestionStore::load(path.to_path_buf());
+        assert_eq!(
+            reloaded.state.lock().unwrap().records[&id].delivery,
+            Delivery::Uncertain
+        );
+        assert!(!reloaded.pending().unwrap().is_empty());
+        assert!(reloaded.outbox().unwrap().is_empty());
+        assert!(reloaded.take_native(&id).unwrap().is_none());
+        assert_eq!(
+            store.state.lock().unwrap().notes.len(),
+            0,
+            "no false answered line"
+        );
     }
 
     #[tokio::test]
