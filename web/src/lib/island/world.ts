@@ -11,6 +11,7 @@ import {
 import type { Material } from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { Kit, solidMaterial } from "./kit";
+import { NightLighting, type LightPool } from "./lighting";
 import type { Plot, Resident } from "./model";
 import { CELL, PLAZA_RADIUS, TILE, TILE_TOP, cellCenter, facingFor, plotNames, plotToWorld, ringCells } from "./model";
 import { PLAYGROUND_CELL, buildPlayground, type Playground } from "./playground";
@@ -245,6 +246,8 @@ export function buildScenery(opts: {
     stone: own(solidMaterial("#d8ccb2", 0.9)),
     paper: own(solidMaterial("#fbf7ee", 0.8)),
     lamp: own(new MeshBasicMaterial({ color: "#ffe3a8" })),
+    nightLamp: own(new MeshBasicMaterial({ color: "#ffe3a8", transparent: true, opacity: 0, depthWrite: false })),
+    nightMetal: own(new MeshStandardMaterial({ color: "#3c4b53", roughness: 0.5, metalness: 0.5, transparent: true, opacity: 0 })),
     star: own(new MeshBasicMaterial({ color: "#ffd56b" })),
     seal: own(new MeshBasicMaterial({ color: "#e0584f" })),
     light0: own(new MeshBasicMaterial({ color: "#ffcf7a" })),
@@ -268,6 +271,11 @@ export function buildScenery(opts: {
   const rock = own(new IcosahedronGeometry(0.5, 0));
   const seats: Seat[] = [];
   const solids: Solid[] = [];
+  const lighting = new NightLighting();
+  const lightPools: LightPool[] = [];
+  const nightFixtures = new Kit(materials);
+  disposables.push(lighting);
+  group.add(lighting.group);
 
   // The honeycomb. Every cell of every ring up to the outermost in use is a
   // path-coloured hexagon, and on it a tile a little smaller: the gaps are
@@ -374,6 +382,7 @@ export function buildScenery(opts: {
     lantern.position.set(x, top + 2.1, z);
     lanterns.push(lantern);
     group.add(lantern);
+    lightPools.push({ x, y: top + 0.016, z, width: 5.6, depth: 5.6 });
     solids.push({ cx: x, cz: z, hx: 0.15, hz: 0.15, yaw: 0 });
   }
 
@@ -401,6 +410,15 @@ export function buildScenery(opts: {
   kit.add("blue", box, bx + dx * 0.3, SEA_LEVEL + 0.85, bz + dz * 0.3, { sx: 1.0, sy: 0.6, sz: 1.2, ry: dockAngle });
   const dock = { x: dx * (dockTo - 1), z: dz * (dockTo - 1), face: dockAngle + Math.PI };
   const walkways: Solid[] = [{ cx: dx * dockMid, cz: dz * dockMid, hx: 0.9, hz: (dockTo - dockFrom) / 2, yaw: dockAngle }];
+  // Reuse the dock's existing posts, and the plot signposts below, as lamps.
+  // Extra fixtures are night-only so the original daytime view stays intact.
+  for (const d of [dockFrom + 1, dockFrom + 5.4, dockFrom + 9.8]) {
+    const x = dx * d + Math.cos(dockAngle) * 1.15;
+    const z = dz * d - Math.sin(dockAngle) * 1.15;
+    nightFixtures.add("nightMetal", cylinder, x, 0.55, z, { sx: 0.08, sy: 0.6, sz: 0.08 });
+    nightFixtures.add("nightLamp", ball, x, 0.91, z, { sx: 0.24, sy: 0.3, sz: 0.24 });
+    lightPools.push({ x: dx * d, y: 0.196, z: dz * d, width: 2.1, depth: 2.1 });
+  }
 
   // Palms and rocks on the beach, and a lighthouse.
   const random = (k: number) => noise(k * 1.37, k * 2.11, seed + 99);
@@ -464,6 +482,9 @@ export function buildScenery(opts: {
     const yaw = (plot.facing * Math.PI) / 180;
     kit.add("darkWood", box, corner.x, top + 0.45, corner.z, { sx: 0.1, sy: 0.9, sz: 0.1 });
     kit.add("wood", box, corner.x, top + 0.95, corner.z, { sx: 1.2, sy: 0.5, sz: 0.08, ry: yaw });
+    nightFixtures.add("nightLamp", ball, corner.x, top + 1.3, corner.z, { sx: 0.26, sy: 0.2, sz: 0.26 });
+    const path = plotToWorld(plot, -plot.radius / 2 + 0.2, front + 0.6);
+    lightPools.push({ x: path.x, y: 0.036, z: path.z, width: 6.5, depth: 6.5 });
     const texture = nameTexture(names);
     if (texture) {
       own(texture);
@@ -482,6 +503,15 @@ export function buildScenery(opts: {
     if (mesh.geometry) own(mesh.geometry);
   });
   group.add(built);
+  lighting.replace(lightPools);
+  const fixtures = nightFixtures.build(false);
+  fixtures.name = "night-lanterns";
+  fixtures.visible = false;
+  fixtures.traverse(object => {
+    const mesh = object as Mesh;
+    if (mesh.geometry) own(mesh.geometry);
+  });
+  group.add(fixtures);
 
   const night = new Color("#ffe3a8");
   const day = new Color("#fff3d6");
@@ -498,6 +528,10 @@ export function buildScenery(opts: {
       water.material.color.copy(seaColor);
       foamMaterial.opacity = 0.22 + Math.sin(t * 0.9) * 0.08;
       lampMaterial.color.copy(day).lerp(night, nightness).multiplyScalar(0.75 + nightness * 0.5);
+      lighting.update(nightness);
+      fixtures.visible = nightness > 0;
+      (materials.nightLamp as MeshBasicMaterial).opacity = nightness;
+      (materials.nightMetal as MeshStandardMaterial).opacity = nightness;
       for (const letter of letters.children) {
         if (!letter.visible) continue;
         letter.rotation.z = Math.sin(t * 1.3 + (letter.userData.swing as number)) * 0.08;

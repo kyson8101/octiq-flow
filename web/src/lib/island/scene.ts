@@ -17,7 +17,8 @@ import {
 } from "three";
 import type { Material, Object3D } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { AssetCache, assetObject, partBox } from "./assets";
+import { AssetCache, assetObject, partBox, setFinishNight } from "./assets";
+import { NightLighting, buildingLightPools } from "./lighting";
 import type { Asset, Island, Plot, Resident, Slot } from "./model";
 import { PLAZA_RADIUS, SLOTS, TILE_TOP, cellAt, onCellTile, plotNames, plotToWorld, ringCells } from "./model";
 import { NavGrid, type Solid } from "./nav";
@@ -131,6 +132,8 @@ export class IslandView {
   private society = buildSociety();
   private scenery: Scenery | null = null;
   private sceneryKey = "";
+  private buildingLights = new NightLighting({ interior: true });
+  private buildingLightsKey = "";
   private cache = new AssetCache();
   private placed = new Map<string, PlacedView>();
   private robots = new Map<string, RobotView>();
@@ -196,7 +199,7 @@ export class IslandView {
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.02;
     this.scene.fog = new Fog("#e8f3fb", 90, 420);
-    this.scene.add(this.society.root);
+    this.scene.add(this.society.root, this.buildingLights.group);
     this.scene.add(this.hemi, this.sun, this.sun.target, this.proxies, this.rain.object);
     this.proxies.visible = false;
     this.sun.castShadow = true;
@@ -341,6 +344,7 @@ export class IslandView {
     const solids: Solid[] = [...scenery.solids,...this.society.solids];
     const activities: ActivitySite[] = [];
     const seats: Seat[] = [...scenery.seats];
+    const litBuildings: { asset: Asset; view: PlacedView }[] = [];
     for (const placement of island.placed) {
       const plot = plots.get(placement.plot);
       const asset = assets.get(placement.asset);
@@ -362,6 +366,7 @@ export class IslandView {
         this.placed.set(placement.id, view);
       }
       solids.push(...placementSolids(asset, plot, placement));
+      if (asset.kind === "building") litBuildings.push({ asset, view });
       const activity = activitySite(asset,plot,placement);
       if(activity) activities.push(activity);
       const seat = placementSeat(asset, plot, placement);
@@ -371,6 +376,15 @@ export class IslandView {
       if (keep.has(id)) continue;
       this.scene.remove(view.object);
       this.placed.delete(id);
+    }
+
+    const lightsKey = litBuildings.map(({ view }) => `${view.object.userData.placement}:${view.signature}`).join("|");
+    if (lightsKey !== this.buildingLightsKey) {
+      this.buildingLights.replace(litBuildings.flatMap(({ asset, view }) => {
+        view.object.updateMatrix();
+        return buildingLightPools(asset).map(pool => ({ ...pool, transform: view.object.matrix }));
+      }));
+      this.buildingLightsKey = lightsKey;
     }
 
     this.nav = new NavGrid(island.radius, solids, 1.5, scenery.walkways);
@@ -635,6 +649,8 @@ export class IslandView {
       const date = new Date();
       this.hour = this.hourOverride ?? date.getHours() + date.getMinutes() / 60 + date.getSeconds() / 3600;
       this.sky = timeOfDay(this.hour);
+      setFinishNight(this.sky.night);
+      this.buildingLights.update(this.sky.night);
       this.sun.position.copy(this.sky.sun);
       this.sun.color.copy(this.sky.sunColor);
       const weather = weatherAt(this.island?.seed ?? 1, Date.now(), this.weatherChoice);
@@ -903,6 +919,7 @@ export class IslandView {
     for (const view of this.placed.values()) this.scene.remove(view.object);
     this.placed.clear();
     this.cache.dispose();
+    this.buildingLights.dispose();
     this.scenery?.dispose();
     this.bubbles.dispose();
     this.rain.dispose();

@@ -110,6 +110,15 @@ export function unitShapes(): Record<Shape, BufferGeometry> {
 
 const FINISHES: Finish[] = ["matte", "soft", "shiny", "metal", "glass", "glow"];
 
+/** Camera-fade clones keep their own opacity but share the live night colour. */
+class GlowMaterial extends MeshBasicMaterial {
+  override copy(source: this): this {
+    super.copy(source);
+    this.color = source.color;
+    return this;
+  }
+}
+
 let materials: Record<Finish, Material> | null = null;
 /** The six materials every asset on the island is drawn with. */
 export function finishMaterials(): Record<Finish, Material> {
@@ -121,8 +130,13 @@ export function finishMaterials(): Record<Finish, Material> {
     glass: new MeshStandardMaterial({
       vertexColors: true, roughness: 0.06, metalness: 0.1, transparent: true, opacity: 0.38, depthWrite: false,
     }),
-    glow: new MeshBasicMaterial({ vertexColors: true }),
+    glow: new GlowMaterial({ vertexColors: true }),
   };
+}
+
+/** One multiplier for all agent-built glow parts; noon keeps their original colour. */
+export function setFinishNight(night: number) {
+  (finishMaterials().glow as MeshBasicMaterial).color.setScalar(1 + Math.max(0, Math.min(1, night)) * 1.6);
 }
 
 /** One part, baked: the unit shape scaled, turned and moved, with its colour
