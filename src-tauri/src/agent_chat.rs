@@ -1925,10 +1925,19 @@ impl ChatManager {
         if !writable {
             return Ok(());
         }
+        let owners = self.orchestrations.session_workspace_owners()?;
         let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         let starts = self.starts.lock().map_err(|e| e.to_string())?;
-        for key in sessions.keys() {
+        for (key, session) in sessions.iter() {
             if key == worker || key == coordinator {
+                continue;
+            }
+            let owner = owners.get(key);
+            if owner.is_some_and(|(_, _, settled)| *settled)
+                // Do not wait on a session while holding starts: a writer
+                // may hold that session and be reading its start context.
+                && session.try_lock().is_ok_and(|session| !session.busy)
+            {
                 continue;
             }
             let Some(start) = starts.get(key) else {
@@ -1939,7 +1948,15 @@ impl ChatManager {
             // processes instead of treating their next-turn setting as proof.
             for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
                 let other = crate::git_ops::workflow::held_checkout(path);
-                if crate::git_ops::workflow::shares_checkout(checkout, &other, managed_worktree) {
+                let other_managed = owner.is_some_and(|(root, managed, _)| {
+                    *managed && std::path::Path::new(&other).starts_with(root)
+                });
+                if crate::git_ops::workflow::leases_clash(
+                    checkout,
+                    managed_worktree,
+                    &other,
+                    other_managed,
+                ) {
                     return Err(if managed_worktree {
                         format!("Chat {key} is working inside this worktree ({other}). Stop it before starting another writer here.")
                     } else {
