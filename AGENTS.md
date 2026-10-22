@@ -316,7 +316,9 @@ worktree's index, commit-message, HEAD, logs/ and lock paths
 (`codex_git.rs`). Never grant the shared git dir or worktree admin dir:
 shared refs/ and logs/, other branches, packed-refs, hooks, config and
 config.worktree must remain protected. Detached, unborn or malformed HEADs
-get no branch ref grant. Ref files and parent paths must not be symlinks.
+get no branch ref grant. Neither do main, master, develop, the primary
+worktree's branch or the known origin/HEAD default. Ref files and parent paths
+must not be symlinks.
 Validate the original admin path without following symlinks, and require its
 gitdir back-pointer to name this worktree's .git file, before any grant. Fresh starts,
 resumes and turns keep all writable roots together; `--add-dir` is for

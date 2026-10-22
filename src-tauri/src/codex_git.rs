@@ -134,6 +134,33 @@ fn current_branch(cwd: &Path) -> Option<String> {
     if !branch.starts_with("refs/heads/") {
         return None;
     }
+    // HEAD is writable inside the worker's admin files. Switching it must
+    // never turn a subsequent launch/resume into a protected-ref grant.
+    if matches!(
+        branch,
+        "refs/heads/main" | "refs/heads/master" | "refs/heads/develop"
+    ) {
+        return None;
+    }
+    // The first porcelain entry is the primary checkout, even when this
+    // command runs from a linked worktree. Fail closed if it cannot be read.
+    let worktrees = git_text(cwd, &["worktree", "list", "--porcelain"])?;
+    if !worktrees.starts_with("worktree ")
+        || worktrees
+            .lines()
+            .take_while(|line| !line.is_empty())
+            .any(|line| line.strip_prefix("branch ") == Some(branch))
+    {
+        return None;
+    }
+    if let Some(default) = git_text(
+        cwd,
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    ) {
+        if default.strip_prefix("refs/remotes/origin/") == branch.strip_prefix("refs/heads/") {
+            return None;
+        }
+    }
     // Reject malformed and unborn refs rather than granting a path derived
     // from an arbitrary HEAD. Packed existing branches are valid too.
     for args in [
@@ -154,6 +181,19 @@ fn current_branch(cwd: &Path) -> Option<String> {
         }
     }
     Some(branch.to_owned())
+}
+
+fn git_text(cwd: &Path, args: &[&str]) -> Option<String> {
+    let mut command = Command::new("git");
+    crate::proc::no_console(&mut command);
+    let output = command.current_dir(cwd).args(args).output().ok()?;
+    output.status.success().then_some(())?;
+    Some(
+        String::from_utf8(output.stdout)
+            .ok()?
+            .trim_end_matches(['\r', '\n'])
+            .to_owned(),
+    )
 }
 
 fn unredirected(common: &Path, path: &Path, directory: bool) -> bool {
@@ -353,6 +393,51 @@ mod tests {
         assert!(commit_roots(&dir.join("missing"), Some(Access::Auto)).is_empty());
     }
 
+    fn assert_no_branch_grant(dir: &Path, roots: &[String]) {
+        let common = crate::paths::canonicalize(dir.join(".git")).unwrap();
+        // objects/ and all existing own-admin grants remain available.
+        assert_eq!(roots.len(), 9, "{roots:?}");
+        assert!(roots.contains(&common.join("objects").to_string_lossy().into_owned()));
+        assert!(roots.contains(
+            &common
+                .join("worktrees/linked/HEAD")
+                .to_string_lossy()
+                .into_owned()
+        ));
+        assert!(
+            !roots.iter().any(|root| {
+                Path::new(root).starts_with(common.join("refs"))
+                    || Path::new(root).starts_with(common.join("logs"))
+            }),
+            "{roots:?}"
+        );
+    }
+
+    #[test]
+    fn switching_head_to_protected_branches_gets_no_ref_or_reflog_grant() {
+        let (dir, work) = fixture();
+        for branch in ["main", "master", "develop", "trunk"] {
+            git(&dir, &["branch", branch]);
+        }
+        git(
+            &dir,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/trunk",
+            ],
+        );
+        for branch in ["main", "master", "develop", "fixture", "trunk"] {
+            git(&work, &["switch", "--ignore-other-worktrees", branch]);
+            for access in [Access::Auto, Access::Edits] {
+                let roots = commit_roots(&work, Some(access));
+                assert_no_branch_grant(&dir, &roots);
+            }
+        }
+        git(&work, &["switch", "feature/x"]);
+        assert_eq!(commit_roots(&work, Some(Access::Edits)).len(), 13);
+    }
+
     #[test]
     fn detached_unborn_and_non_branch_heads_get_no_branch_grant() {
         let (dir, work) = fixture();
@@ -541,6 +626,70 @@ console.log('PASS: real Codex sandbox refuses another worktree admin via symlink
             String::from_utf8_lossy(&out.stderr)
         );
         assert_eq!(std::fs::read_to_string(target).unwrap(), "protected\n");
+    }
+
+    #[test]
+    #[ignore = "requires the real Codex OS sandbox and Node"]
+    fn real_codex_sandbox_refuses_protected_branches_after_switch() {
+        let (dir, work) = fixture();
+        let common = crate::paths::canonicalize(dir.join(".git")).unwrap();
+        for branch in ["main", "master", "develop", "trunk"] {
+            git(&dir, &["branch", branch]);
+        }
+        git(
+            &dir,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/trunk",
+            ],
+        );
+        let probe = dir.join("probe.cjs");
+        for branch in ["main", "master", "develop", "fixture", "trunk"] {
+            git(&work, &["switch", "--ignore-other-worktrees", branch]);
+            let targets = [
+                common.join("refs/heads").join(branch),
+                common.join("logs/refs/heads").join(branch),
+            ];
+            let before: Vec<_> = targets
+                .iter()
+                .map(|path| std::fs::read(path).unwrap())
+                .collect();
+            std::fs::write(
+                &probe,
+                format!(
+                    r#"
+const fs = require('node:fs'), assert = require('node:assert/strict');
+for (const path of {}) {{
+  assert.throws(() => fs.writeFileSync(path, 'MUST BE REFUSED'), /EPERM|EACCES/);
+  assert.throws(() => fs.writeFileSync(path + '.lock', 'MUST BE REFUSED'), /EPERM|EACCES/);
+}}
+console.log('PASS: protected branch ref/reflog and locks refused after HEAD switch');
+"#,
+                    serde_json::to_string(&targets).unwrap()
+                ),
+            )
+            .unwrap();
+            // Even without a task-plan pin, protected branches stay refused.
+            let roots = commit_roots(&work, Some(Access::Auto));
+            assert_no_branch_grant(&dir, &roots);
+            let out = sandbox(&work, &roots, &probe);
+            println!("{branch}: {}", String::from_utf8_lossy(&out.stdout));
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            for (target, before) in targets.iter().zip(before) {
+                assert_eq!(std::fs::read(target).unwrap(), before);
+                assert!(!target
+                    .with_file_name(format!(
+                        "{}.lock",
+                        target.file_name().unwrap().to_string_lossy()
+                    ))
+                    .exists());
+            }
+        }
     }
 
     #[test]
