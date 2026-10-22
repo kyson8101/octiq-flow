@@ -33,7 +33,6 @@ pub const NAME_MAX: usize = 60;
 /// The roofless rule's numbers (`docs/island.md`, Buildings have no roof).
 pub const THICK_ABOVE: f64 = 1.2;
 pub const THICK_MAX: f64 = 0.5;
-pub const HIGH_ABOVE: f64 = 1.5;
 pub const HIGH_COVER_MAX: f64 = 0.15;
 
 /// The words of every roofless refusal start with why there is a rule.
@@ -635,11 +634,10 @@ pub fn roofless(parts: &[Part]) -> Result<(), String> {
         .enumerate()
         .filter(|(_, part)| {
             let bounds = part_bounds(part);
-            // Grounded walls and posts stay legal. Overhead pieces count
-            // together even when their bottoms straddle the 1.5 m plane:
-            // splitting a roof into narrow strips cannot hide its area.
-            bounds.min[1] >= HIGH_ABOVE - EPS
-                || (bounds.min[1] > THICK_ABOVE + EPS && bounds.max[1] > HIGH_ABOVE + EPS)
+            // Grounded means the bottom is within 5 cm of the building's
+            // y=0 floor. Every other part reaching above 1.2 m counts,
+            // however low it starts or how narrowly a roof is split.
+            bounds.min[1] > GROUND_SLACK + EPS && bounds.max[1] > THICK_ABOVE + EPS
         })
         .map(|(index, part)| (index, area(&footprint(part))))
         .collect();
@@ -654,7 +652,7 @@ pub fn roofless(parts: &[Part]) -> Result<(), String> {
         let bounds = part_bounds(part);
         return Err(invalid(format!(
             "{ROOFLESS}: the overhead parts reaching above {} m cover {:.1}% of the building's floor ({} of {} m²), and at most {}% may be covered. The largest is part {} ({}, {} m, from {} to {} m up). Use fewer or thinner beams, or bring signs and lamps lower.",
-            show(HIGH_ABOVE),
+            show(THICK_ABOVE),
             covered / floor * 100.0,
             show(covered),
             show(floor),

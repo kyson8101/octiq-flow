@@ -214,7 +214,7 @@ pub(crate) async fn ask_request_with_timeout(
     request: Request,
     timeout: Duration,
 ) -> String {
-    let (chat_key, session_key, launch_id, questions) = match request {
+    let (chat_key, session_key, launch_id, mut questions) = match request {
         Request::Many(batch) => (
             batch.chat_key,
             batch.session_key,
@@ -228,18 +228,22 @@ pub(crate) async fn ask_request_with_timeout(
     }
     let outcome = async {
         let chat_key = chat_key.ok_or("The question has no conversation")?;
-        if let Some(message) = crate::agent_chat::route_worker_questions(
-            &manager,
-            &chat_key,
-            session_key.as_deref(),
-            launch_id.as_deref(),
-            &questions,
-        )? {
-            return Ok(message);
-        }
         // The same gate as Stop: a late request from a stopped process cannot
         // register a new question after cancellation has already run.
         let (origin, id, rx) = {
+            // Recheck under the rollback lock and adopt only after storage.
+            // The HTTP preflight alone must never claim these snapshots.
+            let media = crate::question_media::resolve(&chat_key, &mut questions)?;
+            if let Some(message) = crate::agent_chat::route_worker_questions(
+                &manager,
+                &chat_key,
+                session_key.as_deref(),
+                launch_id.as_deref(),
+                &questions,
+            )? {
+                media.adopt();
+                return Ok(message);
+            }
             let _delivery = manager
                 .questions
                 .delivery_lock
@@ -248,6 +252,7 @@ pub(crate) async fn ask_request_with_timeout(
             let origin =
                 manager.question_origin(&chat_key, session_key.as_deref(), launch_id.as_deref())?;
             let (id, rx) = manager.questions.insert(origin.clone(), questions)?;
+            media.adopt();
             (origin, id, rx)
         };
         let _waiting = WaitingTool {

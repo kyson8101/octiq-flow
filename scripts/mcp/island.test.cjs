@@ -10,13 +10,20 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 
-test("the agent guide describes Grant as an immediate background task", () => {
-  const guide = fs.readFileSync(path.join(__dirname, "../../AGENTS.md"), "utf8");
+function checkIslandGuide(source) {
+  const guide = source.replace(/\r\n/g, "\n");
   const island = guide.split("### The island\n")[1].split("### Attention alerts")[0];
   assert.match(island, /Grant starts a background island task/);
   assert.match(island, /island_wish_start/);
   assert.doesNotMatch(island, /with the host's brief in the box|nothing is sent for them|share homes of up to four/);
-});
+}
+
+for (const crlf of [false, true]) {
+  test(`the agent guide describes Grant as an immediate background task (${crlf ? "CRLF" : "LF"})`, () => {
+    const source = fs.readFileSync(path.join(__dirname, "../../AGENTS.md"), "utf8").replace(/\r\n/g, "\n");
+    checkIslandGuide(crlf ? source.replace(/\n/g, "\r\n") : source);
+  });
+}
 
 function call(env, method, params, flags = []) {
   return new Promise((resolve, reject) => {
