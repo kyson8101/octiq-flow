@@ -85,6 +85,12 @@ fn validate_effort_with_cache(
     effort: &str,
     cache: Option<&Value>,
 ) -> Result<(), String> {
+    let cached = if agent == ChatAgent::Codex {
+        cache.and_then(|cache| codex_efforts(cache, model))
+    } else {
+        None
+    };
+    let codex_cache_unread = agent == ChatAgent::Codex && cached.is_none();
     let valid = if agent == ChatAgent::Antigravity {
         // The Gemini id is authoritative; this value is bookkeeping only
         // and the adapter never emits a conflicting --effort flag.
@@ -96,12 +102,15 @@ fn validate_effort_with_cache(
             .map(|value| vec![value.to_string()])
             .unwrap_or_default()
     } else {
-        let cached = if agent == ChatAgent::Codex {
-            cache.and_then(|cache| codex_efforts(cache, model))
-        } else {
-            None
-        };
         cached.unwrap_or_else(|| {
+            // Without model capabilities, accept only Codex's shared baseline
+            // for a new lead choice. Registered defaults bypass this check.
+            if agent == ChatAgent::Codex {
+                return ["low", "medium", "high", "xhigh", "max"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect();
+            }
             [
                 "none",
                 "minimal",
@@ -146,6 +155,8 @@ fn validate_effort_with_cache(
             },
             if agent == ChatAgent::Antigravity {
                 " Antigravity fixes effort in its model; match that value or omit effort."
+            } else if codex_cache_unread {
+                " The model's supported efforts could not be read; only the listed values are accepted."
             } else {
                 ""
             }

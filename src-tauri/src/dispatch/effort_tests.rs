@@ -73,6 +73,120 @@ fn now(svc: &Services, id: &str) -> Task {
         .unwrap()
 }
 
+// A separate copy of the test binary keeps CODEX_HOME changes out of parallel
+// tests. Removing it makes the real dispatch read paths::home_dir's scratch
+// home, never this machine's ~/.codex, with no provider process launched.
+fn check_codex_cache_miss(case: &str, test_name: &str) {
+    const CHILD: &str = "OCTIQ_TEST_CODEX_EFFORT_CACHE_MISS";
+    if std::env::var(CHILD).as_deref() != Ok(case) {
+        // libtest omits the crate name that module_path! includes.
+        let test_name = test_name.split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([test_name, "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD, case)
+            .env_remove("CODEX_HOME")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.status.success(), "{printed}");
+        assert!(printed.contains("1 passed"), "the copy ran it: {printed}");
+        return;
+    }
+
+    let cache = crate::paths::home_dir()
+        .unwrap()
+        .join(".codex/models_cache.json");
+    assert!(!cache.exists());
+    match case {
+        "missing" => {}
+        "corrupt" | "unknown slug" => {
+            crate::profile::make_dir(cache.parent().unwrap()).unwrap();
+            let contents = if case == "corrupt" {
+                "{invalid JSON"
+            } else {
+                r#"{"models":[{"slug":"another-model","supported_reasoning_levels":[{"effort":"ultra"}]}]}"#
+            };
+            std::fs::write(&cache, contents).unwrap();
+        }
+        _ => panic!("unknown cache-miss case: {case}"),
+    }
+
+    with_routes(|svc, run, agents| {
+        for model in ["gpt-5.6-luna", "gpt-6-luna"] {
+            for registered_effort in ["high", "ultra"] {
+                let mut draft = serde_json::to_value(&agents[0]).unwrap();
+                draft["model"] = json!(model);
+                draft["effort"] = json!(registered_effort);
+                let agent =
+                    crate::team::save(&svc.handovers.team, serde_json::from_value(draft).unwrap())
+                        .unwrap();
+                let before = svc.orchestrations.snapshot(None).unwrap().tasks.len();
+                let refused = create(svc, run, &agent, json!({"effort":"ultra"})).unwrap_err();
+                assert!(refused.contains(model), "{refused}");
+                assert!(
+                    refused.contains("model's supported efforts could not be read"),
+                    "{refused}"
+                );
+                assert!(
+                    refused.contains("Valid efforts: low, medium, high, xhigh, max."),
+                    "{refused}"
+                );
+                assert_eq!(
+                    svc.orchestrations.snapshot(None).unwrap().tasks.len(),
+                    before
+                );
+                let chosen = create(svc, run, &agent, json!({"effort":"high"})).unwrap();
+                assert_eq!(chosen.worker.unwrap().effort.as_deref(), Some("high"));
+                assert!(chosen.effort_chosen);
+                let inherited = create(svc, run, &agent, json!({})).unwrap();
+                assert_eq!(
+                    inherited.worker.unwrap().effort.as_deref(),
+                    Some(registered_effort)
+                );
+                assert!(!inherited.effort_chosen);
+            }
+        }
+    });
+}
+
+#[test]
+fn lead_effort_with_missing_codex_cache_uses_baseline_and_preserves_default() {
+    check_codex_cache_miss(
+        "missing",
+        concat!(
+            module_path!(),
+            "::lead_effort_with_missing_codex_cache_uses_baseline_and_preserves_default"
+        ),
+    );
+}
+
+#[test]
+fn lead_effort_with_corrupt_codex_cache_uses_baseline_and_preserves_default() {
+    check_codex_cache_miss(
+        "corrupt",
+        concat!(
+            module_path!(),
+            "::lead_effort_with_corrupt_codex_cache_uses_baseline_and_preserves_default"
+        ),
+    );
+}
+
+#[test]
+fn lead_effort_with_unknown_codex_slug_uses_baseline_and_preserves_default() {
+    check_codex_cache_miss(
+        "unknown slug",
+        concat!(
+            module_path!(),
+            "::lead_effort_with_unknown_codex_slug_uses_baseline_and_preserves_default"
+        ),
+    );
+}
+
 #[test]
 fn lead_effort_can_go_above_or_below_default_but_identity_stays_registered() {
     with_routes(|svc, run, agents| {
