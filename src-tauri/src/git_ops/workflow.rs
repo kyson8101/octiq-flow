@@ -341,6 +341,9 @@ pub fn provision(plan: &WorkspacePlan) -> Result<(), String> {
         return verify(plan);
     }
     if Path::new(&plan.checkout_root).exists() {
+        if owned_here(plan) {
+            prepare_working_directory(plan)?;
+        }
         return verify(plan);
     }
     let owner_key = format!("branch.{}.octiqWorkspace", plan.branch);
@@ -390,7 +393,44 @@ pub fn provision(plan: &WorkspacePlan) -> Result<(), String> {
         &["config", &owner_key, &plan.checkout_root],
         false,
     )?;
+    prepare_working_directory(plan)?;
     verify(plan)
+}
+
+/// A Git checkout does not contain an untracked/ignored working directory.
+/// Make only the approved empty suffix, never copy the source's outputs and
+/// never traverse a link supplied by the checked-out tree.
+fn prepare_working_directory(plan: &WorkspacePlan) -> Result<(), String> {
+    let mut root_plan = plan.clone();
+    root_plan.cwd = plan.checkout_root.clone();
+    verify(&root_plan)?;
+    let suffix = Path::new(&plan.cwd)
+        .strip_prefix(&plan.checkout_root)
+        .map_err(|_| "The working directory is outside its assigned checkout.")?;
+    let mut path = std::path::PathBuf::from(&plan.checkout_root);
+    for part in suffix.components() {
+        let std::path::Component::Normal(name) = part else {
+            return Err("The working directory suffix must contain only folder names.".into());
+        };
+        if name == ".git" {
+            return Err("The working directory cannot be inside Git metadata.".into());
+        }
+        path.push(name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(format!(
+                    "The assigned working directory is not a real folder: {}",
+                    path.display()
+                ))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                crate::profile::create_dir_all(&path).map_err(|e| e.to_string())?;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(())
 }
 
 pub fn verify(plan: &WorkspacePlan) -> Result<(), String> {
@@ -767,6 +807,58 @@ pub(crate) mod tests {
         assert_eq!(p.mode, WorkspaceMode::Direct);
         assert!(!p.managed && p.branch.is_empty());
     }
+    #[test]
+    fn a_fresh_worktree_prepares_its_approved_untracked_cwd_without_copying_outputs() {
+        let repo = Repo::new();
+        let cwd = Path::new(&repo.root).join("scratch/render");
+        crate::profile::create_dir_all(&cwd).unwrap();
+        std::fs::write(cwd.join("private-output.txt"), "do not copy").unwrap();
+        let p = plan(
+            &cwd.to_string_lossy(),
+            "main",
+            "task_subdir",
+            WorkspaceMode::Worktree,
+        )
+        .unwrap();
+        assert!(!Path::new(&p.cwd).exists());
+        provision(&p).unwrap();
+        verify(&p).unwrap();
+        assert!(Path::new(&p.cwd).is_dir());
+        assert!(!Path::new(&p.cwd).join("private-output.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(cwd.join("private-output.txt")).unwrap(),
+            "do not copy"
+        );
+        assert!(git(&p.cwd, &["status", "--porcelain"]).unwrap().is_empty());
+        // A prior preparation can have created Git's checkout, then failed
+        // while making the suffix. The same owned plan can finish it later.
+        std::fs::remove_dir(&p.cwd).unwrap();
+        provision(&p).unwrap();
+        verify(&p).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_prepared_cwd_never_follows_a_checked_out_symlink() {
+        let repo = Repo::new();
+        let p = plan(&repo.root, "main", "task_linkcwd", WorkspaceMode::Worktree).unwrap();
+        provision(&p).unwrap();
+        let outside = crate::test_dir::TestDir::new("cwd-outside");
+        std::os::unix::fs::symlink(&*outside, Path::new(&p.cwd).join("redirect")).unwrap();
+        let mut nested = p.clone();
+        nested.cwd = Path::new(&p.cwd)
+            .join("redirect/must-not-exist")
+            .to_string_lossy()
+            .into_owned();
+        assert!(prepare_working_directory(&nested)
+            .unwrap_err()
+            .contains("real folder"));
+        assert!(!outside.join("must-not-exist").exists());
+    }
+
+    /// Feedback 00090954 documents the unresolved target distinction with a
+    /// local bare remote; no author's remote or branch is changed.
+
     #[test]
     fn stable_allocation_preserves_primary_and_disables_inherited_tracking() {
         let repo = Repo::new();
