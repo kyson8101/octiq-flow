@@ -291,6 +291,8 @@ pub const PLAN_SETTLE_MS: u64 = 1_500;
 /// keeps a field; `route` is the host-resolved worker, owner and destination.
 #[derive(Clone, Debug, Default)]
 pub struct TaskRevision {
+    /// Whether the lead explicitly chose the routed worker effort.
+    pub effort_chosen: Option<bool>,
     pub title: Option<String>,
     pub spec: Option<String>,
     pub card: Option<Option<TaskCard>>,
@@ -357,9 +359,26 @@ pub struct WorkerOwner {
     pub run_id: String,
 }
 
+impl Task {
+    /// The lead's original choice, rather than a provider failover's runtime
+    /// spelling of it, when reassignment needs to retain that input.
+    pub(crate) fn lead_effort(&self) -> Option<String> {
+        if !self.effort_chosen {
+            return None;
+        }
+        approval::worker_of(self)
+            .or(self.worker.as_ref())
+            .and_then(|worker| worker.effort.clone())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
+    /// Input provenance: an explicit lead choice survives reassignment even
+    /// when it happened to equal the registration default at creation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub effort_chosen: bool,
     pub id: String,
     pub run_id: String,
     pub title: String,
@@ -530,6 +549,8 @@ pub struct Task {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TaskApprovalRollback {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    effort_chosen: bool,
     approved_at: i64,
     /// Absent on a rollback kept from before approvals fixed a shape; the
     /// restored task then takes one from the ledger (`approval::backfill`).
@@ -554,6 +575,7 @@ struct TaskApprovalRollback {
 impl TaskApprovalRollback {
     fn capture(task: &Task) -> Option<Self> {
         Some(Self {
+            effort_chosen: task.effort_chosen,
             approved_at: task.approved_at?,
             approved: task.approved.clone(),
             worker: task.worker.clone(),
@@ -568,6 +590,7 @@ impl TaskApprovalRollback {
     }
 
     fn restore(self, task: &mut Task, now: i64) {
+        task.effort_chosen = self.effort_chosen;
         task.approved_at = Some(self.approved_at);
         task.approved = self.approved;
         task.worker = self.worker;
@@ -2310,6 +2333,42 @@ impl OrchestrationStore {
         size: Option<TaskSize>,
         kind: TaskKind,
     ) -> Result<Task, String> {
+        self.create_task_with_effort(
+            actor_chat_key,
+            run_id,
+            title,
+            spec,
+            depends_on,
+            parent_task_id,
+            worker,
+            assignee,
+            destination,
+            card,
+            environment,
+            size,
+            kind,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_task_with_effort(
+        &self,
+        actor_chat_key: &str,
+        run_id: String,
+        title: String,
+        spec: String,
+        depends_on: Vec<String>,
+        parent_task_id: Option<String>,
+        worker: Option<automation::WorkerSettings>,
+        assignee: Option<TaskAssignee>,
+        destination: Option<TaskDestination>,
+        card: Option<TaskCard>,
+        environment: TaskEnvironment,
+        size: Option<TaskSize>,
+        kind: TaskKind,
+        effort_chosen: bool,
+    ) -> Result<Task, String> {
         let title = required_text("task title", title, 240)?;
         let spec = required_text("task spec", spec, 40_000)?;
         let worker = worker
@@ -2399,6 +2458,7 @@ impl OrchestrationStore {
                     .is_some_and(releases_dependants)
             });
             let mut task = Task {
+                effort_chosen,
                 id,
                 run_id: run_id.clone(),
                 title,
@@ -2520,6 +2580,21 @@ impl OrchestrationStore {
         ),
         reason: String,
     ) -> Result<Task, String> {
+        self.reassign_task_with_effort(actor_chat_key, task_id, route, reason, None)
+    }
+
+    pub(crate) fn reassign_task_with_effort(
+        &self,
+        actor_chat_key: &str,
+        task_id: &str,
+        route: (
+            Option<automation::WorkerSettings>,
+            Option<TaskAssignee>,
+            Option<TaskDestination>,
+        ),
+        reason: String,
+        effort_chosen: Option<bool>,
+    ) -> Result<Task, String> {
         let reason = required_text("handoff reason", reason, 2_000)?;
         let (worker, assignee, destination) = route;
         let worker = worker
@@ -2588,6 +2663,9 @@ impl OrchestrationStore {
                 reason,
                 at: now,
             });
+            if let Some(chosen) = effort_chosen {
+                task.effort_chosen = chosen;
+            }
             task.assignee = Some(assignee);
             task.worker = worker;
             if destination.is_some() {
@@ -2754,6 +2832,9 @@ impl OrchestrationStore {
                 }
                 if let Some(kind) = revision.kind {
                     task.kind = kind;
+                }
+                if let Some(chosen) = revision.effort_chosen {
+                    task.effort_chosen = chosen;
                 }
                 if let Some((worker, assignee, destination)) = route {
                     task.worker = worker;
@@ -6193,6 +6274,18 @@ fn announce(run_id: &str, change: &str) {
 pub(crate) mod tests {
     pub(crate) use super::workspaces::tests::finished_peer_request;
     use super::*;
+
+    /// Mark a reserved fixture running without preparing a workspace or
+    /// spawning a provider CLI. Used by dispatch's manager-routing tests.
+    pub(crate) fn activate_reserved(
+        store: &OrchestrationStore,
+        attempt: &Attempt,
+        cwd: &str,
+    ) -> Attempt {
+        store
+            .activate_attempt(&attempt.id, cwd.into(), "stub".into(), true)
+            .unwrap()
+    }
 
     pub(crate) fn run(store: &OrchestrationStore) -> Run {
         store

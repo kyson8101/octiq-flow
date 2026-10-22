@@ -1995,6 +1995,9 @@ const ORCHESTRATION_RUN_CREATE = {
   },
 };
 
+const ASSIGNED_EFFORT = { type: "string", description: "Optional effort for an assigned task, above or below the registered default; choose by size and risk. Must suit the registered provider/model and match worker.effort if both are given. Antigravity accepts only the effort encoded in its Gemini model id; otherwise omit. Shown on the plan card and fixed by approval. A reassignment keeps a lead choice if valid; otherwise pass a new effort on reassign." };
+const ASSIGNED_WORKER = { type: "object", description: "With an assignee only effort and recovery are read; all other fields are ignored.", properties: WORKER_SETTINGS_PROPERTIES };
+
 const ORCHESTRATION_TASK_CREATE = {
   name: "orchestration_task_create",
   description:
@@ -2010,8 +2013,9 @@ const ORCHESTRATION_TASK_CREATE = {
       spec: { type: "string", description: "Bounded worker assignment with outcome and checks." },
       dependsOn: { type: "array", items: { type: "string" }, description: "Task IDs that must complete first. Defaults to none." },
       parentTaskId: { type: "string", description: "Optional decomposition parent; not an execution dependency. From the run's coordinator it is a label and nothing more: the task is new work, waits on the plan card and is approved by the person on its own. Only a manager's split of its own task goes by its parent's approval." },
-      worker: { type: "object", description: "The main agent's selection for this task, used by automatic dispatch. Required when workerDefaults has no agent and no assignee is given. Explain the choice briefly in spec.", properties: WORKER_SETTINGS_PROPERTIES, required: ["agent", "access"] },
-      assignee: { type: "string", description: "Agents mode only: the id of one of your direct reports, as listed in your brief. The host applies that agent's provider, model, effort and access; do not also pass worker. A worker that manages agents splits its own task by passing its task id as parentTaskId." },
+      worker: { type: "object", description: "The main agent's selection for this task, used by automatic dispatch. Required when workerDefaults has no agent and no assignee is given. Explain the choice briefly in spec.", properties: WORKER_SETTINGS_PROPERTIES },
+      effort: ASSIGNED_EFFORT,
+      assignee: { type: "string", description: "Agents mode only: the id of one of your direct reports, as listed in your brief. The host fixes that agent's provider, model and access; effort defaults to the registration unless you pass effort (or worker.effort). Other worker fields are ignored except recovery. A worker that manages agents splits its own task by passing its task id as parentTaskId." },
       project: { type: "string", description: "Where the task runs: a registered project's id or name, from orchestration_destinations. Required in the cross-project lead conversation unless the assignee works in only one project. Omit to use the run's own checkout (or the parent task's destination for a subtask)." },
       repository: { type: "string", description: "A repository registered on that project: its path or folder name, from orchestration_destinations. Required when the project has more than one. An unregistered path is refused; the host never falls back to another checkout." },
       problem: { type: "string", description: "The plan card: the problem this task solves, in one short sentence (at most 300 characters). Shown to the person when they review the plan." },
@@ -2040,7 +2044,8 @@ const ORCHESTRATION_TASK_REVISE = {
       spec: { type: "string" },
       dependsOn: { type: "array", items: { type: "string" }, description: "Replaces the task's dependencies: task IDs of this plan." },
       kind: { type: "string", enum: ["work", "check", "review", "acceptance"], description: "What the task is for. \"work\" (the default) produces something. \"check\", \"review\" and \"acceptance\" judge something: their worker must settle completed with verdict pass or fail (a completed report without one is refused), and only a pass releases the tasks that depend on them. Use one for every task whose result gates later work, such as a code review, a test run or an acceptance check. Shown on the plan card and counted as acceptance coverage." },
-      worker: { type: "object", properties: WORKER_SETTINGS_PROPERTIES, required: ["agent", "access"] },
+      worker: { type: "object", properties: WORKER_SETTINGS_PROPERTIES },
+      effort: ASSIGNED_EFFORT,
       assignee: { type: "string", description: "Another of your direct reports." },
       project: { type: "string", description: "A new destination project, from orchestration_destinations." },
       repository: { type: "string", description: "A new destination repository on that project." },
@@ -2067,6 +2072,8 @@ const ORCHESTRATION_TASK_REASSIGN = {
     properties: {
       taskId: { type: "string" },
       assignee: { type: "string", description: "The direct report taking the task over: id or exact name." },
+      effort: ASSIGNED_EFFORT,
+      worker: ASSIGNED_WORKER,
       reason: { type: "string", description: "Why it changes hands, in one line, e.g. \"The person asked Tofu to take over from Mango.\"" },
     },
     required: ["taskId", "assignee", "reason"],

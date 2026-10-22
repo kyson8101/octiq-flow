@@ -941,6 +941,7 @@ impl AgentProvider for CodexProvider {
 
     fn effort(&self, requested: &str) -> Option<&'static str> {
         match requested {
+            "ultra" => Some("ultra"),
             "low" => Some("low"),
             "medium" => Some("medium"),
             "high" => Some("high"),

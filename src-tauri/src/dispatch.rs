@@ -25,12 +25,14 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
+#[cfg(test)]
+mod effort_tests;
 mod island;
 #[cfg(test)]
 mod plan_tests;
 mod pull_requests;
 
-use crate::agent_chat::ChatManager;
+use crate::agent_chat::{Access, ChatAgent, ChatManager};
 use crate::file_watch::FileWatchState;
 use crate::git_watch::GitWatchState;
 use crate::orchestration::OrchestrationStore;
@@ -551,6 +553,7 @@ fn route_task(
     project: Option<String>,
     repository: Option<String>,
     mut worker: Option<crate::orchestration::automation::WorkerSettings>,
+    effort: Option<String>,
 ) -> Result<
     (
         Option<crate::orchestration::automation::WorkerSettings>,
@@ -559,7 +562,7 @@ fn route_task(
     ),
     String,
 > {
-    let team_path = crate::team::default_path();
+    let team_path = &svc.handovers.team;
     let (run_project, coordinator) = svc.orchestrations.run_owner(run_id)?;
     // Whose direct reports this task may go to: the lead's when the
     // coordinator of an agents-mode run creates it, the manager's when
@@ -597,11 +600,21 @@ fn route_task(
     )?;
     let assignee = match routed.assignee {
         Some(agent) => {
+            // Registration fixes identity and permissions; only effort and
+            // recovery can be chosen by the lead.
+            let selected_effort = effort.or_else(|| worker.as_ref().and_then(|w| w.effort.clone()));
+            if let Some(effort) = &selected_effort {
+                crate::orchestration::automation::validate_effort(
+                    agent.agent,
+                    &agent.model,
+                    effort,
+                )?;
+            }
             worker = Some(crate::orchestration::automation::WorkerSettings {
                 agent: agent.agent,
                 access: agent.access,
                 model: Some(agent.model.clone()),
-                effort: agent.effort.clone(),
+                effort: selected_effort.or_else(|| agent.effort.clone()),
                 recovery: worker.and_then(|w| w.recovery),
             });
             Some(crate::orchestration::TaskAssignee {
@@ -609,9 +622,89 @@ fn route_task(
                 name: agent.name,
             })
         }
-        None => None,
+        None => {
+            if effort.is_some() {
+                return Err(
+                    "Top-level `effort` needs an assignee; otherwise choose `worker.effort`."
+                        .into(),
+                );
+            }
+            None
+        }
     };
     Ok((worker, assignee, routed.destination))
+}
+
+/// Read only the two worker fields an assigned task accepts. In particular,
+/// ignored identity fields need not deserialize as WorkerSettings at all.
+fn assignment_settings(
+    args: &Value,
+    assigned: bool,
+) -> Result<
+    (
+        Option<crate::orchestration::automation::WorkerSettings>,
+        Option<String>,
+    ),
+    String,
+> {
+    let effort: Option<String> = arg(&args, "effort")?;
+    if !assigned {
+        return Ok((arg(args, "worker")?, effort));
+    }
+    let worker = args.get("worker").filter(|value| !value.is_null());
+    let nested: Option<String> = worker.map(|w| arg(w, "effort")).transpose()?.flatten();
+    let clean = |value: String| value.trim().to_string();
+    let effort = effort.map(clean);
+    let nested = nested.map(clean);
+    if effort.is_some() && nested.is_some() && effort != nested {
+        return Err("`effort` and `worker.effort` differ. Pass one matching effort.".into());
+    }
+    let selected = effort.or(nested);
+    Ok((
+        worker
+            .filter(|w| w.get("recovery").is_some())
+            .map(|w| {
+                Ok::<_, String>(crate::orchestration::automation::WorkerSettings {
+                    agent: ChatAgent::Codex,
+                    access: Access::Auto,
+                    model: None,
+                    effort: None,
+                    recovery: arg(w, "recovery")?,
+                })
+            })
+            .transpose()?,
+        selected,
+    ))
+}
+
+fn kept_assignment_worker(
+    current: &crate::orchestration::Task,
+    given: Option<crate::orchestration::automation::WorkerSettings>,
+) -> Option<crate::orchestration::automation::WorkerSettings> {
+    let mut worker = given
+        .or_else(|| {
+            current
+                .approved
+                .as_ref()
+                .and_then(|approved| approved.worker.clone())
+        })
+        .or_else(|| current.worker.clone());
+    if let Some(worker) = &mut worker {
+        // Effort is carried separately only when the lead chose it. An old
+        // registration default must not become a choice on reassignment.
+        worker.effort = None;
+    }
+    worker
+}
+
+fn assignment_route_error(error: String) -> String {
+    if error.starts_with("Effort `") {
+        format!(
+            "{error} Pass a new `effort` if the retained choice is not valid for this assignee."
+        )
+    } else {
+        error
+    }
 }
 
 #[cfg(test)]
@@ -2121,6 +2214,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let run_id: String = arg(&args, "runId")?;
             let actor: String = arg(&args, "actorChatKey")?;
             let parent: Option<String> = arg(&args, "parentTaskId")?;
+            let requested: Option<String> = arg(&args, "assignee")?;
+            let (worker_arg, effort) = assignment_settings(&args, requested.is_some())?;
+            let effort_chosen = effort.is_some();
             // The plan card is checked before the task exists, so a bad card
             // refuses the whole call rather than leaving a task without it.
             let card = crate::orchestration::TaskCard::checked(
@@ -2133,10 +2229,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 &actor,
                 &run_id,
                 parent.as_deref(),
-                arg::<Option<String>>(&args, "assignee")?,
+                requested,
                 arg(&args, "project")?,
                 arg(&args, "repository")?,
-                arg(&args, "worker")?,
+                worker_arg,
+                effort,
             )?;
             // A replacement for a blocked or failed task (feedback 6b0870f9).
             // Checked first, so a refusal creates no task.
@@ -2144,7 +2241,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             if let Some(old) = &supersedes {
                 svc.orchestrations.check_supersede(&actor, &run_id, old)?;
             }
-            let created = svc.orchestrations.create_task_full(
+            let created = svc.orchestrations.create_task_with_effort(
                 &actor,
                 run_id,
                 arg(&args, "title")?,
@@ -2159,6 +2256,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     .unwrap_or_default(),
                 arg(&args, "size")?,
                 arg::<Option<crate::orchestration::TaskKind>>(&args, "kind")?.unwrap_or_default(),
+                effort_chosen,
             );
             if let (Ok(task), Some(old)) = (&created, &supersedes) {
                 svc.orchestrations.supersede(&actor, old, &task.id)?;
@@ -2182,25 +2280,35 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let assignee_arg = arg::<Option<String>>(&args, "assignee")?;
             let project_arg = arg::<Option<String>>(&args, "project")?;
             let repository_arg = arg::<Option<String>>(&args, "repository")?;
-            let worker_arg =
-                arg::<Option<crate::orchestration::automation::WorkerSettings>>(&args, "worker")?;
+            let assigned = assignee_arg.is_some() || current.assignee.is_some();
+            let (worker_arg, effort_arg) = assignment_settings(&args, assigned)?;
+            let effort_chosen = effort_arg.is_some() || current.effort_chosen;
             let reroute = assignee_arg.is_some()
                 || project_arg.is_some()
                 || repository_arg.is_some()
-                || worker_arg.is_some();
+                || worker_arg.is_some()
+                || effort_arg.is_some();
             let route = if reroute {
                 // What is not named stays as it was.
                 let kept = current.destination.as_ref();
-                Some(route_task(
-                    svc,
-                    &actor,
-                    &current.run_id,
-                    None,
-                    assignee_arg.or_else(|| current.assignee.as_ref().map(|a| a.id.clone())),
-                    project_arg.or_else(|| kept.map(|d| d.project_id.clone())),
-                    repository_arg.or_else(|| kept.map(|d| d.repository.clone())),
-                    worker_arg.or_else(|| current.worker.clone()),
-                )?)
+                Some(
+                    route_task(
+                        svc,
+                        &actor,
+                        &current.run_id,
+                        None,
+                        assignee_arg.or_else(|| current.assignee.as_ref().map(|a| a.id.clone())),
+                        project_arg.or_else(|| kept.map(|d| d.project_id.clone())),
+                        repository_arg.or_else(|| kept.map(|d| d.repository.clone())),
+                        if assigned {
+                            kept_assignment_worker(&current, worker_arg)
+                        } else {
+                            worker_arg.or_else(|| current.worker.clone())
+                        },
+                        effort_arg.or_else(|| current.lead_effort()),
+                    )
+                    .map_err(assignment_route_error)?,
+                )
             } else {
                 None
             };
@@ -2221,6 +2329,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 &actor,
                 &task_id,
                 crate::orchestration::TaskRevision {
+                    effort_chosen: reroute.then_some(effort_chosen),
                     title: arg(&args, "title")?,
                     spec: arg(&args, "spec")?,
                     card,
@@ -2247,6 +2356,8 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 .find(|task| task.id == task_id)
                 .ok_or("The task does not exist.")?;
             let kept = current.destination.as_ref();
+            let (worker_arg, effort_arg) = assignment_settings(&args, true)?;
+            let effort_chosen = effort_arg.is_some() || current.effort_chosen;
             let route = route_task(
                 svc,
                 &actor,
@@ -2255,13 +2366,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 Some(arg::<String>(&args, "assignee")?),
                 kept.map(|d| d.project_id.clone()),
                 kept.map(|d| d.repository.clone()),
-                current.worker.clone(),
-            )?;
-            to_value(svc.orchestrations.reassign_task(
+                kept_assignment_worker(&current, worker_arg),
+                effort_arg.or_else(|| current.lead_effort()),
+            )
+            .map_err(assignment_route_error)?;
+            to_value(svc.orchestrations.reassign_task_with_effort(
                 &actor,
                 &task_id,
                 route,
                 arg(&args, "reason")?,
+                Some(effort_chosen),
             ))
         }
         // Browser-only: the person chooses a task's size before it starts.
