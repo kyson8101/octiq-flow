@@ -4221,6 +4221,7 @@ pub(crate) fn start_session(
 
     if has_prompt && !provider.capabilities().input.accepts_stdin() {
         record_delivery(&key, user_turn_id.as_deref(), "dispatched");
+        crate::team::note_roster_delivered(&session_key, &wire_prompt);
     }
 
     drop(sessions);
@@ -4933,6 +4934,7 @@ pub(crate) fn start_session(
             &wire_prompt,
             &images,
             &key,
+            &session_key,
             user_turn_id.as_deref(),
         )?;
     }
@@ -4949,6 +4951,7 @@ pub(crate) fn start_session(
 /// `turn_ended` in the stdout reader.
 fn write_user_message_locked(
     session: &mut ChatSession,
+    session_key: &str,
     text: &str,
     images: &[String],
     turn_id: Option<&str>,
@@ -4997,6 +5000,7 @@ fn write_user_message_locked(
         .ok_or("this chat does not take more input")?;
     writeln!(stdin, "{payload}").map_err(|e| e.to_string())?;
     stdin.flush().map_err(|e| e.to_string())?;
+    crate::team::note_roster_delivered(session_key, text);
     // Every turn this session is ever asked to do comes through here, so this
     // one line is the whole of "somebody is still using this chat".
     session.user_turn_id = turn_id.map(str::to_string);
@@ -5252,8 +5256,14 @@ fn dispatch_next_persistent_turn(
         return None;
     }
     let turn = manager.take_queued_turn(session_key)?;
-    let refused =
-        write_user_message_locked(session, &turn.text, &turn.images, turn.turn_id.as_deref()).err();
+    let refused = write_user_message_locked(
+        session,
+        session_key,
+        &turn.text,
+        &turn.images,
+        turn.turn_id.as_deref(),
+    )
+    .err();
     if refused.is_some() {
         manager.fail_completion_of(session_key, &turn, COMPLETION_ENDED);
     }
@@ -5276,10 +5286,11 @@ fn write_user_message(
     text: &str,
     images: &[String],
     key: &str,
+    session_key: &str,
     turn_id: Option<&str>,
 ) -> Result<(), String> {
     let mut guard = session.lock().map_err(|e| e.to_string())?;
-    let result = write_user_message_locked(&mut guard, text, images, turn_id);
+    let result = write_user_message_locked(&mut guard, session_key, text, images, turn_id);
     record_delivery(
         key,
         turn_id,
@@ -5456,7 +5467,7 @@ pub(crate) fn deliver_orchestration_notification(
             {
                 return Ok(false);
             }
-            write_user_message_locked(&mut session, &text, &[], Some(&notification.id))?;
+            write_user_message_locked(&mut session, key, &text, &[], Some(&notification.id))?;
             return Ok(true);
         }
     }
@@ -5925,8 +5936,13 @@ fn send_turn(
             if let Some(turn_id) = user_turn_id.as_deref() {
                 record_durable_user_turn(&key, turn_id, &text, &images);
             }
-            let result =
-                write_user_message_locked(&mut guard, &text, &images, user_turn_id.as_deref());
+            let result = write_user_message_locked(
+                &mut guard,
+                &session_key,
+                &text,
+                &images,
+                user_turn_id.as_deref(),
+            );
             record_delivery(
                 &key,
                 user_turn_id.as_deref(),
@@ -7134,7 +7150,8 @@ pub fn chat_complete_impl(
                 } else {
                     manager.begin_completion(key, &turn_id, "started")?;
                     record_durable_user_turn(key, &turn_id, text, &[]);
-                    let written = write_user_message_locked(&mut guard, text, &[], Some(&turn_id));
+                    let written =
+                        write_user_message_locked(&mut guard, key, text, &[], Some(&turn_id));
                     record_delivery(
                         key,
                         Some(&turn_id),
@@ -10262,6 +10279,108 @@ mod tests {
     }
 
     #[test]
+    fn a_roster_receipt_is_saved_only_when_the_queued_prompt_is_written() {
+        let home = crate::test_dir::TestDir::new("roster-queue-delivery");
+        let _profile = crate::profile::started_in(&home.0);
+        let roster = home.0.join("team.json");
+        let _team = crate::team::use_test_path(roster.clone());
+        let lead = crate::team::save(
+            &roster,
+            serde_json::from_value(json!({
+                "name": "Lead", "role": "Leads", "agent": "claude", "model": "sonnet",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let key = "chat:roster-queue";
+        let text =
+            crate::team::brief(&roster, key, "workspace", &lead.id, "Start", false, &[]).unwrap();
+        let fingerprint = || {
+            crate::team::lead_for_chat(&roster, key)
+                .unwrap()
+                .unwrap()
+                .roster_fingerprint
+        };
+        let manager = Arc::new(ChatManager::default());
+        let (session, mut written) = capturing_claude_session();
+        hold(&manager, key, session.clone());
+        let send = |id: &str| {
+            chat_send_user_impl(
+                manager.clone(),
+                key.into(),
+                text.clone(),
+                None,
+                None,
+                Some(id.into()),
+                None,
+            )
+            .unwrap()
+        };
+        send("roster-cancelled");
+        assert_eq!(fingerprint(), None, "queue admission is not delivery");
+        assert!(chat_cancel_queued_impl(&manager, key.into(), "roster-cancelled".into()).unwrap());
+        assert_eq!(fingerprint(), None, "cancelled context remains owed");
+        send("roster-dispatched");
+        assert_eq!(fingerprint(), None);
+        {
+            let mut live = session.lock().unwrap();
+            live.turn_ended();
+            assert_eq!(
+                dispatch_next_persistent_turn(&manager, key, key, &mut live),
+                None
+            );
+        }
+        // A roster mutation can hold its lock while a write happens. The
+        // receipt then stays pending, and a later actual write retries it.
+        let mut echoed = String::new();
+        std::io::BufRead::read_line(&mut written, &mut echoed).unwrap();
+        for _ in 0..100 {
+            if fingerprint().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            {
+                let mut live = session.lock().unwrap();
+                live.turn_ended();
+                write_user_message_locked(&mut live, key, &text, &[], Some("roster-retry"))
+                    .unwrap();
+            }
+            echoed.clear();
+            std::io::BufRead::read_line(&mut written, &mut echoed).unwrap();
+        }
+        assert!(
+            fingerprint().is_some(),
+            "actual writes confirm the roster when the mutation finishes"
+        );
+        assert_eq!(
+            crate::team::refresh_turn_brief(&roster, key, "Next".into(), &[]).unwrap(),
+            "Next"
+        );
+        // A failed write must also leave changed context pending.
+        let added = crate::team::save(&roster, serde_json::from_value(json!({
+            "name": "New Report", "role": "Builds", "agent": "claude", "model": "sonnet", "reportsTo": lead.id,
+        })).unwrap()).unwrap();
+        let changed = crate::team::refresh_turn_brief(&roster, key, "Changed".into(), &[]).unwrap();
+        let before = fingerprint();
+        {
+            let mut live = session.lock().unwrap();
+            live.turn_ended();
+            live.stdin.take();
+            assert!(
+                write_user_message_locked(&mut live, key, &changed, &[], Some("failed-write"))
+                    .is_err()
+            );
+        }
+        assert_eq!(fingerprint(), before);
+        assert!(
+            crate::team::refresh_turn_brief(&roster, key, "Retry".into(), &[])
+                .unwrap()
+                .contains(&added.id)
+        );
+        end_process(&manager, key).unwrap();
+    }
+
+    #[test]
     fn a_message_sent_to_a_working_claude_waits_in_our_own_queue() {
         // Written to its stdin it would land in the AGENT's queue instead,
         // where nothing on this side can reach it again — which is the whole
@@ -10970,7 +11089,8 @@ mod tests {
         {
             let mut running = session.lock().unwrap();
             running.turn_ended();
-            write_user_message_locked(&mut running, "notification", &[], Some("notif_1")).unwrap();
+            write_user_message_locked(&mut running, &key, "notification", &[], Some("notif_1"))
+                .unwrap();
         }
         assert_eq!(manager.person_turn(&key), None);
 
@@ -10979,7 +11099,7 @@ mod tests {
         {
             let mut running = session.lock().unwrap();
             running.turn_ended();
-            write_user_message_locked(&mut running, "approve", &[], Some("user-3")).unwrap();
+            write_user_message_locked(&mut running, &key, "approve", &[], Some("user-3")).unwrap();
         }
         assert!(manager.person_turn(&key).is_some());
         {
@@ -10991,7 +11111,7 @@ mod tests {
         assert_eq!(manager.person_turn(&key), None);
         {
             let mut running = session.lock().unwrap();
-            write_user_message_locked(&mut running, "gate answered", &[], None).unwrap();
+            write_user_message_locked(&mut running, &key, "gate answered", &[], None).unwrap();
         }
         assert_eq!(manager.person_turn(&key), None);
 
@@ -11000,7 +11120,7 @@ mod tests {
         {
             let mut running = session.lock().unwrap();
             running.turn_ended();
-            write_user_message_locked(&mut running, "approve", &[], Some("notif_2")).unwrap();
+            write_user_message_locked(&mut running, &key, "approve", &[], Some("notif_2")).unwrap();
         }
         assert_eq!(manager.person_turn(&key), None);
 
@@ -14110,7 +14230,7 @@ mod completion_tests {
         for turn in [Some("user-x"), None] {
             let mut stopping = chat.session.lock().unwrap();
             assert_eq!(
-                write_user_message_locked(&mut stopping, "anything", &[], turn),
+                write_user_message_locked(&mut stopping, &chat.key, "anything", &[], turn),
                 Err(STILL_STOPPING.into())
             );
         }
@@ -14124,7 +14244,7 @@ mod completion_tests {
         {
             let mut ended = chat.session.lock().unwrap();
             assert_eq!(
-                write_user_message_locked(&mut ended, "anything", &[], Some("user-y")),
+                write_user_message_locked(&mut ended, &chat.key, "anything", &[], Some("user-y")),
                 Err(STILL_STOPPING.into())
             );
         }
@@ -14596,7 +14716,7 @@ mod leaving_tests {
         {
             let mut session = led.session.lock().unwrap();
             assert_eq!(
-                write_user_message_locked(&mut session, "anything", &[], Some("user-0")),
+                write_user_message_locked(&mut session, &led.key, "anything", &[], Some("user-0")),
                 Err(leaving.into())
             );
             assert!(!session.busy);

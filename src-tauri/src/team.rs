@@ -158,8 +158,8 @@ pub struct LeadRecord {
     /// destination. Absent on every task handed out from a project.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cross_project: bool,
-    /// Fingerprint of the roster last included in this chat's brief. Legacy
-    /// records refresh once; unrelated edits and process restarts do not repeat it.
+    /// Fingerprint of the roster last written to this chat's provider.
+    /// Preparing or queueing a brief does not acknowledge delivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roster_fingerprint: Option<String>,
     pub created_at: i64,
@@ -3006,14 +3006,19 @@ Your direct reports:\n{roster}"
         )
     };
     record_lead(path, chat_key, &lead, project_id, cross_project)?;
-    // The initial brief already carries this roster and its peer context.
-    refresh_turn_brief(path, chat_key, String::new(), projects)?;
     // Its peers are whoever shares its team, wherever they work: the whole
     // roster, not the project's slice of it.
     let peers = lead_peers(path, &lead)
         .map(|peers| format!("\n\n{peers}"))
         .unwrap_or_default();
-    Ok(format!("{text}\n\n{}{peers}", memory_brief(&lead, &team)))
+    // This receipt describes the very snapshot rendered above, not a roster
+    // reread after a concurrent edit. Only the provider write confirms it.
+    let context = roster_context(&team, &lead, &reports, projects, &peers);
+    let receipt = roster_receipt(&context);
+    Ok(format!(
+        "{text}\n\n{}{peers}{receipt}",
+        memory_brief(&lead, &team)
+    ))
 }
 
 /// [`lead_peer_brief`] read from the store. A roster that cannot be read
@@ -3052,13 +3057,34 @@ pub fn refresh_turn_brief(
     if lead.project_id.is_some() {
         team.retain(|agent| agent.visible_in(Some(&record.project_id)));
     }
+    let reports = brief_reports(&team, &lead, projects);
+    let peers = lead_peers(path, &lead)
+        .map(|peers| format!("\n\n{peers}"))
+        .unwrap_or_default();
+    let context = roster_context(&team, &lead, &reports, projects, &peers);
+    let fingerprint = roster_fingerprint(&context);
+    if record.roster_fingerprint.as_ref() == Some(&fingerprint) {
+        return Ok(text);
+    }
+    Ok(format!(
+        "{text}{BRIEF_MARK}{context}{}",
+        roster_receipt(&context)
+    ))
+}
+
+fn roster_context(
+    team: &[TeamAgent],
+    lead: &TeamAgent,
+    reports: &[&TeamAgent],
+    projects: &[(String, String)],
+    peers: &str,
+) -> String {
     let name_of = |id: &str| {
         projects
             .iter()
             .find(|(project_id, _)| project_id == id)
             .map(|(_, name)| name.clone())
     };
-    let reports = brief_reports(&team, &lead, projects);
     let roster = if reports.is_empty() {
         "No eligible agent currently reports to you. Do the task yourself in this chat and do not create an orchestration run. This supersedes any older roster in this conversation.".to_owned()
     } else {
@@ -3067,7 +3093,7 @@ pub fn refresh_turn_brief(
             .map(|agent| {
                 describe(
                     agent,
-                    &team,
+                    team,
                     true,
                     if lead.project_id.is_none() {
                         Some(&name_of)
@@ -3082,23 +3108,75 @@ pub fn refresh_turn_brief(
             "Your currently eligible direct reports are listed below. This host-authorized roster supersedes any older roster or instruction saying that no agent reports to you. You may create an orchestration run when passing on or splitting the person's task; the host still validates every direct-report edge and project destination.\n\n{rows}"
         )
     };
-    let peers = lead_peers(path, &lead)
-        .map(|peers| format!("\n\n{peers}"))
-        .unwrap_or_default();
-    let context = format!("Current roster for {}\n\n{roster}{peers}", lead.name);
+    format!("Current roster for {}\n\n{roster}{peers}", lead.name)
+}
+
+// A hidden receipt travels with the exact prompt, including through the
+// durable queue. It is only deduplication metadata, never authorization.
+const ROSTER_RECEIPT: &str = "\n<!-- octiq-roster:";
+
+fn roster_fingerprint(context: &str) -> String {
     use sha2::{Digest, Sha256};
-    let fingerprint = format!("{:x}", Sha256::digest(context.as_bytes()));
+    // Old builds saved at preparation time; invalidate those receipts once.
+    let mut digest = Sha256::new();
+    digest.update(b"delivered-roster-v1\0");
+    digest.update(context.as_bytes());
+    format!("{digest:x}", digest = digest.finalize())
+}
+
+fn roster_receipt(context: &str) -> String {
+    format!("{ROSTER_RECEIPT}{}-->", roster_fingerprint(context))
+}
+
+/// Confirm only after the prompt has reached the provider's input. Failed
+/// sends, cancelled queue entries and failed starts leave the old fingerprint.
+/// For a combined queued turn, its last roster receipt is the latest context.
+#[cfg(test)]
+fn confirm_turn_brief(path: &Path, chat_key: &str, text: &str) -> Result<(), String> {
+    let Some(fingerprint) = delivered_roster(text) else {
+        return Ok(());
+    };
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    save_roster_receipt(path, chat_key, fingerprint)
+}
+
+fn delivered_roster(text: &str) -> Option<&str> {
+    let (_, brief) = text.split_once(BRIEF_MARK)?;
+    let (_, receipt) = brief.rsplit_once(ROSTER_RECEIPT)?;
+    let (fingerprint, _) = receipt.split_once("-->")?;
+    (fingerprint.len() == 64 && fingerprint.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then_some(fingerprint)
+}
+
+// The caller holds the roster lock.
+fn save_roster_receipt(path: &Path, chat_key: &str, fingerprint: &str) -> Result<(), String> {
     let mut stored = read(path)?;
     let Some(current) = stored.leads.iter_mut().find(|r| r.chat_key == chat_key) else {
-        return Ok(text);
+        return Ok(());
     };
-    if current.roster_fingerprint.as_ref() == Some(&fingerprint) {
-        return Ok(text);
+    if current.roster_fingerprint.as_deref() == Some(fingerprint) {
+        return Ok(());
     }
-    current.roster_fingerprint = Some(fingerprint);
-    write(path, &stored)?;
-    Ok(format!("{text}{BRIEF_MARK}{context}"))
+    current.roster_fingerprint = Some(fingerprint.to_owned());
+    write(path, &stored)
+}
+
+/// Called under the provider's session lock. Roster deletion holds LOCK
+/// before asking about sessions, so this must never wait for that lock.
+/// Contention or a failed save leaves the old fingerprint: context repeats
+/// on the next turn rather than risking a missed roster or blocking a send.
+pub(crate) fn note_roster_delivered(chat_key: &str, text: &str) {
+    let Some(fingerprint) = delivered_roster(text) else {
+        return;
+    };
+    let Ok(_guard) = LOCK.try_lock() else {
+        return;
+    };
+    if let Err(why) = save_roster_receipt(&default_path(), chat_key, fingerprint) {
+        eprintln!(
+            "[team] roster delivered but its receipt was not saved; it will be repeated: {why}"
+        );
+    }
 }
 
 /// Appended to a worker's brief when its assignee manages agents and the task
@@ -3431,6 +3509,7 @@ mod tests {
         )
         .unwrap();
         assert!(first.contains("You are on the team Leads."), "{first}");
+        confirm_turn_brief(&path, "chat:ada", &first).unwrap();
         let later = refresh_turn_brief(&path, "chat:ada", "And now?".into(), &[]).unwrap();
         assert_eq!(later, "And now?");
         let no_team = brief(&path, "chat:cy", "p1", &cy.id, "Check the NAS", false, &[]).unwrap();
@@ -4259,6 +4338,7 @@ mod tests {
             "{first}"
         );
 
+        confirm_turn_brief(&path, "chat:changing-roster", &first).unwrap();
         let saved = std::fs::read(&path).unwrap();
         assert_eq!(
             refresh_turn_brief(&path, "chat:changing-roster", "Unchanged".into(), &projects)
@@ -4278,6 +4358,7 @@ mod tests {
         assert!(added.contains(&format!("id `{}`", maya.id)), "{added}");
         assert!(added.contains("works only in project OctiqFlow"), "{added}");
         assert!(added.contains("supersedes any older roster"), "{added}");
+        confirm_turn_brief(&path, "chat:changing-roster", &added).unwrap();
 
         assert_eq!(
             refresh_turn_brief(&path, "chat:changing-roster", "Again".into(), &projects).unwrap(),
@@ -4312,6 +4393,114 @@ mod tests {
             "{removed}"
         );
         assert!(!removed.contains("id `"), "{removed}");
+    }
+
+    #[test]
+    fn a_failed_send_does_not_consume_the_new_roster() {
+        let home = crate::test_dir::TestDir::new("roster-send-failure");
+        let _profile = crate::profile::started_in(&home.0);
+        let path = temp();
+        let lead = save(&path, draft("Lead", None)).unwrap();
+        let key = "chat:roster-offline";
+        let initial = brief(&path, key, "p1", &lead.id, "Start", false, &[]).unwrap();
+        assert_eq!(
+            lead_for_chat(&path, key)
+                .unwrap()
+                .unwrap()
+                .roster_fingerprint,
+            None
+        );
+        confirm_turn_brief(&path, key, &initial).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        save(&path, under("New Report", None, &lead)).unwrap();
+        let saved = std::fs::read(&path).unwrap();
+        let prepared = refresh_turn_brief(&path, key, "First attempt".into(), &[]).unwrap();
+        let failed = crate::agent_chat::chat_send_user_impl(
+            std::sync::Arc::new(crate::agent_chat::ChatManager::default()),
+            key.into(),
+            prepared,
+            None,
+            None,
+            Some("roster-send".into()),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(failed, "no such chat");
+        assert_ne!(before, saved);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            saved,
+            "preparation/failure saves no receipt"
+        );
+        let retry = refresh_turn_brief(&path, key, "Retry".into(), &[]).unwrap();
+        assert!(retry.contains("New Report"), "{retry}");
+        confirm_turn_brief(&path, key, &retry).unwrap();
+        assert_eq!(
+            refresh_turn_brief(&path, key, "Again".into(), &[]).unwrap(),
+            "Again"
+        );
+    }
+
+    #[test]
+    fn a_roster_receipt_never_waits_on_a_concurrent_roster_mutation() {
+        let path = temp();
+        let _team = use_test_path(path.to_path_buf());
+        let lead = save(&path, draft("Lead", None)).unwrap();
+        let key = "chat:roster-lock-order";
+        let text = brief(&path, key, "p1", &lead.id, "Start", false, &[]).unwrap();
+        let lock = LOCK.lock().unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn({
+            let text = text.clone();
+            move || {
+                note_roster_delivered(key, &text);
+                sent.send(()).unwrap();
+            }
+        });
+        let returned = received.recv_timeout(std::time::Duration::from_secs(2));
+        drop(lock); // A regressed blocking implementation can still finish.
+        worker.join().unwrap();
+        assert!(
+            returned.is_ok(),
+            "provider write waited for the roster lock"
+        );
+        assert_eq!(
+            lead_for_chat(&path, key)
+                .unwrap()
+                .unwrap()
+                .roster_fingerprint,
+            None
+        );
+        confirm_turn_brief(&path, key, &text).unwrap();
+        assert!(lead_for_chat(&path, key)
+            .unwrap()
+            .unwrap()
+            .roster_fingerprint
+            .is_some());
+    }
+
+    #[test]
+    fn roster_receipts_cover_the_snapshot_delivered_not_a_later_roster() {
+        let path = temp();
+        let lead = save(&path, draft("Lead", None)).unwrap();
+        let key = "chat:roster-snapshots";
+        let initial = brief(&path, key, "p1", &lead.id, "Start", false, &[]).unwrap();
+        save(&path, under("New Report", None, &lead)).unwrap();
+        // An old initial brief is written after the edit: do not acknowledge
+        // the newly added report that it never carried.
+        confirm_turn_brief(&path, key, &initial).unwrap();
+        let new = refresh_turn_brief(&path, key, "New".into(), &[]).unwrap();
+        assert!(new.contains("New Report"));
+        let unchanged = std::fs::read(&path).unwrap();
+        // A receipt sent to a room seat is not delivery to its lead.
+        confirm_turn_brief(&path, "chat:roster-snapshots:seat", &new).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), unchanged);
+        let combined = format!("{initial}\n{new}");
+        confirm_turn_brief(&path, key, &combined).unwrap();
+        assert_eq!(
+            refresh_turn_brief(&path, key, "Again".into(), &[]).unwrap(),
+            "Again"
+        );
     }
 
     #[test]
@@ -4917,7 +5106,8 @@ mod tests {
         // The lead's own brief lists its reports.
         let lead_text = brief(&path, "chat:lead", "p1", &lead.id, "Plan it", false, &[]).unwrap();
         assert!(lead_text.contains("Other — builds things"), "{lead_text}");
-        // A later turn's roster.
+        // A later turn's roster, after the initial brief reached the provider.
+        confirm_turn_brief(&path, "chat:lead", &lead_text).unwrap();
         let later = refresh_turn_brief(&path, "chat:lead", "More".into(), &[]).unwrap();
         assert_eq!(later, "More");
         // A second-level manager's roster.
