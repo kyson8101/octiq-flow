@@ -9,10 +9,11 @@
 // of being seen — a long session names a lot of files — and a file that will
 // not load leaves nothing behind: the words above it are still a link.
 import { useEffect, useRef, useState } from "react";
+import { nowPlaying } from "../lib/nowPlaying";
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
 import { HTML_SANDBOX } from "../lib/htmlSandbox";
-import { useHeldMedia, useMediaChat, useMediaSlot } from "./MediaSlot";
+import { useHeldMedia, useMediaChat, useMediaReply, useMediaSlot } from "./MediaSlot";
 import { useOpenFile } from "./OpenFile";
 import { ReviewVideo } from "./ReviewVideo";
 
@@ -54,7 +55,8 @@ export function ProsePlayer({ path, kind }: { path: string; kind: "video" | "aud
   const [holder, near] = useNear<HTMLSpanElement>();
   const [failed, setFailed] = useState(false);
   const chat = useMediaChat();
-  const held = useHeldMedia(chat, path);
+  const reply = useMediaReply();
+  const held = useHeldMedia(chat, path, reply);
   // Latched like `near`: taking its element back ends `held`, and a player
   // that then fell back to waiting would hand it straight out again.
   const kept = useRef(false);
@@ -64,18 +66,19 @@ export function ProsePlayer({ path, kind }: { path: string; kind: "video" | "aud
     <span className={`prose-media is-${kind}`} ref={holder}>
       {!near && !kept.current ? <span className="prose-media-wait" aria-hidden="true" />
         : kind === "video"
-          ? <ReviewVideo key={path} path={path} chat={chat} onError={() => setFailed(true)} />
-          : <ProseAudio key={path} path={path} chat={chat} onError={() => setFailed(true)} />}
+          ? <ReviewVideo key={path} path={path} chat={chat} reply={reply} onError={() => setFailed(true)} />
+          : <ProseAudio key={path} path={path} chat={chat} reply={reply} onError={() => setFailed(true)} />}
     </span>
   );
 }
 
-function ProseAudio({ path, chat, onError }: { path: string; chat: string | null; onError: () => void }) {
+function ProseAudio({ path, chat, reply, onError }: { path: string; chat: string | null; reply: string; onError: () => void }) {
   const failed = useRef(onError);
   failed.current = onError;
-  const slot = useMediaSlot<HTMLAudioElement>({ chat, path, kind: "audio", name: baseName(path) }, bridge.fileUrl(path), (el) => {
+  const slot = useMediaSlot<HTMLAudioElement>({ chat, reply, path, kind: "audio", name: baseName(path) }, bridge.fileUrl(path), (el) => {
     const error = () => failed.current();
     el.addEventListener("error", error);
+    if (nowPlaying.errorOf(el)) error();
     return () => el.removeEventListener("error", error);
   });
   return <span className="media-slot" ref={slot} />;

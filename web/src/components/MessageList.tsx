@@ -23,7 +23,7 @@ import type { Persona } from "../lib/agentPersona";
 import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
 import { MemoryNote } from "./MemoryNote";
-import { MediaChatContext } from "./MediaSlot";
+import { MediaChatContext, MediaReplyContext } from "./MediaSlot";
 import { ReopenedChatContext, ReopenedNote } from "./ReopenedNote";
 import { AnswerBubble, AnsweredInline, AnsweredPlacesContext, AskInline, AskPlacesContext, ChatQuestionsContext, LooseQuestions, type AskPlaces } from "./InlineQuestions";
 import { askAnswer, isAskTool } from "../lib/askAnswer";
@@ -1022,6 +1022,7 @@ function TurnView({
           <span className="msg-reply-preview">{replyTo.preview}</span>
         </div>
       )}
+      <MediaReplyContext.Provider value={message.id}>
       <MessageBubble user={role === "user"} message={message} wrapUp={!!completion} planStart={!!planStart} jobTurn={!!jobEnd} onStart={start} onCancel={cancel}
         onRestore={!wrapUp && (unsent || message.delivery === "unknown") && !message.echo && !message.takenUp && onRestoreUnsent && message.turnId ? () => onRestoreUnsent(message.turnId!) : undefined}
         onDismiss={unsent && onDismissUnsent && message.turnId ? () => onDismissUnsent(message.turnId!) : undefined}
@@ -1080,6 +1081,7 @@ function TurnView({
           </div>
         )}
       </MessageBubble>
+      </MediaReplyContext.Provider>
     </article>
   );
 }

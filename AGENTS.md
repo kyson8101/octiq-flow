@@ -2922,8 +2922,8 @@ Rules that hold:
   波特 are the registered agents. Each team shares an office; unteamed
   agents share the Agent Tower. Old personal plots are storage anchors,
   and granted public projects get their own plots.
-- **three.js loads with the page and with no other** (`lazy` in `App`); the
-  view owns its canvas and lets its context go on dispose
+- **three.js loads for the island page and for chat portraits** (which use
+  the island rig); the view owns its canvas and lets its context go on dispose
   (`renderer.forceContextLoss`), because a browser keeps only a few and the
   terminals need theirs. It pauses when the page is hidden.
 - **Look at it without a server**: `web/island.html` on the Vite dev server

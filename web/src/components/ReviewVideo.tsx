@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { nowPlaying } from "../lib/nowPlaying";
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
 import { playbackMs } from "../lib/mediaComments";
@@ -11,19 +12,20 @@ import { useMediaSlot } from "./MediaSlot";
  *  The `<video>` is made by `lib/nowPlaying` and put into the slot below, so a
  *  playing one in a chat (`chat` set) goes on playing when the person goes to
  *  another chat. The file dock passes no chat and keeps its player to itself. */
-export function ReviewVideo({ path, onError, chat = null }: { path: string; onError: () => void; chat?: string | null }) {
+export function ReviewVideo({ path, onError, chat = null, reply = "" }: { path: string; onError: () => void; chat?: string | null; reply?: string }) {
   const video = useRef<HTMLVideoElement | null>(null);
   const [comments, setComments] = useState(false);
   const [duration, setDuration] = useState(0);
   const failed = useRef(onError);
   failed.current = onError;
-  const slot = useMediaSlot<HTMLVideoElement>({ chat, path, kind: "video", name: baseName(path) }, bridge.fileUrl(path), (el) => {
+  const slot = useMediaSlot<HTMLVideoElement>({ chat, reply, path, kind: "video", name: baseName(path) }, bridge.fileUrl(path), (el) => {
     video.current = el;
     const meta = () => setDuration(el.duration || 0);
     const error = () => failed.current();
     if (el.readyState >= 1) meta();
     el.addEventListener("loadedmetadata", meta);
     el.addEventListener("error", error);
+    if (nowPlaying.errorOf(el)) error();
     return () => {
       el.removeEventListener("loadedmetadata", meta);
       el.removeEventListener("error", error);

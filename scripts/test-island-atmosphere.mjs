@@ -1,13 +1,13 @@
 // Isolated real WebGL check: registered residents only, rain umbrellas and
 // leader aura. It never connects to the running OctiqFlow backend.
 import assert from 'node:assert/strict';
-import {createRequire} from 'node:module';
+import {browserPaths} from './browser-paths.mjs';
 import {mkdtemp} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-const require=createRequire(new URL('../web/package.json',import.meta.url));
-const {createServer}=await import(require.resolve('vite'));
-const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
+const {webRoot,require,moduleUrl}=browserPaths(import.meta.url);
+const {createServer}=await import(moduleUrl(require.resolve('vite')));
+const {chromium}=await import(moduleUrl(process.env.PLAYWRIGHT_MODULE||'playwright'));
 const evidence=await mkdtemp(join(tmpdir(),'octiq-island-atmosphere-'));
 const source=`
 import {IslandView} from '/src/lib/island/scene.ts';
@@ -19,7 +19,7 @@ const residents=residentsOf(island,roster);window.fixture={island,residents};win
 const view=new IslandView(document.getElementById('stage'),{onPick:()=>{}},false);
 view.setIsland(island,residents);view.setHourOverride(12);view.setWeather('rain');window.view=view;
 `;
-const server=await createServer({root:new URL('../web',import.meta.url).pathname,server:{host:'127.0.0.1',port:0,strictPort:false},plugins:[{
+const server=await createServer({root:webRoot,server:{host:'127.0.0.1',port:0,strictPort:false},plugins:[{
  name:'island-atmosphere-fixture',resolveId(id){if(id==='\0atmosphere')return id},load(id){if(id==='\0atmosphere')return source},
  configureServer(server){server.middlewares.use(async(req,res,next)=>{if(req.url!=='/__island')return next();res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml(req.url,'<style>body{margin:0}#stage{width:100vw;height:100vh}</style><div id="stage"></div><script type="module" src="/@id/__x00__atmosphere"></script>'))})}
 }]});

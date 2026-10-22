@@ -1077,6 +1077,7 @@ export default function App() {
    *  and the screen if it is the one you are looking at. */
   const forgetLocally = useCallback(
     (id: string) => {
+    nowPlaying.forget(id);
     gone.current.add(id);
     chatReads.current.delete(id);
     chatHistory.current.forget(id);
@@ -2148,6 +2149,14 @@ export default function App() {
   // person's for picture-in-picture.
   const mediaMain = chatShown ? conversationId : null;
   const mediaBeside = besideShown && !showingProjects ? besideId : null;
+  useLayoutEffect(() => {
+    for (const [id, state] of Object.entries(chats)) {
+      // A page of recent history omitting a reply does not delete it. Only
+      // a fully read transcript can establish that the source is gone.
+      if (!catchUp.current.holds(keyFor(id)) || chatHistory.current.hasEarlier(id)) continue;
+      nowPlaying.retainReplies(id, new Set(state.messages.map((message) => message.id)));
+    }
+  }, [chats]);
   useLayoutEffect(() => {
     nowPlaying.show([mediaMain, mediaBeside]);
   }, [mediaMain, mediaBeside]);
@@ -3805,6 +3814,7 @@ export default function App() {
        * sequence counter to zero, and a client still holding the old high
        * number would discard every event after this as already seen. */
       if (text.trim() === "/clear") {
+        nowPlaying.forget(id);
         const key = keyFor(id);
         if (runningRef.current.has(id)) {
           bridge.invoke("chat_send", { key, text, recordUser: false }).catch(() => undefined);

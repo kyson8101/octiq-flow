@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import {createRequire} from 'node:module';
+import {browserPaths} from './browser-paths.mjs';
 import {mkdtemp} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-const require=createRequire(new URL('../web/package.json',import.meta.url));
-const {createServer}=await import(require.resolve('vite'));
-const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
+const {webRoot,require,moduleUrl}=browserPaths(import.meta.url);
+const {createServer}=await import(moduleUrl(require.resolve('vite')));
+const {chromium}=await import(moduleUrl(process.env.PLAYWRIGHT_MODULE||'playwright'));
 const evidence=await mkdtemp(join(tmpdir(),'octiq-society-'));
 const entry=`
 import {IslandView} from '/src/lib/island/scene.ts';
@@ -21,7 +21,7 @@ window.receipts=[];const view=new IslandView(document.getElementById('stage'),{o
 view.setIsland(island,residents);view.setHourOverride(12);view.setWeather('sunny');view.setModes(new Map(residents.map(r=>[r.key,{state:'working'}])));
 window.fixture={island,residents};window.view=view;window.societyCenter=SOCIETY_CENTER;
 `;
-const server=await createServer({root:new URL('../web',import.meta.url).pathname,server:{host:'127.0.0.1',port:0,strictPort:false},plugins:[{name:'society-fixture',resolveId(id){if(id==='\0society')return id},load(id){if(id==='\0society')return entry},configureServer(server){server.middlewares.use(async(req,res,next)=>{if(req.url!=='/__society')return next();res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml(req.url,'<style>body{margin:0}#stage{width:100vw;height:100vh}</style><div id="stage"></div><script type="module" src="/@id/__x00__society"></script>'))})}}]});
+const server=await createServer({root:webRoot,server:{host:'127.0.0.1',port:0,strictPort:false},plugins:[{name:'society-fixture',resolveId(id){if(id==='\0society')return id},load(id){if(id==='\0society')return entry},configureServer(server){server.middlewares.use(async(req,res,next)=>{if(req.url!=='/__society')return next();res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml(req.url,'<style>body{margin:0}#stage{width:100vw;height:100vh}</style><div id="stage"></div><script type="module" src="/@id/__x00__society"></script>'))})}}]});
 let browser;const timeout=setTimeout(()=>{console.error('society timeout');process.exit(1)},110000);
 try{
  await server.listen();browser=await chromium.launch({headless:true,channel:'chrome',args:['--enable-unsafe-swiftshader']});

@@ -22,12 +22,12 @@
 //   - A video that leaves asks for the browser's picture-in-picture, while the
 //     press that changed chats still counts as the person's. Refused, or not
 //     offered, it is the in-page mini-player.
-//   - Its chat back on screen, the element goes back into the first slot of
-//     that chat that names the same file, still playing. With no such slot it
+//   - Its chat back on screen, the element goes back into the slot of
+//     that reply that names the same file, still playing. With no such slot it
 //     stays where it is: the position is never lost.
-//   - The browser's own window: closed (the video is paused) parks the element
-//     out of sight, kept for its chat; "back to tab" (still playing) asks the
-//     page to open its chat.
+//   - Leaving the browser's own window keeps a visible fallback. Returning
+//     focus to the tab opens its chat even when the video was paused. The
+//     PiP API gives no exit reason; playback alone cannot identify Close.
 //
 // The store only needs what `MediaLike`, `Holder` and `Env` name, so the
 // tests drive it with plain objects in the node environment.
@@ -39,6 +39,8 @@ export type MediaKind = "video" | "audio";
  *  which never floats. */
 export type MediaSource = {
   chat: string | null;
+  /** Stable reply id, preserved when the transcript remounts. */
+  reply: string;
   path: string;
   kind: MediaKind;
   name: string;
@@ -49,6 +51,7 @@ export interface MediaLike {
   paused: boolean;
   ended: boolean;
   controls: boolean;
+  error?: { message: string; code: number } | null;
   play(): Promise<void>;
   pause(): void;
   load(): void;
@@ -72,19 +75,22 @@ export interface Env {
   later(fn: () => void, ms: number): void;
   /** After the commit in progress (a microtask). */
   soon(fn: () => void): void;
+  /** Back to tab focuses the document; a window closed elsewhere need not. */
+  tabActive(): boolean;
 }
 
 /** How the detached element is being shown.
  *  - `mini`: the in-page mini-player
  *  - `asking`: picture-in-picture asked for, not answered yet (nothing drawn)
  *  - `pip`: in the browser's own window
- *  - `parked`: that window was closed; paused, out of sight, kept for its chat */
-export type FloatMode = "mini" | "asking" | "pip" | "parked";
+ */
+export type FloatMode = "mini" | "asking" | "pip";
 
 export type NowPlayingView = {
   source: MediaSource;
   mode: FloatMode;
   paused: boolean;
+  error: string | null;
   /** Whether a picture-in-picture button can be offered. */
   canPip: boolean;
 };
@@ -112,7 +118,7 @@ type Detached = {
  *  drawn anyway. */
 export const PIP_ANSWER_MS = 1500;
 
-const sameFile = (a: MediaSource, b: MediaSource) => a.chat === b.chat && a.path === b.path && a.kind === b.kind;
+const sameFile = (a: MediaSource, b: MediaSource) => a.chat === b.chat && a.reply === b.reply && a.path === b.path && a.kind === b.kind;
 
 export class NowPlaying {
   private slots: Slot[] = [];
@@ -125,6 +131,7 @@ export class NowPlaying {
   private host: Holder | null = null;
   private lastPlayed: MediaLike | null = null;
   private known = new WeakSet<MediaLike>();
+  private errors = new WeakMap<MediaLike, string>();
   /** Elements whose picture-in-picture window the page itself closed. */
   private closing = new WeakSet<MediaLike>();
   private back: ((chat: string) => void) | null = null;
@@ -142,9 +149,40 @@ export class NowPlaying {
 
   /** Whether the detached element is this chat's file: its slot should draw
    *  it at once, near the screen or not, rather than wait. */
-  holds(chat: string | null, path: string): boolean {
+  holds(chat: string | null, path: string, reply: string): boolean {
     const held = this.detached;
-    return !!held && chat !== null && held.source.chat === chat && held.source.path === path;
+    return !!held && chat !== null && held.source.chat === chat && held.source.path === path && held.source.reply === reply;
+  }
+
+  /** A removed reply/chat must never float when its slot next unmounts. */
+  forget(chat: string, reply?: string) {
+    const matches = (source: MediaSource) => source.chat === chat && (reply === undefined || source.reply === reply);
+    if (this.detached && matches(this.detached.source)) this.drop(false);
+    for (const slot of this.slots) {
+      if (!matches(slot.source)) continue;
+      const el = slot.el;
+      this.empty(slot);
+      if (el) { this.closePip(el); release(el); }
+    }
+    this.orphans = this.orphans.filter((orphan) => {
+      if (!matches(orphan.source)) return true;
+      this.closePip(orphan.el);
+      release(orphan.el);
+      return false;
+    });
+    this.emit();
+  }
+
+  /** Loaded transcript changed, rather than merely leaving the viewport. */
+  retainReplies(chat: string, replies: ReadonlySet<string>) {
+    const sources = [...this.slots, ...this.orphans, ...(this.detached ? [this.detached] : [])];
+    for (const { source } of sources) {
+      if (source.chat === chat && !replies.has(source.reply)) this.forget(chat, source.reply);
+    }
+  }
+
+  errorOf(el: MediaLike): string | null {
+    return this.errors.get(el) ?? (el.error ? el.error.message || "Could not load this media." : null);
   }
 
   /** The floating host's own holder. Mounted once, by `App`. */
@@ -241,6 +279,12 @@ export class NowPlaying {
     el.addEventListener("play", () => this.played(el));
     el.addEventListener("pause", () => this.emit());
     el.addEventListener("ended", () => this.emit());
+    el.addEventListener("error", () => {
+      this.errors.set(el, el.error?.message || "Could not load this media.");
+      el.pause();
+      if (this.detached?.el === el) this.detached.mode = "mini";
+      this.emit();
+    });
     el.addEventListener("enterpictureinpicture", () => {
       if (this.detached?.el === el && this.detached.mode !== "pip") { this.detached.mode = "pip"; this.emit(); }
     });
@@ -257,19 +301,16 @@ export class NowPlaying {
   private leftPip(el: MediaLike) {
     if (this.closing.has(el)) { this.closing.delete(el); return; }
     if (this.detached?.el !== el) return;
-    // The browser pauses a video whose window is closed and leaves one that
-    // goes "back to tab" playing; its pause event may come after this one.
+    // Focus and pause can arrive after the leave event.
     this.env.later(() => {
       const held = this.detached;
       if (held?.el !== el) return;
-      if (el.paused) {
-        held.mode = "parked";
-        this.emit();
-      } else {
-        held.mode = "mini";
-        this.emit();
-        this.goBack();
-      }
+      // The PiP API gives no exit reason. A paused video can be sent back
+      // too: focus, not playback, signals return. If focus is inconclusive,
+      // keep an accessible Back button instead of hiding the paused player.
+      held.mode = "mini";
+      this.emit();
+      if (this.env.tabActive() || !el.paused) this.goBack();
     }, 0);
   }
 
@@ -359,10 +400,7 @@ export class NowPlaying {
     if (slot.el) { const own = slot.el; this.empty(slot); release(own); }
     held.el.controls = true;
     this.give(slot, held.el);
-    if (this.env.pipElement() === held.el) {
-      this.closing.add(held.el);
-      void this.env.exitPip().catch(() => {});
-    }
+    this.closePip(held.el);
   }
 
   /** Hand the detached element to its chat's slot, if that chat is shown. */
@@ -374,16 +412,19 @@ export class NowPlaying {
     if (slot) this.adopt(slot);
   }
 
-  private drop() {
+  private drop(refill = true) {
     const held = this.detached!;
     this.detached = null;
-    if (this.env.pipElement() === held.el) {
-      this.closing.add(held.el);
-      void this.env.exitPip().catch(() => {});
-    }
+    this.closePip(held.el);
     release(held.el);
     // Slots that were waiting for it start again with their own element.
-    for (const slot of this.slots) if (!slot.el && sameFile(slot.source, held.source)) this.fill(slot);
+    if (refill) for (const slot of this.slots) if (!slot.el && sameFile(slot.source, held.source)) this.fill(slot);
+  }
+
+  private closePip(el: MediaLike) {
+    if (this.env.pipElement() !== el) return;
+    this.closing.add(el);
+    void this.env.exitPip().catch(() => {});
   }
 
   private emit() {
@@ -391,11 +432,12 @@ export class NowPlaying {
     const next: NowPlayingView | null = held && {
       source: held.source,
       mode: held.mode,
-      paused: held.el.paused || held.el.ended,
-      canPip: held.source.kind === "video" && this.env.pipEnabled() && !!held.el.requestPictureInPicture,
+      paused: held.el.paused || held.el.ended || !!this.errorOf(held.el),
+      error: this.errorOf(held.el),
+      canPip: !this.errorOf(held.el) && held.source.kind === "video" && this.env.pipEnabled() && !!held.el.requestPictureInPicture,
     };
     const same = next && this.view && next.source === this.view.source && next.mode === this.view.mode
-      && next.paused === this.view.paused && next.canPip === this.view.canPip;
+      && next.paused === this.view.paused && next.error === this.view.error && next.canPip === this.view.canPip;
     if (same || (!next && !this.view)) return;
     this.view = next;
     for (const listener of [...this.listeners]) listener();
@@ -416,6 +458,7 @@ const browserEnv: Env = {
   exitPip: () => (typeof document !== "undefined" && document.pictureInPictureElement ? document.exitPictureInPicture() : Promise.resolve()),
   later: (fn, ms) => { setTimeout(fn, ms); },
   soon: (fn) => queueMicrotask(fn),
+  tabActive: () => typeof document !== "undefined" && document.visibilityState === "visible" && document.hasFocus(),
 };
 
 /** The page's one store. */

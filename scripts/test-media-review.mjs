@@ -1,14 +1,14 @@
 // Real component/browser regression. The transport is a persistent test double;
 // Rust tests exercise the real profile store, revision checks and writes.
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
+import { browserPaths } from './browser-paths.mjs';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-const require = createRequire(new URL('../web/package.json', import.meta.url));
-const { createServer, transformWithEsbuild } = await import(require.resolve('vite'));
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const {webRoot, require, moduleUrl} = browserPaths(import.meta.url);
+const { createServer, transformWithEsbuild } = await import(moduleUrl(require.resolve('vite')));
+const { chromium } = await import(moduleUrl(process.env.PLAYWRIGHT_MODULE || 'playwright'));
 const evidence = await mkdtemp(join(tmpdir(), 'octiq-media-review-'));
 const clip = join(evidence, 'clip.mp4');
 const result = spawnSync('ffmpeg', ['-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=steelblue:s=480x270:d=5','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart',clip]);
@@ -42,7 +42,7 @@ function Demo(){const[image,setImage]=React.useState(false);return <main style={
  </main>}
 createRoot(document.getElementById('root')).render(<Demo/>);
 `;
-const server = await createServer({ root: new URL('../web',import.meta.url).pathname,
+const server = await createServer({ root: webRoot,
  server: {host:'127.0.0.1',port:0,strictPort:false}, plugins:[{
  name:'media-review-browser-fixture',
  resolveId(id){if(id==='virtual:media-review')return '\0media-review'},

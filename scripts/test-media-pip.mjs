@@ -14,8 +14,8 @@
 //          file go, and A's reply starts again from nothing
 //   audio  the recording, in the mini-player only
 //   paused a paused video stays in its reply: nothing floats
-//   pip-leave  the browser's window shut "back to tab" opens its chat; shut
-//          paused (close) parks it, and its reply has it again where it stopped
+//   pip-leave  return to the tab opens its chat, including paused video;
+//          inconclusive exits keep a visible Back fallback
 //
 // What is asserted each time: the element is the same one (a mark it carries
 // moves with it), `currentTime` goes on advancing after the switch, exactly
@@ -66,7 +66,7 @@ const FILES = new Map([
   [AUDIO, { file: join(scratch, "voice.m4a"), type: "audio/mp4" }],
 ]);
 
-function mock() {
+function mock(duplicate = false) {
   const stamp = 1792461219629;
   const chat = (id, title, at, text) => ({
     id, projectId: "octiq", title, customTitle: true, modelId: "claude:opus", access: "auto", sessionId: `session-${id}`, cwd: repoRoot,
@@ -75,6 +75,10 @@ function mock() {
   });
   const a = chat("chat-a", "Launch video review", stamp, `The cut is ready: \`${VIDEO}\`\n\nAnd the voice-over on its own: \`${AUDIO}\``);
   const b = chat("chat-b", "Release notes", stamp - 60_000, "The release notes are drafted. Nothing to play here.");
+  if (duplicate) a.messages.push(
+    {id: 'a-user', role: 'user', streaming: false, blocks: [{kind: 'text', text: 'Review the same cut again.'}]},
+    {id: 'a-second', role: 'assistant', streaming: false, blocks: [{kind: 'text', text: `The second reply: \`${VIDEO}\``}]},
+  );
   const stored = [a, b];
   const index = stored.map(({ messages, ...entry }) => entry);
   const resultFor = (request) => {
@@ -110,8 +114,8 @@ const server = await createServer({ root: webRoot, configFile: join(webRoot, "vi
 const errors = [];
 const report = { artifacts, engine, themes, results: [] };
 
-async function open(browser, theme, { width, height, phone }, { noPip = false } = {}) {
-  const { stored, resultFor } = mock();
+async function open(browser, theme, { width, height, phone }, { noPip = false, duplicate = false } = {}) {
+  const { stored, resultFor } = mock(duplicate);
   const context = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce", ...(phone ? { hasTouch: true, isMobile: engine !== "webkit" ? true : undefined } : {}) });
   await context.addInitScript(({ chats, mode, off }) => {
     localStorage.setItem("octiq.v2.gitColumn", "0");
@@ -168,21 +172,21 @@ async function pick(page, phone, title) {
 }
 
 /** The inline player of chat A, brought into view and playing. */
-async function startInline(page, kind) {
+async function startInline(page, kind, index = 0) {
   const selector = `.prose-media.is-${kind}`;
-  const box = page.locator(selector).first();
+  const box = page.locator(selector).nth(index);
   await box.waitFor();
   await box.scrollIntoViewIfNeeded();
-  await page.waitForFunction((sel) => { const el = document.querySelector(`${sel} ${sel.includes("video") ? "video" : "audio"}`); return el && el.readyState >= 1; }, selector, { timeout: 60_000 }).catch(async (error) => {
+  await page.waitForFunction(({sel, index}) => { const box = document.querySelectorAll(sel)[index]; const el = box?.querySelector("video, audio"); return el && el.readyState >= 1; }, {sel: selector, index}, { timeout: 60_000 }).catch(async (error) => {
     throw new Error(`${selector}: no metadata: ${JSON.stringify(await page.evaluate((sel) => { const el = document.querySelector(`${sel} video, ${sel} audio`); return el && { state: el.readyState, network: el.networkState, error: el.error?.code ?? null, src: el.currentSrc.slice(0, 80) }; }, selector))}: ${error.message}`);
   });
-  await page.evaluate((sel) => {
-    const el = document.querySelector(`${sel} ${sel.includes("video") ? "video" : "audio"}`);
+  await page.evaluate(({sel, index}) => {
+    const el = document.querySelectorAll(sel)[index].querySelector("video, audio");
     el.dataset.mark = "first";
     el.volume = 0.4;
     el.playbackRate = 1.25;
     return el.play();
-  }, selector);
+  }, {sel: selector, index});
   await page.waitForFunction(() => { const el = document.querySelector("[data-mark=first]"); return el && el.currentTime > 0.6; });
 }
 
@@ -300,8 +304,8 @@ async function pipScene(browser, theme, size, shots) {
 
 /** Leaving the browser's own window. Its buttons are outside the page, so the
  *  window is shut from the page (`exitPictureInPicture`), which the store has
- *  not asked for: what the browser's "back to tab" (still playing) and close
- *  (Chrome pauses the video first) look like to the page. */
+ *  not asked for. This exercises playing and paused return in a focused
+ *  document; it does not physically press the operating system's buttons. */
 async function pipLeaveScene(browser, theme, size) {
   const label = `${theme} pip-leave ${size.name}`;
   const { context, page } = await open(browser, theme, size);
@@ -317,17 +321,12 @@ async function pipLeaveScene(browser, theme, size) {
     const back = await state(page);
     assert.equal(back.paused, false, `${label}: back to tab keeps it playing`);
     assert.equal(await page.locator(".msgs .msg").filter({ hasText: "The cut is ready" }).first().isVisible(), true, `${label}: in its chat`);
-    // Away again, then close: paused, out of sight, kept for its chat.
+    // Pause first, then return to a focused tab: this is still Back, not Close.
     await pick(page, size.phone, "Release notes");
     await page.waitForFunction(() => document.pictureInPictureElement?.dataset.mark === "first");
     const t = await page.evaluate(() => { const el = document.querySelector("[data-mark=first]"); el.pause(); return el.currentTime; });
+    await page.bringToFront();
     await page.evaluate(() => document.exitPictureInPicture());
-    await page.waitForTimeout(200);
-    const parked = await state(page);
-    assert.equal(parked.paused, true, `${label}: closed, it is paused`);
-    assert.equal(parked.where, "host", `${label}: and kept`);
-    assert.equal(parked.mini, false, `${label}: with nothing floating`);
-    await pick(page, size.phone, "Launch video review");
     await page.waitForFunction(() => document.querySelector("[data-mark=first]")?.closest(".prose-media"));
     const again = await state(page);
     assert.equal(again.paused, true, `${label}: its reply has it again, paused`);
@@ -406,6 +405,51 @@ async function pausedScene(browser, theme, size) {
   return { scene: "paused", size: size.name, theme };
 }
 
+/** Actual App wiring, rather than just the store's public methods. */
+async function lifecycleScene(browser, theme, size, scene) {
+  const { context, page } = await open(browser, theme, size, { noPip: true, duplicate: scene === "duplicate" });
+  const label = `${scene} ${size.name}`;
+  try {
+    await startInline(page, "video", scene === "duplicate" ? 1 : 0);
+    await page.evaluate(() => { window.playedElement = document.querySelector('[data-mark=first]'); });
+    await pick(page, size.phone, "Release notes");
+    await page.locator('.now-playing[data-shown=true]').waitFor();
+    if (scene === "duplicate") {
+      await pick(page, size.phone, "Launch video review");
+      await page.waitForFunction(() => document.querySelectorAll('.prose-media.is-video')[1]?.contains(window.playedElement));
+      assert.equal(await page.evaluate(() => document.querySelectorAll('.prose-media.is-video')[0].contains(window.playedElement)), false, label);
+      assert.equal((await state(page)).paused, false, label);
+    } else if (scene === "delete") {
+      if (size.phone) await page.getByRole('button', {name: 'Show chats', exact: true}).tap();
+      await page.getByRole('button', {name: 'Actions for Launch video review', exact: true}).click();
+      await page.getByRole('menuitem', {name: 'Delete chat', exact: true}).click();
+      await page.waitForFunction(() => !document.querySelector('[data-mark=first]'));
+    } else if (scene === "clear") {
+      await pick(page, size.phone, "Launch video review");
+      const input = page.locator('.composer textarea').first();
+      await input.fill('/clear');
+      await input.press('Enter');
+      await page.waitForFunction(() => !document.querySelector('[data-mark=first]'));
+    } else {
+      // A genuine read/decode failure while the reply has no mounted owner.
+      await page.evaluate(() => { const el = window.playedElement; el.src = '/file?path=/missing.mp4'; el.load(); });
+      await page.locator('.now-playing [role=alert]').waitFor();
+      assert.equal(await page.locator('.now-playing').getByRole('button', {name: 'Play', exact: true}).isDisabled(), true, label);
+      await page.locator('.now-playing-back').click();
+      await page.waitForFunction(() => !document.querySelector('.msgs video'));
+      assert.equal(await page.locator('.now-playing[data-shown=true]').count(), 0, label);
+    }
+    if (scene === 'delete' || scene === 'clear') {
+      assert.deepEqual(await page.evaluate(() => ({paused: window.playedElement.paused, src: window.playedElement.getAttribute('src'), connected: window.playedElement.isConnected})),
+        {paused: true, src: null, connected: false}, label);
+      assert.equal(await page.locator('.now-playing[data-shown=true]').count(), 0, label);
+    }
+  } finally {
+    await context.close();
+  }
+  return {scene, size: size.name, theme};
+}
+
 const deadline = setTimeout(() => { console.error("media-pip: timed out"); process.exit(1); }, 20 * 60_000);
 let browser;
 try {
@@ -416,11 +460,16 @@ try {
   for (const [index, theme] of themes.entries()) {
     for (const size of SIZES) {
       const full = index === 0;
-      report.results.push(await pipScene(browser, theme, size, true));
-      report.results.push(await miniScene(browser, theme, size, "video", true));
+      if (!process.env.OCTIQ_MEDIA_REGRESSION_ONLY) {
+        report.results.push(await pipScene(browser, theme, size, true));
+        report.results.push(await miniScene(browser, theme, size, "video", true));
+      }
       if (full) {
-        report.results.push(await miniScene(browser, theme, size, "audio", true));
-        report.results.push(await pausedScene(browser, theme, size));
+        if (!process.env.OCTIQ_MEDIA_REGRESSION_ONLY) {
+          report.results.push(await miniScene(browser, theme, size, "audio", true));
+          report.results.push(await pausedScene(browser, theme, size));
+        }
+        for (const scene of ["duplicate", "delete", "clear", "error"]) report.results.push(await lifecycleScene(browser, theme, size, scene));
         report.results.push(await pipLeaveScene(browser, theme, size));
       }
     }

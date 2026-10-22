@@ -13,6 +13,7 @@ class FakeMedia implements MediaLike {
   paused = true;
   ended = false;
   controls = true;
+  error: { message: string; code: number } | null = null;
   currentTime = 0;
   src: string | null;
   holder: FakeHolder | null = null;
@@ -46,6 +47,8 @@ class World implements Env {
   queue: Array<{ fn: () => void; at: number }> = [];
   now = 0;
   exits = 0;
+  active = false;
+  tabActive() { return this.active; }
   pipElement() { return this.pip; }
   pipEnabled() { return this.enabled; }
   async exitPip() {
@@ -76,9 +79,9 @@ function setup({ pip = "yes" as "yes" | "no" | "never", enabled = true } = {}) {
   store.setBack((chat) => opened.push(chat));
   const made: FakeMedia[] = [];
   const bound: FakeMedia[] = [];
-  const mount = (chat: string | null, path: string, kind: MediaKind = "video") => {
+  const mount = (chat: string | null, path: string, kind: MediaKind = "video", reply = "reply-1") => {
     const slot = new FakeHolder(`${chat}:${path}`);
-    const source: MediaSource = { chat, path, kind, name: path.split("/").pop()! };
+    const source: MediaSource = { chat, reply, path, kind, name: path.split("/").pop()! };
     const unmount = store.mount(slot, source, () => {
       const el = new FakeMedia(kind, pip, world);
       made.push(el);
@@ -90,6 +93,120 @@ function setup({ pip = "yes" as "yes" | "no" | "never", enabled = true } = {}) {
 }
 
 describe("now playing", () => {
+  it("returns a repeated path to its own reply without replacing another reply's player", async () => {
+    const { store, made, mount } = setup({ enabled: false });
+    store.show(["A"]);
+    const first = mount("A", "/same.mp4", "video", "reply-1");
+    const second = mount("A", "/same.mp4", "video", "reply-2");
+    const playing = made[1];
+    await playing.play();
+    second.unmount();
+    first.unmount();
+    store.show(["B"]);
+    expect(store.holds("A", "/same.mp4", "reply-1")).toBe(false);
+    expect(store.holds("A", "/same.mp4", "reply-2")).toBe(true);
+    const newFirst = mount("A", "/same.mp4", "video", "reply-1");
+    const newSecond = mount("A", "/same.mp4", "video", "reply-2");
+    const other = made[0];
+    store.show(["A"]);
+    expect(playing.holder).toBe(newSecond.slot);
+    expect(playing.paused).toBe(false);
+    expect(other.holder).toBe(newFirst.slot);
+    expect(other.src).not.toBeNull();
+  });
+
+  it.each(["delete chat", "/clear"])("%s releases detached playback and closes PiP without refilling the dying slot", async () => {
+    const { store, world, made, mount, opened } = setup();
+    store.show(["A"]);
+    const a = mount("A", "/same.mp4");
+    await made[0].play();
+    store.show(["B"]);
+    await flush();
+    store.forget("A");
+    a.unmount();
+    world.run();
+    store.goBack();
+    expect(made).toHaveLength(1);
+    expect(made[0].paused).toBe(true);
+    expect(made[0].src).toBeNull();
+    expect(made[0].holder).toBeNull();
+    expect(world.pip).toBeNull();
+    expect(store.snapshot()).toBeNull();
+    expect(opened).toEqual([]);
+  });
+
+  it("removing the playing reply releases it but keeps other replies of that chat", async () => {
+    const { store, made, mount } = setup({ enabled: false });
+    store.show(["A"]);
+    const a = mount("A", "/same.mp4", "video", "reply-1");
+    const b = mount("A", "/same.mp4", "video", "reply-2");
+    await made[0].play();
+    store.show(["B"]);
+    a.unmount();
+    store.retainReplies("A", new Set(["reply-2"]));
+    expect(store.snapshot()).toBeNull();
+    expect(made[0].src).toBeNull();
+    expect(made[1].src).not.toBeNull();
+    b.unmount();
+  });
+
+  it("forgetting a reply also releases its paused orphan before a remount can adopt it", () => {
+    const { store, made, mount } = setup();
+    const a = mount("A", "/same.mp4");
+    a.unmount();
+    store.forget("A", "reply-1");
+    mount("A", "/same.mp4");
+    expect(made).toHaveLength(2);
+    expect(made[0].src).toBeNull();
+  });
+
+  it("deleting a reply also closes PiP opened while the reply was still inline", async () => {
+    const { store, world, made, mount } = setup();
+    store.show(["A"]);
+    mount("A", "/same.mp4");
+    await made[0].requestPictureInPicture();
+    store.forget("A", "reply-1");
+    expect(world.pip).toBeNull();
+    expect(made[0].src).toBeNull();
+  });
+
+  it("keeps a detached media error and gives it back with the element on return", async () => {
+    const { store, made, mount } = setup({ enabled: false });
+    store.show(["A"]);
+    const a = mount("A", "/bad.mp4");
+    const el = made[0];
+    await el.play();
+    a.unmount();
+    store.show(["B"]);
+    el.error = { code: 4, message: "Decode failed" };
+    el.fire("error");
+    expect(store.snapshot()).toMatchObject({ paused: true, error: "Decode failed", mode: "mini", canPip: false });
+    const again = mount("A", "/bad.mp4");
+    store.show(["A"]);
+    expect(el.holder).toBe(again.slot);
+    expect(store.errorOf(el)).toBe("Decode failed");
+    // The native error may be reset by the browser; the held failure is not.
+    el.error = null;
+    expect(store.errorOf(el)).toBe("Decode failed");
+  });
+
+  it("paused PiP Back to tab opens its source chat when the tab regains focus", async () => {
+    const { store, world, made, mount, opened } = setup();
+    store.show(["A"]);
+    const a = mount("A", "/same.mp4");
+    await made[0].play();
+    a.unmount();
+    store.show(["B"]);
+    await flush();
+    made[0].pause();
+    world.active = true;
+    world.pip = null;
+    made[0].fire("leavepictureinpicture");
+    world.run();
+    expect(opened).toEqual(["A"]);
+    expect(store.snapshot()?.mode).toBe("mini");
+  });
+
   it("a player gets its own element, in its own slot", () => {
     const { store, made, mount } = setup();
     store.show(["A"]);
@@ -261,7 +378,7 @@ describe("now playing", () => {
     store.show(["B"]);
     await flush();
     expect(world.pip).toBe(el);
-    expect(store.holds("A", "/x/take.mp4")).toBe(true);
+    expect(store.holds("A", "/x/take.mp4", "reply-1")).toBe(true);
     // Back to A: the slot mounts before App says A is shown (children's layout
     // effects run first). It waits rather than make a second element.
     const again = mount("A", "/x/take.mp4");
@@ -349,7 +466,7 @@ describe("now playing", () => {
     expect(opened).toEqual(["A"]);
   });
 
-  it("the browser's window closed: the video is paused and parked for its chat", async () => {
+  it("the browser's window closed: the paused video keeps a visible Back fallback", async () => {
     const { world, store, made, mount, opened } = setup();
     store.show(["A"]);
     const { unmount } = mount("A", "/x/take.mp4");
@@ -363,7 +480,7 @@ describe("now playing", () => {
     el.pause();
     el.fire("leavepictureinpicture");
     world.run();
-    expect(store.snapshot()?.mode).toBe("parked");
+    expect(store.snapshot()?.mode).toBe("mini");
     expect(opened).toEqual([]);
     expect(el.src).not.toBeNull();
     // Its chat again: the inline player is back where it stopped, paused.
