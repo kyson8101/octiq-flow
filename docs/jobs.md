@@ -323,7 +323,7 @@ above and has no fixed form. For example:
 The job "render · "final" cut" failed: exit code 1, after 2m 14s.
 ```
 
-- **Told once** (AGENTS.md, *A chat's plan*): before it sends, the host asks
+- **Told once**: before it sends, the host asks
   the chat's record what became of that id (`agent_chat::host_turns`, with
   the turns this server handed over itself as `here`). A turn that is there,
   handed over or taken back, is never sent again, across a restart too. A

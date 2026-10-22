@@ -66,8 +66,6 @@ pub const HOST_BOOKKEEPING: &[&str] = &[
     "orchestration_destinations",
     "orchestration_peer_ask",
     "orchestration_peer_request",
-    "plan_read",
-    "plan_update",
     "set_chat_title",
     "ask_user",
     "feedback_submit",
@@ -76,8 +74,6 @@ pub const HOST_BOOKKEEPING: &[&str] = &[
     "feedback_get",
     "search_conversations",
     "read_conversation",
-    "preview_image",
-    "preview_html",
     "island_propose",
     "island_look",
     "island_build",
@@ -720,13 +716,6 @@ mod tests {
         assert!(host_bookkeeping("mcp__octiq__orchestration_worker_report"));
         assert!(!host_bookkeeping("mcp__other__orchestration_worker_report"));
         assert!(!host_bookkeeping("mcp__octiq__orchestration_worker_start"));
-        // The chat's plan is the host's own record too, read by the person
-        // beside the chat: the person's decision. Nothing that would start
-        // one is a tool, whatever it were called.
-        assert!(host_bookkeeping("mcp__octiq__plan_read"));
-        assert!(host_bookkeeping("mcp__octiq__plan_update"));
-        assert!(!host_bookkeeping("mcp__octiq__plan_begin"));
-        assert!(!host_bookkeeping("mcp__octiq__chat_plan_update"));
         assert!(host_bookkeeping("mcp__octiq__handover"));
         assert!(host_bookkeeping("mcp__octiq__request_access"));
         assert!(host_bookkeeping("mcp__octiq__agent_delete"));

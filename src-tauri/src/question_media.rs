@@ -10,7 +10,7 @@
 //! `resolve` rebuilds every field the page reads from the file the host
 //! wrote: an agent can name a snapshot of its own chat and nothing else.
 //!
-//! Kept through the trash window and `/clear`, like the chat's plan; removed
+//! Kept through the trash window and `/clear`; removed
 //! with the chat when it is purged (`forget`). Contract:
 //! `docs/question-delivery.md`, Media.
 use crate::paths::Canonical;
@@ -55,7 +55,7 @@ pub fn discard(chat_key: &str, ids: &[String]) -> Result<(), String> {
 
 /// At most this many media files under one question.
 pub const MAX_PER_QUESTION: usize = 4;
-/// An image, as `preview_image` takes one.
+/// A local image validated before attaching it to a question.
 pub const IMAGE_MAX: u64 = 20 * 1024 * 1024;
 /// A video or a sound.
 pub const PLAYED_MAX: u64 = 200 * 1024 * 1024;

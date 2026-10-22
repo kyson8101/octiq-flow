@@ -30,7 +30,7 @@ const refuse = (why) => {
   throw new MediaRefusal(why);
 };
 
-/** Open one source the way preview_image reads one: absolute, a regular
+/** Open one source safely: absolute, a regular
  *  file, not empty, under its cap. Non-blocking, so a FIFO handed over as a
  *  picture cannot hang the call; the size is the open file's own. */
 function openSource(source, cap) {

@@ -120,33 +120,11 @@ test("every tool the instructions used to name is still named", async () => {
     "team_create", "team_update",
     "request_access",
     "handover", "handover_ask", "handover_outcome",
-    "preview_html", "preview_image", "create_artifact",
+    "create_artifact",
     "search_conversations", "read_conversation",
     "orchestration_snapshot", "orchestration_worker_report", "orchestration_peer_ask", "orchestration_peer_request",
     "task_status", "ask_user",
   ]) assert.ok(said.includes(tool), tool);
-});
-
-test("a chat agent is told when to keep a plan, in one sentence right after the diagram", async () => {
-  const sentence = "When the person says several things are coming before work starts, or asks for a plan, keep one with plan_update, ask scoping questions as they come, and start no work until they press Start: the plan_update description says how.";
-  for (const flags of [[], ["--disable-ask-user"]]) {
-    const said = await instructions({}, flags);
-    const at = said.indexOf(sentence);
-    assert.ok(at > 0, "the sentence is there");
-    assert.ok(said.startsWith("A reply can hold one card diagram"), "the diagram comes first");
-    assert.equal(said.slice(0, at).trimEnd().endsWith("at most one per reply."), true, "and the plan sentence second");
-    assert.ok(at + sentence.length <= 1024, `it ends at ${at + sentence.length}`);
-  }
-  // One line, and nothing a POSIX or a JavaScript quote has to escape: the
-  // host says it word for word to Codex's app-server and to Antigravity.
-  assert.doesNotMatch(sentence, /[\n'"\\]/);
-});
-
-test("a worker and a front desk keep no plan and are not told to", async () => {
-  assert.doesNotMatch(await instructions({ OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" }), /plan_update|plan_read/);
-  assert.doesNotMatch(await instructions({ OCTIQ_FRONT_DESK: "1" }), /plan_update|plan_read/);
-  // A worker is still told the rest.
-  assert.match(await instructions({ OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" }), /orchestration_worker_report/);
 });
 
 test("message_send discloses its UTF-8 byte body limit", async () => {

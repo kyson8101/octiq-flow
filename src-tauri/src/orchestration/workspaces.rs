@@ -1386,33 +1386,6 @@ impl OrchestrationStore {
             for attempt in snapshot.attempts.iter().filter(|a| a.task_id == task_id) {
                 crate::agent_chat::chat_stop_impl(chats, attempt.worker_chat_key.clone())?;
             }
-            // Its services are built from this folder: stop them (volumes
-            // kept) before the folder goes, through their frozen
-            // configuration. The person's hold is theirs to release.
-            if task.environment == super::TaskEnvironment::Sandbox {
-                let sandboxes = crate::sandbox::Store::profile();
-                // What leads to a stop goes by what this server knows.
-                let envs = sandboxes.known()?;
-                let live = sandboxes.live_keys();
-                for attempt in snapshot.attempts.iter().filter(|a| a.task_id == task_id) {
-                    let key = &attempt.worker_chat_key;
-                    if !live.contains(key) {
-                        continue;
-                    }
-                    if envs
-                        .environments
-                        .get(key)
-                        .is_some_and(|e| e.lease.is_some())
-                    {
-                        return Err("This task's test environment is held open from its Sandbox panel. Stop it there before cleaning up the workspace.".into());
-                    }
-                    if !sandboxes
-                        .host_stop(key, "Its workspace was cleaned up. Volumes are kept.")?
-                    {
-                        return Err("This task's test environment is busy. Try the cleanup again when it settles.".into());
-                    }
-                }
-            }
             chats.require_checkout_idle(&ws.plan.checkout_root, true)?;
             let evidence = workflow::inspect(&ws.plan, true)?;
             if expected_head.is_empty() || evidence.head_sha != expected_head {
@@ -2588,7 +2561,7 @@ pub(super) mod tests {
     /// Feedback 6f1aa0d3: queued proposals are read-only; admission failures
     /// neither provision a checkout nor spend the first attempt's retry.
     #[test]
-    fn queued_plan_reads_do_not_provision_or_spend_an_attempt_before_admission() {
+    fn queued_workspace_reads_do_not_provision_or_spend_an_attempt_before_admission() {
         let repo = Repo::new();
         let (store, run, task) = setup(&repo, WorkspaceMode::Worktree);
         let plan = proposed(&store, &task);

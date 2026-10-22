@@ -37,8 +37,8 @@ steps). One-pixel borders, icon strokes, optical alignment and interaction
 geometry such as resize handles are not rounded to the spacing grid.
 
 The Flow workspace retains project navigation, the conversation column and
-resizable file/preview panels. The composer is a neutral bordered field with
-a focus ring. Settings, connection, dialogs, file lists, image/HTML Preview,
+resizable file panels. The composer is a neutral bordered field with
+a focus ring. Settings, connection, dialogs, file lists, image/HTML viewers,
 agent panels and both OS portals share the same tokens. The world's illustrated
 buildings, office and avatar artwork keep their own material colors.
 
@@ -59,4 +59,4 @@ Run `pnpm test` and `pnpm build` from `web/`. If the running backend serves
 `web/dist`, direct the verification build to a temporary directory using
 `pnpm build --outDir /private/tmp/<unique-directory>`.
 Inspect Flow and both OS routes at desktop and narrow widths in both appearances;
-check settings, a populated conversation, inputs, menus and file/preview panels.
+check settings, a populated conversation, inputs, menus and file panels.

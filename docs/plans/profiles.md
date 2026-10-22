@@ -113,7 +113,6 @@ all state from disk; no live teardown).
   | `orchestration_gate_resolve` (the person's, and a coordinator's) | takes the answer and queues it for the worker | `the gate's answer` |
   | `orchestration_message_send` with `interrupt` | keeps the message, cuts the worker's turn short | `the coordinator's message` |
   | `chat_retarget`, and `chat_set_access` LOWERING a run's chat (a raise is refused: rule C below) | ends the process, or lowers the level | `the forgotten start settings`, `the chat's access level` |
-  | the Sandbox panel's Stop, and the host's stop of services nothing needs (rule A below) | asks Docker to take the project down | `the stopped sandbox` |
   | a peer request's time limit (the scheduler) | ends the attempt and stops its process | `the attempt ended at its time limit` |
 
   Keeps nothing in the profile, so was never held up: `permission_decide`
@@ -154,34 +153,14 @@ all state from disk; no live teardown).
   shows the action as done, which it is.
 - **Four rules that follow, each found as a site the rule above did not
   list (2026-10-12, review of b894867).** With the folder only moved away:
-  the Sandbox panel's Stop left its services running; a Stop with messages
-  queued behind it answered an error and forgot them; a raise of a
-  coordinator's access level went through with nothing on disk; an answer
+  a Stop with messages queued behind it answered an error and forgot them;
+  a raise of a coordinator's access level went through with nothing on disk; an answer
   that was not saved was answered `saved: true` and drawn as "Answers
   saved".
 
   **A. Nothing that stops something running reads or saves the profile
   first.** What a stop needs to find its target is in memory or is asked of
   the system itself, never of a file in the profile.
-  - The sandbox store keeps what it last read or wrote of its state
-    (`sandbox::Store::known`). The panel's Stop, the host's stop
-    (`host_stop`, from the lifecycle pass and from a workspace cleanup) and
-    `live_keys` go by it; start, check, reset, select and configure read
-    the file and are refused while it cannot be read.
-  - Docker is asked first. With the sandbox's own folder there, through the
-    frozen Compose file as before. With it away, `docker --host <endpoint
-    on record> compose --project-name <id> down`: no file, Docker finds the
-    project's containers and networks by their Compose labels, volumes are
-    kept. Checked against Docker 29.2 / Compose 5.1.
-  - Then it is written down. The outcome (stopped, by whom and why; or in
-    error, with Docker's words) is kept whether or not it can be written,
-    said as `unsaved` (`the stopped sandbox`), and owed: `sandboxes` in
-    `profile_status.owed`, written by `settle_owed`. A state file that
-    cannot be read is never written over.
-  - A server reads the state once as it starts (`Services::load`), so a
-    sandbox the server before it left running can be stopped too. Limit: a
-    server that could not read it then (it started with the folder away)
-    knows no sandbox to stop until the folder is back.
 
   **B. An action that fails for a missing profile never discards the
   person's input.** A queued message whose turn cannot start is not a
@@ -236,9 +215,8 @@ all state from disk; no live teardown).
     the chat runs (memory only, as the card says), and Claude's Always is
     recorded in Claude's own settings file, outside the profile.
   - Plan and roster settings (a task's access, a run's worker defaults, an
-    agent's registered access, the shared policy, a chat's index entry, a
-    sandbox's configuration) are record-first in both directions and are
-    refused whole with the folder away. None of them changes anything that
+    agent's registered access, the shared policy, a chat's index entry) are
+    record-first in both directions and are refused whole with the folder away. None of them changes anything that
     is running: they are read by a later start, and every start is itself
     refused then.
   - **Known limit, not built:** a lowering made with the folder away and
@@ -265,8 +243,7 @@ all state from disk; no live teardown).
   `profile_status.owed` on the page in general; handover Decline and
   Abandon, which read the profile first and so leave the parked tool to its
   600 s wait; the Codex safety card, where dismissing is not delivering and
-  the turn that would deliver is a start; a sandbox known only to a server
-  that has not read its state yet.
+  the turn that would deliver is a start.
 
 ## Target layout
 
