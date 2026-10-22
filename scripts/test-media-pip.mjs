@@ -90,6 +90,7 @@ function mock(duplicate = false) {
       case "resolve_paths": return (request.args?.paths ?? []).map((path) => (FILES.has(path) ? path : null));
       case "chat_list": case "chat_activity": case "permission_pending": case "safety_block_pending": case "question_pending":
       case "pr_repositories": case "codex_skills": case "image_preview_list": case "access_request_pending": case "team_list":
+      case "provider_fallback_choices":
         return [];
       case "chat_queue_state": return { live: false, queuedTurnIds: [] };
       case "orchestration_snapshot": return { runs: [], tasks: [], attempts: [], gates: [], messages: [] };
@@ -428,7 +429,8 @@ async function lifecycleScene(browser, theme, size, scene) {
       await pick(page, size.phone, "Launch video review");
       const input = page.locator('.composer textarea').first();
       await input.fill('/clear');
-      await input.press('Enter');
+      // Touch composers keep Enter for newlines; Send submits on both sizes.
+      await page.locator('.composer').getByRole('button', {name: 'Send', exact: true}).click();
       await page.waitForFunction(() => !document.querySelector('[data-mark=first]'));
     } else {
       // A genuine read/decode failure while the reply has no mounted owner.
