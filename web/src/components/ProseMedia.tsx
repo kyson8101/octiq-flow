@@ -61,9 +61,15 @@ export function ProsePlayer({ path, kind }: { path: string; kind: "video" | "aud
   // that then fell back to waiting would hand it straight out again.
   const kept = useRef(false);
   if (held) kept.current = true;
-  if (failed) return null;
+  useEffect(() => setFailed(false), [path, kind]);
   return (
     <span className={`prose-media is-${kind}`} ref={holder}>
+      {failed && <span className="prose-media-error" role="status">
+        Media unavailable. <button type="button" onClick={() => {
+          setFailed(false);
+          holder.current?.querySelector<HTMLMediaElement>("video, audio")?.load();
+        }}>Retry</button>
+      </span>}
       {!near && !kept.current ? <span className="prose-media-wait" aria-hidden="true" />
         : kind === "video"
           ? <ReviewVideo key={path} path={path} chat={chat} reply={reply} onError={() => setFailed(true)} />

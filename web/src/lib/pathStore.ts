@@ -24,6 +24,9 @@ const BATCH_MS = 40;
 /** A ceiling on what is remembered, so a very long day cannot grow this without
  *  bound. Far above what any real conversation reaches. */
 const MAX_ANSWERS = 4000;
+/** Missing outputs can appear while an agent is still writing them. */
+export const MISSING_PATH_MS = 5_000;
+const missingAt = new Map<string, number>();
 
 /** candidate + cwd → the real path, or null for "no such file". */
 const answers = new Map<string, string | null>();
@@ -63,7 +66,8 @@ export function askPaths(raws: string[], cwd: string): void {
   let added = false;
   for (const raw of raws) {
     const key = keyOf(raw, cwd);
-    if (answers.has(key) || inflight.has(key)) continue;
+    if (inflight.has(key)) continue;
+    if (answers.has(key) && (answers.get(key) !== null || Date.now() - (missingAt.get(key) ?? 0) < MISSING_PATH_MS)) continue;
     inflight.add(key);
     let waiting = queue.get(cwd);
     if (!waiting) queue.set(cwd, (waiting = new Set()));
@@ -96,8 +100,10 @@ function flush(): void {
           const key = keyOf(raw, cwd);
           inflight.delete(key);
           answers.set(key, resolved?.[i] ?? null);
+          if (resolved?.[i]) missingAt.delete(key);
+          else missingAt.set(key, Date.now());
         });
-        if (answers.size > MAX_ANSWERS) answers.clear();
+        if (answers.size > MAX_ANSWERS) { answers.clear(); missingAt.clear(); }
         for (const listener of listeners) listener();
       })
       .catch(() => {
@@ -112,6 +118,7 @@ function flush(): void {
 /** Forget everything. For tests — nothing in the app has a reason to. */
 export function resetPathStore(): void {
   answers.clear();
+  missingAt.clear();
   inflight.clear();
   queue.clear();
   listeners.clear();
