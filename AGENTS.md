@@ -319,6 +319,9 @@ config.worktree must remain protected. Detached, unborn or malformed HEADs
 get no branch ref grant. Neither do main, master, develop, the primary
 worktree's branch or the known origin/HEAD default. Ref files and parent paths
 must not be symlinks.
+There is no task-branch pin yet: `commit_roots` is recomputed from HEAD for
+each launch, resume and turn, so a worker may switch to and commit on another
+non-protected branch; protected branches are refused.
 Validate the original admin path without following symlinks, and require its
 gitdir back-pointer to name this worktree's .git file, before any grant. Fresh starts,
 resumes and turns keep all writable roots together; `--add-dir` is for
