@@ -745,6 +745,22 @@ fn bounded_text(label: &str, value: &str, max: usize, hint: &str) -> Result<Stri
     Ok(value.to_owned())
 }
 
+/// Display names can change; identity is the project id and repository.
+/// An ordinary task without an explicit destination belongs to its run's
+/// default repository, just as workspace planning treats it.
+fn same_destination(
+    left: Option<&TaskDestination>,
+    right: Option<&TaskDestination>,
+    run: &Run,
+) -> bool {
+    let identity = |destination: Option<&TaskDestination>| {
+        destination
+            .map(|d| (d.project_id.clone(), d.repository.clone()))
+            .unwrap_or_else(|| (run.workspace_id.clone(), run.root_path.clone()))
+    };
+    identity(left) == identity(right)
+}
+
 impl OrchestrationStore {
     /// Record one peer request from `actor` as a task for its teammate,
     /// waiting for the person. Nothing starts here: the plan card decides.
@@ -862,17 +878,18 @@ impl OrchestrationStore {
         let mut reopened_plan = false;
         let (task, left, waits_for_requester) = self.mutate(|data| {
             let current = asking(data, actor, lead, agents)?;
+            // Equivalence is the same run, assignee identity, trimmed title
+            // and full spec, and project/repository. It includes ordinary
+            // coordinator tasks and requests from other attempts/requesters.
+            // Settled/cancelled/replaced work does not block a new request.
             if let Some(existing) = data.tasks.values().find(|task| {
                 task.run_id == run.id && task.title == title && task.spec == spec
-                    && task.assignee.as_ref() == Some(&teammate)
-                    && task.destination == destination
-                    && task.peer_request.as_ref().is_some_and(|request| {
-                        request.requester_chat_key == actor
-                            && request.requester_attempt_id == current.attempt_id
-                            && request.max_minutes == max_minutes
-                    })
+                    && task.assignee.as_ref().is_some_and(|who| who.id == teammate.id)
+                    && matches!(task.status, TaskStatus::Pending | TaskStatus::Ready | TaskStatus::Running | TaskStatus::Blocked)
+                    && task.result.is_none() && task.superseded_by.is_none()
+                    && same_destination(task.destination.as_ref(), destination.as_ref(), &run)
             }) {
-                return Err(format!("This exact peer request already exists as task {} ({:?}). Read its state instead of recording it again; its approval has not been changed.", existing.id, existing.status));
+                return Err(format!("Equivalent work already exists as task {} ({:?}). Read its state instead of recording it again; its approval has not been changed.", existing.id, existing.status));
             }
             over_limit(&current)?;
             // Routed and planned against `run`: a run that appeared or went
@@ -2018,6 +2035,144 @@ pub(crate) mod tests {
             before
         );
         assert_eq!(store.snapshot(Some(&run.id)).unwrap().tasks.len(), 2);
+    }
+
+    // Ordinary coordinator-created tasks, with no PeerRequest metadata.
+    fn ordinary_peer_task(store: &OrchestrationStore, run: &Run, wanted: &PeerWork) -> Task {
+        let (agents, _) = roster();
+        let peer = agents.iter().find(|a| a.id == wanted.peer).unwrap();
+        store
+            .create_task_full(
+                &run.coordinator_chat_key,
+                run.id.clone(),
+                wanted.title.trim().into(),
+                format!(
+                    "{}\n\nExpected output\n{}",
+                    wanted.request.trim(),
+                    wanted.output.trim()
+                ),
+                vec![],
+                None,
+                Some(automation::WorkerSettings {
+                    agent: peer.agent,
+                    access: peer.access,
+                    model: Some(peer.model.clone()),
+                    effort: peer.effort.clone(),
+                    recovery: None,
+                }),
+                Some(TaskAssignee {
+                    id: peer.id.clone(),
+                    name: peer.name.clone(),
+                }),
+                Some(TaskDestination {
+                    project_id: run.workspace_id.clone(),
+                    project_name: "Project workspace".into(),
+                    repository: run.root_path.clone(),
+                }),
+                None,
+                TaskEnvironment::None,
+                None,
+                TaskKind::Check,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn an_approved_ordinary_qa_task_refuses_a_duplicate_without_reopening_revision_three() {
+        let home = TestDir::new("approved-ordinary-duplicate");
+        let _profile = crate::profile::started_in(&home.0);
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        store.require_plan_approval(&run.id).unwrap();
+        let parent = ordinary_peer_task(
+            &store,
+            &run,
+            &PeerWork {
+                peer: "ada".into(),
+                title: "Worker".into(),
+                ..work("ada")
+            },
+        );
+        let wanted = work("bo");
+        let qa = ordinary_peer_task(&store, &run, &wanted);
+        store
+            .approve_plan(&run.coordinator_chat_key, &run.id, None, None)
+            .unwrap();
+        let (_, _, worker, _) = store
+            .reserve_attempt(&run.coordinator_chat_key, &host_launch(&store, &parent))
+            .unwrap();
+        let worker = store
+            .activate_attempt(&worker.id, run.root_path.clone(), "fixture".into(), true)
+            .unwrap();
+        let before = store.snapshot(Some(&run.id)).unwrap();
+        let plan = before.runs[0].plan_approval.as_ref().unwrap();
+        assert_eq!(plan.revision, 3);
+        assert_eq!(plan.status, PlanStatus::Approved);
+        assert_eq!(before.tasks.len(), 2);
+        assert!(qa.peer_request.is_none());
+        assert!(task_of(&store, &qa.id).approved.is_some());
+        let refused = from_worker(&store, &worker, wanted).unwrap_err();
+        assert!(refused.contains(&qa.id), "{refused}");
+        let after = store.snapshot(Some(&run.id)).unwrap();
+        assert_eq!(
+            serde_json::to_value(after).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
+    }
+
+    #[test]
+    fn pending_ordinary_work_is_also_deduplicated_by_assignee_id_and_effective_destination() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = worker_ada(&store, &run);
+        store.require_plan_approval(&run.id).unwrap();
+        let wanted = work("bo");
+        let qa = ordinary_peer_task(&store, &run, &wanted);
+        store
+            .mutate(|data| {
+                let qa = data.tasks.get_mut(&qa.id).unwrap();
+                qa.assignee.as_mut().unwrap().name = "Old display name".into();
+                qa.destination = None; // The same default repository.
+                Ok(())
+            })
+            .unwrap();
+        let before = serde_json::to_value(run_of(&store, &run.id).plan_approval).unwrap();
+        let refused = from_worker(&store, &worker, wanted).unwrap_err();
+        assert!(refused.contains(&qa.id), "{refused}");
+        assert_eq!(
+            serde_json::to_value(run_of(&store, &run.id).plan_approval).unwrap(),
+            before
+        );
+        assert_eq!(store.snapshot(Some(&run.id)).unwrap().tasks.len(), 2);
+    }
+
+    #[test]
+    fn settled_cancelled_or_replaced_work_allows_a_new_peer_request() {
+        for (status, replaced) in [
+            (TaskStatus::Completed, false),
+            (TaskStatus::Failed, false),
+            (TaskStatus::Cancelled, false),
+            (TaskStatus::Ready, true),
+        ] {
+            let store = OrchestrationStore::default();
+            let run = run(&store);
+            let worker = worker_ada(&store, &run);
+            let wanted = work("bo");
+            let qa = ordinary_peer_task(&store, &run, &wanted);
+            store
+                .mutate(|data| {
+                    let task = data.tasks.get_mut(&qa.id).unwrap();
+                    task.status = status;
+                    if replaced {
+                        task.superseded_by = Some("task_replacement".into());
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            let made = from_worker(&store, &worker, wanted).unwrap();
+            assert_ne!(made.task_id, qa.id);
+            assert_eq!(store.snapshot(Some(&run.id)).unwrap().tasks.len(), 3);
+        }
     }
 
     #[test]

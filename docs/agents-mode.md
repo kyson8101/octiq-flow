@@ -881,6 +881,16 @@ extended. The host (`orchestration/peer_request.rs`):
   request does not start before the person approves. Tasks they had already
   approved keep starting (see **What a waiting plan holds**). A run that never
   asked for approval asks from then on. There is no new card type.
+- **refuses equivalent unfinished work already in that run.** Equivalence is
+  the same assignee id, case-sensitive title and full spec (outer whitespace
+  trimmed), and project id/repository, including the run's default destination.
+  This covers ordinary coordinator tasks and requests from any requester or
+  attempt; display names and time bounds do not make the work different.
+  Pending, ready, running and blocked tasks with no settled result count.
+  Completed, failed, cancelled or replaced tasks do not. The refusal names
+  the existing task id, inserts nothing and leaves plan approval and its
+  revision untouched. The approval card's settle and stale-revision guards
+  still apply to genuine new work.
 - **puts the task where the requester's work is.** A worker's request joins
   the worker's own run, and that run's coordinator is told. A lead chat's
   joins the live run the chat coordinates; when it coordinates none, the host
