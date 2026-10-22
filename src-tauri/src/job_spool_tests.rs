@@ -895,6 +895,30 @@ fn an_answer_planted_as_a_link_is_replaced_not_written_through() {
     assert_eq!(answer["id"], jobs_of(&scene, &chat)[0]["id"]);
 }
 
+/// Feedback dd0d3e6a: failed atomic rename owes an ack, not an ack timestamp.
+#[test]
+fn failed_ack_write_is_retried_without_registering_another_job() {
+    let scene = scene();
+    let chat = chat();
+    let (dir, key) = open(&scene, &chat);
+    let file = file_in(&dir);
+    let ack = file.with_extension("ack");
+    std::fs::create_dir(&ack).unwrap(); // Atomic rename must fail on every OS.
+    append(&file, &(start(&key) + &end(&key, 0)));
+    pass(&scene, true, true);
+    assert!(cursor_of(&scene, &dir, &file, |c| c.ack_at.is_none()
+        && c.pending_ack.is_some()));
+    assert!(file.exists(), "keep the pending answer recoverable");
+    assert_eq!(jobs_of(&scene, &chat).len(), 1);
+    std::fs::remove_dir(&ack).unwrap();
+    pass(&scene, true, true);
+    let answer: Value = serde_json::from_str(&std::fs::read_to_string(&ack).unwrap()).unwrap();
+    assert_eq!(answer["id"], jobs_of(&scene, &chat)[0]["id"]);
+    assert!(cursor_of(&scene, &dir, &file, |c| c.ack_at.is_some()
+        && c.pending_ack.is_none()));
+    assert!(!file.exists());
+}
+
 /// Feedback 9c959462: the filename is not a wrapper invocation identity.
 #[test]
 fn copying_or_recreating_a_spool_file_reuses_the_invocation_receipt() {

@@ -382,4 +382,6 @@ renaming, copying or recreating a valid start returns the original host job id;
 its progress/end cannot create a second job or wake. Older starts without that
 field are deduplicated by canonical start content (including wrapper pid).
 Receipts live only as long as that launch's secret; another launch cannot replay
-its records.
+its records. A failed atomic ack write leaves a pending answer to retry on later
+passes. `ack_at` is set only after a successful rename, and the spool stays until
+that answer is written. Cleanup never treats a failed write as a host-owned ack.

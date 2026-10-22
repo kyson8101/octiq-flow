@@ -114,6 +114,7 @@ struct Cursor {
     unreadable_logged: bool,
     /// When the answer to its start was written.
     ack_at: Option<Instant>,
+    pending_ack: Option<Value>,
     /// Done with: the system said it is gone, or the host removed it.
     removed: bool,
     /// How many times the file was opened, for the tests to count.
@@ -130,6 +131,7 @@ impl Cursor {
             logged: false,
             unreadable_logged: false,
             ack_at: None,
+            pending_ack: None,
             removed: false,
             opened: 0,
         }
@@ -473,6 +475,7 @@ fn read_launch(
             continue;
         };
         if cursor.removed {
+            retry_ack(&folder, name, cursor);
             continue;
         }
         match cursor.vetted {
@@ -558,7 +561,7 @@ fn read_launch(
     // What is left of an own file that is gone: its answer, once
     // `--detach` has had time to read it. Only an answer the host wrote.
     launch.files.retain(|name, cursor| {
-        if !cursor.removed {
+        if !cursor.removed || cursor.pending_ack.is_some() {
             return true;
         }
         if cursor.ack_at.is_some_and(|at| at.elapsed() < ACK_KEEP) {
@@ -667,6 +670,7 @@ fn read_ours(
     alive: &dyn Fn(u32) -> bool,
     running: bool,
 ) -> bool {
+    retry_ack(ctx.folder, name, cursor);
     let jobs = ctx.jobs;
     let path = ctx.dir.join(name);
     // Asked before the read: a wrapper dead before it holds no line it has
@@ -725,7 +729,7 @@ fn read_ours(
         State::Fresh => at_end && !running,
         State::Started(_) => false,
     };
-    if !done {
+    if !done || cursor.pending_ack.is_some() {
         return true;
     }
     match ctx.folder.remove_file(name) {
@@ -841,7 +845,8 @@ fn take_line(line: &[u8], name: &str, cursor: &mut Cursor, ctx: &Ctx) {
                 None => State::Refused,
             };
             cursor.pending_ack = Some(answer);
-                }
+            retry_ack(ctx.folder, name, cursor);
+        }
         (Some("progress"), State::Started(id)) => {
             let Ok(progress) = serde_json::from_value::<Progress>(record) else {
                 return note(cursor, "a progress record that does not parse");
@@ -865,12 +870,23 @@ fn take_line(line: &[u8], name: &str, cursor: &mut Cursor, ctx: &Ctx) {
 /// under a new temporary name (never through a link) and renamed over the
 /// answer's name, so it is never read in part. A link planted at that name
 /// is replaced as a name; what it pointed at is not touched.
-fn write_ack(folder: &Folder, stem: &str, answer: &Value) {
+fn write_ack(folder: &Folder, stem: &str, answer: &Value) -> std::io::Result<()> {
     let name = format!("{stem}.ack");
     let temp = format!("{stem}.ack-{}", uuid::Uuid::new_v4().simple());
     let written = folder.write_new(&temp, answer.to_string().as_bytes());
-    if written.is_err() || folder.rename(&temp, &name).is_err() {
+    let result = written.and_then(|()| folder.rename(&temp, &name));
+    if result.is_err() {
         let _ = folder.remove_file(&temp);
+    }
+    result
+}
+
+fn retry_ack(folder: &Folder, name: &str, cursor: &mut Cursor) {
+    if let (Some(stem), Some(answer)) = (spool_stem(name), cursor.pending_ack.as_ref()) {
+        if write_ack(folder, stem, answer).is_ok() {
+            cursor.ack_at = Some(Instant::now());
+            cursor.pending_ack = None;
+        }
     }
 }
 
