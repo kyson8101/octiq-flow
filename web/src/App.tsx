@@ -2911,7 +2911,7 @@ export default function App() {
   const openConversation = useCallback((c: Conversation) => {
     setUnavailableChat(null);
     setNewChatError(null);
-    // Asked for a chat, the phone shows the chat: its plan page is put away.
+    // Open the conversation with its saved model and access settings.
     const model = modelFromId(c.modelId ?? meta.current[c.id]?.modelId ?? null) ?? MODELS[0];
     const conversationAccess = accessFor(model.agent, (c.permission as AccessLevel) ?? "read");
     // The level this chat runs at, not the one the page last held: a resumed

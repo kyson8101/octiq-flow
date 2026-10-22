@@ -2965,9 +2965,9 @@ person stopped did not fail. So:
   replacement uses one and carries the count on (`retry::replaced`).
 - **No count and no budget reads a fact that exists to be shown.** A failure
   has two readings and they differ on purpose. `retry::failed_as` is what is
-  SHOWN (`Task::failure`, a plan item's progress, the notice to the
-  coordinator): it says nothing of a failure the host has scheduled its own
-  recovery of, because nobody is asked about that one. `retry::counted` is
+  SHOWN (`Task::failure`, the notice to the coordinator): it says nothing of
+  a failure the host has scheduled its own recovery of, because nobody is
+  asked about that one. `retry::counted` is
   what an act right now would answer, for everything that is counted: that
   scheduled recovery is a failure there, and so is a failed check that was
   reopened. `retry::allows`, `retry::started` and `retry::replaced` are

@@ -97,8 +97,8 @@ describe("a Codex seat answering", () => {
         id: "mcp-1",
         type: "mcp_tool_call",
         server: "octiq",
-        tool: "preview_html",
-        arguments: { title: "Tool preview" },
+        tool: "task_status",
+        arguments: { objective: "Check tool names" },
         status: "inProgress",
       },
     });
@@ -108,10 +108,10 @@ describe("a Codex seat answering", () => {
         id: "mcp-1",
         type: "mcp_tool_call",
         server: "octiq",
-        tool: "preview_html",
-        arguments: { title: "Tool preview" },
+        tool: "task_status",
+        arguments: { objective: "Check tool names" },
         status: "completed",
-        result: { content: [{ type: "text", text: "Preview published" }] },
+        result: { content: [{ type: "text", text: "Task status reported" }] },
       },
     });
     const tools = state.messages.flatMap((message) =>
@@ -120,11 +120,11 @@ describe("a Codex seat answering", () => {
 
     expect(tools).toHaveLength(1);
     expect(tools[0]).toMatchObject({
-      name: "mcp__octiq__preview_html",
-      args: { title: "Tool preview" },
+      name: "mcp__octiq__task_status",
+      args: { objective: "Check tool names" },
       state: "done",
     });
-    expect(tools[0]?.result).toContain("Preview published");
+    expect(tools[0]?.result).toContain("Task status reported");
   });
 
   it("marks a command as finished once its result is in", () => {

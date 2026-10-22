@@ -358,9 +358,7 @@ The job "render · "final" cut" failed: exit code 1, after 2m 14s.
   `durable_user_turn_exists`): no record file is an empty record, and a
   record file that cannot be read is an error, so its wake stays owed and is
   asked again on the watcher's next pass. It was read as empty and handed
-  over a second time. The plan's Start shares the reader: a `Tell the agent`
-  asked while the record cannot be read is refused in words and sends
-  nothing.
+  over a second time.
 - A running job keeps its chat off the idle reaper, like native background
   work.
 - **A restart interrupts.** The wrapper's token and the pid watch are in

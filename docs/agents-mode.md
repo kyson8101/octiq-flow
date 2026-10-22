@@ -1731,7 +1731,7 @@ too and takes the host's recovery off. (Until the fix of 2026-10-14 a
 replacement read what is shown, found no failure, and was neither held to
 the budget nor counted: a coordinator could replace without end.) In the
 host the two readings are two functions, `retry::failed_as` (shown: the
-task's `failure`, a plan item's progress, the notice to the coordinator)
+task's `failure`, the notice to the coordinator)
 and `retry::counted` (the budget and the count), and a test names every
 caller of the first.
 
