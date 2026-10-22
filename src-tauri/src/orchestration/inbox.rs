@@ -46,6 +46,9 @@ pub struct Notification {
     pub state: DeliveryState,
     pub attempts: u32,
     pub coalesced: u32,
+    /// Enqueue order under the ledger lock. Legacy records have no proven order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
     pub created_at: i64,
     pub updated_at: i64,
     pub next_attempt_at: i64,
@@ -68,6 +71,13 @@ pub(super) fn enqueue(
     {
         return;
     }
+    // Live enqueues hold the inbox's ledger lock through mutate. Persist the
+    // high-water mark with the notice, including when progress replaces content.
+    // Exhaustion must lose ordering evidence, never wrap and cancel newer work.
+    let sequence = data.notification_sequence.checked_add(1);
+    if let Some(sequence) = sequence {
+        data.notification_sequence = sequence;
+    }
     let now = now_ms();
     if kind == "progress" {
         if let Some(n) = data.notifications.values_mut().find(|n| {
@@ -77,9 +87,12 @@ pub(super) fn enqueue(
                 && n.kind == "progress"
                 && n.state == DeliveryState::Pending
                 && n.attempts == 0
+                && n.sequence.is_some()
+                && sequence.is_some()
         }) {
             n.source = source;
             n.body = body;
+            n.sequence = sequence;
             n.updated_at = now;
             n.coalesced += 1;
             n.next_attempt_at = (now + 2_000).min(n.created_at + 10_000);
@@ -112,12 +125,28 @@ pub(super) fn enqueue(
             state: DeliveryState::Pending,
             attempts: 0,
             coalesced: 0,
+            sequence,
             created_at: now,
             updated_at: now,
             next_attempt_at: now + if kind == "progress" { 2_000 } else { 0 },
             last_error: None,
         },
     );
+}
+
+/// Legacy notices have no enqueue order: retain them all, presented by their
+/// timestamps before sequenced notices. Stable sorting leaves an unknown tie
+/// alone; it must never make a random receipt id evidence for folding.
+fn batch_order(n: &Notification) -> (bool, u64, i64) {
+    (
+        n.sequence.is_some(),
+        n.sequence.unwrap_or(0),
+        if n.sequence.is_none() {
+            n.created_at
+        } else {
+            0
+        },
+    )
 }
 
 /// A notice of a one-time command allowance from a build that offered one.
@@ -155,7 +184,7 @@ fn informational_attempt<'a>(
 }
 
 fn stale_reason(data: &Stored, n: &Notification) -> Option<String> {
-    if let Some((attempt, message)) = informational_attempt(data, n) {
+    if let Some((attempt, _)) = informational_attempt(data, n) {
         let task = data.tasks.get(&attempt.task_id)?;
         if !matches!(
             attempt.status,
@@ -171,9 +200,10 @@ fn stale_reason(data: &Stored, n: &Notification) -> Option<String> {
         if data.notifications.values().any(|other| {
             other.id != n.id
                 && other.state != DeliveryState::Cancelled
-                && informational_attempt(data, other).is_some_and(|(a, m)| {
-                    a.id == attempt.id && (m.created_at, &m.id) > (message.created_at, &message.id)
-                })
+                // Neither timestamps nor UUIDs prove a legacy notice's order.
+                // Keep both when either side lacks a sequence (or they tie).
+                && n.sequence.zip(other.sequence).is_some_and(|(this, next)| next > this)
+                && informational_attempt(data, other).is_some_and(|(a, _)| a.id == attempt.id)
         }) {
             return Some(format!(
                 "Folded worker update: a newer status exists for attempt {}.",
@@ -468,7 +498,7 @@ impl OrchestrationStore {
             })
             .cloned()
             .collect();
-        due.sort_by_key(|n| (n.created_at, n.id.clone()));
+        due.sort_by_key(batch_order);
         // Bound chats per pass, never split one chat's due backlog into turns.
         let mut targets = BTreeSet::new();
         due.retain(|n| {
@@ -557,9 +587,9 @@ impl OrchestrationStore {
                             .is_some_and(|r| r.coordinator_chat_key != key)
                         && valid(data, n)
                 })
-                .map(|n| (n.created_at, n.id.clone()))
+                .map(|n| (batch_order(n), n.id.clone()))
                 .collect();
-            ids.sort();
+            ids.sort_by_key(|(order, _)| *order);
             let mut taken = Vec::new();
             for (_, id) in ids {
                 let n = data.notifications.get_mut(&id).unwrap();
@@ -836,13 +866,32 @@ mod tests {
         for body in ["old status", "latest status"] {
             ping(&store, &run, &worker, "status", body);
         }
-        // Give the two events a strict order independent of clock precision.
+        // Equal timestamps and reverse UUID order must still keep the real latest.
         store
             .mutate(|data| {
-                for message in data.messages.values_mut() {
-                    if message.body == "latest status" {
-                        message.created_at += 1;
-                    }
+                let timestamp = worker.created_at;
+                for (body, id) in [
+                    ("old status", "message_f0000000000040008000000000000000"),
+                    ("latest status", "message_00000000000040008000000000000000"),
+                ] {
+                    let previous = data
+                        .messages
+                        .values()
+                        .find(|m| m.body == body)
+                        .unwrap()
+                        .id
+                        .clone();
+                    let mut message = data.messages.remove(&previous).unwrap();
+                    message.id = id.into();
+                    message.created_at = timestamp;
+                    data.messages.insert(id.into(), message);
+                    let n = data
+                        .notifications
+                        .values_mut()
+                        .find(|n| n.source == format!("message:{previous}"))
+                        .unwrap();
+                    n.source = format!("message:{id}");
+                    n.created_at = timestamp;
                 }
                 Ok(())
             })
@@ -861,6 +910,276 @@ mod tests {
             .unwrap();
         assert_eq!(old.state, DeliveryState::Cancelled);
         assert!(old.last_error.unwrap().contains("newer status"));
+    }
+
+    #[test]
+    fn statuses_without_proven_sequence_order_are_both_kept() {
+        for sequences in [
+            [None, None],
+            [None, Some(2)],
+            [Some(1), None],
+            [Some(7), Some(7)],
+        ] {
+            for same_millisecond in [false, true] {
+                let store = OrchestrationStore::default();
+                let run = run(&store);
+                let worker = running_worker(&store, &run);
+                ping(&store, &run, &worker, "status", "old status");
+                ping(&store, &run, &worker, "status", "latest status");
+                store
+                    .mutate(|data| {
+                        for message in data.messages.values_mut() {
+                            message.created_at = worker.created_at
+                                + if message.body == "latest status" && !same_millisecond {
+                                    1
+                                } else {
+                                    0
+                                };
+                        }
+                        for n in data.notifications.values_mut() {
+                            n.sequence = sequences[usize::from(n.body.contains("latest status"))];
+                        }
+                        // Exercise legacy deserialization too: None is omitted on disk.
+                        *data =
+                            serde_json::from_value(serde_json::to_value(&*data).unwrap()).unwrap();
+                        Ok(())
+                    })
+                    .unwrap();
+                let ids = store
+                    .due_notifications(i64::MAX)
+                    .unwrap()
+                    .into_iter()
+                    .map(|n| n.id)
+                    .collect::<Vec<_>>();
+                let kept = store.claim_notifications(&ids, i64::MAX - 60_000).unwrap();
+                assert_eq!(
+                    kept.len(),
+                    2,
+                    "{sequences:?}, same timestamp: {same_millisecond}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn notification_batches_follow_sequence_despite_clock_and_reverse_receipt_ids() {
+        for to_worker in [false, true] {
+            for clock_backwards in [false, true] {
+                let store = OrchestrationStore::default();
+                let run = run(&store);
+                let worker = running_worker(&store, &run);
+                let target = if to_worker {
+                    &worker.worker_chat_key
+                } else {
+                    &run.coordinator_chat_key
+                };
+                store
+                    .mutate(|data| {
+                        for (body, id, created_at) in [
+                            ("first", "receipt_ffffffff", 100),
+                            (
+                                "second",
+                                "receipt_00000000",
+                                if clock_backwards { 99 } else { 100 },
+                            ),
+                        ] {
+                            enqueue(
+                                data,
+                                &run.id,
+                                &worker.worker_chat_key,
+                                target,
+                                body.into(),
+                                "question",
+                                body.into(),
+                            );
+                            let previous = data
+                                .notifications
+                                .values()
+                                .find(|n| n.body == body)
+                                .unwrap()
+                                .id
+                                .clone();
+                            let mut n = data.notifications.remove(&previous).unwrap();
+                            n.id = id.into();
+                            n.created_at = created_at;
+                            data.notifications.insert(id.into(), n);
+                        }
+                        Ok(())
+                    })
+                    .unwrap();
+                let due = store.due_notifications(i64::MAX).unwrap();
+                assert_eq!(
+                    due.iter().map(|n| n.body.as_str()).collect::<Vec<_>>(),
+                    ["first", "second"]
+                );
+                if to_worker {
+                    let taken = store.take_for_working_worker(target).unwrap();
+                    assert_eq!(
+                        taken.iter().map(|n| n.body.as_str()).collect::<Vec<_>>(),
+                        ["first", "second"]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn notification_sequence_survives_reload_and_pruning_all_receipts() {
+        let home = crate::test_dir::TestDir::new("notification-sequence");
+        let _profile = crate::profile::started_in(&home);
+        let path = home.join("inbox.json");
+        let store = OrchestrationStore::load(path.clone());
+        let run = run(&store);
+        for body in ["first", "second"] {
+            store
+                .mutate(|data| {
+                    enqueue(
+                        data,
+                        &run.id,
+                        "chat:worker",
+                        &run.coordinator_chat_key,
+                        body.into(),
+                        "question",
+                        body.into(),
+                    );
+                    Ok(())
+                })
+                .unwrap();
+        }
+        let order = |store: &OrchestrationStore| {
+            store
+                .due_notifications(i64::MAX)
+                .unwrap()
+                .iter()
+                .map(|n| n.sequence)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&store), [Some(1), Some(2)]);
+        drop(store);
+        let store = OrchestrationStore::load(path.clone());
+        assert_eq!(order(&store), [Some(1), Some(2)]);
+        store
+            .mutate(|data| {
+                // Use the real retention path: the high-water mark outlives receipts.
+                data.runs.get_mut(&run.id).unwrap().status = RunStatus::Completed;
+                for n in data.notifications.values_mut() {
+                    n.state = DeliveryState::Acknowledged;
+                }
+                assert!(retention::prune_run(data, &run.id));
+                assert!(data.notifications.is_empty());
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+        let store = OrchestrationStore::load(path);
+        store
+            .mutate(|data| {
+                enqueue(
+                    data,
+                    &run.id,
+                    "chat:worker",
+                    &run.coordinator_chat_key,
+                    "third".into(),
+                    "question",
+                    "third".into(),
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(order(&store), [Some(3)]);
+    }
+
+    #[test]
+    fn legacy_ledger_keeps_missing_sequences_through_reload() {
+        let home = crate::test_dir::TestDir::new("notification-legacy-sequence");
+        let _profile = crate::profile::started_in(&home);
+        let path = home.join("inbox.json");
+        let store = OrchestrationStore::load(path.clone());
+        let run = run(&store);
+        store
+            .mutate(|data| {
+                enqueue(
+                    data,
+                    &run.id,
+                    "chat:worker",
+                    &run.coordinator_chat_key,
+                    "old".into(),
+                    "question",
+                    "old".into(),
+                );
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+        let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        saved
+            .as_object_mut()
+            .unwrap()
+            .remove("notification_sequence");
+        for n in saved["notifications"].as_object_mut().unwrap().values_mut() {
+            n.as_object_mut().unwrap().remove("sequence");
+        }
+        fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let store = OrchestrationStore::load(path);
+        assert!(store.due_notifications(i64::MAX).unwrap()[0]
+            .sequence
+            .is_none());
+        store
+            .mutate(|data| {
+                enqueue(
+                    data,
+                    &run.id,
+                    "chat:worker",
+                    &run.coordinator_chat_key,
+                    "new".into(),
+                    "question",
+                    "new".into(),
+                );
+                Ok(())
+            })
+            .unwrap();
+        let due = store.due_notifications(i64::MAX).unwrap();
+        assert_eq!(
+            due.iter().map(|n| n.body.as_str()).collect::<Vec<_>>(),
+            ["old", "new"]
+        );
+        assert_eq!(
+            due.iter().map(|n| n.sequence).collect::<Vec<_>>(),
+            [None, Some(1)]
+        );
+    }
+
+    #[test]
+    fn coalesced_progress_takes_the_new_enqueue_sequence_but_legacy_progress_is_kept() {
+        for legacy in [false, true] {
+            let store = OrchestrationStore::default();
+            let run = run(&store);
+            let worker = running_worker(&store, &run);
+            ping(&store, &run, &worker, "progress", "first");
+            if legacy {
+                store
+                    .mutate(|data| {
+                        for n in data.notifications.values_mut() {
+                            n.sequence = None;
+                        }
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            ping(&store, &run, &worker, "question", "question");
+            ping(&store, &run, &worker, "progress", "second");
+            let due = store.due_notifications(i64::MAX).unwrap();
+            let bodies = due.iter().map(|n| n.body.as_str()).collect::<Vec<_>>();
+            if legacy {
+                assert_eq!(due.len(), 3);
+                assert!(bodies[0].contains("first"));
+            } else {
+                assert_eq!(due.len(), 2);
+            }
+            assert!(bodies[bodies.len() - 2].contains("question"));
+            assert!(bodies[bodies.len() - 1].contains("second"));
+            assert_eq!(due.last().unwrap().sequence, Some(3));
+        }
     }
 
     #[test]

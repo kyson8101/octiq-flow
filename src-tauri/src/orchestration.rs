@@ -1037,6 +1037,9 @@ struct Stored {
     messages: BTreeMap<String, OrchestrationMessage>,
     #[serde(default)]
     notifications: BTreeMap<String, inbox::Notification>,
+    /// Last enqueue sequence, retained even when notifications are pruned.
+    #[serde(default)]
+    notification_sequence: u64,
     #[serde(default)]
     resume_contexts: BTreeMap<String, crate::agent_chat::StartContext>,
     #[serde(default)]
@@ -1085,6 +1088,7 @@ impl Default for Stored {
             gates: BTreeMap::new(),
             messages: BTreeMap::new(),
             notifications: BTreeMap::new(),
+            notification_sequence: 0,
             resume_contexts: BTreeMap::new(),
             native_decisions: BTreeMap::new(),
             services: BTreeMap::new(),
