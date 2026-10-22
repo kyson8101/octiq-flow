@@ -61,8 +61,19 @@ pub(crate) fn thread_request(request: ThreadRequest<'_>) -> Value {
         params.insert("sandbox".into(), json!(codex_sandbox(access)));
         params.insert("approvalPolicy".into(), json!(codex_approval(access)));
     }
+    let mut config = Map::new();
     if let Some(effort) = request.effort {
-        params.insert("config".into(), json!({ "model_reasoning_effort": effort }));
+        config.insert("model_reasoning_effort".into(), json!(effort));
+    }
+    let roots = writable_roots(request.cwd, request.workspace_roots, request.access);
+    if roots != request.workspace_roots {
+        config.insert(
+            "sandbox_workspace_write.writable_roots".into(),
+            json!(roots),
+        );
+    }
+    if !config.is_empty() {
+        params.insert("config".into(), Value::Object(config));
     }
 
     let method = if let Some(thread_id) = request.resume {
@@ -140,10 +151,23 @@ pub(crate) fn turn_request(request: TurnRequest<'_>) -> Value {
         params.insert("approvalPolicy".into(), json!(codex_approval(access)));
         params.insert(
             "sandboxPolicy".into(),
-            sandbox_policy(access, request.workspace_roots),
+            sandbox_policy(
+                access,
+                &writable_roots(request.cwd, request.workspace_roots, request.access),
+            ),
         );
     }
     json!({ "id": request.id, "method": "turn/start", "params": params })
+}
+
+fn writable_roots(cwd: &str, workspace: &[String], access: Option<Access>) -> Vec<String> {
+    let mut roots = workspace.to_vec();
+    for root in crate::codex_git::commit_roots(std::path::Path::new(cwd), access) {
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    roots
 }
 
 fn sandbox_policy(access: Access, roots: &[String]) -> Value {

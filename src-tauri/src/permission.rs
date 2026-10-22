@@ -67,40 +67,38 @@ pub const DENIED: &str = "you denied it";
 /// the chat. Neither is on Claude's `--allowedTools`, a command line, so
 /// this list is what keeps a card off every change to a plan. Starting a
 /// plan is no tool at all.
+pub const HOST_BOOKKEEPING: &[&str] = &[
+    "vault_agent_memory_append",
+    "task_status",
+    "orchestration_worker_report",
+    "plan_read",
+    "plan_update",
+    "set_chat_title",
+    "ask_user",
+    "feedback_submit",
+    "feedback_update",
+    "preview_image",
+    "preview_html",
+    "island_propose",
+    "island_look",
+    "island_build",
+    "island_grant",
+    "pin_file",
+    "handover",
+    "handover_ask",
+    "handover_outcome",
+    "agent_register",
+    "agent_update",
+    "agent_delete",
+    "agent_policy_update",
+    "team_create",
+    "team_update",
+    "request_access",
+];
+
 pub fn host_bookkeeping(tool: &str) -> bool {
-    matches!(
-        tool.strip_prefix("mcp__octiq__"),
-        Some(
-            "vault_agent_memory_append"
-                | "task_status"
-                // Settlement is host bookkeeping; the hook/ledger still
-                // validate the worker and its exact current attempt.
-                | "orchestration_worker_report"
-                | "plan_read"
-                | "plan_update"
-                | "set_chat_title"
-                | "ask_user"
-                | "feedback_submit"
-                | "feedback_update"
-                | "preview_image"
-                | "preview_html"
-                | "island_propose"
-                | "island_look"
-                | "island_build"
-                | "island_grant"
-                | "pin_file"
-                | "handover"
-                | "handover_ask"
-                | "handover_outcome"
-                | "agent_register"
-                | "agent_update"
-                | "agent_delete"
-                | "agent_policy_update"
-                | "team_create"
-                | "team_update"
-                | "request_access"
-        )
-    )
+    tool.strip_prefix("mcp__octiq__")
+        .is_some_and(|name| HOST_BOOKKEEPING.contains(&name))
 }
 
 /// What the user said.
@@ -127,6 +125,9 @@ impl Decision {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
+    /// Host-stamped provider for native confirmation cards. Never trusted from a hook.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<crate::agent_provider::AgentKind>,
     /// Which chat asked — the key OctiqFlow gave the agent process.
     pub chat_key: Option<String>,
     pub session_id: Option<String>,

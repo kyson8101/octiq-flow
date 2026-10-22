@@ -300,6 +300,22 @@ use a 15-minute cooldown. Registered agent defaults and identity do not change.
   `codex ask` after the binary/evidence paths to verify manual selections
   across a real server restart.
 
+### Codex approvals and linked worktrees
+
+Codex's native MCP approvals use the same `permission::HOST_BOOKKEEPING` list
+as the Claude hook; generate command-line tool approvals from that list.
+Front desks still approve only `route_chat`. The elicitation fallback accepts
+only an empty native `octiq` confirmation for a listed tool in the current
+thread/turn. Codex 0.163 names the tool in its message, not `_meta.tool_name`;
+use the captured fixture and `scripts/capture-codex-elicitation.mjs`.
+
+At Auto and Edits, linked-worktree commits get only shared objects/refs/logs
+and the current worktree's index, commit-message, HEAD and lock paths
+(`codex_git.rs`). Never grant the shared git dir or worktree admin dir:
+`hooks`, `config` and `config.worktree` must remain protected. Fresh starts,
+resumes and turns keep all writable roots together; `--add-dir` is for
+directories, not these file roots. Native cards carry the actual provider.
+
 ### Persistence locations
 
 | Store | Path | Owner |

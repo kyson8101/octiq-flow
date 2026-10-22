@@ -28,6 +28,7 @@ mod chat_search;
 mod chat_task;
 mod claude_allow;
 mod codex_app_server;
+mod codex_git;
 mod diagnostics;
 mod dispatch;
 mod failover_policy;

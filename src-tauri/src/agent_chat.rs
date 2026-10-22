@@ -2924,6 +2924,7 @@ fn build_command_with_context(
         prompt: &prompt,
         resume,
         extra_dirs,
+        sandbox_roots: &[],
         effort,
         images,
         lite,
@@ -3869,6 +3870,14 @@ pub(crate) fn start_session(
 
     let provider = provider_for(agent);
     let transport = provider.capabilities().input;
+    let sandbox_roots = if agent == ChatAgent::Codex
+        && !front_desk
+        && transport == crate::agent_provider::InputTransport::CommandLine
+    {
+        crate::codex_git::commit_roots(std::path::Path::new(&cwd), access)
+    } else {
+        Vec::new()
+    };
     let has_prompt = prompt.is_some();
     let prompt = prompt.unwrap_or_default();
     let durable_prompt = visible_prompt.as_deref().unwrap_or(&prompt);
@@ -3919,6 +3928,7 @@ pub(crate) fn start_session(
         prompt: &wire_prompt,
         resume: resume.as_deref(),
         extra_dirs: &extras,
+        sandbox_roots: &sandbox_roots,
         effort: effort.as_deref(),
         images: &images,
         lite: lite.unwrap_or(false) || front_desk,
@@ -6408,6 +6418,7 @@ fn answer_codex_approval(
             .and_then(Value::as_str)
             .map(str::to_string),
         access: None,
+        provider: Some(ChatAgent::Codex),
         ..Default::default()
     };
     let Some(rt) = rt else {
