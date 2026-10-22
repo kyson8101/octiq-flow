@@ -73,7 +73,7 @@ describe("the task panel's environment", () => {
       persona: { id: "a", name: "Maya" },
       runsOn: "Claude Opus 4.7",
       projectName: (id) => (id === "p-flow" ? "octiq-flow" : undefined),
-      launch: { projectId: "p-flow", projectName: "octiq-flow", path: "/code/octiq-flow", baseBranch: "develop", newWorktree: true, prepare: true, useSandbox: false, chosenBy: "auto", reason: "New worktree from develop, so the primary checkout stays untouched." },
+      launch: { projectId: "p-flow", projectName: "octiq-flow", path: "/code/octiq-flow", baseBranch: "develop", newWorktree: true, prepare: true, chosenBy: "auto", reason: "New worktree from develop, so the primary checkout stays untouched." },
     });
     expect(html).toContain("chat-task-agent");
     expect(html).toContain("Maya");

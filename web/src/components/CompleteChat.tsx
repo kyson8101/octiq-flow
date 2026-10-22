@@ -57,18 +57,6 @@ function CompleteIcon({ size = 17 }: { size?: number }) {
   );
 }
 
-/** Work set going: the mark of the host's turn that tells an agent its plan
- *  was started. Not the flag, which is the end of the course. */
-function StartedIcon({ size = 17 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="8.5" />
-      <path d="M10 8.5v7l5.5-3.5z" />
-    </svg>
-  );
-}
-
 /** A job that ran on its own: the mark of the host's turn that tells an agent
  *  a job it registered has ended (`lib/jobs`). */
 function JobIcon({ size = 17 }: { size?: number }) {
@@ -270,16 +258,13 @@ export function ChatCompletionLine({
  *  disclosure that says how much is there. */
 export function WrapUpNote({ label, detail, text, mark = "complete" }: {
   label: string; detail: string; text: string;
-  /** Which of the host's turns this is. A plan's Start is not a completion,
-   *  and does not wear its flag: the mark is a start's. A job's end is told
-   *  to the agent, not asked of it. */
-  mark?: "complete" | "start" | "job";
+  mark?: "complete" | "job";
 }) {
   const lines = text.split("\n").filter((line) => line.trim()).length;
   return (
     <div className="wrap-up-note" data-mark={mark}>
       <span className="wrap-up-note-head">
-        <span className="wrap-up-note-mark" aria-hidden="true">{mark === "start" ? <StartedIcon size={13} /> : mark === "job" ? <JobIcon size={13} /> : <CompleteIcon size={13} />}</span>
+        <span className="wrap-up-note-mark" aria-hidden="true">{mark === "job" ? <JobIcon size={13} /> : <CompleteIcon size={13} />}</span>
         <span className="wrap-up-note-label">{label}</span>
         {detail && <span className="wrap-up-note-detail">{detail}</span>}
       </span>

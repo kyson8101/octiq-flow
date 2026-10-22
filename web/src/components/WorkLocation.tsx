@@ -31,8 +31,6 @@ export function WorkLocation({
   onBranch,
   newWorktree,
   onNewWorktree,
-  useSandbox = false,
-  onUseSandbox,
 }: {
   projects: readonly WorkLocationProject[];
   projectId: string | null;
@@ -42,8 +40,6 @@ export function WorkLocation({
   onBranch: (branch: string) => void;
   newWorktree: boolean;
   onNewWorktree: (enabled: boolean) => void;
-  useSandbox?: boolean;
-  onUseSandbox?: (enabled: boolean) => void;
 }) {
   const offeredProjects = projects.filter((project) => projectSlug(project.name) !== "general");
   const branchOptions = branch && !branches.branches.includes(branch)
@@ -107,11 +103,6 @@ export function WorkLocation({
         />
         <WorktreeIcon />
         <span>New worktree</span>
-      </label>
-
-      <label className="worktree-choice sandbox-choice" title="Prepare local test services and a separate database for this chat">
-        <input type="checkbox" checked={useSandbox} onChange={event => onUseSandbox?.(event.target.checked)} />
-        <span>Use sandbox</span>
       </label>
 
       {branches.error && <span className="work-location-error" role="status">{branches.error}</span>}

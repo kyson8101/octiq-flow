@@ -123,8 +123,6 @@ export function taskStateLabel(
     const state = attempt.execution.state;
     const approval = decisions.some((d) => d.attemptId === attempt.id && d.status === "pending");
     if (approval && (state === "waiting_tool" || state === "awaiting_report")) return "Awaiting approval";
-    const environment = attempt.execution.pendingTools?.["octiq:environment"];
-    if (environment) return environment.startsWith("Waiting for environment capacity") ? "Waiting for an environment slot" : "Preparing environment";
     return EXECUTION_LABELS[state];
   }
   return TASK_LABELS[task.status];

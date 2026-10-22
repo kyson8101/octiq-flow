@@ -180,7 +180,7 @@ async function connect() {
 
 const results = {};
 const key = "chat:refusal";
-const base = { key, cwd: repo, agent: "claude", model: "sonnet", access: "auto", useSandbox: false };
+const base = { key, cwd: repo, agent: "claude", model: "sonnet", access: "auto", };
 const cards = () => events.filter((e) => e.event === "safety-blocked" && e.payload.chatKey === key);
 const fullStops = () => events.filter((e) => e.event === "chat-event" && e.payload.key === key && e.payload.event?.type === "result").length;
 const launches = () => stub().filter((e) => e.argv && e.argv.includes("--input-format") && e.argv.includes("--mcp-config"));

@@ -126,7 +126,7 @@ export function ProsePdf({ path }: { path: string }) {
 
 /** An HTML page: a card, shut. Agent-written pages run scripts, so one only
  *  runs when asked — here, in a sandboxed frame with no access to this page, or
- *  in a tab of its own, which is where the Preview panel sends them too. */
+ *  in a tab of its own. */
 export function ProsePage({ path }: { path: string }) {
   const open = useOpenFile();
   const [shown, setShown] = useState(false);

@@ -10,13 +10,10 @@
 //                        verdicts workers actually reported;
 // - source integration — task branches git says are merged (as of the last
 //                        delivery check);
-// - sandbox runtime    — test environments' own states: ready is a passed
-//                        readiness check, never a release;
 // - deployed runtime   — not tracked per run, and said so;
 // - acceptance         — never inferred from counts. Checks that all passed
 //                        are reported as that, not as product acceptance.
-import { failureShown, isSettled, type OrchestrationAttempt, type OrchestrationTask } from "./orchestration";
-import type { SandboxEnvironment, SandboxSnapshot } from "./sandbox";
+import { failureShown, isSettled, type OrchestrationTask } from "./orchestration";
 
 export type CheckKind = NonNullable<OrchestrationTask["kind"]>;
 
@@ -73,72 +70,6 @@ export function checkCoverage(tasks: readonly OrchestrationTask[]): CheckCoverag
 
 export type EnvTone = "ok" | "warn" | "quiet" | "active";
 
-export type TaskEnvironmentView = {
-  state: SandboxEnvironment["state"] | "waiting_for_capacity" | "not_prepared";
-  label: string;
-  tone: EnvTone;
-  /** Everything behind the label, for a tooltip and the details: why,
-   *  what was checked against, and how long ago. */
-  detail: string[];
-  checkedAt: number | null;
-};
-
-const ENV_LABEL: Record<TaskEnvironmentView["state"], string> = {
-  ready: "Env ready", stale: "Env stale", unhealthy: "Env unhealthy", stopped: "Env stopped",
-  preparing: "Env preparing", error: "Env failed", unverified: "Env unverified",
-  waiting_for_capacity: "Env waiting for a slot", not_prepared: "Env not prepared",
-};
-
-const ENV_TONE: Record<TaskEnvironmentView["state"], EnvTone> = {
-  ready: "ok", stale: "warn", unhealthy: "warn", error: "warn", preparing: "active",
-  waiting_for_capacity: "active", stopped: "quiet", unverified: "quiet", not_prepared: "quiet",
-};
-
-function short(revision: string | null | undefined): string {
-  return revision ? revision.slice(0, 8) : "none";
-}
-
-/** A sandbox task's environment, apart from the task's own status: the
- *  environment of its current attempt (a retry takes the previous one over). */
-export function taskEnvironment(
-  task: OrchestrationTask,
-  attempts: readonly OrchestrationAttempt[],
-  sandboxes: SandboxSnapshot | null | undefined,
-  ago: (at: number) => string,
-): TaskEnvironmentView | null {
-  if (task.environment !== "sandbox") return null;
-  const attempt = attempts.find((candidate) => candidate.id === task.activeAttemptId);
-  const key = attempt?.workerChatKey;
-  const env = key ? sandboxes?.environments[key] : undefined;
-  const waiting = !!key && !!sandboxes?.capacity?.waiting.some((w) => w.keys[0] === key);
-  const state: TaskEnvironmentView["state"] = waiting ? "waiting_for_capacity" : env?.state ?? "not_prepared";
-  const detail: string[] = [];
-  if (waiting && sandboxes?.capacity) {
-    detail.push(`All ${sandboxes.capacity.limit} host environment slots are in use; it starts when one frees.`);
-  }
-  if (env) {
-    if (env.invalidated) detail.push(env.invalidated.reason);
-    if (env.state === "error" && env.error) detail.push(env.error);
-    if (env.stopped && env.state === "stopped") detail.push(`${env.stopped.by === "person" ? "Stopped by you" : "Stopped by OctiqFlow"}: ${env.stopped.reason}`);
-    if (env.lease) detail.push("Kept running from its Sandbox panel; OctiqFlow will not stop it.");
-    detail.push(env.checkedAt ? `Last passing check ${ago(env.checkedAt)}` : "No passing check on this server");
-    // A read is never a fresh probe: say what was looked at, and when.
-    if (env.probing) detail.push("Health probe in progress");
-    if (env.state === "ready" && env.probedAt && env.checkedAt && env.probedAt >= env.checkedAt) {
-      detail.push(`Health looked at ${ago(env.probedAt)}; nothing wrong found`);
-    } else if (env.state === "ready") {
-      detail.push("Health not looked at since this check");
-    }
-    for (const source of env.fingerprint?.sources ?? []) {
-      detail.push(`${source.path} @ ${short(source.revision)}${source.dirty ? " + local changes" : ""}`);
-    }
-    if (env.fixtureVersion) detail.push(`Fixture ${env.fixtureVersion}`);
-    detail.push("Ready is a passed readiness check in a test sandbox, not a release.");
-  }
-  const age = env?.checkedAt && state === "ready" ? ` · ${ago(env.checkedAt)}` : "";
-  return { state, label: `${ENV_LABEL[state]}${age}`, tone: ENV_TONE[state], detail, checkedAt: env?.checkedAt ?? null };
-}
-
 /** `danger` is a check that failed: a failure, where `warn` is only ever a
  *  warning (a stale or unhealthy environment). */
 export type Stage = { key: string; label: string; value: string; tone: EnvTone | "danger"; note?: string };
@@ -146,8 +77,6 @@ export type Stage = { key: string; label: string; value: string; tone: EnvTone |
 /** The run's stages, each from its own evidence. */
 export function runStages(
   tasks: readonly OrchestrationTask[],
-  attempts: readonly OrchestrationAttempt[],
-  sandboxes: SandboxSnapshot | null | undefined,
 ): Stage[] {
   const live = tasks.filter((task) => task.status !== "cancelled");
   // Settled, and said as that: a check that failed settled too.
@@ -173,17 +102,6 @@ export function runStages(
   const released = mergedDeliveries.filter((d) => d?.released === true).length;
   const notReleased = mergedDeliveries.filter((d) => d?.released === false).length;
   const releaseKnown = released + notReleased;
-
-  const envs = live
-    .map((task) => taskEnvironment(task, attempts, sandboxes, () => ""))
-    .filter((view): view is TaskEnvironmentView => !!view);
-  const envCounts = new Map<string, number>();
-  for (const view of envs) envCounts.set(view.state, (envCounts.get(view.state) ?? 0) + 1);
-  const envOrder: TaskEnvironmentView["state"][] = ["ready", "stale", "unhealthy", "error", "preparing", "waiting_for_capacity", "stopped", "unverified", "not_prepared"];
-  const envText = envOrder
-    .filter((state) => envCounts.get(state))
-    .map((state) => `${envCounts.get(state)} ${ENV_LABEL[state].replace(/^Env /, "")}`)
-    .join(" · ");
 
   // The danger colour is a failure that is said as one. A failed check the
   // coordinator is having fixed is still a failing check, in the line's ink.
@@ -211,12 +129,6 @@ export function runStages(
         : "No task branches",
       tone: branches.length && merged === branches.length ? "ok" : "quiet",
       note: unchecked ? `${unchecked} not checked yet; refresh a task's delivery to ask git.` : "As of each task's last delivery check. Prepared means committed on its branch, not yet in the base.",
-    },
-    {
-      key: "sandbox", label: "Sandbox runtime",
-      value: envs.length ? envText : "No sandbox tasks",
-      tone: envCounts.get("stale") || envCounts.get("unhealthy") || envCounts.get("error") ? "warn" : envs.length && envCounts.get("ready") === envs.length ? "ok" : "quiet",
-      note: "Test environments on this host. Ready means its readiness check passed; it is not a deployment.",
     },
     releaseKnown
       ? {

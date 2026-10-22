@@ -186,7 +186,7 @@ try {
   const startChat = async (id, title, cwd, prompt) => {
     await invoke("chat_index_save", { meta: { id, projectId: project.id, title, customTitle: true, cwd,
       modelId: "claude:opus", access: "auto", createdAt: Date.now(), updatedAt: Date.now(), generation: 0 } });
-    await invoke("chat_start", { key: `chat:${id}`, cwd, agent: "claude", model: "opus", access: "auto", useSandbox: false,
+    await invoke("chat_start", { key: `chat:${id}`, cwd, agent: "claude", model: "opus", access: "auto",
       prompt, turnId: `user-${id}-${Date.now()}` });
   };
   const handovers = () => invoke("handover_list");

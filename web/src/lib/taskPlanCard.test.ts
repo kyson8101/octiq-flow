@@ -31,11 +31,6 @@ const proposal = (patch: Partial<WorkspaceProposal> = {}): WorkspaceProposal => 
 });
 
 describe("the standard plan card", () => {
-  it("says when a task's worker waits for its test environment (feedback caa2ca88)", () => {
-    expect(taskCardRows(task(), run, null, names).some((r) => r.key === "environment")).toBe(false);
-    const rows = taskCardRows(task({ environment: "sandbox" }), run, null, names);
-    expect(row(rows, "environment").value).toBe("Test environment, checked before the worker starts");
-  });
 
   it("says a check task needs a verdict, and says nothing for ordinary work (feedback ee0a43b0)", () => {
     expect(taskCardRows(task(), run, null, names).some((r) => r.key === "kind")).toBe(false);

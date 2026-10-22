@@ -22,7 +22,7 @@ vi.mock("./bridge", () => ({
 
 import { hostFacts } from "./__fixtures__/hostFacts";
 import { STRAY_MS, STRAY_RADIUS } from "./cardFold";
-import { gateFlight, IN_FLIGHT, inFlight, once, planFlight } from "./inFlight";
+import { gateFlight, IN_FLIGHT, inFlight, once } from "./inFlight";
 import { gateDoor, type OrchestrationSnapshot } from "./orchestration";
 import { dropHeld, strayOnto } from "./pressGuard";
 import { GATE_DOOR_NOTE, OrchestrationPanel } from "../components/OrchestrationPanel";
@@ -106,7 +106,7 @@ describe("a request that is out", () => {
   });
 
   it("is let go when the request fails", async () => {
-    const key = planFlight("chat-fails");
+    const key = gateFlight("gate-fails");
     await expect(once(key, async () => { throw new Error("refused"); })).rejects.toThrow("refused");
     expect(inFlight(key)).toBe(false);
   });

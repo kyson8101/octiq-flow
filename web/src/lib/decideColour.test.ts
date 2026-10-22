@@ -18,8 +18,6 @@ import chatPlanCss from "../components/ChatPlanCards.css?raw";
 import handoverCss from "../components/HandoverCards.css?raw";
 import questionCss from "../components/InlineQuestions.css?raw";
 import planReviewCss from "../components/PlanReview.css?raw";
-import planPanelCss from "../components/PlanPanel.css?raw";
-import guofengSheet from "../guofeng.css?raw";
 import xpSheet from "../xp.css?raw";
 import cyberpunkSheet from "../cyberpunk.css?raw";
 import completeCss from "../components/CompleteChat.css?raw";
@@ -731,94 +729,5 @@ describe("the pending badge in the chat list", () => {
     const [base] = rules(before, "PendingActionBadge.css").filter((rule) => rule.selector === ".pending-action-badge");
     expect(base.body).toMatch(NOT_A_DECISION);
     expect(of(".pending-action-badge")[0].body).not.toMatch(NOT_A_DECISION);
-  });
-});
-
-/* ---- The Plan panel: a chat's plan beside the chat ---------------------- */
-
-describe("the Plan panel", () => {
-  const sheet = rules(planPanelCss, "PlanPanel.css");
-  const of = (selector: string) => sheet.filter((rule) => rule.selector === selector);
-  const drawn = (rule: Rule) => rule.body.split(";").filter((line) => !/^\s*outline/.test(line)).join(";");
-  const reads = (token: string) => sheet.filter((rule) => new RegExp(`var\\(--${token}\\b`).test(drawn(rule))).map((rule) => rule.selector);
-
-  /** The parts of the panel and of its button (`PlanPanel.tsx`), by the
-   *  class each is drawn with. A part added to the panel is added here, or
-   *  the scans below do not see it. */
-  const PLAN_PARTS = [
-    "toggle", "toggle-open", "panel", "head", "head-state", "close", "meta", "meta-open", "error", "none", "none-hint",
-    "items", "item", "item-main", "mark", "item-head", "item-title", "item-word", "decisions", "questions", "question-mark",
-    "more", "chevron", "note", "progress", "progress-count", "bar", "progress-parts", "tasks", "task", "task-word",
-    "task-title", "task-go", "foot", "foot-row", "start", "foot-side", "started", "started-note", "refusal",
-  ];
-
-  it("names every part of the panel, and the sheet draws no part it does not name", () => {
-    const classes = new Set(sheet.flatMap((rule) => [...rule.selector.matchAll(/\.cplan-([a-z-]+)/g)].map((match) => match[1])));
-    expect([...classes].sort()).toEqual([...PLAN_PARTS].sort());
-    // Its classes are its own: the plan card of a run (`.plan-task`,
-    // `.plan-stage`, `.plan-card`) is another thing, in other sheets.
-    expect(sheet.filter((rule) => /(^|[\s,(>+~])\.plan-/.test(rule.selector))).toEqual([]);
-    expect(RULES.filter((rule) => /\.cplan-/.test(rule.selector))).toEqual([]);
-  });
-
-  /** What waits on the person here: a question still open (on its item, in
-   *  the header's count and on the bar's button) and Start. */
-  const WAITS_ON_YOU = [".cplan-start", ".cplan-question-mark", ".cplan-toggle-open", ".cplan-meta-open"];
-
-  it.each(WAITS_ON_YOU)("%s is the decision colour, never amber and never the accent", (selector) => {
-    const found = of(selector);
-    expect(found.length, `no rule for ${selector}`).toBeGreaterThan(0);
-    expect(found.some((rule) => /var\(--decide\)/.test(rule.body)), `${selector} does not read --decide`).toBe(true);
-    for (const rule of found) expect(rule.body, selector).not.toMatch(NOT_A_DECISION);
-  });
-
-  it("reads the decision colour for those and for nothing else", () => {
-    expect(reads("decide").sort()).toEqual([...WAITS_ON_YOU, ".cplan-start:hover:not([aria-disabled=\"true\"])"].sort());
-  });
-
-  it("keeps the accent for an item with a turn in flight on one of its tasks, as a tint, and nothing else", () => {
-    expect(reads("accent").sort()).toEqual(['.cplan-mark[data-mark="live"]', ".cplan-task-word[data-live]"]);
-    const mark = of('.cplan-mark[data-mark="live"]')[0];
-    // A tint, never a solid fill.
-    expect(mark.body).toMatch(/background:\s*var\(--accent-tint\)/);
-    expect(mark.body).not.toMatch(/background:\s*var\(--accent\)/);
-    expect(sheet.filter((rule) => /--(composer-accent|composer-ink)\b/.test(rule.body))).toEqual([]);
-  });
-
-  it("draws done in the ok colour: the item the count does not contradict, a full bar, a finished task", () => {
-    expect(reads("ok").sort()).toEqual([
-      ".cplan-bar[data-full] > span", '.cplan-item-word[data-mark="done"]', '.cplan-mark[data-mark="done"]', '.cplan-task-word[data-state="done"]',
-    ]);
-    // The agent's word alone colours nothing: `data-status="done"` is grey.
-    expect(sheet.filter((rule) => /data-status="done"/.test(rule.selector)).every((rule) => !/--ok\b/.test(rule.body))).toBe(true);
-  });
-
-  it("keeps amber for a plan that could not be read, and draws nothing in the danger colour", () => {
-    expect(reads("warn")).toEqual([".cplan-error"]);
-    // A linked task that failed is said in words, in grey: whose move a
-    // failure is the run panel's to say, which the task links to.
-    expect(reads("danger")).toEqual([]);
-    expect(sheet.filter((rule) => /data-state="failed"/.test(rule.selector))).toEqual([]);
-  });
-
-  it("writes no colour out: tokens only, in every mode", () => {
-    for (const rule of sheet) expect(rule.body, rule.selector).not.toMatch(/#[0-9a-f]{3,8}\b|\brgba?\(|\boklch\(|\bhsla?\(/i);
-    // No mode's own sheet redraws a part of it.
-    for (const css of [mangaSheet, guofengSheet, xpSheet, cyberpunkSheet, stylesCss]) expect(css).not.toMatch(/\.cplan-/);
-  });
-
-  it("has no animation that loops, and holds every one still for reduced motion", () => {
-    expect(planPanelCss).not.toMatch(/infinite/);
-    const animated = sheet.filter((rule) => /(^|;)\s*animation:\s*(?!none)/.test(rule.body)).map((rule) => rule.selector);
-    expect(animated.length).toBeGreaterThan(0);
-    const reduced = planPanelCss.slice(planPanelCss.indexOf("@media (prefers-reduced-motion: reduce)"));
-    for (const selector of animated) for (const part of selector.split(",")) expect(reduced, part).toContain(part.trim());
-    // Every state change is 130 to 220 ms, ease-out.
-    for (const rule of sheet) {
-      for (const ms of [...rule.body.matchAll(/(\d+)ms/g)].map((match) => Number(match[1]))) {
-        expect(ms, rule.selector).toBeGreaterThanOrEqual(130);
-        expect(ms, rule.selector).toBeLessThanOrEqual(220);
-      }
-    }
   });
 });

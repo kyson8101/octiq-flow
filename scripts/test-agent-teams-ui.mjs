@@ -111,7 +111,6 @@ function resultFor(request) {
     case "agent_avatar_status": return { available: false, reason: "mock" };
     case "levels_list": case "agent_levels": return [];
     case "chat_task": return { chatId: args.chatId, projectId: "general" };
-    case "sandbox_snapshot": return { defaultEnabled: false, environments: {} };
     case "codex_skills": return [];
     case "pr_repositories": return [];
     case "pr_local_list": case "pr_remote_list": return { items: [], warnings: [] };
