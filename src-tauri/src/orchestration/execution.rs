@@ -655,7 +655,7 @@ impl OrchestrationStore {
                         // The provider cancelled whatever the turn was
                         // running; a call left here would name a tool nothing
                         // is running through every turn after it.
-                        e.pending_tools.retain(|id, _| id == super::ENVIRONMENT_OPERATION);
+                        e.pending_tools.clear();
                         let pending = &e.pending_tools;
                         e.pending_tool_started_at.retain(|id, _| pending.contains_key(id));
                         if attempt.status == AttemptStatus::Blocked { continue; }
@@ -785,16 +785,6 @@ impl OrchestrationStore {
             {
                 continue;
             }
-            // The host's own environment work is bounded by its commands'
-            // timeouts, and a wait for capacity by the attempt staying live;
-            // neither is a quiet worker.
-            if before
-                .execution
-                .pending_tools
-                .contains_key(super::ENVIRONMENT_OPERATION)
-            {
-                continue;
-            }
             let p = snapshot
                 .tasks
                 .iter()
@@ -897,15 +887,6 @@ impl OrchestrationStore {
             .iter()
             .filter(|a| a.status == AttemptStatus::Running)
         {
-            // No process yet is expected while the host builds its test
-            // environment or waits for a slot: the worker starts after.
-            if attempt
-                .execution
-                .pending_tools
-                .contains_key(super::ENVIRONMENT_OPERATION)
-            {
-                continue;
-            }
             if !chats.has_process(&attempt.worker_chat_key)
                 && now
                     - attempt
@@ -1368,43 +1349,6 @@ mod tests {
             .execution
             .next_retry_at
             .is_none());
-    }
-
-    #[test]
-    fn a_worker_waiting_on_its_test_environment_is_neither_lost_nor_stalled() {
-        // No chat process exists while the host builds the environment or
-        // waits for a slot: the worker starts afterwards. The lost-worker
-        // sweep used to fail such an attempt as disconnected after 30s.
-        let store = OrchestrationStore::default();
-        let run = run(&store);
-        let attempt = running_worker(&store, &run);
-        store.environment_preparing(&attempt.id).unwrap();
-        let chats = Arc::new(ChatManager::default());
-        let workspaces = crate::workspaces::WorkspaceState::with_projects(Vec::new());
-        let later = now_ms() + 3_600_000;
-        store
-            .recover_due_workers(chats.clone(), &workspaces, later)
-            .unwrap();
-        let current = latest(&store, &attempt.id);
-        assert_eq!(current.status, AttemptStatus::Running);
-        assert_eq!(current.execution.state, ExecutionState::WaitingTool);
-        assert!(store.snapshot(None).unwrap().notifications.is_empty());
-        // Without the host's operation, the same silence is a lost worker.
-        store
-            .mutate(|data| {
-                data.attempts
-                    .get_mut(&attempt.id)
-                    .unwrap()
-                    .execution
-                    .pending_tools
-                    .clear();
-                Ok(())
-            })
-            .unwrap();
-        store
-            .recover_due_workers(chats, &workspaces, later)
-            .unwrap();
-        assert_eq!(latest(&store, &attempt.id).status, AttemptStatus::Failed);
     }
 
     /// Feedback cab56ae9: a worker waits on its gate for longer than the idle

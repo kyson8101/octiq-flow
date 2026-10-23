@@ -6,7 +6,6 @@ import { ChatDeleteButton } from "./ChatDeleteButton";
 import { CopyChatIdButton } from "./CopyChatIdButton";
 import { FocusModeButton } from "./FocusMode";
 import { FullscreenButton } from "./FullscreenButton";
-import { PreviewButton } from "./ImagePreviewPanel";
 import { InstalledReload } from "./InstalledReload";
 import barCss from "./ActionBar.css?raw";
 import stylesCss from "../styles.css?raw";
@@ -18,7 +17,7 @@ vi.mock("../lib/bridge", () => ({ bridge: { invoke: vi.fn(), on: vi.fn(() => () 
 const button = (label: string) => <button type="button">{label}</button>;
 const actions: BarAction[] = [
   { id: "tasks", keep: 100, attention: 2, node: button("Tasks") },
-  { id: "preview", keep: 90, node: button("Preview") },
+  { id: "git", keep: 85, node: button("Git") },
   { id: "copy", keep: 20, node: button("Copy ID") },
   { id: "delete", keep: 10, separated: true, node: button("Delete") },
 ];
@@ -28,7 +27,7 @@ const draw = (props: Partial<Parameters<typeof ActionBar>[0]> = {}) =>
 describe("the action bar", () => {
   it("draws every action as a button of the row, in the order given", () => {
     const html = draw();
-    const places = ["Tasks", "Preview", "Copy ID", "Delete"].map((label) => html.indexOf(`>${label}<`));
+    const places = ["Tasks", "Git", "Copy ID", "Delete"].map((label) => html.indexOf(`>${label}<`));
     expect(places.every((place) => place > 0)).toBe(true);
     expect([...places].sort((a, b) => a - b)).toEqual(places);
     expect(html.match(/class="actionbar-item/g)).toHaveLength(4);
@@ -47,7 +46,7 @@ describe("the action bar", () => {
     expect(html.match(/class="mobile-actions"/g)).toHaveLength(1);
     const more = html.indexOf('class="mobile-actions"');
     expect(html.indexOf(">Tasks<")).toBeLessThan(more);
-    expect(html.indexOf(">Preview<")).toBeLessThan(more);
+    expect(html.indexOf(">Git<")).toBeLessThan(more);
     const menu = html.slice(html.indexOf('class="mobile-actions-panel"'));
     expect(menu).toContain("Copy ID");
     expect(menu.indexOf('role="separator"')).toBeGreaterThan(menu.indexOf("Copy ID"));
@@ -90,7 +89,6 @@ describe("the action bar", () => {
 describe("the buttons of the action bar", () => {
   const drawn = [
     ["Tasks", <TasksButton tasks={3} decisions={1} open={false} onToggle={() => {}} />],
-    ["Preview", <PreviewButton count={0} open={false} onClick={() => {}} />],
     ["Focus", <FocusModeButton onClick={() => {}} />],
     ["Full width", <FullscreenButton expanded={false} onToggle={() => {}} />],
     ["Reload", <InstalledReload show />],
@@ -181,7 +179,7 @@ describe("App hands the actions to the bar", () => {
 
   it("leaves nothing in the top bar but the page's name: no menu and no action there", () => {
     const header = appSource.slice(appSource.indexOf('<header className="topbar">'), appSource.indexOf("</header>"));
-    expect(header).not.toMatch(/TopbarAction|ActionBar|barActions|TasksButton|GitButton|PreviewButton|FocusModeButton/);
+    expect(header).not.toMatch(/TopbarAction|ActionBar|barActions|TasksButton|GitButton|FocusModeButton/);
   });
 
   it("counts on More what waits behind the Tasks button", () => {

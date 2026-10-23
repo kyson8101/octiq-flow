@@ -107,7 +107,6 @@ function resultFor(request) {
     case "team_leads": return [{ chatKey: "chat:lead", leadId: "lena", leadName: "Lena", projectId: "general", createdAt: now - 200_000 }];
     case "team_home": return "general";
     case "chat_task": return { chatId: request.args?.chatId, projectId: "general" };
-    case "sandbox_snapshot": return { defaultEnabled: false, environments: {} };
     case "codex_skills": return [];
     default: return null;
   }

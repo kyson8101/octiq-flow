@@ -20,7 +20,6 @@ fn read_only_review(store: &OrchestrationStore, run: &Run) -> (Task, Task, Attem
             None,
             None,
             None,
-            TaskEnvironment::None,
             None,
             TaskKind::Review,
         )

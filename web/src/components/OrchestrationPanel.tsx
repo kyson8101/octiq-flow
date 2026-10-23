@@ -10,8 +10,7 @@ import {
   stepLabel, taskProgress, taskStage, taskStateLabel, taskStepSummary, TASK_LABELS,
   useElapsedTick,
 } from "../lib/agentTaskBoard";
-import { acceptanceLine, checkCoverage, KIND_LABEL, requiresVerdict, runStages, taskEnvironment } from "../lib/runAcceptance";
-import { useSandboxes, type SandboxSnapshot } from "../lib/sandbox";
+import { acceptanceLine, checkCoverage, KIND_LABEL, requiresVerdict, runStages } from "../lib/runAcceptance";
 import {
   attentionLabel, attentionSpoken, attentionTone, mainChatTarget, nextRunTab, NO_STEPS, runAttention, runPeople, RUN_TABS, setRunArchived, splitArchived, stopRun,
   TASK_TAB_LABEL, TASK_TABS, taskTabKey,
@@ -94,7 +93,7 @@ export function OrchestrationPanel({
   /** Show this run, open, on its Tasks tab: a badge in the chat list asked
    *  for something it holds. A new nonce asks again for the same run. */
   /** The run to open, and with `taskId` the row of it to bring out from
-   *  behind a fold (the Plan panel's way to a task). */
+   *  behind a fold. */
   focusRun?: { runId: string; taskId?: string; nonce: number } | null;
   coordinatorKey: string | null;
   /** The chat on screen. When it is one of this run's workers, its task is
@@ -827,8 +826,6 @@ function RunDetail({
   const detailRef = useRef<HTMLElement>(null);
   const tabRefs = useRef<Partial<Record<RunTab, HTMLButtonElement | null>>>({});
   const archived = run.archivedAt != null;
-  // Read only for a run with a task that needs a test environment.
-  const sandboxes = useSandboxes(tasks.some((task) => task.environment === "sandbox")).snapshot;
   // Plan mode: until the person approves, the plan IS the run.
   const planPending = !readOnly && run.planApproval?.status === "pending" && ACTIVE_RUNS.has(run.status);
   // Two clocks, and the later one is read: the beat of a run with a worker
@@ -1103,7 +1100,7 @@ function RunDetail({
       {runError && !settingsOpen && <p className="orch-run-error" role="alert">{runError}</p>}
 
       <div className="orch-tab-panel" role="tabpanel" id={`${tabsId}-tasks-panel`} aria-labelledby={`${tabsId}-tasks`} hidden={tab !== "tasks"}>
-        {!planIsRun && tasks.length > 0 && <RunStages tasks={tasks} attempts={attempts} sandboxes={sandboxes} />}
+        {!planIsRun && tasks.length > 0 && <RunStages tasks={tasks} />}
         {planPending && <p className="orch-task-none">{planHoldsAll ? PLAN_HOLDS_ALL : PLAN_HOLDS_SOME}</p>}
         {planPending && (!pendingRows || tasks.length === 0) ? null : tasks.length === 0 ? (
           <div className="orch-planning"><span className="orch-pulse" />The main agent is planning the tasks.</div>
@@ -1114,7 +1111,7 @@ function RunDetail({
             // The task on screen is never behind a fold or a "more" line,
             // and neither is one that was asked for by name.
             holds={group.rows.findIndex((row) => chatOf(row, currentChatKey) || chatOf(row, besideChatKey) || row.task.id === focusTaskId)}>
-            {(row) => <RunTask key={row.task.id} run={run} snapshot={snapshot} row={row} attempts={attempts} sandboxes={sandboxes}
+            {(row) => <RunTask key={row.task.id} run={run} snapshot={snapshot} row={row} attempts={attempts}
               taskGate={open.find((item) => item.taskId === row.task.id)}
               taskNames={taskNames} gateBlockedTasks={gateBlockedTasks} now={now} busy={busy} readOnly={readOnly}
               archiveControl={archiveControl} onOpenChat={onOpenChat} onRetry={onRetry} onWorkspaceAction={onWorkspaceAction}
@@ -1178,7 +1175,7 @@ function RunLine({ snapshot, run, tasks, attempts, tiled = false }: {
   const failedChecks = tasks.filter((task) => checkFailed(task) && failureShown(task) === "red").length;
   const status = shownRunStatus(run, tasks);
   const planned = checkCoverage(tasks).total > 0;
-  const acceptance = acceptanceLine(runStages(tasks, attempts, null));
+  const acceptance = acceptanceLine(runStages(tasks));
   const parts = [
     tiled ? null : `${counts.done}/${counts.total} tasks`,
     run.archivedAt != null ? `${statusLabel(status)} · archived` : statusLabel(status),
@@ -1243,15 +1240,13 @@ function AttentionButton({ attention, onShow }: { attention: RunAttention; onSho
 }
 
 /** Where the run stands, one line per kind of evidence (feedback ee0a43b0):
- *  tasks settled, checks, merged source, test environments, deployment and
+ *  tasks settled, checks, merged source, deployment and
  *  acceptance never collapse into one number. Closed, it is the acceptance
  *  line; open, each stage with what it rests on. */
-function RunStages({ tasks, attempts, sandboxes }: {
+function RunStages({ tasks }: {
   tasks: OrchestrationTask[];
-  attempts: OrchestrationAttempt[];
-  sandboxes: SandboxSnapshot | null;
 }) {
-  const stages = runStages(tasks, attempts, sandboxes);
+  const stages = runStages(tasks);
   const acceptance = acceptanceLine(stages);
   return <details className="orch-stages">
     <summary><span>Acceptance</span><span className="orch-stage-value" data-tone={acceptance.tone}>{acceptance.value}</span></summary>
@@ -1283,18 +1278,6 @@ function RunTiles({ tiles }: { tiles: RunTilesData }) {
 /** Where the keyboard is put on a row: its summary when that opens a chat,
  *  else its details disclosure, which every row has and is never disabled. */
 export const ROW_FOCUS = ".orch-task-summary:not(:disabled), .orch-task-expand";
-
-/** Bring one task's row into view and put the keyboard on it, once it is
- *  drawn. Answers whether it was: a row behind a fold that has not opened
- *  yet, or in a panel that is not on screen yet, is not there to show. It
- *  presses nothing. */
-export function showTaskRow(taskId: string, root: ParentNode = document): boolean {
-  const row = [...root.querySelectorAll<HTMLElement>("[data-task-id]")].find((item) => item.dataset.taskId === taskId);
-  if (!row || row.getClientRects().length === 0) return false;
-  row.scrollIntoView({ block: "nearest" });
-  row.querySelector<HTMLElement>(ROW_FOCUS)?.focus({ preventScroll: true });
-  return true;
-}
 
 /** One group of rows under its count. Finished is the only one that folds,
  *  and starts folded; a long quiet group shows its first rows and a line for
@@ -1375,13 +1358,11 @@ function RowMark({ state, held = false }: {
   </span>;
 }
 
-function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onOpenBeside, onRetry, onWorkspaceAction, open, beside = false, projectName, mission }: {
+function RunTask({ run, snapshot, row, attempts, taskGate: gate, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onOpenBeside, onRetry, onWorkspaceAction, open, beside = false, projectName, mission }: {
   projectName?: (id: string) => string | undefined;
   /** A mission's crew: the row names its owner, kind and size, and offers
    *  reassignment. Absent for every other run, whose row is unchanged. */
   mission?: readonly CrewMember[];
-  /** Test environments, when the run has a task that needs one. */
-  sandboxes: SandboxSnapshot | null;
   onOpenBeside?: (chatKey: string) => void;
   /** This task's chat is open beside the main chat. */
   beside?: boolean;
@@ -1484,9 +1465,6 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
   // in this panel, never on the row. A failure that waits on the person is
   // the row itself, and is not badged on it a second time.
   const pending = usePendingActions().forTask(task.id).filter((action) => action.kind !== "failure");
-  // Its test environment has a state of its own: a done task's services may
-  // be stopped, and a running task's may have gone stale.
-  const environment = taskEnvironment(task, attempts, sandboxes, (at) => agoLabel(at, now));
   const decision = task.activeAttemptId === attempt?.id ? pendingDecision(attempt, parkedOn) : undefined;
 
   return (
@@ -1568,7 +1546,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
       {mission && reassigning && !readOnly && <ReassignForm run={run} task={task} crew={mission} onDone={() => setReassigning(false)} />}
       <div className="orch-task-detail" id={detailId} hidden={!expanded}>
         {/* What the row leaves out: the host's state word, the task's kind
-            and size, its environment, the decision it is parked on, the step
+            and size, the decision it is parked on, the step
             its worker said it was on, and its branch. */}
         <div className="orch-task-meta">
           {/* A held row's line is its state word already, and the host's
@@ -1582,7 +1560,6 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
           {requiresVerdict(task) && task.verdict !== "fail" && <span className="orch-task-kind" title="It settles only with a pass or fail verdict, and only a pass releases the tasks that depend on it.">{KIND_LABEL[task.kind!]}</span>}
           {mission && !requiresVerdict(task) && <span className="orch-task-kind">{KIND_LABEL.work}</span>}
           {mission && task.size && <span className="orch-task-size" title="What the task is worth when its result is accepted">{SIZE_LABEL[task.size]}</span>}
-          {environment && <span className="orch-task-env" data-tone={environment.tone} title={environment.detail.join("\n")}>{environment.label}</span>}
           {decision && <span className="orch-task-decision" title={decisionSummary(decision).lines.join("\n")}>{decisionSummary(decision).label} {decision.id.slice(0, 10)}</span>}
           {step && <span className="orch-task-step" title={step}>{step}</span>}
           {reportedStage && !step && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
@@ -1641,10 +1618,6 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, sandboxes, task
         <details className="orch-task-more">
           <summary className="orch-task-more-summary" onClick={(event) => { notePress(event); }}>Task details</summary>
           <TaskLifecycleEvidence snapshot={snapshot} taskId={task.id} now={now} />
-          {environment && <div className="orch-task-env-detail">
-            <p>Test environment: {environment.label}</p>
-            <ul>{environment.detail.map((line, index) => <li key={index}>{line}</li>)}</ul>
-          </div>}
           {/* The ledger's own status, said as the ledger's, and led by what
               holds the task when something does (`statusLine`). Asked of
               the hold itself: a row that waits on the person keeps none. */}

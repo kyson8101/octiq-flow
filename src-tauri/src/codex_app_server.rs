@@ -162,6 +162,7 @@ pub(crate) fn turn_request(request: TurnRequest<'_>) -> Value {
 
 fn writable_roots(cwd: &str, workspace: &[String], access: Option<Access>) -> Vec<String> {
     let mut roots = workspace.to_vec();
+    crate::git_ops::prepare_codex_branch_parents(std::path::Path::new(cwd), access);
     for root in crate::codex_git::commit_roots(std::path::Path::new(cwd), access) {
         if !roots.contains(&root) {
             roots.push(root);

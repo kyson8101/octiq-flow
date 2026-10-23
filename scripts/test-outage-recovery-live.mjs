@@ -240,7 +240,7 @@ try {
   const card = page.locator(".safety-card.is-outage");
 
   // 1. git push is refused: the card names the rule and both files.
-  await invoke("chat_start", { key, cwd: repo, agent: "claude", model: "sonnet", access: "auto", useSandbox: false, prompt: "PUSH", turnId: "user-1" });
+  await invoke("chat_start", { key, cwd: repo, agent: "claude", model: "sonnet", access: "auto", prompt: "PUSH", turnId: "user-1" });
   const pushCard = await wait("push card", async () => cards().at(-1));
   results.pushCard = {
     command: pushCard.payload.commands?.[0],
@@ -393,7 +393,7 @@ try {
     const sharedKey = `chat:${id}`;
     await invoke("chat_index_save", { meta: { id, projectId: project.id, title: `Shared config ${label}`, customTitle: true, cwd: repo,
       modelId: "claude:sonnet", access: "auto", createdAt: Date.now(), updatedAt: Date.now(), generation: 0 } });
-    await invoke("chat_start", { key: sharedKey, cwd: repo, agent: "claude", model: "sonnet", access: "auto", useSandbox: false,
+    await invoke("chat_start", { key: sharedKey, cwd: repo, agent: "claude", model: "sonnet", access: "auto",
       // The upload: the push is allowed in this project by now (step 2), and
       // with the config dir moved, no settings file this chat reads allows it.
       env: { CLAUDE_CONFIG_DIR: dir }, prompt: "UPLOAD", turnId: `user-${label}` });

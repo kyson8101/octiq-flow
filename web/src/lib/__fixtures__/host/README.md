@@ -62,33 +62,6 @@ The ledgers above this section were recorded before the host counted
 retries, so their tasks carry no `retriesUsed`, `retryLimit` or `failure`:
 they are what a host that does not say looks like.
 
-## A chat's plan
-
-Recorded at the commit that added `chat_plan.rs`. Each is an answer to
-`chat_plan_get { chatId }` (`../../chatPlan.ts` has its type, and
-`docs/chat-plan.md` the contract). These are not ledgers: a chat's plan is
-the list the person and an agent agree on before any run exists.
-
-| File | Host test (`src-tauri/src/…`) | What is printed |
-| --- | --- | --- |
-| `chat_plan_none.json` | `dispatch::plan_tests::the_page_reads_a_plan_as_the_agent_keeps_it_and_hears_every_change` | a chat with no plan: `revision: 0`, no items, `awaitsStart: false`, and no `updatedAt`, `updatedBy` or `started` |
-| `chat_plan_discussing.json` | same test | two items being discussed, each with open questions, one with a note: `awaitsStart: true` |
-| `chat_plan_decided.json` | same test | the same plan at revision 2, every question answered and both items `decided`: still `awaitsStart: true`, no `started` |
-| `chat_plan_started.json` | `orchestration::plan_link_tests::a_started_plan_says_the_agents_word_and_the_ledgers_count_side_by_side` | a started plan (`started.revision: 1`, `told: true`) whose items link tasks in mixed states: an item the agent calls `done` with one task done and one failed check; one running and one waiting; one failed; a replaced task (`closed`, outside `total`) beside its replacement; and three items with no task (discussing, dropped, added after Start), which have no `progress` and no `linked` |
-
-The first three are the command's own answer through `dispatch`. The fourth
-is `chat_plan::answer`, the function that command returns, asked in the
-orchestration tests because only they can put a ledger in mixed states.
-
-```bash
-cd src-tauri
-OCTIQ_RECORD_FACTS=1 cargo test --lib -- --nocapture --test-threads=1 \
-  plan_tests::the_page_reads_a_plan plan_link_tests::a_started_plan
-```
-
-Write each `FACT <name> {…}` to `<name>.json`, indented by two spaces and
-otherwise unchanged.
-
 ## An answered question's line
 
 Recorded at the commit that added the line. Each is one event of a chat's

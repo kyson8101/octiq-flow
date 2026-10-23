@@ -98,7 +98,6 @@ impl Lead {
                 None,
                 None,
                 None,
-                TaskEnvironment::None,
                 None,
                 kind,
             )
@@ -1170,11 +1169,6 @@ fn who_reads_what_a_failure_is_shown_as() {
             "orchestration/retry.rs",
             3,
             "its definition; `failure`: what a read says of the task; `expectation`: what the coordinator is told",
-        ),
-        (
-            "orchestration/plan_link.rs",
-            1,
-            "`state_of`: how a plan item's linked task is drawn",
         ),
         (
             "orchestration.rs",

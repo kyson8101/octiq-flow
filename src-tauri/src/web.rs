@@ -560,7 +560,6 @@ fn router(ctx: Ctx) -> Router {
         .route("/hook/access", post(access_handler))
         .route("/hook/orchestration", post(orchestration_handler))
         .route("/hook/task", post(task_handler))
-        .route("/hook/plan", post(plan_handler))
         .route("/hook/job", post(job_handler))
         .route("/hook/feedback", post(feedback_handler))
         .route("/hook/agents", post(agents_handler))
@@ -1817,11 +1816,6 @@ async fn orchestration_handler(
     if let Some(refused) = seat_refusal(command, &caller) {
         return hook_failed(StatusCode::BAD_REQUEST, refused);
     }
-    // A chat whose plan waits on the person's Start starts no orchestrated
-    // work: asked of the chat this capability proves, before anything runs.
-    if let Some(refused) = plan_gate_refusal(command, &caller.chat_key) {
-        return hook_failed(StatusCode::BAD_REQUEST, refused);
-    }
     let actor = caller.chat_key;
     let mut args = match request.args {
         Value::Object(args) => args,
@@ -1882,42 +1876,6 @@ fn seat_refusal(command: &str, caller: &HookCaller) -> Option<crate::outcome::Re
             crate::outcome::ReasonClass::ScopeRefused,
             "Only the chat's own agent can ask a teammate or hand one work. An additional agent in a room has no team of its own here.",
         )
-    })
-}
-
-/// The commands that start orchestrated work, as an agent reaches them on
-/// `/hook/orchestration`. While its chat's plan has not been started
-/// (`chat_plan::gate`) each is refused. A reopen is one of them: it sets a
-/// task going again with new words and no new approval. The socket's
-/// commands of the same names are the person's own (the run panel's New run
-/// and its Start) and never come through here.
-///
-/// Not here, and stated as limits (`docs/agents-mode.md`): the peer tools,
-/// whose every request the person approves on its own card, and the host's
-/// own scheduler for a run that existed before the plan.
-const PLAN_GATED_COMMANDS: &[&str] = &[
-    "orchestration_run_create",
-    "orchestration_task_create",
-    "orchestration_worker_start_in_chat",
-    "orchestration_dispatch_ready",
-    "orchestration_task_reopen_in_chat",
-];
-
-/// Why `command` is refused to `chat_key`'s agent while its plan waits on
-/// the person's Start, if it is. A chat with no plan is never refused, and
-/// a plan that cannot be read refuses in the reason's own words: the gate
-/// is not lifted by a folder that is away.
-fn plan_gate_refusal(command: &str, chat_key: &str) -> Option<crate::outcome::Refusal> {
-    if !PLAN_GATED_COMMANDS.contains(&command) {
-        return None;
-    }
-    crate::chat_plan::gate(chat_key).err().map(|why| {
-        let reason = if why.starts_with(crate::chat_plan::NOT_STARTED) {
-            crate::outcome::ReasonClass::ScopeRefused
-        } else {
-            crate::outcome::ReasonClass::Other
-        };
-        crate::outcome::Refusal::new(reason, why)
     })
 }
 
@@ -2602,94 +2560,6 @@ async fn job_handler(
     }
 }
 
-/// A plan is the chat's own agent's to write: an additional agent in a room
-/// is one voice in the chat, not the agent the person is planning with.
-/// Reading it stays open to a seat.
-fn plan_seat_refusal(action: &str, caller: &HookCaller) -> Option<crate::outcome::Refusal> {
-    (action != "read" && caller.session_key != caller.chat_key).then(|| {
-        crate::outcome::Refusal::new(
-            crate::outcome::ReasonClass::ScopeRefused,
-            "Only the chat's own agent keeps its plan. An additional agent in a room is one voice in the chat: say what should change and let the chat's agent write it.",
-        )
-    })
-}
-
-/// What an agent is told beside a plan it read or changed: where the plan
-/// stands with the person's Start, which is not the agent's to give.
-fn plan_note(plan: &Value) -> &'static str {
-    if plan["awaitsStart"] == true {
-        "Not started. Only the person starts it, with Start on the Plan panel. Until then keep this plan current, ask what is still open, and start no work."
-    } else if plan
-        .get("started")
-        .is_some_and(|started| !started.is_null())
-    {
-        "Started by the person. Link each item to the tasks it became and keep its status current. Items added now do not wait for another Start."
-    } else if plan["revision"] == 0 {
-        "This chat has no plan yet. Start one with plan_update, baseRevision 0."
-    } else {
-        "Nothing on this plan waits to be started: every item is dropped."
-    }
-}
-
-/// An agent reading or changing its chat's plan (`chat_plan`). The chat is
-/// the one the capability proves. A change is written only for the chat's
-/// own agent: a front desk, a room seat and a worker (by what it IS, which
-/// still holds after its attempt settled) are refused before anything is
-/// read. Starting a plan is not here: that is the person's, on the page.
-async fn plan_handler(
-    AxumState(ctx): AxumState<Ctx>,
-    headers: axum::http::HeaderMap,
-    Json(request): Json<TaskHook>,
-) -> Response {
-    use crate::outcome::{ReasonClass, Refusal};
-    let claim = HookClaim {
-        chat_key: request.chat_key.as_deref(),
-        session_key: request.session_key.as_deref(),
-        launch_id: None,
-    };
-    let caller = match hook_caller(&ctx.services.chats, &headers, claim)
-        .and_then(|caller| not_front_desk(&ctx, caller))
-    {
-        Ok(caller) => caller,
-        Err(refused) => return hook_refusal(refused),
-    };
-    let refuse =
-        |reason, message: &str| hook_failed(StatusCode::BAD_REQUEST, Refusal::new(reason, message));
-    let command = match request.action.as_str() {
-        "read" => "chat_plan_get",
-        "update" => "chat_plan_update",
-        _ => return refuse(ReasonClass::Validation, "Unknown plan action."),
-    };
-    if let Some(refused) = plan_seat_refusal(&request.action, &caller) {
-        return hook_failed(StatusCode::BAD_REQUEST, refused);
-    }
-    if command == "chat_plan_update" {
-        match ctx.services.orchestrations.is_worker_chat(&caller.chat_key) {
-            Ok(false) => {}
-            Ok(true) => return refuse(ReasonClass::ScopeRefused, "An orchestration worker keeps no plan: its task is its plan, and task_status is where it says how far it has got. Tell your coordinator what should change in the plan."),
-            Err(error) => return refuse(ReasonClass::Other, &error),
-        }
-    }
-    let chat_id = caller
-        .chat_key
-        .strip_prefix("chat:")
-        .unwrap_or(&caller.chat_key);
-    let args = match command {
-        "chat_plan_update" => json!({ "chatId": chat_id, "change": request.args }),
-        _ => json!({ "chatId": chat_id }),
-    };
-    match run_hook_command(&ctx, command.into(), args).await {
-        Ok(mut plan) => {
-            let note = plan_note(&plan);
-            if let Some(fields) = plan.as_object_mut() {
-                fields.insert("note".into(), Value::String(note.into()));
-            }
-            axum::Json(json!({ "result": plan })).into_response()
-        }
-        Err(refusal) => hook_failed(StatusCode::BAD_REQUEST, refusal),
-    }
-}
-
 /// Commands that act as one particular lead chat, and so answer only that
 /// chat's capability on `/hook/orchestration`. The socket is the person, who
 /// has commands of their own for the same decisions; letting it run these
@@ -2720,10 +2590,6 @@ const CHAT_ONLY_COMMANDS: &[&str] = &[
     // writes is shown in that chat as the agent's own update: only the
     // agent's capability, on /hook/vault, may say so.
     "memory_vault_agent",
-    // A change to a chat's plan is recorded as its agent's, and only that
-    // agent's capability, on /hook/plan, says so. The person reads the plan
-    // and starts it; they change it by saying so in the chat.
-    "chat_plan_update",
     // Builds on the island as the chat's registered agent, or the chat: who
     // made an asset, who granted a wish. Only the chat's capability, on
     // /hook/island, says which.
@@ -4702,7 +4568,6 @@ mod tests {
                     .starts_with("Your own task only."),
                 "{answer}"
             );
-            assert!(result.get("environmentCapacity").is_none(), "{answer}");
             let said = answer.to_string();
             for words in NOT_FOR_THE_PEER {
                 assert!(
@@ -5222,17 +5087,6 @@ mod tests {
                 "task",
                 json!({ "chatKey": "chat:desk", "action": "report", "args": {} }),
             ),
-            // A front desk only routes: it keeps no plan and reads none.
-            (
-                "plan",
-                json!({ "chatKey": "chat:desk", "action": "update", "args": {
-                    "baseRevision": 0, "add": [{ "title": "A" }],
-                } }),
-            ),
-            (
-                "plan",
-                json!({ "chatKey": "chat:desk", "action": "read", "args": {} }),
-            ),
             (
                 "vault",
                 json!({ "chatKey": "chat:desk", "action": "write", "args": {} }),
@@ -5664,322 +5518,6 @@ mod tests {
         "chat_set_access",
         "access_request_answer",
     ];
-
-    // ---- /hook/plan and the Start gate on /hook/orchestration ---------------
-
-    /// A plan is written by the chat's own agent and by nobody else that
-    /// can reach the hook: a room seat, and a worker by what it IS (it stays
-    /// one after its attempt settled, while its capability still works).
-    /// Reading stays open to a seat, and nothing on this hook starts a plan.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn only_the_chats_own_agent_writes_its_plan() {
-        use crate::orchestration::tests::{run, settled_worker};
-        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
-        let chats = Arc::new(crate::agent_chat::ChatManager::default());
-        let id = uuid::Uuid::new_v4().simple().to_string();
-        let chat_id = format!("plan-own-{id}");
-        let chat = format!("chat:{chat_id}");
-        let seat_key = format!("{chat}#2");
-        let settled_key = format!("chat:legacy-plan-{id}");
-        let settled = settled_worker(&store, &run(&store), Some(&settled_key));
-        assert_eq!(settled.worker_chat_key, settled_key);
-        assert!(store.active_task(&settled_key).unwrap().is_none());
-        let orch_key = format!("chat:orch-plan-{id}");
-        let (_ctx, base) = test_server(chats.clone(), store).await;
-        let own = chats.test_launch(&chat);
-        let seat = chats.test_launch_in(&seat_key, &chat);
-        let settled_cap = chats.test_launch(&settled_key);
-        let orch_cap = chats.test_launch(&orch_key);
-        let call = |chat: &str, session: &str, action: &str, args: Value| json!({ "chatKey": chat, "sessionKey": session, "action": action, "args": args });
-        let add = || json!({ "baseRevision": 0, "add": [{ "title": "A quieter composer" }] });
-
-        // A seat, with arguments no change could have and then a real one:
-        // answered the same, because neither was read.
-        for args in [json!({ "baseRevision": "x" }), add()] {
-            let (status, answer) = post_hook(
-                &base,
-                "plan",
-                None,
-                Some(&seat),
-                call(&chat, &seat_key, "update", args),
-            )
-            .await;
-            assert_eq!(status, 400, "{answer}");
-            assert_eq!(
-                answer["outcome"]["reasonClass"], "scope-refused",
-                "{answer}"
-            );
-            assert!(
-                answer["error"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("Only the chat's own agent keeps its plan."),
-                "{answer}"
-            );
-        }
-        // A worker, settled long ago or under a worker's key.
-        for (key, cap) in [(&settled_key, &settled_cap), (&orch_key, &orch_cap)] {
-            let (status, answer) = post_hook(
-                &base,
-                "plan",
-                None,
-                Some(cap),
-                call(key, key, "update", add()),
-            )
-            .await;
-            assert_eq!(status, 400, "{key}: {answer}");
-            assert_eq!(
-                answer["outcome"]["reasonClass"], "scope-refused",
-                "{key}: {answer}"
-            );
-            assert!(
-                answer["error"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("An orchestration worker keeps no plan"),
-                "{key}: {answer}"
-            );
-            let key_id = key.strip_prefix("chat:").unwrap();
-            assert_eq!(crate::chat_plan::get(key_id), Ok(None), "{key}");
-        }
-        assert_eq!(crate::chat_plan::get(&chat_id), Ok(None));
-
-        // The chat's own agent: the change is kept as its own, under the
-        // chat its capability proves whatever the arguments name.
-        let (status, answer) = post_hook(
-            &base,
-            "plan",
-            None,
-            Some(&own),
-            call(&chat, &chat, "update", add()),
-        )
-        .await;
-        assert_eq!(status, 200, "{answer}");
-        let plan = &answer["result"];
-        assert_eq!(plan["chatId"], chat_id.as_str());
-        assert_eq!(plan["revision"], 1);
-        assert_eq!(plan["changed"], true);
-        assert_eq!(plan["awaitsStart"], true);
-        assert_eq!(plan["items"][0]["id"], "i1");
-        assert!(
-            plan["note"]
-                .as_str()
-                .unwrap()
-                .starts_with("Not started. Only the person starts it"),
-            "{plan}"
-        );
-        // A refusal of the change itself is a validation failure, in words.
-        let (status, answer) = post_hook(
-            &base,
-            "plan",
-            None,
-            Some(&own),
-            call(&chat, &chat, "update", add()),
-        )
-        .await;
-        assert_eq!(status, 400, "{answer}");
-        assert!(
-            answer["error"]
-                .as_str()
-                .unwrap()
-                .contains("is at revision 1"),
-            "{answer}"
-        );
-        // A seat reads what the chat's agent wrote, and a read changes nothing.
-        for (session, cap) in [(&chat, &own), (&seat_key, &seat)] {
-            let (status, answer) = post_hook(
-                &base,
-                "plan",
-                None,
-                Some(cap),
-                call(&chat, session, "read", json!({ "chatId": "someone-else" })),
-            )
-            .await;
-            assert_eq!(status, 200, "{answer}");
-            assert_eq!(answer["result"]["chatId"], chat_id.as_str());
-            assert_eq!(answer["result"]["revision"], 1);
-            assert!(answer["result"].get("changed").is_none(), "{answer}");
-        }
-        // Start is not an action of this hook, for anybody.
-        for action in ["start", "begin", "get"] {
-            let (status, answer) = post_hook(
-                &base,
-                "plan",
-                None,
-                Some(&own),
-                call(&chat, &chat, action, json!({ "revision": 1 })),
-            )
-            .await;
-            assert_eq!(status, 400, "{action}: {answer}");
-            assert_eq!(answer["error"], "Unknown plan action.", "{action}");
-        }
-        assert_eq!(
-            crate::chat_plan::get(&chat_id).unwrap().unwrap().started,
-            None
-        );
-        crate::chat_plan::forget(&chat_id);
-        for key in [&seat_key, &chat, &settled_key, &orch_key] {
-            chats.test_end(key);
-        }
-    }
-
-    /// While its chat's plan waits on the person's Start, an agent is
-    /// refused the commands that start orchestrated work, in words that say
-    /// so. A chat with no plan is answered exactly as a chat whose plan was
-    /// started, a worker is not asked, and nothing else on the hook is held.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_unstarted_plan_holds_its_chats_agent_from_starting_orchestrated_work() {
-        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
-        let chats = Arc::new(crate::agent_chat::ChatManager::default());
-        let id = uuid::Uuid::new_v4().simple().to_string();
-        let planned_id = format!("plan-gate-{id}");
-        let planned = format!("chat:{planned_id}");
-        let plain = format!("chat:plan-none-{id}");
-        let (_ctx, base) = test_server(chats.clone(), store).await;
-        let planned_cap = chats.test_launch(&planned);
-        let plain_cap = chats.test_launch(&plain);
-        let gated = [
-            "run_create",
-            "task_create",
-            "worker_start",
-            "dispatch_ready",
-            "task_reopen",
-        ];
-        let ask = |chat: String, cap: String, action: &'static str| {
-            let base = base.clone();
-            async move {
-                let (status, answer) = hook(
-                    &base,
-                    Some(&cap),
-                    json!({ "chatKey": chat, "action": action, "args": {} }),
-                )
-                .await;
-                (status, answer)
-            }
-        };
-        // Before there is a plan: what each call answers on its own account.
-        let mut before = Vec::new();
-        for action in gated {
-            let (status, answer) = ask(planned.clone(), planned_cap.clone(), action).await;
-            assert!(
-                !answer["error"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .contains("plan"),
-                "{action}: {answer}"
-            );
-            before.push((status, answer));
-        }
-
-        crate::chat_plan::update(
-            &planned_id,
-            "agent",
-            serde_json::from_value(json!({ "baseRevision": 0, "add": [{ "title": "A" }] }))
-                .unwrap(),
-            |_| Ok(()),
-        )
-        .unwrap();
-        for action in gated {
-            let (status, answer) = ask(planned.clone(), planned_cap.clone(), action).await;
-            assert_eq!(status, 400, "{action}: {answer}");
-            assert_eq!(
-                answer["outcome"]["reasonClass"], "scope-refused",
-                "{action}: {answer}"
-            );
-            let why = answer["error"].as_str().unwrap();
-            assert!(
-                why.starts_with(crate::chat_plan::NOT_STARTED),
-                "{action}: {why}"
-            );
-            assert!(why.contains("only the person starts it"), "{action}: {why}");
-            // A chat with no plan is not asked: it answers as it always did.
-            let (status, answer) = ask(plain.clone(), plain_cap.clone(), action).await;
-            let at = gated.iter().position(|name| *name == action).unwrap();
-            assert_eq!((status, &answer), (before[at].0, &before[at].1), "{action}");
-        }
-        // What starts no work is not held: reading the ledger, a gate.
-        for action in ["snapshot", "destinations", "gate_create", "run_stop"] {
-            let (_, answer) = ask(planned.clone(), planned_cap.clone(), action).await;
-            assert!(
-                !answer["error"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .starts_with(crate::chat_plan::NOT_STARTED),
-                "{action}: {answer}"
-            );
-        }
-
-        // The person's Start, and every one of them goes through to the
-        // command, which answers as it did before there was a plan.
-        crate::chat_plan::start(&planned_id, 1, "octiq-plan-start-test").unwrap();
-        for (at, action) in gated.into_iter().enumerate() {
-            let (status, answer) = ask(planned.clone(), planned_cap.clone(), action).await;
-            assert_eq!((status, &answer), (before[at].0, &before[at].1), "{action}");
-        }
-        // An item added after Start does not hold it again.
-        crate::chat_plan::update(
-            &planned_id,
-            "agent",
-            serde_json::from_value(json!({ "baseRevision": 1, "add": [{ "title": "B" }] }))
-                .unwrap(),
-            |_| Ok(()),
-        )
-        .unwrap();
-        let (status, answer) = ask(planned.clone(), planned_cap.clone(), "run_create").await;
-        assert_eq!((status, &answer), (before[0].0, &before[0].1));
-
-        crate::chat_plan::forget(&planned_id);
-        chats.test_end(&planned);
-        chats.test_end(&plain);
-    }
-
-    /// The pure half of the gate: which commands it asks about, that each
-    /// is one an agent can reach, and that the page's own are not among
-    /// them.
-    #[test]
-    fn the_start_gate_asks_only_about_the_commands_that_start_work() {
-        let reachable: Vec<&str> = ORCHESTRATION_HOOK_ACTIONS
-            .iter()
-            .map(|(_, command)| *command)
-            .collect();
-        for command in PLAN_GATED_COMMANDS {
-            assert!(
-                reachable.contains(command),
-                "{command} is not a hook command"
-            );
-        }
-        // The coordinator's start, never the page's retry of the same name.
-        assert!(PLAN_GATED_COMMANDS.contains(&"orchestration_worker_start_in_chat"));
-        assert!(!PLAN_GATED_COMMANDS.contains(&"orchestration_worker_start"));
-        let id = format!("plan-pure-{}", uuid::Uuid::new_v4().simple());
-        let key = format!("chat:{id}");
-        // No plan: nothing is refused, whatever the command.
-        for command in reachable.iter().chain(PLAN_GATED_COMMANDS) {
-            assert_eq!(plan_gate_refusal(command, &key).map(|r| r.message), None);
-        }
-        crate::chat_plan::update(
-            &id,
-            "agent",
-            serde_json::from_value(json!({ "baseRevision": 0, "add": [{ "title": "A" }] }))
-                .unwrap(),
-            |_| Ok(()),
-        )
-        .unwrap();
-        for command in &reachable {
-            let refused = plan_gate_refusal(command, &key);
-            assert_eq!(
-                refused.is_some(),
-                PLAN_GATED_COMMANDS.contains(command),
-                "{command}"
-            );
-        }
-        // A worker's chat has no plan and is never held by its coordinator's.
-        assert!(plan_gate_refusal("orchestration_task_create", "chat:orch-worker").is_none());
-        crate::chat_plan::forget(&id);
-        // The person's socket does not write a plan: a change is the agent's.
-        assert!(socket_refusal("chat_plan_update").is_some());
-        assert!(socket_refusal("chat_plan_get").is_none());
-    }
 
     #[test]
     fn the_hook_reaches_no_person_only_command() {

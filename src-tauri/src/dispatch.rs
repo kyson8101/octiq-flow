@@ -28,8 +28,6 @@ use serde_json::{json, Value};
 #[cfg(test)]
 mod effort_tests;
 mod island;
-#[cfg(test)]
-mod plan_tests;
 mod pull_requests;
 
 use crate::agent_chat::{Access, ChatAgent, ChatManager};
@@ -93,14 +91,6 @@ impl Services {
             chats.clone(),
             workspaces.clone(),
         );
-        crate::orchestration::environments::start_reconciler(orchestrations.clone());
-        // Read the sandbox state once now, so that a sandbox this server
-        // did not start itself (one left running by the server before it)
-        // can still be stopped if the profile folder goes away before
-        // anything else has read it (`sandbox::Store::known`).
-        if let Err(why) = crate::sandbox::Store::profile().known() {
-            eprintln!("[sandbox] could not read the sandbox state at startup: {why}");
-        }
         let services = Self {
             workspaces,
             chats,
@@ -267,14 +257,11 @@ enum FirstTurn {
     Person(Option<String>),
     /// The host's wrap-up, for a completion of a chat with no process.
     WrapUp(String),
-    /// The host telling the agent its plan was started (`chat_plan`), for a
-    /// chat with no process.
-    PlanStart(String),
 }
 
 /// Start a chat's agent from the page's start settings (`args`: `cwd`,
 /// `agent`, `model`, `access`, `resume`, `extraDirs`, `env`, `effort`,
-/// `lite`, `useSandbox`, `fallbackCwd`). `chat_start` and a completion of a
+/// `lite`, `fallbackCwd`). `chat_start` and a completion of a
 /// chat that is not running both come through here, so both put a removed
 /// folder back first and both start under what that holds.
 fn start_chat(
@@ -288,7 +275,7 @@ fn start_chat(
     let resume: Option<String> = arg(args, "resume")?;
     // A chat outlives the worktree it ran in. Put the folder back, or
     // move the chat to one that exists, before anything reads it: the
-    // sandbox below and the launch both need a real directory. It is
+    // launch needs a real directory. It is
     // refused before it changes anything, and what it holds (the
     // workspace lifecycle lock and its claim on the chat) is kept
     // until the chat has been started, further down.
@@ -302,12 +289,6 @@ fn start_chat(
     if let Some(held) = &held {
         cwd = held.recovery.cwd.clone();
     }
-    crate::sandbox::Store::profile().select(
-        key,
-        &cwd,
-        arg(args, "useSandbox")?,
-        resume.is_some(),
-    )?;
     if let Some(held) = &held {
         held.settle(
             key,
@@ -339,7 +320,7 @@ fn start_chat(
         }
         // The host's own words: no evidence of the person's, no roster
         // brief, nothing attached.
-        FirstTurn::WrapUp(text) | FirstTurn::PlanStart(text) => (Some(text), None, None, None),
+        FirstTurn::WrapUp(text) => (Some(text), None, None, None),
     };
     let started = crate::agent_chat::chat_start_answering_impl(
         svc.chats.clone(),
@@ -361,75 +342,6 @@ fn start_chat(
     );
     drop(held);
     started
-}
-
-/// Why a chat keeps no plan, for the kinds that never do: a worker's task
-/// is its plan, and a front desk only routes. By durable identity, like
-/// every hook that writes: a worker stays one after its attempt settles.
-/// A chat in the trash is refused too. A room seat is refused where its
-/// capability is read (`web::plan_handler`): only that says which voice
-/// of a chat is calling.
-fn plan_chat_refusal(svc: &Services, key: &str) -> Result<Option<&'static str>, String> {
-    plan_chat_refusal_in(&svc.orchestrations, &crate::team::default_path(), key)
-}
-
-fn plan_chat_refusal_in(
-    orchestrations: &OrchestrationStore,
-    team: &std::path::Path,
-    key: &str,
-) -> Result<Option<&'static str>, String> {
-    if orchestrations.is_worker_chat(key)? {
-        return Ok(Some(
-            "A worker's chat keeps no plan: its task is its plan. The plan is the main chat's that coordinates it.",
-        ));
-    }
-    if crate::team::is_front_desk_chat(team, key) {
-        return Ok(Some("A front desk only routes. It keeps no plan."));
-    }
-    let trashed = key.strip_prefix("chat:").is_some_and(|id| {
-        crate::chat_index::deleted()
-            .iter()
-            .any(|chat| chat.id == id)
-    });
-    Ok(trashed.then_some("This chat is in the trash. Restore it first."))
-}
-
-/// A chat's plan as it is answered (`chat_plan::answer`).
-fn plan_view(
-    svc: &Services,
-    chat_id: &str,
-    plan: Option<crate::chat_plan::Plan>,
-) -> crate::chat_plan::PlanView {
-    crate::chat_plan::answer(&svc.orchestrations, chat_id, plan)
-}
-
-/// Tell every open page a chat's plan changed.
-fn announce_plan(view: &crate::chat_plan::PlanView) {
-    crate::bus::emit("chat-plan", json!({ "chatId": view.chat_id, "plan": view }));
-}
-
-/// The tasks a change to `key`'s plan links anew: each has to be in the
-/// ledger, in a run this chat coordinates.
-fn plan_linkable(svc: &Services, key: &str, ids: &[String]) -> Result<(), String> {
-    let known = svc
-        .orchestrations
-        .linked_tasks(ids.iter().map(String::as_str))?;
-    for id in ids {
-        match known.get(id) {
-            None => {
-                return Err(format!(
-                    "{id} is not a task in the ledger. Link a task by the id orchestration_task_create answered. Nothing was changed."
-                ))
-            }
-            Some(task) if task.coordinator != key => {
-                return Err(format!(
-                    "{id} is a task of a run another chat coordinates. An item links only to tasks of a run this chat coordinates. Nothing was changed."
-                ))
-            }
-            Some(_) => {}
-        }
-    }
-    Ok(())
 }
 
 /// Why a chat cannot be completed, for the kinds that never can: a worker's
@@ -757,88 +669,23 @@ pub fn told(svc: &Services, cmd: &str, args: Value) -> Told {
 /// write fails as it did and nothing is made.
 pub fn settle_owed(svc: &Services) -> Vec<&'static str> {
     let mut owed = crate::agent_chat::settle_owed(&svc.chats);
-    if settle_plan_starts(svc).is_err() {
-        owed.push(crate::chat_plan::OWED);
-    }
     if svc.orchestrations.settle_owed().is_err() {
         owed.push(crate::orchestration::OWED);
     }
     if svc.chats.jobs.settle().is_err() {
         owed.push(crate::chat_jobs::OWED);
     }
-    if crate::sandbox::Store::profile().settle().is_err() {
-        owed.push(crate::sandbox::OWED);
-    }
     owed
-}
-
-/// Save the notes the plans' files are owed for what this server did with
-/// the turn that tells an agent its plan was started: that it was handed
-/// over, or that it was taken back (`chat_plan::StartTurns`). An error is
-/// why one is still owed. With nothing owed it is one lock.
-///
-/// Each is saved under the chat's claim, so a note that the agent was told
-/// is never written over a taking back. A claim that is held is an ask in
-/// flight, which saves the note itself: that chat is left for the next
-/// pass, and nothing here waits on a chat being started.
-fn settle_plan_starts(svc: &Services) -> Result<(), String> {
-    use crate::chat_plan::Note;
-    let starts = &svc.chats.plan_starts;
-    let owed = starts.owed();
-    if owed.is_empty() {
-        return Ok(());
-    }
-    crate::profile::available()?;
-    let mut still = None;
-    for chat_id in owed {
-        let claim = crate::chat_plan::telling(&chat_id);
-        let Ok(telling) = claim.try_lock() else {
-            still = Some(format!("the plan of {chat_id} is being started"));
-            continue;
-        };
-        // Asked again under the claim: noted, or changed, since.
-        let Some(note) = starts.of(&telling, &chat_id).owed else {
-            continue;
-        };
-        let saved = match crate::chat_plan::get(&chat_id) {
-            // The chat was removed for good, and its plan with it.
-            Ok(None) => {
-                starts.forget(&telling, &chat_id);
-                continue;
-            }
-            Ok(Some(_)) => match &note {
-                Note::Told(turn_id) => crate::chat_plan::told(&chat_id, turn_id).map(Some),
-                Note::Untold(turn_id) => crate::chat_plan::untold(&chat_id, turn_id),
-            },
-            Err(why) => Err(why),
-        };
-        match saved {
-            Ok(plan) => {
-                starts.noted(&telling, &chat_id);
-                if let Some(plan) = plan {
-                    announce_plan(&plan_view(svc, &chat_id, Some(plan)));
-                }
-            }
-            Err(why) => still = Some(why),
-        }
-    }
-    still.map_or(Ok(()), Err)
 }
 
 /// The stores `settle_owed` would write, without writing them.
 fn owed(svc: &Services) -> Vec<&'static str> {
     let mut owed = crate::agent_chat::owed(&svc.chats);
-    if svc.chats.plan_starts.owes() {
-        owed.push(crate::chat_plan::OWED);
-    }
     if svc.orchestrations.owes() {
         owed.push(crate::orchestration::OWED);
     }
     if svc.chats.jobs.owes() {
         owed.push(crate::chat_jobs::OWED);
-    }
-    if crate::sandbox::Store::profile().owes() {
-        owed.push(crate::sandbox::OWED);
     }
     owed
 }
@@ -896,22 +743,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
     // The coordinator's internal launch/message/report paths call their
     // implementations directly, without a client-controlled bypass flag.
     match cmd {
-        // A worker's test environment outlives its turns on purpose, so once
-        // its attempt has settled the person can start, check, stop or reset
-        // it from the Sandbox panel to inspect it; that no longer drives the
-        // worker, and starting holds it against the host's lifecycle until
-        // they stop it. A live worker's stays out of reach, like everything
-        // else a worker owns.
-        "sandbox_action"
-            if matches!(
-                arg::<String>(&args, "action")?.as_str(),
-                "start" | "check" | "stop" | "reset"
-            ) && svc
-                .orchestrations
-                .worker_card_live(&arg::<String>(&args, "key")?)?
-                == Some(false) => {}
         "chat_start"
-        | "sandbox_action"
         | "chat_send"
         | "chat_cancel_auto_resume"
         | "chat_cancel_queued"
@@ -1216,22 +1048,6 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         )),
 
         // ---- chats --------------------------------------------------------
-        "sandbox_snapshot" => to_value(crate::sandbox::Store::profile().snapshot_probed()),
-        "sandbox_configure" => {
-            to_value(crate::sandbox::Store::profile().configure(arg(&args, "enabled")?))
-        }
-        "sandbox_action" => {
-            let key: String = arg(&args, "key")?;
-            let action: String = arg(&args, "action")?;
-            let confirmation: Option<String> = arg(&args, "confirmation")?;
-            to_value(
-                crate::sandbox::Store::profile()
-                    .person_action(&key, &action, confirmation.as_deref(), || {
-                        crate::agent_chat::end_idle_for_sandbox(&svc.chats, &key)
-                    })
-                    .map(crate::sandbox::Environment::public),
-            )
-        }
         "chat_start" => {
             // Said first, before the roster is read for the turn: a start
             // whose record cannot be kept is refused in the profile's words.
@@ -1283,241 +1099,6 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let key: String = arg(&args, "chatKey")?;
             to_value(completion_preview(svc, &key))
         }
-        // ---- a chat's plan (`chat_plan.rs`) ---------------------------------
-        // What the page reads: the agent's list, the person's Start, and how
-        // each item's linked tasks stand in the ledger right now.
-        "chat_plan_get" => {
-            let chat_id: String = arg(&args, "chatId")?;
-            let plan = crate::chat_plan::get(&chat_id)?;
-            to_value(Ok::<_, String>(plan_view(svc, &chat_id, plan)))
-        }
-        // The agent's change, from `/hook/plan` and nowhere else: the
-        // socket refuses it (`web::CHAT_ONLY_COMMANDS`), because it records
-        // the chat's agent as its author.
-        "chat_plan_update" => {
-            let chat_id: String = arg(&args, "chatId")?;
-            let key = format!("chat:{chat_id}");
-            if let Some(refusal) = plan_chat_refusal(svc, &key)? {
-                return Err(crate::outcome::refuse(
-                    crate::outcome::ReasonClass::ScopeRefused,
-                    refusal,
-                ));
-            }
-            let change: crate::chat_plan::Change =
-                serde_json::from_value(args.get("change").cloned().unwrap_or(Value::Null))
-                    .map_err(|error| {
-                        crate::outcome::refuse(
-                            crate::outcome::ReasonClass::Validation,
-                            format!("Those arguments are not valid: {error}"),
-                        )
-                    })?;
-            let by = crate::team::identity(&crate::team::default_path(), &key, None)
-                .map(|(me, _)| me.name)
-                .unwrap_or_else(|_| "agent".into());
-            let updated = crate::chat_plan::update(&chat_id, &by, change, |ids| {
-                plan_linkable(svc, &key, ids)
-            })?;
-            let view = plan_view(svc, &chat_id, Some(updated.plan));
-            if updated.changed {
-                announce_plan(&view);
-            }
-            let mut answer = serde_json::to_value(&view).map_err(|e| e.to_string())?;
-            answer["changed"] = Value::Bool(updated.changed);
-            Ok(answer)
-        }
-        // The person's Start. The page's command and nobody else's: no hook
-        // routes here and the MCP server has no such tool. Its point is the
-        // record, so it is save-first: recorded, then the agent is told, and
-        // refused whole when it cannot be recorded.
-        "chat_plan_start" => {
-            crate::profile::available()?;
-            let chat_id: String = arg(&args, "chatId")?;
-            let revision: u64 = arg(&args, "revision")?;
-            let key = format!("chat:{chat_id}");
-            if let Some(refusal) = plan_chat_refusal(svc, &key)? {
-                return Err(refusal.into());
-            }
-            // One Start, one turn, however often and from however many tabs
-            // this is asked (review of 16e4188, H2). Two things hold it:
-            //
-            // - the claim: from here to the answer nobody else reads
-            //   whether this chat's agent was told, hands the turn over or
-            //   notes that it was, so two asks at once are one after the
-            //   other and the second finds what the first did;
-            // - the receipt: the turn's id is the Start's own, saved with
-            //   it, and what became of that turn is read from the chat's
-            //   record (`host_turns`), not from the note `told`. A turn
-            //   that was handed over and whose note could not be saved is
-            //   found there, and this ask saves the note and sends nothing.
-            //
-            // And a third, for a record that took no line of the turn while
-            // the note could not be saved either (review 2b, H2b): what
-            // this server handed over itself it remembers
-            // (`chat_plan::StartTurns`), and that is read before the record.
-            let claim = crate::chat_plan::telling(&chat_id);
-            let telling = claim.lock().unwrap_or_else(|e| e.into_inner());
-            let starts = &svc.chats.plan_starts;
-            // A plan that is started is never started again. Asked of one
-            // whose agent has its turn, this answers that and sends nothing.
-            // Asked of one whose turn was not handed over, or was taken
-            // back or lost, it is the page asking again: the turn is tried
-            // once more and the Start as it was recorded (when, on which
-            // revision) is not touched.
-            let mut before = crate::chat_plan::get(&chat_id)?;
-            let again = before.as_ref().is_some_and(|plan| plan.started.is_some());
-            let mut retried = None;
-            // The plan says its agent was told, and that turn is gone.
-            let mut stale = None;
-            if let Some((plan, started)) = before
-                .as_ref()
-                .and_then(|plan| Some((plan, plan.started.as_ref()?)))
-            {
-                use crate::agent_chat::HostTurn;
-                let first = crate::chat_plan::first_turn_id(&started.turn_id).to_string();
-                // What this server did itself for this Start: the try it
-                // handed over, and the tries it took back.
-                let known = starts.of(&telling, &chat_id);
-                let of_this_start = |id: &String| crate::chat_plan::first_turn_id(id) == first;
-                let here = known.handed.filter(of_this_start);
-                let mut turns =
-                    crate::agent_chat::host_turns(&svc.chats, &key, &first, here.as_deref())?;
-                // A try taken back from this server's queue is over,
-                // whatever line the record took of the taking back.
-                for taken_back in known.taken_back.into_iter().filter(of_this_start) {
-                    turns.insert(taken_back, HostTurn::Gone);
-                }
-                // A line says the try handed over is gone: it is over too.
-                let here = here.filter(|handed| {
-                    let gone = turns.get(handed) == Some(&HostTurn::Gone);
-                    if gone {
-                        starts.over(&telling, &chat_id, handed);
-                    }
-                    !gone
-                });
-                if started.told && turns.get(&started.turn_id) != Some(&HostTurn::Gone) {
-                    let turn_id = started.turn_id.clone();
-                    return Ok(json!({
-                        "plan": plan_view(svc, &chat_id, before),
-                        "turnId": turn_id, "delivered": true, "state": "told",
-                    }));
-                }
-                // The turn this server handed over, when it did: the record
-                // may hold no line of it, nor of the tries before it. Else
-                // the first try of this Start that is not gone. A turn the
-                // person took back, one marked not sent and one a server
-                // that is gone had only queued are each a try that is over;
-                // the next has the next id.
-                let mut turn_id = first;
-                match here {
-                    Some(handed) => turn_id = handed,
-                    None => {
-                        while turns.get(&turn_id) == Some(&HostTurn::Gone) {
-                            turn_id = crate::chat_plan::next_turn_id(&turn_id);
-                        }
-                    }
-                }
-                if turns.get(&turn_id) == Some(&HostTurn::Handed) {
-                    // The agent has it, or it waits in the queue for it:
-                    // what is missing is the note. Nothing is sent.
-                    let noted = crate::chat_plan::told(&chat_id, &turn_id);
-                    starts.handed(&telling, &chat_id, &turn_id, noted.is_ok());
-                    let plan = noted.unwrap_or_else(|why| {
-                        crate::unsaved::say(crate::chat_plan::TOLD_NOTE, why);
-                        plan.clone()
-                    });
-                    let view = plan_view(svc, &chat_id, Some(plan));
-                    announce_plan(&view);
-                    return Ok(json!({
-                        "plan": view, "turnId": turn_id, "delivered": true, "state": "told",
-                    }));
-                }
-                retried = Some(turn_id);
-                stale = started.told.then(|| started.turn_id.clone());
-            } else {
-                crate::chat_plan::startable(&chat_id, revision)?;
-            }
-            // Before the next try, which may fail: the plan stops saying
-            // what is no longer so, as it does when the person takes the
-            // turn back themselves.
-            if let Some(gone) = stale {
-                match crate::chat_plan::untold(&chat_id, &gone) {
-                    Ok(Some(plan)) => {
-                        announce_plan(&plan_view(svc, &chat_id, Some(plan.clone())));
-                        before = Some(plan);
-                    }
-                    Ok(None) => {}
-                    Err(why) => crate::unsaved::say(crate::chat_plan::UNTOLD_NOTE, why),
-                }
-            }
-            // As for a completion: a chat with no process is started with
-            // the host's turn as its first message, from the settings the
-            // page would start it with. Asked before anything is recorded,
-            // so the page can ask again with `start`.
-            let start = args.get("start").filter(|start| start.is_object());
-            if !svc.chats.takes_turns(&key) {
-                let start = start.ok_or_else(|| crate::agent_chat::completion_needs_start(&key))?;
-                if let Some(resume) = arg::<Option<String>>(start, "resume")? {
-                    svc.chats.require_user_resume(&resume)?;
-                }
-            }
-            // The Start's own turn id, made once and saved with it. A try
-            // that left nothing in the record is tried again under the
-            // same id, so a send that did get through is never sent twice
-            // (`send_turn` knows the id). A try that is over has left its
-            // line, and the next one's id is counted on from it above.
-            let turn_id = retried.unwrap_or_else(crate::chat_plan::start_turn_id);
-            let plan = match before {
-                Some(plan) if again => plan,
-                _ => {
-                    let plan = crate::chat_plan::start(&chat_id, revision, &turn_id)?;
-                    announce_plan(&plan_view(svc, &chat_id, Some(plan.clone())));
-                    plan
-                }
-            };
-            let text = crate::chat_plan::start_message(&plan);
-            // Recorded. From here the Start stands whatever becomes of the
-            // turn: one that cannot be handed over is said beside the
-            // answer, never instead of it.
-            let handed =
-                match crate::agent_chat::chat_host_turn_impl(&svc.chats, &key, &text, &turn_id) {
-                    Ok(Some(state)) => Ok(state),
-                    Ok(None) => match start {
-                        Some(start) => start_chat(
-                            svc,
-                            &key,
-                            start,
-                            FirstTurn::PlanStart(text),
-                            turn_id.clone(),
-                        )
-                        .map(|()| "started"),
-                        None => Err(crate::agent_chat::completion_needs_start(&key)),
-                    },
-                    Err(why) => Err(why),
-                };
-            Ok(match handed {
-                Ok(state) => {
-                    // The agent has the turn. That it was told is a note
-                    // of something that happened: when it cannot be kept it
-                    // is said beside the answer, and owed (`settle_owed`).
-                    // The page may ask again, and that ask finds the turn
-                    // in what this server remembers handing over, or in
-                    // the record, saves the note and sends nothing.
-                    let noted = crate::chat_plan::told(&chat_id, &turn_id);
-                    starts.handed(&telling, &chat_id, &turn_id, noted.is_ok());
-                    let plan = noted.unwrap_or_else(|why| {
-                        crate::unsaved::say(crate::chat_plan::TOLD_NOTE, why);
-                        plan
-                    });
-                    let view = plan_view(svc, &chat_id, Some(plan));
-                    announce_plan(&view);
-                    json!({ "plan": view, "turnId": turn_id, "delivered": true, "state": state })
-                }
-                Err(why) => json!({
-                    "plan": plan_view(svc, &chat_id, Some(plan)),
-                    "turnId": turn_id, "delivered": false, "notDelivered": why,
-                }),
-            })
-        }
         "chat_send" => {
             crate::profile::available()?;
             let key: String = arg(&args, "key")?;
@@ -1559,42 +1140,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "chat_cancel_queued" => {
             let key: String = arg(&args, "key")?;
             let turn_id: String = arg(&args, "turnId")?;
-            // The turn that tells an agent its plan was started: taking it
-            // back takes the turn and never the Start. The plan stops
-            // saying its agent was told, so the page can ask again, and the
-            // two change under the claim a Start is told under, so a note
-            // that the agent was told is never written over a taking back.
-            let plan_chat = turn_id
-                .starts_with(crate::chat_plan::START_TURN_PREFIX)
-                .then(|| key.strip_prefix("chat:"))
-                .flatten();
-            let claim = plan_chat.map(crate::chat_plan::telling);
-            let telling = claim
-                .as_ref()
-                .map(|claim| claim.lock().unwrap_or_else(|e| e.into_inner()));
             let cancelled = crate::agent_chat::chat_cancel_queued_impl(
                 &svc.chats,
                 key.clone(),
                 turn_id.clone(),
             )?;
-            if let Some((chat_id, telling)) = plan_chat.zip(telling.as_ref()).filter(|_| cancelled)
-            {
-                let noted = crate::chat_plan::untold(chat_id, &turn_id);
-                // Taken back from this server's own queue, and the server
-                // remembers that it was: the try is over whatever line the
-                // record took of it, so the next ask hands over the next
-                // one. A note that could not be saved is said and owed
-                // (`settle_owed`): the page offers `Tell the agent` by it.
-                svc.chats
-                    .plan_starts
-                    .taken_back(telling, chat_id, &turn_id, noted.is_ok());
-                match noted {
-                    Ok(Some(plan)) => announce_plan(&plan_view(svc, chat_id, Some(plan))),
-                    Ok(None) => {}
-                    // The turn is taken back all the same.
-                    Err(why) => crate::unsaved::say(crate::chat_plan::UNTOLD_NOTE, why),
-                }
-            }
             Ok(json!(cancelled))
         }
         // Permanently hide a prompt that queue reconciliation established was
@@ -1801,7 +1351,6 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             crate::agent_chat::chat_forget(key);
             Ok(Value::Null)
         }
-        "image_preview_list" => to_value(crate::image_preview::list(&arg::<String>(&args, "key")?)),
         "media_comments_list" => {
             to_value(crate::media_comments::list(&arg::<String>(&args, "path")?))
         }
@@ -2031,7 +1580,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let message_limit: Option<usize> = arg(&args, "messageLimit")?;
             // Every agent's read is built from this one ledger, so a peer
             // request's worker, held to its own task, finds nothing else in
-            // the view or in the environments below.
+            // the view.
             let (snapshot, own_task) = svc.orchestrations.snapshot_for_agent(
                 &actor,
                 run_id.as_deref(),
@@ -2041,7 +1590,6 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             // attempts' figures and nobody else's.
             let snapshot = snapshot.with_usage(&svc.chats.usage);
             let task_id = own_task.clone().or(task_id);
-            let full = snapshot.clone();
             let mut view = crate::orchestration::agent_view::agent_snapshot(
                 snapshot,
                 &crate::orchestration::agent_view::AgentRead {
@@ -2054,38 +1602,6 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             )?;
             if own_task.is_some() {
                 crate::orchestration::agent_view::held_to_own_task(&mut view);
-            }
-            // Only when a task in view needs one: the sandbox record is read
-            // from disk, and most runs never touch it.
-            let shown: std::collections::BTreeSet<String> = view["runs"]
-                .as_array()
-                .map(|runs| {
-                    runs.iter()
-                        .filter_map(|r| r["id"].as_str().map(str::to_owned))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let needs = full.tasks.iter().any(|task| {
-                task.environment == crate::orchestration::TaskEnvironment::Sandbox
-                    && shown.contains(&task.run_id)
-            });
-            if needs {
-                if let (Ok(sandboxes), Some(out)) = (
-                    crate::sandbox::Store::profile().snapshot_probed(),
-                    view.as_object_mut(),
-                ) {
-                    out.insert(
-                        "environments".into(),
-                        crate::orchestration::agent_view::environments(&full, &sandboxes, &shown),
-                    );
-                    // Host-wide, and it names the chats waiting for a slot.
-                    if own_task.is_none() {
-                        out.insert(
-                            "environmentCapacity".into(),
-                            crate::orchestration::agent_view::capacity(&sandboxes),
-                        );
-                    }
-                }
             }
             Ok(view)
         }
@@ -2252,8 +1768,6 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 assignee,
                 destination,
                 card,
-                arg::<Option<crate::orchestration::TaskEnvironment>>(&args, "environment")?
-                    .unwrap_or_default(),
                 arg(&args, "size")?,
                 arg::<Option<crate::orchestration::TaskKind>>(&args, "kind")?.unwrap_or_default(),
                 effort_chosen,
@@ -3553,13 +3067,11 @@ mod tests {
                 "feedback_list",
                 json!({ "query": "", "offset": 0, "limit": 30 }),
             ),
-            ("sandbox_snapshot", json!({})),
             ("chat_index_list", json!({})),
             ("chat_index_deleted", json!({})),
             ("chat_since", json!({ "key": key, "after": 0 })),
             ("chat_page", json!({ "key": key })),
             ("chat_task", json!({ "chatId": "read" })),
-            ("image_preview_list", json!({ "key": key })),
         ];
         let answers = |when: &str| -> Vec<Value> {
             reads

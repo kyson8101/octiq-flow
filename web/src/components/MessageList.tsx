@@ -43,6 +43,8 @@ import { closeFence, splitBlocks } from "../lib/blocks";
 import { rehypeWordFade } from "../lib/wordfade";
 import { ContextReport } from "./ContextReport";
 import { parseContextReport } from "../lib/contextReport";
+import { RunCommand, TerminalRunContext } from "./RunCommand";
+import { fencedCodeClosed, isShellFence, shellCommand } from "../lib/shellRun";
 import { copyText } from "../lib/clipboard";
 import { clipMessage } from "../lib/clip";
 import { ConfigPanel, ConfigWorldProvider, isConfigUsage } from "./ConfigPanel";
@@ -58,7 +60,6 @@ import { WrapUpNote } from "./CompleteChat";
 import { useJob } from "./Background";
 import { isJobTurn, jobIdOfTurn, jobTurnBubble } from "../lib/jobs";
 import { wrapUpBubble } from "../lib/chatComplete";
-import { planStartBubble } from "../lib/planTurn";
 import { foldNoticeReplies, isNoticeTurn, noticeReply, noticeText, readNoticeTurn } from "../lib/hostNotice";
 import { ChatPersonaContext } from "../lib/agentRoster";
 import { HostNotice } from "./HostNotice";
@@ -74,15 +75,17 @@ import {
   type ChatPlace,
 } from "../lib/chatPlace";
 
-/** Whether every fence of the markdown block being drawn was closed by the
- *  reply itself. `closeFence` closes a half-arrived one so it draws as code,
- *  and a code block cannot tell that from one the agent closed. */
-const FencesClosed = createContext(true);
+/** Original source, before closeFence appends a synthetic closer. Each code
+ * node's parser positions identify its own fence, including list/quote nesting. */
+const FenceSource = createContext("");
 
-/** A fenced code block, with the one control that matters: copy.
+/** A fenced code block, with Copy and an optional confirmed shell Run.
  *  react-markdown hands us the <code> child, whose className carries the fence
  *  language ("language-rust"). */
-function CodeBlock({ children }: { children?: React.ReactNode }) {
+function CodeBlock({ children, node }: {
+  children?: React.ReactNode;
+  node?: { position?: { start: { offset?: number }; end: { offset?: number } } };
+}) {
   const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLPreElement>(null);
   const child = children as { props?: { className?: string; children?: unknown } } | undefined;
@@ -91,7 +94,9 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
   // A card diagram that is not a block of its own (inside a list, a quote):
   // `MarkdownBlock` never saw its fence, so it is read here. Anything that is
   // not a closed, whole, valid diagram stays the code block it also is.
-  const closed = useContext(FencesClosed);
+  const source = useContext(FenceSource);
+  const closed = typeof child?.props?.children === "string" &&
+    fencedCodeClosed(source, child.props.children, node?.position?.start.offset, node?.position?.end.offset);
   if (closed && lang === DIAGRAM_LANG && typeof child?.props?.children === "string") {
     const diagram = parseDiagram(child.props.children);
     if (diagram) return <CardDiagram diagram={diagram} />;
@@ -101,22 +106,26 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
     <div className="code">
       <div className="code-head">
         <span className="code-lang">{lang || "text"}</span>
-        <button
-          className="code-copy"
-          type="button"
-          onClick={async () => {
-            // Through the shared helper, which falls back to the old copy API
-            // where `navigator.clipboard` does not exist — reaching this app
-            // from a phone means a plain-http origin, and this button used to
-            // do nothing at all there.
-            if (await copyText(ref.current?.innerText ?? "")) {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1400);
-            }
-          }}
-        >
-          {copied ? "copied" : "copy"}
-        </button>
+        <div className="code-actions">
+          {closed && isShellFence(lang) && typeof child?.props?.children === "string" &&
+            <RunCommand command={shellCommand(lang, child.props.children)} />}
+          <button
+            className="code-copy"
+            type="button"
+            onClick={async () => {
+              // Through the shared helper, which falls back to the old copy API
+              // where `navigator.clipboard` does not exist — reaching this app
+              // from a phone means a plain-http origin, and this button used to
+              // do nothing at all there.
+              if (await copyText(ref.current?.innerText ?? "")) {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1400);
+              }
+            }}
+          >
+            {copied ? "copied" : "copy"}
+          </button>
+        </div>
       </div>
       <pre ref={ref}>{children}</pre>
     </div>
@@ -271,7 +280,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
 
   const whole = closeFence(text);
   return (
-    <FencesClosed.Provider value={whole === text}>
+    <FenceSource.Provider value={text}>
       <Markdown
         remarkPlugins={[remarkGfm]}
         // Paths first: the word fade cuts text into one span per word, and a
@@ -281,7 +290,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
       >
         {whole}
       </Markdown>
-    </FencesClosed.Provider>
+    </FenceSource.Provider>
   );
 });
 
@@ -478,6 +487,7 @@ function SubAgent({
   const blocks = messages.flatMap((m) => m.blocks);
   const streaming = messages.some((m) => m.streaming);
   return (
+    <TerminalRunContext.Provider value={null}>
     <div className="subagent">
       <Blocks
         blocks={blocks}
@@ -488,6 +498,7 @@ function SubAgent({
       />
       {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
     </div>
+    </TerminalRunContext.Provider>
   );
 }
 
@@ -916,15 +927,13 @@ function TurnView({
   const start = onStartQueued && waitingId ? () => onStartQueued(waitingId) : undefined;
   // The host's wrap-up turn of a completion is not something the person said.
   const completion = role === "user" ? wrapUpBubble(message) : null;
-  // Nor is the turn that tells the agent its plan was started (`lib/planTurn`).
-  const planStart = role === "user" && !completion ? planStartBubble(message) : null;
   // Nor the turn that tells an agent a job it registered ended (`lib/jobs`),
   // named from the job the page holds, else from the turn's own first line.
   const jobTurn = role === "user" && isJobTurn(message.turnId) ? message.turnId! : null;
   const wakeJob = useJob(jobTurn ? jobIdOfTurn(jobTurn) : null);
   const jobEnd = jobTurn ? jobTurnBubble(message, wakeJob?.job, answer) : null;
   /** One of the host's own turns: named, with its words behind a disclosure. */
-  const wrapUp = completion ?? planStart;
+  const wrapUp = completion;
 
   // Cards 80 and 81 — a turn made ENTIRELY of things that HAPPENED takes no
   // name. A compaction is not something Claude said, and a `/model` answered by
@@ -1056,7 +1065,7 @@ function TurnView({
         </div>
       )}
       <MediaReplyContext.Provider value={message.id}>
-      <MessageBubble user={role === "user"} message={message} wrapUp={!!completion} planStart={!!planStart} onStart={start} onCancel={cancel}
+      <MessageBubble user={role === "user"} message={message} wrapUp={!!completion} onStart={start} onCancel={cancel}
         onRestore={!wrapUp && (unsent || message.delivery === "unknown") && !message.echo && !message.takenUp && onRestoreUnsent && message.turnId ? () => onRestoreUnsent(message.turnId!) : undefined}
         onDismiss={unsent && onDismissUnsent && message.turnId ? () => onDismissUnsent(message.turnId!) : undefined}
         footer={role === "user" && answer && !wrapUp ? <CopyAnswer text={answer} what="message" /> : undefined}>
@@ -1079,7 +1088,7 @@ function TurnView({
             Anything else in a user turn (there is nothing today) still goes the
             ordinary way. */}
         {wrapUp ? (
-          <WrapUpNote label={wrapUp.label} detail={wrapUp.detail} text={answer} mark={planStart ? "start" : "complete"} />
+          <WrapUpNote label={wrapUp.label} detail={wrapUp.detail} text={answer} mark="complete" />
         ) : role === "user" && blocks.every((b) => b.kind === "text") ? (
           blocks.map((b, i) => <UserText key={i} text={deskRoute ? readDeskRoute(shown((b as { text: string }).text))?.text ?? shown((b as { text: string }).text) : shown((b as { text: string }).text)} />)
         ) : (

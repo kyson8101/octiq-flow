@@ -77,7 +77,7 @@ describe("the new-chat screen with a front desk", () => {
 
   it("runs the front desk at home with nothing prepared", () => {
     const plan = frontDeskExecution("p-general");
-    expect(plan).toMatchObject({ target: "home", projectId: "p-general", prepare: false, newWorktree: false, useSandbox: false, crossProject: false });
+    expect(plan).toMatchObject({ target: "home", projectId: "p-general", prepare: false, newWorktree: false, crossProject: false });
   });
 
   it("starts the front desk on its registered model and effort, so a change in Settings is the next chat's", () => {

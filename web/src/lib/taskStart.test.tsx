@@ -7,14 +7,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import panelSourceRaw from "../components/OrchestrationPanel.tsx?raw";
-import planPanelSourceRaw from "../components/PlanPanel.tsx?raw";
-import planViewSourceRaw from "./planView.ts?raw";
 import { lf } from "./sourceText";
 
 // Read with one kind of line end, so a pattern may name `\n` on a CRLF checkout too.
 const panelSource = lf(panelSourceRaw);
-const planPanelSource = lf(planPanelSourceRaw);
-const planViewSource = lf(planViewSourceRaw);
 
 /** Every component file, as text: what a row draws inside its tabs is
  *  followed into the helpers that draw it. */
@@ -469,17 +465,4 @@ describe("every control that starts an attempt", () => {
     expect(panelSource).not.toMatch(/"Start (retry|next attempt|it again)"/);
   });
 
-  it("is not the Plan panel's Start, which starts a plan and no attempt", () => {
-    // The person's Start on a chat's plan (`chat_plan_start`) hands the
-    // agent a turn; the tasks it then creates are started through the run
-    // panel's door like any other. The panel sends no worker start, offers
-    // no start of an attempt, and its one label comes from its own reader
-    // (`planView.planStart`), which asks the host's `awaitsStart`.
-    expect(planPanelSource).not.toMatch(/orchestration_worker_start|onRetry|startControl\(|task-start/);
-    expect(planPanelSource).not.toMatch(/>Start(?: [a-z ]+)?<|"Start(?: [a-z ]+)?"|>Tell the agent<|"Tell the agent"/);
-    expect(planPanelSource.match(/className="cplan-start"/g)).toHaveLength(1);
-    expect(planPanelSource).toMatch(/className="cplan-start"[\s\S]{0,160}?>\{start\.label\}<\/button>/);
-    expect(planViewSource).toMatch(/if \(!plan\.awaitsStart\) return /);
-    expect(planViewSource.match(/label: "Start"/g)).toHaveLength(2); // the type, and the one place it is made
-  });
 });

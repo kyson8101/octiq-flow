@@ -61,7 +61,6 @@ try {
     if (request.cmd === "chat_page") result = { events: [], context: [], before: null };
     if (request.cmd === "chat_queue_state") result = { live: false, queuedTurnIds: [] };
     if (request.cmd === "orchestration_snapshot") result = snapshot;
-    if (request.cmd === "sandbox_snapshot") result = { environments: {} };
     if (request.cmd === "permission_pending") result = [];
     if (request.cmd === "memory_usage") result = { totalMb: 0, procs: 0, rows: [] };
     if (request.cmd === "usage_summary") result = {};

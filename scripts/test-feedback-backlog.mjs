@@ -96,7 +96,6 @@ function resultFor(request) {
     case "pr_local_list": case "pr_remote_list": return { items: [], warnings: [] };
     case "codex_skills": return [];
     case "agent_avatar_status": return { available: false, reason: "Not signed in to Codex." };
-    case "sandbox_snapshot": return { defaultEnabled: false, environments: {} };
     default: return null;
   }
 }

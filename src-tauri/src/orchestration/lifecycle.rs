@@ -381,29 +381,6 @@ pub(super) fn refresh_decision_views(snapshot: &mut Snapshot) {
 }
 
 impl OrchestrationStore {
-    /// Whether a card raised in this chat can still continue a worker attempt:
-    /// None when the chat is no worker's, else whether its attempt is the live
-    /// one of its task. A settled or superseded attempt cannot be continued.
-    pub(crate) fn worker_card_live(&self, chat_key: &str) -> Result<Option<bool>, String> {
-        let inner = self.inner.lock().map_err(|e| e.to_string())?;
-        let data = &inner.data;
-        let mut attempts = data
-            .attempts
-            .values()
-            .filter(|a| a.worker_chat_key == chat_key)
-            .peekable();
-        if attempts.peek().is_none() {
-            return Ok(None);
-        }
-        Ok(Some(attempts.any(|a| {
-            matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running)
-                && data
-                    .tasks
-                    .get(&a.task_id)
-                    .is_some_and(|t| t.active_attempt_id.as_deref() == Some(&a.id))
-        })))
-    }
-
     /// The attempt a refusal in this chat belongs to (`chat_owner`), for
     /// grouping an outage refusal by attempt before it reaches the ledger.
     pub(crate) fn refusal_owner(&self, chat_key: &str) -> Option<String> {

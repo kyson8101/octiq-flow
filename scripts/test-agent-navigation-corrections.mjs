@@ -37,8 +37,8 @@ const chats = [
     createdAt: now - 60_000, updatedAt: now - 50_000,
     launch: {
       projectId: "octiq", projectName: "OctiqFlow", path: primaryRoot, baseBranch: "develop",
-      newWorktree: true, useSandbox: true, prepare: true, chosenBy: "auto",
-      reason: "A project task gets an isolated worktree and sandbox.", decidedAt: now - 60_000,
+      newWorktree: true, prepare: true, chosenBy: "auto",
+      reason: "A project task gets an isolated worktree.", decidedAt: now - 60_000,
     },
   },
 ];
@@ -109,12 +109,6 @@ const staleTaskStatus = {
   workspace: { ...taskStatus.workspace, exists: false, changed: 0, ahead: 0 },
   delivery: { ...taskStatus.delivery, uncommitted: 0, stale: true, checkedAt: now - 5_000 },
 };
-const sandbox = {
-  id: "sandbox-worker", chatKey: "chat:worker-current", enabled: true, locked: true,
-  cwd: longCwd, state: "ready", checkedAt: now - 12_000, error: null,
-  urls: {}, sourceRevision: "abcdef123456", sourceDirty: true, fixtureVersion: "mock-v1",
-};
-
 const calls = [];
 const errors = [];
 let appSocket;
@@ -136,7 +130,6 @@ function resultFor(request) {
     case "chat_list": return [];
     case "chat_queue_state": return { live: false, queuedTurnIds: [] };
     case "orchestration_snapshot": return snapshot;
-    case "sandbox_snapshot": return { defaultEnabled: true, environments: { [sandbox.id]: sandbox } };
     case "permission_pending": return [];
     case "memory_usage": return { totalMb: 0, procs: 0, rows: [] };
     case "usage_summary": return {};
@@ -210,7 +203,7 @@ try {
   await details.waitFor();
   for (const value of [
     "Noah", "OctiqFlow", longCwd, primaryRoot, "feature/navigation-corrections",
-    "develop", "Task worktree", "Ready", "3 changed · 1 to push · no upstream",
+    "develop", "Task worktree", "3 changed · 1 to push · no upstream",
     "No release check is configured for this project.",
   ]) assert.match(await details.innerText(), new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.equal(await page.locator(".topbar-leading > .chat-task, .topbar-actions > .chat-task").count(), 0,

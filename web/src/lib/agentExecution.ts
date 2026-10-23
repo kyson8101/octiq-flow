@@ -1,14 +1,14 @@
 // Agents mode: where a new task RUNS, decided without asking.
 //
-// The compact composer has no project, branch, worktree or sandbox controls on
+// The compact composer has no project, branch or worktree controls on
 // show. Something still has to choose them, and it is this — a pure rule, so
 // the choice is the same on every device and every rule is a test:
 //
 //   * The head (the CTO) coordinates from the person's HOME workspace. It is
 //     never given a code checkout of its own: every task it hands out is
 //     routed by the host to a registered project and repository, and gets its
-//     own environment when the plan is approved. So no git is prepared, and
-//     no sandbox is started for the conversation itself.
+//     own workspace when the plan is approved. No git is prepared for the
+//     conversation itself.
 //   * A lead in a project starts in a NEW WORKTREE of that project, based on
 //     the branch the project is on. The primary checkout is where the person
 //     and other chats work; a lead that does the work itself must not write
@@ -38,7 +38,6 @@ export type ExecutionOverrides = {
   projectId?: string | null;
   branch?: string;
   newWorktree?: boolean;
-  useSandbox?: boolean;
 };
 
 export type ExecutionPlan = {
@@ -50,7 +49,6 @@ export type ExecutionPlan = {
   /** The base branch; "" lets the host use the branch the project is on. */
   branch: string;
   newWorktree: boolean;
-  useSandbox: boolean;
   chosenBy: "auto" | "advanced";
   /** One line for the details, in the person's words. */
   reason: string;
@@ -81,10 +79,9 @@ export function autoExecution(input: {
   /** The coordination home's id, when one is configured and exists. */
   homeId?: string | null;
   repo?: ExecutionRepo | null;
-  sandboxDefault: boolean;
   overrides?: ExecutionOverrides | null;
 }): ExecutionPlan {
-  const { toHead, project, homeId, repo, sandboxDefault } = input;
+  const { toHead, project, homeId, repo } = input;
   const overrides = input.overrides ?? {};
   const overridden = Object.values(overrides).some((value) => value !== undefined);
 
@@ -97,7 +94,6 @@ export function autoExecution(input: {
       prepare: false,
       branch: "",
       newWorktree: false,
-      useSandbox: false,
       chosenBy: "auto",
       reason: "Coordinates from your home workspace. Each task it hands out runs where the host routes it.",
       crossProject: true,
@@ -114,7 +110,6 @@ export function autoExecution(input: {
       prepare: false,
       branch: "",
       newWorktree: false,
-      useSandbox: overrides.useSandbox ?? false,
       chosenBy: overridden ? "advanced" : "auto",
       reason: "No code project: works from your home workspace.",
       crossProject: false,
@@ -124,7 +119,6 @@ export function autoExecution(input: {
   const repoKnown = !!repo && !repo.loading && !repo.error;
   const branch = overrides.branch ?? (repoKnown && repo.isRepo ? repo.current : "");
   const newWorktree = overrides.newWorktree ?? true;
-  const useSandbox = overrides.useSandbox ?? sandboxDefault;
   const base = branch || "the project's current branch";
   const reason = overridden
     ? "Chosen under Advanced."
@@ -137,7 +131,6 @@ export function autoExecution(input: {
     prepare: true,
     branch,
     newWorktree,
-    useSandbox,
     chosenBy: overridden ? "advanced" : "auto",
     reason,
     crossProject: false,

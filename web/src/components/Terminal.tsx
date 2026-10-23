@@ -21,6 +21,7 @@ export function TerminalPane({
   id,
   cwd,
   cmd,
+  takeCommand,
   env,
 }: {
   id: string;
@@ -30,6 +31,9 @@ export function TerminalPane({
    *  idempotent by id, so a shell that is already running is left alone and
    *  only a genuinely new one (the server restarted) starts it again. */
   cmd?: string;
+  /** Reply Run only: consume before the request; reattaching opens a plain
+   * shell if the PTY has ended, without replaying the confirmed command. */
+  takeCommand?: () => string | undefined;
   /** The project's environment, set on the shell — passed on every mount for
    *  the same reason `cmd` is. */
   env?: Record<string, string>;
@@ -141,7 +145,7 @@ export function TerminalPane({
     // idempotent by id, so on a re-attach this finds the running shell rather
     // than starting a second one.
     bridge
-      .invoke("pty_spawn", { id, cwd, startCmd: cmd, env: envRef.current })
+      .invoke("pty_spawn", { id, cwd, startCmd: takeCommand ? takeCommand() : cmd, env: envRef.current })
       .then(() => {
         sendSize();
         // A backend older than this client does not have `pty_attach` and
@@ -178,7 +182,7 @@ export function TerminalPane({
       // should leave a running build running — it is reattached by id when the
       // pane comes back.
     };
-  }, [id, cwd, cmd, sendSize]);
+  }, [id, cwd, cmd, takeCommand, sendSize]);
 
   return <div className="term" ref={hostRef} />;
 }

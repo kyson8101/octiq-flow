@@ -34,6 +34,50 @@ use serde::Serialize;
 
 use crate::git::run_git;
 
+/// Re-create only a validated task branch's empty ref/reflog parents on the
+/// host. pack-refs can prune them, while file-only sandbox grants cannot mkdir
+/// their parents. Keep this mutation out of codex_git's read-only root lookup.
+pub(crate) fn prepare_codex_branch_parents(
+    cwd: &Path,
+    access: Option<crate::agent_provider::Access>,
+) {
+    let Some((common, parents)) = crate::codex_git::branch_parents(cwd, access) else {
+        return;
+    };
+    for parent in parents {
+        if let Err(error) = prepare_codex_branch_parent(&common, &parent) {
+            eprintln!(
+                "Could not prepare Codex branch parent {}: {error}",
+                parent.display()
+            );
+        }
+    }
+}
+
+fn prepare_codex_branch_parent(common: &Path, parent: &Path) -> Result<(), String> {
+    let relative = parent
+        .strip_prefix(common)
+        .map_err(|error| error.to_string())?;
+    let mut cursor = common.to_path_buf();
+    for part in relative.components() {
+        cursor.push(part);
+        if !crate::codex_git::unredirected(common, &cursor, true) {
+            return Err(format!(
+                "{} is redirected or is not a directory",
+                cursor.display()
+            ));
+        }
+        match std::fs::symlink_metadata(&cursor) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                crate::profile::make_dir(&cursor)?;
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(())
+}
+
 /// The outcome of one successful commit / push / pull.
 #[derive(Debug, Clone, Serialize)]
 pub struct GitOpResult {

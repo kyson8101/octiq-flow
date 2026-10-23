@@ -101,7 +101,6 @@ function answer(request) {
     case "team_list": return [];
     case "team_leads": return [];
     case "chat_task": return { chatId: request.args?.chatId, projectId: "general" };
-    case "sandbox_snapshot": return { defaultEnabled: false, environments: {} };
     case "codex_skills": return [];
     case "git_status": return { branch: "main", files: [] };
     default: return null;

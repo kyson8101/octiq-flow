@@ -11,9 +11,8 @@
 //!
 //! 1. **Rebuild the worktree at the SAME path.** From its branch when the
 //!    branch still exists, else by making the branch again at the commit that
-//!    was remembered for it. The same path is the point: a chat's sandbox is
-//!    bound to the folder it was made for, and Claude files each session
-//!    under its working directory.
+//!    was remembered for it. Claude files each session under its working
+//!    directory, so the same path preserves that association.
 //!    What the worktree was is read from two places, because either can be
 //!    the one that survived: git's own record of it (`git worktree list`,
 //!    which keeps a removed worktree until the next prune) and the last
@@ -987,7 +986,7 @@ fn native(path: &str) -> String {
 
 /// git's name for a worktree, spelled the way the chat spells its own folder:
 /// the ancestor of `cwd` that is that place. The chat's spelling is the one
-/// its index entry and its sandbox were recorded under.
+/// its index entry was recorded under.
 fn spelled_like(cwd: &str, listed: &str) -> String {
     let wanted = resolved(listed);
     Path::new(cwd.trim_end_matches(['/', '\\']))
@@ -1292,43 +1291,6 @@ mod tests {
         );
         assert_eq!(git(&scene.worktree, &["rev-parse", "HEAD"]), scene.head);
         assert!(recovery.notice.contains("made again"));
-    }
-
-    #[test]
-    fn a_rebuilt_worktree_is_the_folder_the_chats_sandbox_belongs_to() {
-        let scene = scene("sandbox");
-        let scratch = crate::test_dir::TestDir::new("recover-sandbox-store");
-        let sandboxes = crate::sandbox::Store::at(scratch.join("sandboxes"));
-        let cwd = Scene::text(&scene.worktree);
-        sandboxes
-            .select("chat:sandboxed", &cwd, Some(true), false)
-            .expect("a sandbox bound to the worktree");
-        scene.remove_worktree();
-
-        // What the person used to be shown.
-        let raw = sandboxes
-            .select("chat:sandboxed", &cwd, None, true)
-            .unwrap_err();
-        assert!(raw.starts_with("Chat folder is unavailable"), "{raw}");
-
-        let recovery = restore(&cwd, &scene.remembered()).expect("recovered");
-        assert_eq!(recovery.cwd, cwd);
-        sandboxes
-            .select("chat:sandboxed", &recovery.cwd, None, true)
-            .expect("the same folder, so the same sandbox");
-
-        // Ownership is not loosened for a chat that had to move instead.
-        scene.remove_worktree();
-        git(&scene.repo, &["switch", "-q", "task/one"]);
-        let moved = restore(&cwd, &scene.remembered()).expect("recovered");
-        assert_eq!(moved.kind, Kind::Moved);
-        let refused = sandboxes
-            .select("chat:sandboxed", &moved.cwd, None, true)
-            .unwrap_err();
-        assert!(
-            refused.contains("belongs to a different folder"),
-            "{refused}"
-        );
     }
 
     #[test]

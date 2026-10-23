@@ -23,6 +23,7 @@ import {
   type CompletionAction,
   type Completions,
 } from "./chatComplete";
+import { deliveryStage, mergeLine } from "./chatTask";
 
 const fold = (actions: CompletionAction[], from: Completions = NO_COMPLETIONS) =>
   actions.reduce(reduceCompletions, from);
@@ -138,6 +139,30 @@ describe("who is offered Complete", () => {
 });
 
 describe("what the confirm says", () => {
+  it.each([
+    [false, false, false, false, "Not in develop or main"],
+    [true, false, false, false, "In develop · not in main"],
+    [false, true, false, false, "In develop · not in main"],
+    [true, true, true, false, "Yes, in main"],
+    [true, true, false, true, "Yes, in main"],
+    [false, false, true, false, "Yes, in main"],
+  ])("shares integration/target wording with Details (%s, %s, %s, %s)", (merged, mergedRemote, targetMerged, targetRemote, expected) => {
+    const verified = delivery({
+      target: "main", uncommitted: 0,
+      merged: targetMerged, mergedRemote: targetRemote,
+      integration: { branch: "develop", merged, mergedRemote },
+    });
+    expect(confirmContent(preview({ delivery: verified })).facts).toContainEqual({ label: "Merged", value: expected });
+    expect(mergeLine(verified)).toBe(expected);
+    if (!targetMerged && !targetRemote) expect(deliveryStage(verified)).toBe("to-merge");
+  });
+
+  it("keeps the existing target-branch wording even with integration verification", () => {
+    const verified = delivery({ target: "main", onTarget: true, integration: { branch: "develop", merged: false, mergedRemote: false } });
+    expect(confirmContent(preview({ delivery: verified })).facts).toContainEqual({ label: "Merged", value: "On main" });
+    expect(mergeLine(verified)).toBe("Working directly on main");
+  });
+
   it("says what will happen in one line and lists the host's facts as label and value", () => {
     const content = confirmContent(preview());
     expect(content.title).toBe("Complete this chat?");

@@ -108,7 +108,7 @@ function mock(scene) {
       case "chat_page": return { events: [], context: [], before: null };
       case "question_pending": return scene === "ask" ? [question] : [];
       case "chat_list": case "chat_activity": case "permission_pending": case "safety_block_pending":
-      case "pr_repositories": case "codex_skills": case "image_preview_list": case "access_request_pending":
+      case "pr_repositories": case "codex_skills": case "access_request_pending":
         return [];
       case "team_list": return [];
       case "chat_queue_state": return { live: false, queuedTurnIds: [] };
@@ -117,11 +117,9 @@ function mock(scene) {
       case "usage_summary": return {};
       case "agent_installs": return [{ id: "claude", installed: true, path: "/mock/claude" }];
       case "pr_local_list": case "pr_remote_list": return { items: [], warnings: [] };
-      case "sandbox_snapshot": return { defaultEnabled: false, environments: {} };
       case "git_status_summary": return [{ path: repoRoot, repo_root: repoRoot, is_repo: true, branch: "develop", changed: 0, ahead: 0, behind: 0 }];
       case "git_local_branches": return { is_repo: true, current: "develop", branches: ["develop"], is_worktree: false };
       case "chat_task": return { chatId: request.args?.chatId, projectId: "octiq" };
-      case "chat_plan_get": return { chatId: "main", revision: 0, items: [], decisions: [], awaitsStart: false };
       default: return null;
     }
   };

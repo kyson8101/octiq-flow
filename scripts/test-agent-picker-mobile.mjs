@@ -70,7 +70,6 @@ function resultFor(request) {
     case "chat_list": return [];
     case "chat_queue_state": return { live: false, queuedTurnIds: [] };
     case "orchestration_snapshot": return { runs: [], tasks: [], attempts: [], gates: [], messages: [] };
-    case "sandbox_snapshot": return { defaultEnabled: false, environments: {} };
     case "permission_pending": return [];
     case "memory_usage": return { totalMb: 0, procs: 0, rows: [] };
     case "usage_summary": return {};

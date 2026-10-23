@@ -323,7 +323,7 @@ above and has no fixed form. For example:
 The job "render · "final" cut" failed: exit code 1, after 2m 14s.
 ```
 
-- **Told once** (AGENTS.md, *A chat's plan*): before it sends, the host asks
+- **Told once**: before it sends, the host asks
   the chat's record what became of that id (`agent_chat::host_turns`, with
   the turns this server handed over itself as `here`). A turn that is there,
   handed over or taken back, is never sent again, across a restart too. A
@@ -358,9 +358,7 @@ The job "render · "final" cut" failed: exit code 1, after 2m 14s.
   `durable_user_turn_exists`): no record file is an empty record, and a
   record file that cannot be read is an error, so its wake stays owed and is
   asked again on the watcher's next pass. It was read as empty and handed
-  over a second time. The plan's Start shares the reader: a `Tell the agent`
-  asked while the record cannot be read is refused in words and sends
-  nothing.
+  over a second time.
 - A running job keeps its chat off the idle reaper, like native background
   work.
 - **A restart interrupts.** The wrapper's token and the pid watch are in
