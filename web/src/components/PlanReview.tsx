@@ -1,4 +1,4 @@
-// Plan mode: the main agent's plan, laid out as the order it will run in, with
+// Orchestration plan: the main agent's plan, laid out as the order it will run in, with
 // the three answers it can get — approve, reject, or say what to change.
 //
 // It stands in for the run's progress and task list while the plan waits,
@@ -31,10 +31,12 @@ import { AgentLogo } from "./AgentLogo";
 import { AgentAvatar } from "./AgentAvatar";
 import { TaskPlanCard, type WorkspaceDecision } from "./TaskPlanCard";
 import { readWorkspaceChoice, workspaceChoiceFact, workspaceDraft, workspaceOverrides, type WorkspaceDraft } from "../lib/workspaceChoice";
-import { notePress } from "../lib/pressGuard";
+import { dropHeld, notePress, repeatsAnother } from "../lib/pressGuard";
 import { CommandApprovalChoice } from "./CommandApprovalChoice";
 import { useRosterAgent } from "../lib/agentRoster";
 import "./PlanReview.css";
+import "./AutoPlan.css";
+import { approveWithAutoPlan, autoPlanHeld, useAutoPlan } from "../lib/autoPlan";
 
 /** Beside Approve, when the plan holds only part of the run: the tasks the
  *  person approved before keep starting while this waits. */
@@ -68,12 +70,16 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   /** Draw a folded card opened: for the tests, which cannot press the control. */
   startOpen?: boolean;
 }) {
+  const autoPlan = useAutoPlan(surface === "chat" && !approved ? run.coordinatorChatKey : null);
+  const [future, setFuture] = useState(false);
+  const autoEnabled = autoPlan.setting?.enabled ?? !!run.autoPlan?.enabled;
+  const heldLine = autoPlanHeld(run);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [busyAction, setBusyAction] = useState<"approve" | "reject" | null>(null);
-  const busy = useApproving(run.id);
+  const busy = useApproving(run.id) || busyAction !== null;
   // A task the lead withdrew is no longer part of the plan.
   const tasks = useMemo(() => planTasks(allTasks), [allTasks]);
   const stages = useMemo(() => planStages(tasks), [tasks]);
@@ -140,9 +146,12 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
     try {
       // The revision on screen goes with the click: a plan the lead changed
       // a moment ago is refused, not approved unseen.
-      const sent = await approveOnce(run.id, () => approvePlan(run.coordinatorChatKey, run.id, waiting, revision,
-        { surface, ...cardView(shownRef.current ?? shown, Date.now()) }, workspaceChoices));
-      if (sent) onApproved?.();
+      await approveWithAutoPlan(async () => {
+        const sent = await approveOnce(run.id, () => approvePlan(run.coordinatorChatKey, run.id, waiting, revision,
+          { surface, ...cardView(shownRef.current ?? shown, Date.now()) }, workspaceChoices));
+        if (sent) onApproved?.();
+        return sent;
+      }, run.coordinatorChatKey, surface === "chat" && future && !autoEnabled);
     } catch (reason) {
       setError(String((reason as Error).message ?? reason));
     } finally {
@@ -214,6 +223,8 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
           {folded && <FoldToggle fold={fold} describedBy={metaId} what="the tasks" />}
         </div>
       </header>
+
+      {!approved && heldLine && <p className="auto-plan-held">{heldLine}</p>}
 
       {!approved && (changes.added.length > 0 || changes.withdrawn.length > 0) && (
         <div className="plan-review-changes" role="status">
@@ -288,6 +299,19 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
                 />
                 <button className="plan-review-quiet" type="button" disabled={!note.trim()} onClick={requestChanges}>Request changes</button>
               </div>}
+              {surface === "chat" && !autoEnabled && <label className="auto-plan-future"
+                onClickCapture={(event) => {
+                  if (busy || autoPlan.busy || repeatsAnother(event)) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    return;
+                  }
+                  notePress(event);
+                }}>
+                <input type="checkbox" checked={future} disabled={busy || autoPlan.busy}
+                  onKeyDown={dropHeld} onChange={(event) => { if (!busy && !autoPlan.busy) setFuture(event.target.checked); }} />
+                <span>Auto-approve this chat's future plans</span>
+              </label>}
               {rejecting && <PlanRejectConfirmation reason={reason} busy={busy} disabled={holding}
                 rejecting={busyAction === "reject"} onReason={setReason} onConfirm={() => void reject()}
                 onCancel={() => { setRejecting(false); setReason(""); }} />}

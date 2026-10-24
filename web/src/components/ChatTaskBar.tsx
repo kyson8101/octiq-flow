@@ -37,6 +37,9 @@ import { copyText } from "../lib/clipboard";
 import { entryClass, useEntry } from "../lib/useArrival";
 import { AgentAvatar } from "./AgentAvatar";
 import "./ChatTaskBar.css";
+import { AutoPlanSwitch } from "./AutoPlanSwitch";
+import { setAutoPlan, useAutoPlan } from "../lib/autoPlan";
+import { notePress } from "../lib/pressGuard";
 
 /** `waiting` is the page's one reading of the chat (`lib/chatWait`): what it
  *  waits on the person for, `unknown` while the page cannot say, or nothing. */
@@ -54,6 +57,7 @@ export type PanelContext = Omit<EnvironmentInput, "status"> & {
   persona?: Persona | null;
   /** The agent's provider and model, for the details only. */
   runsOn?: string;
+  canLead?: boolean;
 };
 
 export function ChatTaskBar({
@@ -64,6 +68,7 @@ export function ChatTaskBar({
   context,
   action = false,
 }: { chatId: string; connected: boolean; context?: PanelContext; action?: boolean } & Live) {
+  const autoPlan = useAutoPlan(context?.canLead ? `chat:${chatId}` : null, connected);
   const [status, setStatus] = useState<TaskStatus>();
   const [open, setOpen] = useState(false);
   /** True once the backend has said it does not know this command. The two
@@ -185,6 +190,9 @@ export function ChatTaskBar({
       onReleaseCheck={setReleaseCheck}
       context={context}
       action={action}
+      autoPlan={context?.canLead ? <AutoPlanSwitch enabled={autoPlan.setting?.enabled ?? false} busy={autoPlan.busy}
+        ready={connected && !!autoPlan.setting} error={autoPlan.error}
+        onChange={() => { void setAutoPlan(`chat:${chatId}`, !autoPlan.setting?.enabled).catch(() => {}); }} /> : undefined}
     />
   );
 }
@@ -217,6 +225,7 @@ export function ChatTaskBarView({
   action = false,
   scope = "",
   ready = true,
+  autoPlan,
 }: {
   status?: TaskStatus;
   /** The chat this line is for, and whether its status has been answered.
@@ -224,6 +233,7 @@ export function ChatTaskBarView({
    *  (`lib/arrival`); one that already knew is drawn in place. */
   scope?: string;
   ready?: boolean;
+  autoPlan?: React.ReactNode;
   context?: PanelContext;
   open: boolean;
   now: number;
@@ -263,7 +273,8 @@ export function ChatTaskBarView({
         aria-expanded={open}
         aria-label={action ? "Task details" : `Task and workspace — ${phase.label}${branch ? ` on ${branch}` : ""}`}
         title={action ? "Task details" : `${phase.label}${branch ? ` · ${branch}` : ""} — ${locationOf(status?.workspace)}`}
-        onClick={() => {
+        onClick={(event) => {
+          notePress(event);
           // Placed at the press, before the panel exists: placed after it
           // is drawn, it would be seen for a frame where it is not.
           if (action && !open) place();
@@ -304,6 +315,7 @@ export function ChatTaskBarView({
           onReleaseCheck={onReleaseCheck}
           context={context}
           phase={phase.label}
+          autoPlan={autoPlan}
         />
       )}
     </div>
@@ -318,10 +330,12 @@ function ChatTaskPanel({
   onReleaseCheck,
   context,
   phase,
+  autoPlan,
 }: {
   status?: TaskStatus;
   context?: PanelContext;
   phase?: string;
+  autoPlan?: React.ReactNode;
   now: number;
   onClose: () => void;
   onTarget?: (branch: string) => void;
@@ -348,6 +362,8 @@ function ChatTaskPanel({
           </span>
         </div>
       )}
+
+      {autoPlan}
 
       <p className={`chat-task-objective ${report ? "" : "is-missing"}`}>
         {report?.objective || NOT_REPORTED}

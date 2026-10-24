@@ -4807,8 +4807,8 @@ export default function App() {
   }, [conversationId, workerChat, questionsHere, setQuestions]);
   const planTail = useMemo(
     () => {
-      const plans = plansHere.some((plan) => plan.pending)
-        ? <ChatPlanCards plans={plansHere} drafting={planDrafting} projectName={planProjectName} late={lateTail} /> : null;
+      const plans = conversationId && chatKindOf({ key: keyFor(conversationId), worker: workerChat, frontDesk: frontDeskChats.has(conversationId) }) === "main"
+        ? <ChatPlanCards key={conversationId} chatKey={keyFor(conversationId)} plans={plansHere} drafting={planDrafting} projectName={planProjectName} late={lateTail} /> : null;
       const handed = handoverTailHere.length
         ? <HandoverCards outgoing={handoverTailHere} onDecide={decideAndGo} late={lateTail} />
         : null;
@@ -4818,7 +4818,7 @@ export default function App() {
         : null;
       return plans || handed || refused ? <>{refused}{handed}{plans}</> : undefined;
     },
-    [plansHere, planDrafting, planProjectName, handoverTailHere, decideAndGo,
+    [conversationId, frontDeskChats, plansHere, planDrafting, planProjectName, handoverTailHere, decideAndGo,
       workerChat, safetySplit, safetyReveal, answeredSafety, continueSafety, lateTail],
   );
 
@@ -5285,7 +5285,7 @@ export default function App() {
       action
       chatId={conversationId}
       connected={conn === "open"}
-      context={panelContext}
+      context={{ ...panelContext, canLead: chatKindOf({ key: keyFor(conversationId), worker: workerChat, frontDesk: frontDeskChats.has(conversationId) }) === "main" }}
       busy={chat.busy && !cutOff}
       // The page's one reading of a wait (`lib/chatWait`), as the composer
       // and the chat list have it, its third answer included: a chat the

@@ -10,6 +10,7 @@
 // `RejectedPlan`). A plan the lead changes after approval is a new revision,
 // waiting again, and comes back.
 import { approvalLabel, chatApprovalHint, type ChatPlan } from "../lib/chatPlans";
+import { useAutoPlan } from "../lib/autoPlan";
 import { PlanReview } from "./PlanReview";
 import { Arrive } from "./Arrive";
 import "./ChatPlanCards.css";
@@ -18,8 +19,9 @@ import "./ChatPlanCards.css";
  *  own change box is not drawn and never called. */
 const inChat = () => {};
 
-export function ChatPlanCards({ plans, drafting, projectName, late, startOpen }: {
+export function ChatPlanCards({ plans, drafting, projectName, late, startOpen, chatKey }: {
   plans: ChatPlan[];
+  chatKey?: string;
   /** The lead is mid-turn. */
   drafting: boolean;
   projectName?: (id: string) => string | undefined;
@@ -29,10 +31,12 @@ export function ChatPlanCards({ plans, drafting, projectName, late, startOpen }:
   /** Draw the cards opened: for the tests, which cannot press the control. */
   startOpen?: boolean;
 }) {
+  const autoPlan = useAutoPlan(chatKey ?? plans[0]?.run.coordinatorChatKey ?? null);
   const pending = plans.filter((plan) => plan.pending);
-  if (!pending.length) return null;
+  if (!pending.length && !autoPlan.saveError) return null;
   return (
     <div className="chat-plans">
+      {!pending.length && autoPlan.saveError && <div className="chat-plan"><p className="auto-plan-error" role="alert">Could not save auto-approval: {autoPlan.saveError}</p></div>}
       {pending.map((plan) => (
         <Arrive key={plan.run.id} late={!!late?.has(`plan:${plan.run.id}`)}>
           <div className="chat-plan" data-pending="" tabIndex={-1}
