@@ -57,7 +57,7 @@ export function approvalLabel(plan: ChatPlan): string {
   const consent = plan.run.planApproval?.consent;
   // Which card a button approval came from, when the host recorded it: the
   // evidence behind "approved", shown rather than implied (feedback 713786e9).
-  const how = consent?.via === "conversation" ? "Approved in chat"
+  const how = consent?.via === "standing" ? "Plan auto-approved" : consent?.via === "conversation" ? "Approved in chat"
     : consent?.surface === "chat" ? "Approved on its card in chat"
     : consent?.surface === "panel" ? "Approved in the mission panel"
     : "Approved";

@@ -8,6 +8,8 @@
 // says what it changed.
 import type { OrchestrationSnapshot, OrchestrationTask } from "../orchestration";
 import type { Question, QuestionAnswered } from "../question";
+import autoPlanApproved from "./host/auto_plan_approved.json?raw";
+import autoPlanHeldAccess from "./host/auto_plan_held_access.json?raw";
 import cardOnGateBlocked from "./host/card_on_gate_blocked.json?raw";
 import cardPending from "./host/card_pending.json?raw";
 import claudeRefusal from "./host/claude_refusal.json?raw";
@@ -53,6 +55,8 @@ const answered = (raw: string) => (): QuestionAnswered => JSON.parse(raw) as Que
 export type HostChatEntry = { id: string; projectId: string; title: string; createdAt: number; updatedAt: number; coordinatesRun?: boolean };
 
 export const hostFacts = {
+  autoPlanApproved: ledger(autoPlanApproved),
+  autoPlanHeldAccess: ledger(autoPlanHeldAccess),
   workspaceChoicePending: ledger(workspaceChoicePending),
   workspaceChoiceApproved: ledger(workspaceChoiceApproved),
   workspaceChoiceOnlyCheckout: ledger(workspaceChoiceOnlyCheckout),
