@@ -29,6 +29,7 @@ pub mod approval;
 #[cfg(test)]
 mod approval_tests;
 mod archive;
+pub mod auto_plan;
 pub mod automation;
 pub mod bridge;
 pub mod brief;
@@ -135,6 +136,9 @@ pub struct Run {
     /// starts on a task they have not approved. Absent on every other run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_approval: Option<PlanApproval>,
+    /// Derived on reads only; standing consent itself lives in the ledger.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub auto_plan: Option<auto_plan::AutoPlan>,
     pub created_at: i64,
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -222,6 +226,8 @@ pub enum ConsentVia {
     Button,
     /// The person said so in the lead's chat, and the host checked it.
     Conversation,
+    /// The person's persisted per-chat consent, checked at a clean turn end.
+    Standing,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -231,6 +237,8 @@ pub struct PlanConsent {
     /// The plan revision this approval covers.
     pub revision: u32,
     pub at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_at: Option<i64>,
     /// The person's own message, by its turn id and words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
@@ -1016,6 +1024,11 @@ struct Stored {
     #[serde(default = "store_version")]
     version: u32,
     #[serde(default)]
+    auto_plan_chats: BTreeMap<String, auto_plan::AutoPlanSetting>,
+    /// Durable outbox: an approval must eventually appear in its chat record.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    auto_plan_notices: BTreeMap<String, auto_plan::Notice>,
+    #[serde(default)]
     runs: BTreeMap<String, Run>,
     #[serde(default)]
     tasks: BTreeMap<String, Task>,
@@ -1072,6 +1085,8 @@ impl Default for Stored {
     fn default() -> Self {
         Self {
             version: STORE_VERSION,
+            auto_plan_chats: BTreeMap::new(),
+            auto_plan_notices: BTreeMap::new(),
             runs: BTreeMap::new(),
             tasks: BTreeMap::new(),
             attempts: BTreeMap::new(),
@@ -1107,6 +1122,7 @@ pub struct OrchestrationStore {
     path: Option<PathBuf>,
     inner: Mutex<Inner>,
     workspace_ops: Mutex<()>,
+    auto_plan_delivery: Mutex<()>,
     /// Coordinator chats whose transcript gave no receipt for a reopen's
     /// notice: how often in a row, and when it is next worth asking
     /// (`workspaces::notice_wait`). In memory only; a restart asks at once.
@@ -1217,6 +1233,7 @@ impl Default for OrchestrationStore {
             path: None,
             inner: Mutex::new(Inner::default()),
             workspace_ops: Mutex::new(()),
+            auto_plan_delivery: Mutex::new(()),
             reopen_waits: Mutex::default(),
             listed_chats: Mutex::default(),
         }
@@ -1271,6 +1288,7 @@ impl OrchestrationStore {
             path: Some(path),
             inner: Mutex::new(inner),
             workspace_ops: Mutex::new(()),
+            auto_plan_delivery: Mutex::new(()),
             reopen_waits: Mutex::default(),
             listed_chats: Mutex::default(),
         };
@@ -1360,6 +1378,15 @@ impl OrchestrationStore {
         change: impl FnOnce(&mut Stored) -> Result<T, String>,
     ) -> Result<T, String> {
         let mut inner = self.inner.lock().map_err(|error| error.to_string())?;
+        self.mutate_locked(&mut inner, regardless, change)
+    }
+
+    fn mutate_locked<T>(
+        &self,
+        inner: &mut Inner,
+        regardless: Option<&str>,
+        change: impl FnOnce(&mut Stored) -> Result<T, String>,
+    ) -> Result<T, String> {
         if let Some(error) = &inner.load_error {
             return Err(error.clone());
         }
@@ -1402,6 +1429,9 @@ impl OrchestrationStore {
             .cloned()
             .collect();
         runs.sort_by_key(|run| std::cmp::Reverse(run.updated_at));
+        for run in &mut runs {
+            run.auto_plan = auto_plan::derived(&inner.data, run);
+        }
         let visible: BTreeSet<_> = runs.iter().map(|run| run.id.clone()).collect();
 
         let mut tasks: Vec<_> = inner
@@ -1779,6 +1809,7 @@ impl OrchestrationStore {
             workspace_mode,
             worker_defaults: None,
             plan_approval: None,
+            auto_plan: None,
             created_at: now,
             updated_at: now,
             stopped_reason: None,
@@ -1955,6 +1986,7 @@ impl OrchestrationStore {
         self.mutate(|data| {
             let consent = PlanConsent {
                 via: ConsentVia::Button,
+                enabled_at: None,
                 revision: 0,
                 at: now_ms(),
                 turn_id: None,
@@ -2008,6 +2040,7 @@ impl OrchestrationStore {
         self.mutate(|data| {
             let consent = PlanConsent {
                 via: ConsentVia::Button,
+                enabled_at: None,
                 revision: 0,
                 at: now_ms(),
                 turn_id: None,
@@ -2179,6 +2212,7 @@ impl OrchestrationStore {
             }
             let consent = PlanConsent {
                 via: ConsentVia::Conversation,
+                enabled_at: None,
                 revision,
                 at: now_ms(),
                 turn_id: Some(turn.turn_id.clone()),

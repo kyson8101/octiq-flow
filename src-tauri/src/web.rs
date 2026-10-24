@@ -5482,6 +5482,8 @@ mod tests {
 
     /// Commands only the person gives. Nothing on a hook may reach them.
     const PERSON_ONLY: &[&str] = &[
+        "orchestration_auto_plan_get",
+        "orchestration_auto_plan_set",
         "orchestration_task_accept",
         "orchestration_task_size",
         "orchestration_plan_approve",
@@ -5536,11 +5538,15 @@ mod tests {
             Some("orchestration_task_accept_in_chat")
         );
         assert_eq!(orchestration_hook_command("workspaceChoices"), None);
+        assert_eq!(orchestration_hook_command("auto_plan_get"), None);
+        assert_eq!(orchestration_hook_command("auto_plan_set"), None);
         assert_eq!(
             orchestration_hook_command("plan_approve"),
             Some("orchestration_plan_approve_in_chat")
         );
         let mcp = include_str!("../../scripts/mcp/octiq-ask.cjs");
+        assert!(!mcp.contains("orchestration_auto_plan_get"));
+        assert!(!mcp.contains("orchestration_auto_plan_set"));
         let approval = mcp
             .split("const ORCHESTRATION_PLAN_APPROVE =")
             .nth(1)

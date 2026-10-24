@@ -1051,6 +1051,10 @@ pub struct ChatManager {
     pub(crate) questions: Arc<crate::question_store::QuestionStore>,
     pub(crate) auto_resumes: crate::auto_resume::Store,
     sessions: Mutex<HashMap<String, Arc<Mutex<ChatSession>>>>,
+    /// Latest real launch per key, retained after a natural one-shot exit.
+    /// Updated under the session table in grant_capability. A buffered clean
+    /// full stop can then distinguish that exit from a replacement launch.
+    auto_plan_launches: Mutex<HashMap<String, String>>,
     /// How each running agent was last started — see `StartContext`. Keyed by
     /// process key, so each chat resumes independently.
     starts: Mutex<HashMap<String, StartContext>>,
@@ -1254,6 +1258,9 @@ impl ChatManager {
         launch_id: &str,
     ) -> String {
         let secret = mint_capability();
+        if let Ok(mut launches) = self.auto_plan_launches.lock() {
+            launches.insert(session_key.into(), launch_id.into());
+        }
         if let Ok(mut capabilities) = self.capabilities.lock() {
             capabilities.retain(|key, _| live.contains_key(key));
             capabilities.insert(
@@ -4262,6 +4269,7 @@ pub(crate) fn start_session(
             // and so does this.
             let mut usage_meter = crate::agent_usage::Meter::default();
             let mut denied_actions = DeniedActions::default();
+            let mut auto_plan_refused = false;
             let prelude = app_server_prelude
                 .into_iter()
                 .map(|message| Ok(message.to_string()));
@@ -4470,6 +4478,7 @@ pub(crate) fn start_session(
                                 .map(|(name, input)| (name.as_str(), input));
                             let refused = event.get("subtype").and_then(Value::as_str)
                                 == Some("permission_denied");
+                            auto_plan_refused |= refused;
                             let owner = refused
                                 .then(|| reading.orchestrations.refusal_owner(&key))
                                 .flatten();
@@ -4579,6 +4588,7 @@ pub(crate) fn start_session(
                         // Set only by the full stop of a completion's wrap-up
                         // turn, and acted on once that full stop is recorded.
                         let mut wrap_up = None;
+                        let mut auto_plan_end = None;
                         if observed.turn_finished {
                             // The full stop is also when the next message the
                             // person already sent is finally handed over. Taken
@@ -4598,8 +4608,20 @@ pub(crate) fn start_session(
                             );
                             if let Ok(mut s) = asking.lock() {
                                 reading.questions.detach_launch(&s.launch_id);
-                                (wrap_up, refused) =
-                                    end_turn_locked(&reading, &session_key, &key, &mut s, clean);
+                                ((wrap_up, refused), auto_plan_end) = end_turn_for_auto_plan(
+                                    &reading,
+                                    &session_key,
+                                    &key,
+                                    &mut s,
+                                    clean,
+                                    &asking,
+                                    auto_plan_refused
+                                        || event
+                                            .get("permission_denials")
+                                            .and_then(Value::as_array)
+                                            .is_some_and(|denials| !denials.is_empty()),
+                                );
+                                auto_plan_refused = false;
                             }
                             if let Some(why) = refused {
                                 // Nothing behind it can go either, and words
@@ -4679,6 +4701,16 @@ pub(crate) fn start_session(
                         );
                         // After the full stop is in the transcript and on the
                         // bus: the tick is the last thing said about the turn.
+                        // The session lock above has gone. Auto approval takes
+                        // the ledger FIRST, then rechecks this exact idle turn.
+                        if let Some(ended) = auto_plan_end {
+                            if let Err(error) = reading
+                                .orchestrations
+                                .auto_approve_at_turn_end(&reading, ended)
+                            {
+                                eprintln!("orchestration: automatic plan approval failed: {error}");
+                            }
+                        }
                         if let Some(ended) = wrap_up {
                             settle_wrap_up(&reading, &session_key, &asking, ended);
                         }
@@ -5000,6 +5032,79 @@ fn write_user_message_locked(
 /// not reached its full stop. Every caller checks first and queues instead,
 /// so nobody is meant to read this.
 const STILL_STOPPING: &str = "this chat is still stopping its last turn";
+
+/// Evidence of a clean own-writer full stop, rechecked under the ledger lock.
+pub(crate) struct CleanTurnEnd {
+    pub(crate) chat_key: String,
+    launch_id: String,
+    ended_at: Instant,
+    process: Arc<Mutex<ChatSession>>,
+}
+
+impl CleanTurnEnd {
+    /// Called with the ledger held, never from a session/table lock. Keep
+    /// both guards through the ledger save, excluding every concurrent send
+    /// and Stop. A new turn or a replaced process invalidates this evidence.
+    pub(crate) fn while_idle<T>(
+        &self,
+        manager: &ChatManager,
+        action: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let sessions = manager.sessions.lock().ok()?;
+        let live = sessions.get(&self.chat_key);
+        if live.is_some_and(|current| !Arc::ptr_eq(current, &self.process)) {
+            return None;
+        }
+        let mut session = self.process.lock().ok()?;
+        if live.is_none() {
+            // A one-shot reaper may remove this process before stdout's
+            // buffered full stop is read. Only a successful natural exit of
+            // the latest launch can qualify; Stop/kill sets Ended below.
+            let launches = manager.auto_plan_launches.lock().ok()?;
+            if launches.get(&self.chat_key) != Some(&self.launch_id)
+                || manager.has_queued_turns(&self.chat_key)
+                || manager.handoffs.lock().ok()?.contains(&self.chat_key)
+                || !session.child.try_wait().ok().flatten()?.success()
+            {
+                return None;
+            }
+        }
+        if session.busy
+            || session.cut_off != CutOff::No
+            || session.launch_id != self.launch_id
+            || session.last_active != self.ended_at
+        {
+            return None;
+        }
+        Some(action())
+    }
+}
+
+fn end_turn_for_auto_plan(
+    manager: &ChatManager,
+    session_key: &str,
+    stream_key: &str,
+    session: &mut ChatSession,
+    clean: bool,
+    process: &Arc<Mutex<ChatSession>>,
+    refused: bool,
+) -> ((Option<WrapUpEnded>, Option<String>), Option<CleanTurnEnd>) {
+    // Check BEFORE end_turn_locked clears the Stop marker. A host notification
+    // is a normal turn here; a room seat's process key is never its chat key.
+    let eligible = clean
+        && !refused
+        && session.busy
+        && session.cut_off == CutOff::No
+        && session_key == stream_key;
+    let result = end_turn_locked(manager, session_key, stream_key, session, clean);
+    let ended = (eligible && !session.busy).then(|| CleanTurnEnd {
+        chat_key: stream_key.into(),
+        launch_id: session.launch_id.clone(),
+        ended_at: session.last_active,
+        process: process.clone(),
+    });
+    (result, ended)
+}
 
 /// A turn reached its full stop: end it, decide a completion whose wrap-up
 /// it was, and hand over the next queued message, all under the session lock
@@ -6231,7 +6336,16 @@ fn interrupt_session(
 ) -> Result<Stopped, String> {
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.get(session_key).cloned().ok_or("no such chat")?
+        match sessions.get(session_key).cloned() {
+            Some(session) => session,
+            None => {
+                // Stop after a natural reaper still vetoes its buffered stop.
+                if let Ok(mut launches) = manager.auto_plan_launches.lock() {
+                    launches.remove(session_key);
+                }
+                return Err("no such chat".into());
+            }
+        }
     };
     let agent = {
         let guard = session.lock().map_err(|e| e.to_string())?;
@@ -7831,6 +7945,11 @@ fn end_process_when(
                 return Ok(false);
             }
         }
+        // Invalidate under the table lock, before the old Arc can be
+        // mistaken for a naturally reaped process by automatic approval.
+        if let Ok(mut launches) = manager.auto_plan_launches.lock() {
+            launches.remove(key);
+        }
         sessions.remove(key)
     };
     // Ending the process on purpose ends a completion in it, running or
@@ -7850,6 +7969,7 @@ fn end_process_when(
 /// End the process of a session that has been taken out of the session
 /// table. Called with the session held.
 fn stop_process(manager: &ChatManager, key: &str, session: &mut ChatSession) {
+    session.cut_off = CutOff::Ended;
     if let Some(codex) = session.codex.as_mut() {
         codex.elicitations.clear();
         codex.mcp_calls.clear();
@@ -15077,5 +15197,334 @@ mod leaving_tests {
         drop(mark);
         assert_eq!(led.manager.leaving_refusal(&led.key), None);
         assert_eq!(led.sent(), Vec::<String>::new());
+    }
+}
+
+#[cfg(test)]
+mod auto_plan_tests {
+    use super::tests::{claude_session, hold};
+    use super::*;
+    use crate::orchestration::{automation::WorkerDefaults, PlanStatus, Run};
+
+    struct Lead {
+        manager: Arc<ChatManager>,
+        key: String,
+        run: Run,
+        session: Arc<Mutex<ChatSession>>,
+    }
+    impl Lead {
+        fn new(agent: ChatAgent) -> Self {
+            let manager = Arc::new(ChatManager::default());
+            let key = format!("chat:auto-plan-{}", uuid::Uuid::new_v4().simple());
+            let store = &manager.orchestrations;
+            let run = store
+                .create_run_with_mode(
+                    key.clone(),
+                    "Implement feature".into(),
+                    "workspace".into(),
+                    "/tmp".into(),
+                    None,
+                    crate::git_ops::workflow::WorkspaceMode::Direct,
+                )
+                .unwrap();
+            store.require_plan_approval(&run.id).unwrap();
+            store
+                .configure_automation(
+                    &key,
+                    &run.id,
+                    Some(WorkerDefaults {
+                        agent: Some(ChatAgent::Claude),
+                        access: Access::Auto,
+                        model: None,
+                        effort: None,
+                        recovery: None,
+                    }),
+                )
+                .unwrap();
+            store
+                .create_task(
+                    &key,
+                    run.id.clone(),
+                    "Implement".into(),
+                    "Make the change".into(),
+                    vec![],
+                    None,
+                    None,
+                )
+                .unwrap();
+            store.auto_plan_set(&key, true).unwrap();
+            let session = claude_session(true);
+            session.lock().unwrap().agent = agent;
+            hold(&manager, &key, session.clone());
+            Self {
+                manager,
+                key,
+                run,
+                session,
+            }
+        }
+        fn finish(&self, clean: bool) -> Option<CleanTurnEnd> {
+            let mut s = self.session.lock().unwrap();
+            let ((_, refused), ended) = end_turn_for_auto_plan(
+                &self.manager,
+                &self.key,
+                &self.key,
+                &mut s,
+                clean,
+                &self.session,
+                false,
+            );
+            assert_eq!(refused, None);
+            ended
+        }
+        fn apply(&self, ended: CleanTurnEnd) {
+            self.manager
+                .orchestrations
+                .auto_approve_at_turn_end(&self.manager, ended)
+                .unwrap();
+        }
+        fn approved(&self) -> bool {
+            self.manager
+                .orchestrations
+                .snapshot(Some(&self.run.id))
+                .unwrap()
+                .runs[0]
+                .plan_approval
+                .as_ref()
+                .unwrap()
+                .status
+                == PlanStatus::Approved
+        }
+    }
+    impl Drop for Lead {
+        fn drop(&mut self) {
+            let _ = end_process(&self.manager, &self.key);
+            crate::transcript::forget(&self.key);
+        }
+    }
+
+    #[test]
+    fn auto_plan_only_clean_own_full_stops_trigger_including_host_notifications() {
+        for (agent, good, bad) in [
+            (
+                ChatAgent::Claude,
+                json!({"type":"result","subtype":"success","is_error":false}),
+                json!({"type":"result","subtype":"error_during_execution","is_error":true}),
+            ),
+            (
+                ChatAgent::Codex,
+                json!({"type":"turn.completed"}),
+                json!({"type":"turn.failed","error":{"message":"failed"}}),
+            ),
+            (
+                ChatAgent::Antigravity,
+                json!({"event":"result","result":{"status":"SUCCESS"}}),
+                json!({"event":"result","result":{"status":"ERROR"}}),
+            ),
+        ] {
+            for notification in [false, true] {
+                let lead = Lead::new(agent);
+                lead.session.lock().unwrap().answering = Some(
+                    if notification {
+                        "octiq-notification-test"
+                    } else {
+                        "person-turn"
+                    }
+                    .into(),
+                );
+                assert!(!lead.approved(), "never during the turn");
+                assert!(!ended_cleanly(agent, &bad, false));
+                let ended = lead.finish(ended_cleanly(agent, &good, false)).unwrap();
+                lead.apply(ended);
+                assert!(lead.approved());
+                assert!(
+                    lead.finish(true).is_none(),
+                    "a duplicate full stop is not a turn"
+                );
+            }
+            let failed = Lead::new(agent);
+            assert!(failed.finish(ended_cleanly(agent, &bad, false)).is_none());
+            assert!(!failed.approved());
+        }
+        let refused = Lead::new(ChatAgent::Antigravity);
+        let event =
+            json!({"event":"result","result":{"status":"SUCCESS","denied_actions":["write"]}});
+        assert!(refused
+            .finish(ended_cleanly(ChatAgent::Antigravity, &event, true))
+            .is_none());
+        assert!(!refused.approved());
+        let seat = Lead::new(ChatAgent::Claude);
+        let mut session = seat.session.lock().unwrap();
+        let (_, ended) = end_turn_for_auto_plan(
+            &seat.manager,
+            "chat:seat#voice",
+            &seat.key,
+            &mut session,
+            true,
+            &seat.session,
+            false,
+        );
+        assert!(ended.is_none());
+    }
+
+    #[test]
+    fn auto_plan_a_claude_refusal_prevents_approval_even_if_its_final_result_says_success() {
+        let lead = Lead::new(ChatAgent::Claude);
+        let (_, ended) = end_turn_for_auto_plan(
+            &lead.manager,
+            &lead.key,
+            &lead.key,
+            &mut lead.session.lock().unwrap(),
+            true,
+            &lead.session,
+            true,
+        );
+        assert!(ended.is_none());
+        assert!(!lead.approved());
+    }
+
+    #[test]
+    fn auto_plan_stop_interrupt_and_ended_process_never_trigger_even_with_a_success_full_stop() {
+        for cut_off in [CutOff::Owed(1), CutOff::Ended] {
+            let lead = Lead::new(ChatAgent::Claude);
+            lead.session.lock().unwrap().cut_off = cut_off;
+            assert!(lead.finish(true).is_none());
+            assert!(!lead.approved());
+        }
+        let lead = Lead::new(ChatAgent::Claude);
+        chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+        assert!(lead.finish(true).is_none());
+        assert!(!lead.approved());
+    }
+
+    #[test]
+    fn auto_plan_rechecks_off_new_turn_stop_and_replaced_process_after_the_full_stop() {
+        for race in [
+            "off",
+            "new-turn",
+            "new-turn-ended",
+            "stopped",
+            "ended",
+            "replaced",
+            "idle",
+        ] {
+            let lead = Lead::new(ChatAgent::Claude);
+            let ended = lead.finish(true).unwrap();
+            match race {
+                "off" => {
+                    lead.manager
+                        .orchestrations
+                        .auto_plan_set(&lead.key, false)
+                        .unwrap();
+                }
+                "new-turn" => lead.session.lock().unwrap().turn_started(),
+                "new-turn-ended" => {
+                    let mut s = lead.session.lock().unwrap();
+                    s.turn_started();
+                    s.turn_ended();
+                }
+                "stopped" => lead.session.lock().unwrap().cut_off = CutOff::Owed(1),
+                "ended" => {
+                    end_process(&lead.manager, &lead.key).unwrap();
+                }
+                "replaced" => {
+                    end_process(&lead.manager, &lead.key).unwrap();
+                    hold(&lead.manager, &lead.key, claude_session(false));
+                }
+                _ => (),
+            }
+            lead.apply(ended);
+            assert_eq!(lead.approved(), race == "idle", "{race}");
+        }
+    }
+
+    #[test]
+    fn auto_plan_a_natural_one_shot_exit_can_be_reaped_before_its_buffered_full_stop() {
+        for reaped_first in [false, true] {
+            for intervention in ["none", "replacement", "stop", "interrupt"] {
+                let lead = Lead::new(ChatAgent::Codex);
+                {
+                    let sessions = lead.manager.sessions.lock().unwrap();
+                    lead.manager
+                        .grant_capability(&sessions, &lead.key, &lead.key, "test-launch");
+                }
+                let mut ended = if reaped_first {
+                    None
+                } else {
+                    lead.finish(true)
+                };
+                {
+                    let mut session = lead.session.lock().unwrap();
+                    session.stdin.take();
+                    assert!(session.child.wait().unwrap().success());
+                }
+                // The natural reaper, unlike stop_process, does not mark Ended.
+                lead.manager.sessions.lock().unwrap().remove(&lead.key);
+                if reaped_first {
+                    ended = lead.finish(true);
+                }
+                match intervention {
+                    "replacement" => {
+                        // Even a newer process that has already ended invalidates
+                        // the old buffered stop. The table alone cannot prove it.
+                        lead.manager.test_launch(&lead.key);
+                        lead.manager.test_end(&lead.key);
+                    }
+                    "stop" => {
+                        chat_stop_impl(&lead.manager, lead.key.clone()).unwrap();
+                    }
+                    "interrupt" => {
+                        assert!(chat_interrupt_impl(&lead.manager, lead.key.clone()).is_err());
+                    }
+                    _ => (),
+                }
+                lead.apply(ended.unwrap());
+                assert_eq!(lead.approved(), intervention == "none");
+            }
+        }
+    }
+
+    #[test]
+    fn auto_plan_a_new_revision_waits_for_the_next_clean_turn() {
+        let lead = Lead::new(ChatAgent::Claude);
+        lead.apply(lead.finish(true).unwrap());
+        assert!(lead.approved());
+        lead.manager
+            .orchestrations
+            .create_task(
+                &lead.key,
+                lead.run.id.clone(),
+                "Follow-up".into(),
+                "Implement follow-up".into(),
+                vec![],
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(!lead.approved());
+        lead.session.lock().unwrap().turn_started();
+        assert!(!lead.approved());
+        lead.apply(lead.finish(true).unwrap());
+        assert!(lead.approved());
+        let events = crate::transcript::of_type(&lead.key, "octiq_plan_auto_approved");
+        assert_eq!(events.len(), 2);
+        assert!(events[1]["revision"].as_u64().unwrap() > events[0]["revision"].as_u64().unwrap());
+    }
+
+    #[test]
+    fn auto_plan_idle_guard_holds_the_session_table_and_session_until_approval_finishes() {
+        let lead = Lead::new(ChatAgent::Claude);
+        let ended = lead.finish(true).unwrap();
+        ended
+            .while_idle(&lead.manager, || {
+                assert!(lead.manager.sessions.try_lock().is_err());
+                assert!(lead.session.try_lock().is_err());
+            })
+            .unwrap();
+        // The call above started with NO session locks. The production
+        // caller acquires the ledger before entering this same idle guard;
+        // mutate_locked never reacquires it while either guard is held.
+        lead.apply(ended);
+        assert!(lead.approved());
     }
 }

@@ -2906,6 +2906,24 @@ mode; approval without a choice re-plans them as Direct and fixes that mode.
 The main chat coordinates while a
 worker owns the write lease; it must not also edit that checkout.
 
+**Per-chat automatic plan approval is the person's standing consent.** Only
+the browser socket exposes `orchestration_auto_plan_get/set { chatKey, enabled? }`;
+neither command has a hook action or MCP tool. The Details switch and plan-card
+tick box share the ledger's `auto_plan_chats` setting, retained until switched
+off. Enabling needs its record first (Conventions C); disabling acts at once
+and owes a failed save. Workers, front desks, room seats and unlisted chats
+cannot enable it. A clean full stop of the chat's own writer, including a host
+notification turn, hands evidence out of the session lock. The host then takes
+ledger → session table → session, rechecks the same idle turn, and approves
+the whole pending revision through `decide_plan_in` only when every waiting
+task's effective worker access is at most Auto and none is a peer request.
+Stop, interrupt, failure, refusal or a replaced/ended process approves nothing.
+`ConsentVia::Standing` keeps `enabledAt`; a durable ledger outbox records
+`octiq_plan_auto_approved` in the transcript and the normal host notification
+tells the lead the host dispatches it. Snapshot-only `run.autoPlan` explains
+an access or peer-request hold. This uses no provider plan mode and changes
+none of the task, permission, safety or reserve gates.
+
 **An approval fixes what a task runs as, and a time stamp or a parent id is
 not that approval.** `approved_at` says a task was approved. `Task::approved`
 (`orchestration/approval.rs`) says as what: the worker in effect when the
