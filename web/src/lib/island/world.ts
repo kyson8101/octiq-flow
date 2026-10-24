@@ -1,12 +1,12 @@
 // The island's scenery: the land and its beach, the sea, the sky, the
 // honeycomb of plots, and what stands on the island without anyone having
 // built it: the plaza with the wish tree, benches and lamps, the dock where
-// bots arrive, palms, rocks and a lighthouse. Low-poly and flat-shaded, and
-// merged by material, so the whole of it is a handful of draw calls.
+// bots arrive, lollipop trees, rock candy and a peppermint lighthouse.
+// Low-poly, flat-shaded and merged by material to keep draw calls low.
 import {
   BackSide, BufferAttribute, BufferGeometry, CanvasTexture, Color, ConeGeometry, CylinderGeometry, DoubleSide, Group,
   IcosahedronGeometry, Mesh, MeshBasicMaterial, MeshStandardMaterial, PlaneGeometry, RingGeometry, ShaderMaterial,
-  SphereGeometry, SRGBColorSpace, Vector3,
+  SphereGeometry, SRGBColorSpace, TorusGeometry, Vector3,
 } from "three";
 import type { Material } from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
@@ -51,11 +51,11 @@ export function groundHeight(r: number, radius: number): number {
 }
 
 const COLORS = {
-  grass: new Color("#8fcb72"),
-  grassDark: new Color("#7fbe64"),
-  sand: new Color("#f0dcaa"),
-  wetSand: new Color("#dcc28a"),
-  deep: new Color("#bfa673"),
+  grass: new Color("#b5e4ce"),
+  grassDark: new Color("#efd0dc"),
+  sand: new Color("#fff0ec"),
+  wetSand: new Color("#e8c9dc"),
+  deep: new Color("#c2abd2"),
 };
 
 /** The land as one polar mesh: grass, then the beach. The honeycomb lies
@@ -115,7 +115,7 @@ function sea(radius: number): { mesh: Mesh; material: MeshStandardMaterial; time
   const geometry = new PlaneGeometry(900, 900, 150, 150);
   geometry.rotateX(-Math.PI / 2);
   const material = new MeshStandardMaterial({
-    color: "#5fbcd8", flatShading: true, roughness: 0.32, metalness: 0.08, transparent: true, opacity: 0.88,
+    color: "#62cfc8", flatShading: true, roughness: 0.32, metalness: 0.08, transparent: true, opacity: 0.88,
   });
   const time = { value: 0 };
   material.onBeforeCompile = (shader) => {
@@ -136,8 +136,8 @@ function sea(radius: number): { mesh: Mesh; material: MeshStandardMaterial; time
 }
 
 function sky(): { mesh: Mesh; top: Color; horizon: Color } {
-  const top = new Color("#79b8f0");
-  const horizon = new Color("#e8f3fb");
+  const top = new Color("#b9b5ef");
+  const horizon = new Color("#ffe1eb");
   const material = new ShaderMaterial({
     side: BackSide, depthWrite: false, fog: false,
     uniforms: { top: { value: top }, horizon: { value: horizon } },
@@ -231,44 +231,48 @@ export function buildScenery(opts: {
   group.add(skyDome.mesh);
 
   const materials: Record<string, Material> = {
-    wood: own(solidMaterial("#b9875e")),
-    darkWood: own(solidMaterial("#7a563b")),
-    leaf: own(solidMaterial("#4f9d63")),
-    leafLight: own(solidMaterial("#62b273")),
-    pine: own(solidMaterial("#2f6f52")),
-    pineLight: own(solidMaterial("#3c8a62")),
-    trunk: own(solidMaterial("#8a5a3c")),
-    rock: own(solidMaterial("#b8b3aa", 0.9)),
-    metal: own(solidMaterial("#3c4b53", 0.5, 0.5)),
-    white: own(solidMaterial("#f6f3ec", 0.7)),
-    red: own(solidMaterial("#df5a4e", 0.7)),
-    blue: own(solidMaterial("#5b8bd9", 0.7)),
-    stone: own(solidMaterial("#d8ccb2", 0.9)),
+    wood: own(solidMaterial("#ce9c78")),
+    darkWood: own(solidMaterial("#77505a")),
+    leaf: own(solidMaterial("#e9a9cb")),
+    leafLight: own(solidMaterial("#bca6e0")),
+    pine: own(solidMaterial("#daa0c4")),
+    pineLight: own(solidMaterial("#f3bfd8")),
+    trunk: own(solidMaterial("#fff0df")),
+    rock: own(solidMaterial("#b7a6e6", 0.9)),
+    metal: own(solidMaterial("#785c84", 0.5, 0.5)),
+    white: own(solidMaterial("#fff6ef", 0.7)),
+    red: own(solidMaterial("#e58da9", 0.7)),
+    blue: own(solidMaterial("#a3a5df", 0.7)),
+    stone: own(solidMaterial("#ead3df", 0.9)),
     paper: own(solidMaterial("#fbf7ee", 0.8)),
     lamp: own(new MeshBasicMaterial({ color: "#ffe3a8" })),
     nightLamp: own(new MeshBasicMaterial({ color: "#ffe3a8", transparent: true, opacity: 0, depthWrite: false })),
-    nightMetal: own(new MeshStandardMaterial({ color: "#3c4b53", roughness: 0.5, metalness: 0.5, transparent: true, opacity: 0 })),
+    nightMetal: own(new MeshStandardMaterial({ color: "#785c84", roughness: 0.5, metalness: 0.5, transparent: true, opacity: 0 })),
     star: own(new MeshBasicMaterial({ color: "#ffd56b" })),
     seal: own(new MeshBasicMaterial({ color: "#e0584f" })),
     light0: own(new MeshBasicMaterial({ color: "#ffcf7a" })),
     light1: own(new MeshBasicMaterial({ color: "#ff9f8a" })),
     light2: own(new MeshBasicMaterial({ color: "#9fe0ff" })),
     light3: own(new MeshBasicMaterial({ color: "#c8a8ff" })),
-    path: own(solidMaterial("#e7d9b9", 0.95)),
-    plaza: own(solidMaterial("#efe5cd", 0.9)),
-    plazaInner: own(solidMaterial("#e2d3b3", 0.9)),
-    tileAgent: own(solidMaterial("#a2d985", 0.95)),
-    tileBot: own(solidMaterial("#98d07c", 0.95)),
-    tileEmpty: own(solidMaterial("#b3d79c", 0.95)),
-    tileEdge: own(solidMaterial("#79b35f", 0.95)),
-    playTile: own(solidMaterial("#f3d9a4", 0.95)),
+    path: own(solidMaterial("#fff0e7", 0.95)),
+    plaza: own(solidMaterial("#f8dce8", 0.9)),
+    plazaInner: own(solidMaterial("#edd1e2", 0.9)),
+    tileAgent: own(solidMaterial("#b8e1cd", 0.95)),
+    tileBot: own(solidMaterial("#ecd1de", 0.95)),
+    tileEmpty: own(solidMaterial("#cce8da", 0.95)),
+    tileEdge: own(solidMaterial("#a4caba", 0.95)),
+    cocoa: own(solidMaterial("#80525b", 0.32)),
+    caramel: own(solidMaterial("#e6bb8c")),
+    mint: own(solidMaterial("#a4ddcf")),
+    playTile: own(solidMaterial("#f4d8e9", 0.95)),
   };
   const kit = new Kit(materials);
   const box = own(new RoundedBoxGeometry(1, 1, 1, 2, 0.12));
   const cylinder = own(new CylinderGeometry(0.5, 0.5, 1, 12));
   const cone = own(new ConeGeometry(0.5, 1, 9));
   const ball = own(new IcosahedronGeometry(0.5, 1));
-  const rock = own(new IcosahedronGeometry(0.5, 0));
+  const crystal = own(new ConeGeometry(0.5, 1, 5));
+  const donut = own(new TorusGeometry(1.15, 0.38, 6, 24));
   const seats: Seat[] = [];
   const solids: Solid[] = [];
   const lighting = new NightLighting();
@@ -307,7 +311,7 @@ export function buildScenery(opts: {
   const playground = buildPlayground({ x: playAt.x, z: playAt.z, facing: facingFor(playAt.x, playAt.z), shadows: opts.shadows });
   group.add(playground.group);
 
-  // The wish tree: a pine on a stone planter, its lights in a spiral.
+  // The strawberry-frosted wish tree keeps its letters and familiar silhouette.
   const top = TILE_TOP;
   kit.add("stone", cylinder, 0, top + 0.25, 0, { sx: 3.0, sy: 0.5, sz: 3.0 });
   kit.add("trunk", cylinder, 0, top + 1.0, 0, { sx: 0.6, sy: 1.6, sz: 0.6 });
@@ -368,14 +372,17 @@ export function buildScenery(opts: {
     }
   }
 
-  // A lamp post at each corner of the plaza; their lanterns glow at night.
+  // Existing plaza lamps become striped candy canes; their pools still fade at dusk.
   const lanterns: Mesh[] = [];
   for (let k = 0; k < 6; k++) {
     const corner = Math.PI / 6 + (k * Math.PI) / 3;
     const r = PLAZA_RADIUS - 1.3;
     const x = Math.cos(corner) * r;
     const z = Math.sin(corner) * r;
-    kit.add("metal", cylinder, x, top + 1.1, z, { sx: 0.12, sy: 2.2, sz: 0.12 });
+    for (let band = 0; band < 10; band++) {
+      kit.add(band % 2 ? "red" : "white", cylinder, x, top + 0.11 + band * 0.22, z, { sx: 0.16, sy: 0.22, sz: 0.16 });
+    }
+    kit.add("white", donut, x + 0.21, top + 2.14, z, { sx: 0.2, sy: 0.2, sz: 0.2 });
     kit.add("metal", box, x, top + 2.28, z, { sx: 0.34, sy: 0.08, sz: 0.34 });
     const lantern = new Mesh(box, materials.lamp);
     lantern.scale.set(0.26, 0.3, 0.26);
@@ -420,43 +427,95 @@ export function buildScenery(opts: {
     lightPools.push({ x: dx * d, y: 0.196, z: dz * d, width: 2.1, depth: 2.1 });
   }
 
-  // Palms and rocks on the beach, and a lighthouse.
+  // Scenery lives in the coast belt, outside every plot and both reserved
+  // cells. Check the full footprint, including crown overhang, before adding.
   const random = (k: number) => noise(k * 1.37, k * 2.11, seed + 99);
   const lighthouseAngle = dockAngle + 1.9;
-  const keepClear = (a: number) => {
-    const near = (b: number) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b))) < 0.18;
-    return near(dockAngle) || near(lighthouseAngle);
+  const coastClear = (x: number, z: number, reach: number) => {
+    if (Math.hypot(x, z) < CELL + reach + 0.5) return false;
+    if (Math.hypot(x - playAt.x, z - playAt.z) < CELL + reach + 0.5) return false;
+    return plots.every(p => Math.hypot(x - p.x, z - p.z) > p.radius + reach + 0.8);
   };
-  for (let k = 0; k < 18; k++) {
-    const a = (k / 18) * Math.PI * 2 + random(k) * 0.3;
+  const keepClear = (a: number) => {
+    const near = (b: number) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b))) < 0.2;
+    return near(dockAngle) || near(lighthouseAngle) || near(0.65) || near(1.55);
+  };
+  for (let k = 0; k < 22; k++) {
+    const a = (k / 22) * Math.PI * 2 + random(k) * 0.18;
     if (keepClear(a)) continue;
-    const r = radius - 2.6 + random(k + 40) * 1.2;
-    const x = Math.sin(a) * r;
-    const z = Math.cos(a) * r;
-    const lean = (random(k + 80) - 0.5) * 0.5;
-    const h = 3.4 + random(k + 20) * 1.6;
-    for (let s = 0; s < 5; s++) {
-      const t = s / 5;
-      kit.add("trunk", cylinder, x + Math.sin(a) * lean * t * h * 0.4, t * h + h / 10, z + Math.cos(a) * lean * t * h * 0.4,
-        { sx: 0.32 - t * 0.1, sy: h / 5 + 0.05, sz: 0.32 - t * 0.1 });
+    const r = radius - 2.8 + random(k + 40) * 0.8;
+    const x = Math.sin(a) * r, z = Math.cos(a) * r;
+    if (!coastClear(x, z, 1.2)) continue;
+    const h = 2.8 + random(k + 20) * 1.4;
+    const y = groundHeight(r, radius);
+    kit.add("white", cylinder, x, y + h / 2, z, { sx: 0.22, sy: h, sz: 0.22 });
+    // Flat candy discs, with a smaller frosting face and a sugar centre.
+    kit.addAt(x, z, a, k % 2 ? "leaf" : "leafLight", cylinder, 0, y + h, 0,
+      { sx: 2.1, sy: 0.38, sz: 2.1, rx: Math.PI / 2 });
+    kit.addAt(x, z, a, "white", donut, 0, y + h, 0.22, { sx: 0.55, sy: 0.55, sz: 0.25 });
+    kit.addAt(x, z, a, "caramel", ball, 0, y + h, 0.24, { sx: 0.28, sy: 0.28, sz: 0.16 });
+    solids.push({ cx: x, cz: z, hx: 0.24, hz: 0.24, yaw: 0 });
+    // Low gumdrops have their own footprint rather than sharing the stick's.
+    const gx = x + Math.cos(a) * 1.3, gz = z - Math.sin(a) * 1.3;
+    if (coastClear(gx, gz, 0.6)) {
+      kit.add(k % 2 ? "mint" : "leaf", ball, gx, y + 0.32, gz, { sx: 1.0, sy: 0.95, sz: 1.0 });
+      solids.push({ cx: gx, cz: gz, hx: 0.5, hz: 0.5, yaw: 0 });
     }
-    const topX = x + Math.sin(a) * lean * h * 0.4;
-    const topZ = z + Math.cos(a) * lean * h * 0.4;
-    for (let l = 0; l < 6; l++) {
-      const la = (l / 6) * Math.PI * 2 + k;
-      kit.add(l % 2 ? "leaf" : "leafLight", cone, topX + Math.sin(la) * 0.9, h + 0.05, topZ + Math.cos(la) * 0.9,
-        { sx: 0.5, sy: 2.0, sz: 0.18, rx: Math.PI / 2 - 0.35, ry: la });
-    }
-    kit.add("leafLight", ball, topX, h + 0.2, topZ, { sx: 0.6, sy: 0.4, sz: 0.6 });
-    solids.push({ cx: x, cz: z, hx: 0.3, hz: 0.3, yaw: 0 });
   }
-  for (let k = 0; k < 10; k++) {
+  for (let k = 0; k < 16; k++) {
     const a = random(k + 200) * Math.PI * 2;
     if (keepClear(a)) continue;
-    const r = radius - 1.2 + random(k + 220) * 2.2;
-    const s = 0.4 + random(k + 240) * 0.8;
-    kit.add("rock", rock, Math.sin(a) * r, groundHeight(r, radius) + s * 0.25, Math.cos(a) * r, { sx: s * 1.3, sy: s, sz: s, ry: k });
-    if (r < radius - 1) solids.push({ cx: Math.sin(a) * r, cz: Math.cos(a) * r, hx: s * 0.6, hz: s * 0.6, yaw: 0 });
+    const r = radius - 2 + random(k + 220) * 1.2;
+    const x = Math.sin(a) * r, z = Math.cos(a) * r;
+    if (!coastClear(x, z, 0.85)) continue;
+    const h = 0.7 + random(k + 240) * 1.2;
+    for (let c = 0; c < 3; c++) {
+      kit.add(c % 2 ? "mint" : "rock", crystal, x + (c - 1) * 0.32, groundHeight(r, radius) + h / 2, z,
+        { sx: 0.55, sy: h * (c === 1 ? 1.3 : 0.8), sz: 0.6, rz: (c - 1) * 0.22, ry: k });
+    }
+    solids.push({ cx: x, cz: z, hx: 0.8, hz: 0.45, yaw: 0 });
+  }
+
+  // The dock's gingerbread gate: two solid piers, a high icing lintel,
+  // and the original 2.2 m path kept open between them.
+  const gateD = radius - 1.8;
+  const gateX = dx * gateD, gateZ = dz * gateD;
+  if (coastClear(gateX, gateZ, 2.2)) {
+    for (const side of [-1.6, 1.6]) {
+      kit.addAt(gateX, gateZ, dockAngle, "caramel", box, side, 1.55, 0, { sx: 0.65, sy: 3.1, sz: 0.7 });
+      for (let i = 0; i < 5; i++) kit.addAt(gateX, gateZ, dockAngle, "white", ball, side, 0.5 + i * 0.5, 0.38, { sx: 0.2, sy: 0.2, sz: 0.12 });
+      solids.push({ cx: gateX + Math.cos(dockAngle) * side, cz: gateZ - Math.sin(dockAngle) * side, hx: 0.35, hz: 0.4, yaw: dockAngle });
+    }
+    kit.addAt(gateX, gateZ, dockAngle, "caramel", box, 0, 3.12, 0, { sx: 3.9, sy: 0.6, sz: 0.7 });
+    kit.addAt(gateX, gateZ, dockAngle, "white", box, 0, 3.46, 0, { sx: 4.0, sy: 0.14, sz: 0.78 });
+    kit.addAt(gateX, gateZ, dockAngle, "red", ball, 0, 3.2, 0.4, { sx: 0.42, sy: 0.42, sz: 0.16 });
+  }
+
+  // Two small destination sculptures, on unclaimed shoreline only.
+  for (const [a, kind] of [[0.65, "donut"], [1.55, "fountain"]] as const) {
+    const r = radius - 3.0, x = Math.sin(a) * r, z = Math.cos(a) * r;
+    if (!coastClear(x, z, 2.0)) continue;
+    const y = groundHeight(r, radius);
+    kit.add("white", cylinder, x, y + 0.12, z, { sx: 3.6, sy: 0.24, sz: 3.6 });
+    solids.push({ cx: x, cz: z, hx: 1.85, hz: 1.85, yaw: 0 });
+    if (kind === "donut") {
+      kit.addAt(x, z, a, "caramel", donut, 0, y + 1.65, 0, { sx: 1.1, sy: 1.1, sz: 1.1 });
+      kit.addAt(x, z, a, "red", donut, 0, y + 1.65, 0.2, { sx: 1.08, sy: 1.08, sz: 0.7 });
+      for (let i = 0; i < 12; i++) {
+        const t = i * Math.PI / 6;
+        kit.addAt(x, z, a, i % 2 ? "white" : "mint", box, Math.sin(t) * 1.28, y + 1.65 + Math.cos(t) * 1.28, 0.49,
+          { sx: 0.09, sy: 0.22, sz: 0.07, rz: t + 0.4 });
+      }
+    } else {
+      kit.add("caramel", cylinder, x, y + 0.4, z, { sx: 3.1, sy: 0.5, sz: 3.1 });
+      kit.add("cocoa", cylinder, x, y + 0.66, z, { sx: 2.8, sy: 0.06, sz: 2.8 });
+      for (let tier = 0; tier < 3; tier++) {
+        const w = 1.8 - tier * 0.55;
+        kit.add("cocoa", cone, x, y + 0.95 + tier * 0.55, z, { sx: w, sy: 0.75, sz: w });
+      }
+      kit.add("white", ball, x, y + 2.5, z, { sx: 0.4, sy: 0.35, sz: 0.4 });
+      lightPools.push({ x, y: y + 0.25, z, width: 3.5, depth: 3.5 });
+    }
   }
   const lx = Math.sin(lighthouseAngle) * (radius - 2.4);
   const lz = Math.cos(lighthouseAngle) * (radius - 2.4);
@@ -497,7 +556,54 @@ export function buildScenery(opts: {
     solids.push({ cx: corner.x, cz: corner.z, hx: 0.15, hz: 0.15, yaw: 0 });
   }
 
+  // Cotton-candy clouds are two merged meshes, drifting as one group.
+  // Stars share a third mesh and fade with the same clock as the lamps.
+  const cloudWhite = own(solidMaterial("#fff1f4"));
+  const cloudPink = own(solidMaterial("#f0c0da"));
+  const starMaterial = own(new MeshBasicMaterial({ color: "#fff1de", transparent: true, opacity: 0, depthWrite: false, fog: false }));
+  const cloudKit = new Kit({ white: cloudWhite, pink: cloudPink });
+  for (let c = 0; c < 7; c++) {
+    const a = c * Math.PI * 2 / 7;
+    const r = radius + 13 + (c % 2) * 8;
+    for (let puff = 0; puff < 5; puff++) {
+      cloudKit.add(puff % 3 ? "white" : "pink", ball,
+        Math.sin(a) * r + (puff - 2) * 2.1, 14 + c % 3 * 2 + (puff % 2) * 0.9, Math.cos(a) * r,
+        { sx: 5.2, sy: 2.6 + puff % 2, sz: 3.8 });
+    }
+  }
+  const clouds = cloudKit.build(false);
+  clouds.name = "cotton-candy-clouds";
+  const starKit = new Kit({ star: starMaterial });
+  for (let i = 0; i < 100; i++) {
+    const a = i * 2.3999632297;
+    const elevation = 0.08 + random(i + 700) * 0.85;
+    const r = Math.sqrt(1 - elevation * elevation) * 220;
+    const size = 0.35 + random(i + 850) * 0.5;
+    starKit.add("star", ball, Math.sin(a) * r, elevation * 220, Math.cos(a) * r, { sx: size, sy: size, sz: size });
+  }
+  const stars = starKit.build(false);
+  stars.name = "sugar-stars";
+  stars.visible = false;
+  for (const layer of [clouds, stars]) {
+    layer.traverse(object => { if (object instanceof Mesh) own(object.geometry); });
+    group.add(layer);
+  }
+  const cloudDay = new Color("#fff1f4"), cloudNight = new Color("#9283b3");
+  const pinkDay = new Color("#f0c0da"), pinkNight = new Color("#89729f");
+
+  // Sugar sprinkles lie flush with empty coast grass, with no walk-height
+  // geometry. No changes to plots or the playground's play anchors.
+  for (let i = 0; i < 90; i++) {
+    const a = random(i + 400) * Math.PI * 2;
+    const r = radius - 5.5 - random(i + 500) * 1.5;
+    const x = Math.sin(a) * r, z = Math.cos(a) * r;
+    if (!coastClear(x, z, 0.3)) continue;
+    kit.add(i % 3 === 0 ? "white" : i % 3 === 1 ? "red" : "caramel", box, x, 0.025, z,
+      { sx: 0.09, sy: 0.035, sz: 0.24, ry: a * 4 });
+  }
+
   const built = kit.build(opts.shadows);
+  built.name = "candy-scenery";
   built.traverse((object) => {
     const mesh = object as Mesh;
     if (mesh.geometry) own(mesh.geometry);
@@ -523,6 +629,11 @@ export function buildScenery(opts: {
     group, seats, solids, dock, walkways, deck: 0.19, playground,
     update(t, nightness, colors, seaColor) {
       water.time.value = t;
+      clouds.rotation.y = Math.sin(t * 0.035) * 0.035;
+      cloudWhite.color.copy(cloudDay).lerp(cloudNight, nightness);
+      cloudPink.color.copy(pinkDay).lerp(pinkNight, nightness);
+      stars.visible = nightness > 0;
+      starMaterial.opacity = nightness * 0.85;
       skyDome.top.copy(colors.top);
       skyDome.horizon.copy(colors.horizon);
       water.material.color.copy(seaColor);
@@ -560,14 +671,14 @@ export function onRect(x: number, z: number, rects: readonly Solid[]): boolean {
 /** The colours of the hour: sky, sea and how dark it is (0 day … 1 night). */
 export function timeOfDay(hour: number): { top: Color; horizon: Color; sea: Color; night: number; sun: Vector3; sunColor: Color; sunIntensity: number; hemi: number } {
   const keys: { h: number; top: string; horizon: string; sea: string; night: number; sun: string; power: number; hemi: number }[] = [
-    { h: 0, top: "#0a1631", horizon: "#1c2b52", sea: "#1d3a5c", night: 1, sun: "#9fb6ff", power: 0.35, hemi: 0.55 },
-    { h: 5.5, top: "#0e1c3d", horizon: "#2a3966", sea: "#22416a", night: 1, sun: "#9fb6ff", power: 0.35, hemi: 0.55 },
-    { h: 6.6, top: "#5a78b8", horizon: "#ffc6a6", sea: "#4f8fb4", night: 0.4, sun: "#ffc59a", power: 1.6, hemi: 1.0 },
-    { h: 8, top: "#79b8f0", horizon: "#e8f3fb", sea: "#5fbcd8", night: 0, sun: "#fff4e2", power: 2.7, hemi: 1.45 },
-    { h: 17.2, top: "#79b8f0", horizon: "#e8f3fb", sea: "#5fbcd8", night: 0, sun: "#fff4e2", power: 2.7, hemi: 1.45 },
-    { h: 18.8, top: "#5866b0", horizon: "#ffb487", sea: "#4a83ad", night: 0.35, sun: "#ffad7a", power: 1.6, hemi: 1.0 },
-    { h: 20.3, top: "#13224a", horizon: "#3a3f6e", sea: "#244468", night: 0.9, sun: "#9fb6ff", power: 0.45, hemi: 0.6 },
-    { h: 24, top: "#0a1631", horizon: "#1c2b52", sea: "#1d3a5c", night: 1, sun: "#9fb6ff", power: 0.35, hemi: 0.55 },
+    { h: 0, top: "#201c46", horizon: "#51406d", sea: "#285b70", night: 1, sun: "#9fb6ff", power: 0.35, hemi: 0.55 },
+    { h: 5.5, top: "#29204e", horizon: "#65507e", sea: "#315e78", night: 1, sun: "#9fb6ff", power: 0.35, hemi: 0.55 },
+    { h: 6.6, top: "#9d8bc9", horizon: "#ffc6a6", sea: "#76b9bd", night: 0.4, sun: "#ffc59a", power: 1.6, hemi: 1.0 },
+    { h: 8, top: "#b9b5ef", horizon: "#ffe1eb", sea: "#62cfc8", night: 0, sun: "#fff4e2", power: 2.7, hemi: 1.45 },
+    { h: 17.2, top: "#b9b5ef", horizon: "#ffe1eb", sea: "#62cfc8", night: 0, sun: "#fff4e2", power: 2.7, hemi: 1.45 },
+    { h: 18.8, top: "#9d7fba", horizon: "#ffb487", sea: "#679ba9", night: 0.35, sun: "#ffad7a", power: 1.6, hemi: 1.0 },
+    { h: 20.3, top: "#312552", horizon: "#63517f", sea: "#345b74", night: 0.9, sun: "#9fb6ff", power: 0.45, hemi: 0.6 },
+    { h: 24, top: "#201c46", horizon: "#51406d", sea: "#285b70", night: 1, sun: "#9fb6ff", power: 0.35, hemi: 0.55 },
   ];
   const h = ((hour % 24) + 24) % 24;
   let i = 0;

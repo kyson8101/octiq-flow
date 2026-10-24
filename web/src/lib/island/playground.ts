@@ -62,13 +62,13 @@ export function buildPlayground(opts: { x: number; z: number; facing: number; sh
   const owned: { dispose(): void }[] = [];
   const own = <T extends { dispose(): void }>(thing: T) => { owned.push(thing); return thing; };
   const materials: Record<string, Material> = {
-    frame: own(solidMaterial("#5b8bd9", 0.6)),
-    red: own(solidMaterial("#ef7a5d", 0.6)),
-    yellow: own(solidMaterial("#f4b942", 0.5)),
-    teal: own(solidMaterial("#4fb5a5", 0.6)),
-    wood: own(solidMaterial("#c99a6b", 0.8)),
-    darkWood: own(solidMaterial("#7a563b", 0.8)),
-    rope: own(solidMaterial("#e9dcc0", 0.9)),
+    frame: own(solidMaterial("#afa2d9", 0.6)),
+    red: own(solidMaterial("#e9a5bd", 0.6)),
+    yellow: own(solidMaterial("#f0d39e", 0.5)),
+    teal: own(solidMaterial("#9bcebf", 0.6)),
+    wood: own(solidMaterial("#ddb78e", 0.8)),
+    darkWood: own(solidMaterial("#806071", 0.8)),
+    rope: own(solidMaterial("#fff0e7", 0.9)),
   };
   const box = own(new RoundedBoxGeometry(1, 1, 1, 2, 0.08));
   const bar = own(new CylinderGeometry(0.5, 0.5, 1, 10));

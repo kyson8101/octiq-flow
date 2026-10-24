@@ -6,6 +6,28 @@ appears: no extra random residents such as Chip, and no random-invite button.
 Historical NPC data is retained on disk but excluded from characters, plots,
 wishes and the open-wish limit. New islands never create NPCs.
 
+The page is a low-poly candy fantasy world: mint and strawberry grass tiles,
+frosting-white beaches, a turquoise soda lagoon, and a cotton-candy pink/lilac
+sky. After dusk the sky turns lavender/indigo and sugar stars fade in. The
+existing day/night clock, weather controls and warm interior lighting remain.
+
+The plaza keeps its wish letters, benches and original layout, with a
+strawberry-frosted wish tree and striped candy-cane lamps. The playground keeps
+its slide, seesaw and swings, now in soft confectionery colours. Along the
+shore stand lollipop trees, gumdrop bushes, rock-candy crystals and a striped
+peppermint lighthouse. A gingerbread gate frames the dock path, while a
+strawberry donut sculpture and a tiered cocoa fountain stand on clear coastal
+patches. Sugar sprinkles dust the empty grass; cotton-candy clouds drift slowly
+over the sea. Landmarks are omitted wherever their footprint would overlap a
+plot, the plaza or the playground; the gate's passage stays open. Every new
+solid footprint joins the navigation grid.
+
+These are client scenery, never stored assets or placements. They do not alter
+agent persona colours, real-work states, the host schema or the roofless rule.
+Static shapes merge by material; clouds use two merged meshes and stars one.
+New sky motion follows reduced motion and pauses with the hidden page; all
+scene resources are released when the view is disposed.
+
 Robots walk, play, sleep and greet occasionally. Greetings have a one-minute
 cooldown per robot and a five-minute cooldown per pair; a greeting never
 replaces a current speech bubble. A seesaw wave asks an awake, free partner;

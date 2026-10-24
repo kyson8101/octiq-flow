@@ -126,7 +126,7 @@ export class IslandView {
   private scene = new Scene();
   private camera = new PerspectiveCamera(38, 1, 0.1, 1400);
   private controls: OrbitControls;
-  private hemi = new HemisphereLight("#eef6ff", "#c8b58a", 1.4);
+  private hemi = new HemisphereLight("#fff0f6", "#bda2b3", 1.4);
   private sun = new DirectionalLight("#fff4e2", 2.6);
   private gardenBeds = new Map<string,ReturnType<typeof gardenPatch>>();
   private society = buildSociety();
@@ -656,7 +656,7 @@ export class IslandView {
       const weather = weatherAt(this.island?.seed ?? 1, Date.now(), this.weatherChoice);
       this.sun.intensity = this.sky.sunIntensity * (weather === "rain" ? .35 : weather === "cloudy" ? .65 : 1);
       this.hemi.intensity = this.sky.hemi;
-      this.hemi.color.copy(new Color("#eef6ff").lerp(new Color("#7f93c9"), this.sky.night));
+      this.hemi.color.copy(new Color("#fff0f6").lerp(new Color("#a695cf"), this.sky.night));
       (this.scene.fog as Fog).color.copy(this.sky.horizon);
     }
 
