@@ -39,6 +39,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import "./ChatTaskBar.css";
 import { AutoPlanSwitch } from "./AutoPlanSwitch";
 import { setAutoPlan, useAutoPlan } from "../lib/autoPlan";
+import { notePress } from "../lib/pressGuard";
 
 /** `waiting` is the page's one reading of the chat (`lib/chatWait`): what it
  *  waits on the person for, `unknown` while the page cannot say, or nothing. */
@@ -272,7 +273,8 @@ export function ChatTaskBarView({
         aria-expanded={open}
         aria-label={action ? "Task details" : `Task and workspace — ${phase.label}${branch ? ` on ${branch}` : ""}`}
         title={action ? "Task details" : `${phase.label}${branch ? ` · ${branch}` : ""} — ${locationOf(status?.workspace)}`}
-        onClick={() => {
+        onClick={(event) => {
+          notePress(event);
           // Placed at the press, before the panel exists: placed after it
           // is drawn, it would be seen for a frame where it is not.
           if (action && !open) place();

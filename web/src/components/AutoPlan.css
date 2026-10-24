@@ -1,6 +1,6 @@
 .auto-plan-setting { margin: 14px 0; padding: 12px 0; border-block: 1px solid var(--border); }
 .auto-plan-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--fg-1); text-align: left; cursor: pointer; }
-.auto-plan-switch:disabled { opacity: .5; cursor: default; }
+.auto-plan-switch[aria-disabled="true"] { opacity: .5; cursor: default; }
 .auto-plan-track { display: flex; align-items: center; flex: 0 0 32px; height: 20px; padding: 3px; border: 1px solid var(--fg-3); border-radius: 12px; background: var(--bg-2); box-sizing: border-box; }
 .auto-plan-track > span { width: 12px; height: 12px; border-radius: 50%; background: var(--fg-2); }
 .auto-plan-switch[aria-checked="true"] .auto-plan-track { background: var(--fg-2); }

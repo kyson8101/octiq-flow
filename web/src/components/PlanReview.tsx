@@ -31,13 +31,12 @@ import { AgentLogo } from "./AgentLogo";
 import { AgentAvatar } from "./AgentAvatar";
 import { TaskPlanCard, type WorkspaceDecision } from "./TaskPlanCard";
 import { readWorkspaceChoice, workspaceChoiceFact, workspaceDraft, workspaceOverrides, type WorkspaceDraft } from "../lib/workspaceChoice";
-import { notePress } from "../lib/pressGuard";
+import { dropHeld, notePress, repeatsAnother } from "../lib/pressGuard";
 import { CommandApprovalChoice } from "./CommandApprovalChoice";
 import { useRosterAgent } from "../lib/agentRoster";
 import "./PlanReview.css";
 import "./AutoPlan.css";
 import { approveWithAutoPlan, autoPlanHeld, useAutoPlan } from "../lib/autoPlan";
-import { dropHeld } from "../lib/pressGuard";
 
 /** Beside Approve, when the plan holds only part of the run: the tasks the
  *  person approved before keep starting while this waits. */
@@ -300,9 +299,17 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
                 />
                 <button className="plan-review-quiet" type="button" disabled={!note.trim()} onClick={requestChanges}>Request changes</button>
               </div>}
-              {surface === "chat" && !autoEnabled && <label className="auto-plan-future">
+              {surface === "chat" && !autoEnabled && <label className="auto-plan-future"
+                onClickCapture={(event) => {
+                  if (busy || autoPlan.busy || repeatsAnother(event)) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    return;
+                  }
+                  notePress(event);
+                }}>
                 <input type="checkbox" checked={future} disabled={busy || autoPlan.busy}
-                  onKeyDown={dropHeld} onClick={notePress} onChange={(event) => setFuture(event.target.checked)} />
+                  onKeyDown={dropHeld} onChange={(event) => { if (!busy && !autoPlan.busy) setFuture(event.target.checked); }} />
                 <span>Auto-approve this chat's future plans</span>
               </label>}
               {rejecting && <PlanRejectConfirmation reason={reason} busy={busy} disabled={holding}

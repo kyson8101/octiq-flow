@@ -7,6 +7,10 @@ import type { OrchestrationRun } from "./orchestration";
 export type AutoPlanSetting = { chatKey: string; enabled: boolean; enabledAt?: number };
 type Reading = { setting?: AutoPlanSetting; error?: string; saveError?: string };
 const readings = new Map<string, Reading>();
+// A failed read carries no new setting. Only a successful read, event or
+// explicit change supersedes other reads already in flight.
+const revisions = new Map<string, number>();
+const advance = (key: string) => revisions.set(key, (revisions.get(key) ?? 0) + 1);
 const listeners = new Set<() => void>();
 const EMPTY: Reading = {};
 export const autoPlanFlight = (chatKey: string) => `auto-plan:${chatKey}`;
@@ -18,10 +22,13 @@ const words = (error: unknown) => String((error as Error)?.message ?? error);
 
 export async function setAutoPlan(chatKey: string, enabled: boolean, source: "details" | "card" = "details") {
   return once(autoPlanFlight(chatKey), async () => {
+    advance(chatKey);
     try {
       const setting = await bridge.invoke<AutoPlanSetting>("orchestration_auto_plan_set", { chatKey, enabled });
+      advance(chatKey);
       publish(chatKey, { setting });
     } catch (error) {
+      advance(chatKey);
       publish(chatKey, { ...readings.get(chatKey), error: words(error), ...(source === "card" ? { saveError: words(error) } : {}) });
       throw error;
     }
@@ -38,19 +45,21 @@ export function useAutoPlan(chatKey: string | null, connected = true) {
   useEffect(() => {
     if (!chatKey || !connected) return;
     let live = true;
-    let changed = false;
     const off = bridge.on("orchestration-auto-plan", (payload) => {
       const setting = payload as AutoPlanSetting;
       if (setting?.chatKey !== chatKey) return;
-      changed = true;
+      advance(chatKey);
       publish(chatKey, { setting });
     });
-    const before = readings.get(chatKey);
+    const before = revisions.get(chatKey);
     void bridge.invoke<AutoPlanSetting>("orchestration_auto_plan_get", { chatKey }).then((setting) => {
       // An event or a person's press after this read began is newer.
-      if (live && !changed && readings.get(chatKey) === before) publish(chatKey, { ...readings.get(chatKey), setting, error: undefined });
+      if (live && revisions.get(chatKey) === before) {
+        advance(chatKey);
+        publish(chatKey, { ...readings.get(chatKey), setting, error: undefined });
+      }
     }).catch((error) => {
-      if (live && !changed && readings.get(chatKey) === before) publish(chatKey, { ...before, error: words(error) });
+      if (live && revisions.get(chatKey) === before) publish(chatKey, { ...readings.get(chatKey), error: words(error) });
     });
     return () => { live = false; off(); };
   }, [chatKey, connected]);

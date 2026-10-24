@@ -38,9 +38,10 @@ describe("standing plan consent", () => {
   });
   it("draws the setting off while the host answers, and shows its refusal", () => {
     const html = renderToStaticMarkup(<AutoPlanSwitch enabled busy ready error="Only a chat's own agent can lead" onChange={() => {}} />);
-    expect(html).toContain('role="switch" aria-checked="true" disabled=""');
+    expect(html).toContain('role="switch" aria-checked="true" aria-disabled="true"');
+    expect(html).not.toMatch(/\sdisabled="/);
     expect(html).toContain('role="alert"');
-    expect(html).toContain("Full access tasks and peer requests still wait for you.");
+    expect(html).toContain("Plans are approved when the lead&#x27;s turn ends cleanly, if every waiting task runs at Auto or lower. A Full access task or a peer request leaves the whole plan for you to approve.");
   });
   it("sends one setting change across duplicate presses and waits for the host", async () => {
     let answer!: (value: unknown) => void;
