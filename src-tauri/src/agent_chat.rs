@@ -1060,6 +1060,9 @@ pub struct ChatManager {
     /// Leaf map: its guard is never held while acquiring any other lock.
     /// Evidence carries the atomic itself, so ledger commit takes no chat lock.
     stop_epochs: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicU64>>>,
+    /// Leaf map, like stop_epochs. Every real prompt start advances this
+    /// under its own writer lock, before any bytes can reach the provider.
+    turn_sequences: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicU64>>>,
     /// How each running agent was last started — see `StartContext`. Keyed by
     /// process key, so each chat resumes independently.
     starts: Mutex<HashMap<String, StartContext>>,
@@ -1218,6 +1221,37 @@ impl ChatManager {
             .clone()
     }
 
+    fn turn_sequence(&self, key: &str) -> Arc<std::sync::atomic::AtomicU64> {
+        self.turn_sequences
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key.into())
+            .or_default()
+            .clone()
+    }
+
+    /// Called only for a real turn start, under the own writer's lock. A
+    /// queued message is not a start. Persistent processes regain launch
+    /// evidence after Stop here, never while consuming the cut-off full stop.
+    fn start_auto_plan_turn(&self, key: &str, session: &ChatSession) {
+        self.turn_sequence(key)
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if provider_for(session.agent)
+            .capabilities()
+            .input
+            .accepts_stdin()
+        {
+            let mut launches = self
+                .auto_plan_launches
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            // A stale writer cannot replace a newer process's identity.
+            launches
+                .entry(key.into())
+                .or_insert_with(|| session.launch_id.clone());
+        }
+    }
+
     /// No chat lock is needed to veto a staged approval. The leaf map guard
     /// is gone before touching the atomic or the separate leaf launches map.
     /// Natural reaping alone keeps both epoch and launch evidence unchanged.
@@ -1287,6 +1321,10 @@ impl ChatManager {
         launch_id: &str,
     ) -> String {
         self.revoke_auto_plan(session_key);
+        // A new launch starts a fresh writer (including a one-shot resume),
+        // before it can execute its command-line prompt. The table is held.
+        self.turn_sequence(session_key)
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let secret = mint_capability();
         if let Ok(mut launches) = self.auto_plan_launches.lock() {
             launches.insert(session_key.into(), launch_id.into());
@@ -4509,6 +4547,7 @@ pub(crate) fn start_session(
                             // clock had run since the previous full stop,
                             // ended the worker mid-report (feedback 4c7f5647).
                             if observed.turn_opened && !session.busy {
+                                reading.start_auto_plan_turn(&session_key, &session);
                                 session.turn_started();
                             }
                         }
@@ -4990,6 +5029,7 @@ pub(crate) fn start_session(
         && (!wire_prompt.trim().is_empty() || !images.is_empty())
     {
         write_user_message(
+            &manager,
             &session,
             &wire_prompt,
             &images,
@@ -5010,6 +5050,7 @@ pub(crate) fn start_session(
 /// thread's direct write could take to jump the line. See the flush beside
 /// `turn_ended` in the stdout reader.
 fn write_user_message_locked(
+    manager: &ChatManager,
     session: &mut ChatSession,
     session_key: &str,
     text: &str,
@@ -5054,10 +5095,12 @@ fn write_user_message_locked(
             .user_message_payload(text, images)
             .ok_or("this chat does not take more input")?
     };
-    let stdin = session
+    session
         .stdin
-        .as_mut()
+        .as_ref()
         .ok_or("this chat does not take more input")?;
+    manager.start_auto_plan_turn(session_key, session);
+    let stdin = session.stdin.as_mut().expect("stdin checked above");
     writeln!(stdin, "{payload}").map_err(|e| e.to_string())?;
     stdin.flush().map_err(|e| e.to_string())?;
     crate::team::note_roster_delivered(session_key, text);
@@ -5075,30 +5118,44 @@ fn write_user_message_locked(
 const STILL_STOPPING: &str = "this chat is still stopping its last turn";
 
 /// Captured under the own writer's existing session lock. After that lock
-/// is released, approval reads ONLY this atomic; a new turn is not a veto.
+/// is released, approval reads ONLY these atomics. Stop and every next turn
+/// veto the old full stop, even if that next turn never changes the plan.
 pub(crate) struct CleanTurnEnd {
     pub(crate) chat_key: String,
     launch_id: String,
     stop_epoch: Arc<std::sync::atomic::AtomicU64>,
     epoch: u64,
+    turn_sequence: Arc<std::sync::atomic::AtomicU64>,
+    sequence: u64,
 }
 
 pub(crate) const AUTO_PLAN_REVOKED: &str = "automatic plan approval was revoked";
 
 impl CleanTurnEnd {
+    /// The first ledger snapshot may use only evidence with no later turn
+    /// and no intervening Stop. No chat or leaf-map lock is acquired here.
+    pub(crate) fn unchanged(&self) -> bool {
+        self.turn_sequence.load(std::sync::atomic::Ordering::SeqCst) == self.sequence
+            && self.stop_epoch.load(std::sync::atomic::Ordering::SeqCst) == self.epoch
+    }
+
     /// Linearization point after the staged write, immediately before rename.
-    /// Compare/exchange the unchanged epoch: an earlier Stop wins; a later
-    /// Stop does not retroactively undo an already committed decision.
+    /// Bracket the epoch CAS with sequence checks. As the sequence only grows,
+    /// equal checks prove no turn crossed that CAS; an earlier Stop or turn
+    /// wins, and a later one does not undo an already committed decision.
     pub(crate) fn decide(&self) -> bool {
         debug_assert!(!self.launch_id.is_empty());
-        self.stop_epoch
-            .compare_exchange(
-                self.epoch,
-                self.epoch,
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-            )
-            .is_ok()
+        self.turn_sequence.load(std::sync::atomic::Ordering::SeqCst) == self.sequence
+            && self
+                .stop_epoch
+                .compare_exchange(
+                    self.epoch,
+                    self.epoch,
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                )
+                .is_ok()
+            && self.turn_sequence.load(std::sync::atomic::Ordering::SeqCst) == self.sequence
     }
 }
 
@@ -5123,6 +5180,8 @@ fn end_turn_for_auto_plan(
     // with its new epoch. A naturally reaped one-shot may still own stdout.
     let stop_epoch = manager.stop_epoch(session_key);
     let epoch = stop_epoch.load(std::sync::atomic::Ordering::SeqCst);
+    let turn_sequence = manager.turn_sequence(session_key);
+    let sequence = turn_sequence.load(std::sync::atomic::Ordering::SeqCst);
     let current_launch = manager
         .auto_plan_launches
         .lock()
@@ -5136,6 +5195,8 @@ fn end_turn_for_auto_plan(
         launch_id: session.launch_id.clone(),
         stop_epoch,
         epoch,
+        turn_sequence,
+        sequence,
     });
     let result = end_turn_locked(manager, session_key, stream_key, session, clean);
     (result, ended)
@@ -5385,6 +5446,7 @@ fn dispatch_next_persistent_turn(
     }
     let turn = manager.take_queued_turn(session_key)?;
     let refused = write_user_message_locked(
+        manager,
         session,
         session_key,
         &turn.text,
@@ -5410,6 +5472,7 @@ fn dispatch_next_persistent_turn(
 }
 
 fn write_user_message(
+    manager: &ChatManager,
     session: &Arc<Mutex<ChatSession>>,
     text: &str,
     images: &[String],
@@ -5418,7 +5481,7 @@ fn write_user_message(
     turn_id: Option<&str>,
 ) -> Result<(), String> {
     let mut guard = session.lock().map_err(|e| e.to_string())?;
-    let result = write_user_message_locked(&mut guard, session_key, text, images, turn_id);
+    let result = write_user_message_locked(manager, &mut guard, session_key, text, images, turn_id);
     record_delivery(
         key,
         turn_id,
@@ -5665,7 +5728,7 @@ fn deliver_orchestration_notification_with_start(
             {
                 return Ok(false);
             }
-            write_user_message_locked(&mut session, key, &text, &[], Some(&receipt))?;
+            write_user_message_locked(&manager, &mut session, key, &text, &[], Some(&receipt))?;
             return Ok(true);
         }
     }
@@ -6078,7 +6141,8 @@ fn send_turn(
                 // prevents the idle sweeper from ending the process in the handoff
                 // before its reaper starts the resume.
                 if !guard.busy {
-                    guard.turn_started();
+                    guard.busy = true;
+                    guard.last_active = Instant::now();
                 }
                 return Ok(Sent::Queued);
             }
@@ -6086,6 +6150,7 @@ fn send_turn(
                 record_durable_user_turn(&key, turn_id, &text, &images);
             }
             let result = write_user_message_locked(
+                &manager,
                 &mut guard,
                 &session_key,
                 &text,
@@ -7338,14 +7403,21 @@ pub fn chat_complete_impl(
                 {
                     queue()?;
                     if !guard.busy {
-                        guard.turn_started();
+                        guard.busy = true;
+                        guard.last_active = Instant::now();
                     }
                     "queued"
                 } else {
                     manager.begin_completion(key, &turn_id, "started")?;
                     record_durable_user_turn(key, &turn_id, text, &[]);
-                    let written =
-                        write_user_message_locked(&mut guard, key, text, &[], Some(&turn_id));
+                    let written = write_user_message_locked(
+                        manager,
+                        &mut guard,
+                        key,
+                        text,
+                        &[],
+                        Some(&turn_id),
+                    );
                     record_delivery(
                         key,
                         Some(&turn_id),
@@ -10818,8 +10890,15 @@ mod tests {
             {
                 let mut live = session.lock().unwrap();
                 live.turn_ended();
-                write_user_message_locked(&mut live, key, &text, &[], Some("roster-retry"))
-                    .unwrap();
+                write_user_message_locked(
+                    &manager,
+                    &mut live,
+                    key,
+                    &text,
+                    &[],
+                    Some("roster-retry"),
+                )
+                .unwrap();
             }
             echoed.clear();
             std::io::BufRead::read_line(&mut written, &mut echoed).unwrap();
@@ -10842,10 +10921,15 @@ mod tests {
             let mut live = session.lock().unwrap();
             live.turn_ended();
             live.stdin.take();
-            assert!(
-                write_user_message_locked(&mut live, key, &changed, &[], Some("failed-write"))
-                    .is_err()
-            );
+            assert!(write_user_message_locked(
+                &manager,
+                &mut live,
+                key,
+                &changed,
+                &[],
+                Some("failed-write")
+            )
+            .is_err());
         }
         assert_eq!(fingerprint(), before);
         assert!(
@@ -11565,8 +11649,15 @@ mod tests {
         {
             let mut running = session.lock().unwrap();
             running.turn_ended();
-            write_user_message_locked(&mut running, &key, "notification", &[], Some("notif_1"))
-                .unwrap();
+            write_user_message_locked(
+                &manager,
+                &mut running,
+                &key,
+                "notification",
+                &[],
+                Some("notif_1"),
+            )
+            .unwrap();
         }
         assert_eq!(manager.person_turn(&key), None);
 
@@ -11575,7 +11666,8 @@ mod tests {
         {
             let mut running = session.lock().unwrap();
             running.turn_ended();
-            write_user_message_locked(&mut running, &key, "approve", &[], Some("user-3")).unwrap();
+            write_user_message_locked(&manager, &mut running, &key, "approve", &[], Some("user-3"))
+                .unwrap();
         }
         assert!(manager.person_turn(&key).is_some());
         {
@@ -11587,7 +11679,8 @@ mod tests {
         assert_eq!(manager.person_turn(&key), None);
         {
             let mut running = session.lock().unwrap();
-            write_user_message_locked(&mut running, &key, "gate answered", &[], None).unwrap();
+            write_user_message_locked(&manager, &mut running, &key, "gate answered", &[], None)
+                .unwrap();
         }
         assert_eq!(manager.person_turn(&key), None);
 
@@ -11596,7 +11689,15 @@ mod tests {
         {
             let mut running = session.lock().unwrap();
             running.turn_ended();
-            write_user_message_locked(&mut running, &key, "approve", &[], Some("notif_2")).unwrap();
+            write_user_message_locked(
+                &manager,
+                &mut running,
+                &key,
+                "approve",
+                &[],
+                Some("notif_2"),
+            )
+            .unwrap();
         }
         assert_eq!(manager.person_turn(&key), None);
 
@@ -14718,7 +14819,14 @@ mod completion_tests {
         for turn in [Some("user-x"), None] {
             let mut stopping = chat.session.lock().unwrap();
             assert_eq!(
-                write_user_message_locked(&mut stopping, &chat.key, "anything", &[], turn),
+                write_user_message_locked(
+                    &chat.manager,
+                    &mut stopping,
+                    &chat.key,
+                    "anything",
+                    &[],
+                    turn
+                ),
                 Err(STILL_STOPPING.into())
             );
         }
@@ -14732,7 +14840,14 @@ mod completion_tests {
         {
             let mut ended = chat.session.lock().unwrap();
             assert_eq!(
-                write_user_message_locked(&mut ended, &chat.key, "anything", &[], Some("user-y")),
+                write_user_message_locked(
+                    &chat.manager,
+                    &mut ended,
+                    &chat.key,
+                    "anything",
+                    &[],
+                    Some("user-y")
+                ),
                 Err(STILL_STOPPING.into())
             );
         }
@@ -15204,7 +15319,14 @@ mod leaving_tests {
         {
             let mut session = led.session.lock().unwrap();
             assert_eq!(
-                write_user_message_locked(&mut session, &led.key, "anything", &[], Some("user-0")),
+                write_user_message_locked(
+                    &led.manager,
+                    &mut session,
+                    &led.key,
+                    "anything",
+                    &[],
+                    Some("user-0")
+                ),
                 Err(leaving.into())
             );
             assert!(!session.busy);
@@ -15493,7 +15615,7 @@ mod auto_plan_tests {
     }
 
     #[test]
-    fn auto_plan_epoch_vetoes_stop_replacement_and_off_but_allows_a_new_turn() {
+    fn auto_plan_epoch_and_sequence_veto_stop_replacement_off_and_new_turns() {
         for race in [
             "off",
             "new-turn",
@@ -15512,9 +15634,14 @@ mod auto_plan_tests {
                         .auto_plan_set(&lead.key, false)
                         .unwrap();
                 }
-                "new-turn" => lead.session.lock().unwrap().turn_started(),
+                "new-turn" => {
+                    let mut s = lead.session.lock().unwrap();
+                    lead.manager.start_auto_plan_turn(&lead.key, &s);
+                    s.turn_started();
+                }
                 "new-turn-ended" => {
                     let mut s = lead.session.lock().unwrap();
+                    lead.manager.start_auto_plan_turn(&lead.key, &s);
                     s.turn_started();
                     s.turn_ended();
                 }
@@ -15531,11 +15658,137 @@ mod auto_plan_tests {
                 _ => (),
             }
             lead.apply(ended);
+            assert_eq!(lead.approved(), race == "idle", "{race}");
+        }
+    }
+
+    #[test]
+    fn auto_plan_next_turn_edits_before_first_snapshot_wait_for_its_own_clean_end() {
+        let lead = Lead::new(ChatAgent::Claude);
+        // end_turn_locked dispatches N+1 before returning N's evidence.
+        queue_waiting_turn(
+            &lead.manager,
+            &lead.key,
+            &lead.key,
+            "add a task",
+            &[],
+            Some("user-before-snapshot".into()),
+        )
+        .unwrap();
+        let ended = lead.finish(true).unwrap();
+        assert!(!ended.unchanged());
+        lead.manager
+            .orchestrations
+            .create_task(
+                &lead.key,
+                lead.run.id.clone(),
+                "Built by N+1".into(),
+                "New scope".into(),
+                vec![],
+                None,
+                None,
+            )
+            .unwrap();
+        // N+1 has already mutated R into R+1 before N takes any ledger snapshot.
+        lead.manager
+            .orchestrations
+            .auto_approve_at_turn_end_with(
+                ended,
+                || panic!("old evidence must fail before the first snapshot"),
+                || panic!("old evidence must never stage approval"),
+            )
+            .unwrap();
+        assert!(!lead.approved());
+        assert!(crate::transcript::of_type(&lead.key, "octiq_plan_auto_approved").is_empty());
+        lead.apply(lead.finish(true).unwrap());
+        assert!(lead.approved());
+        let events = crate::transcript::of_type(&lead.key, "octiq_plan_auto_approved");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["taskIds"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn auto_plan_next_turn_without_plan_edits_vetoes_before_first_snapshot() {
+        for notification in [false, true] {
+            let lead = Lead::new(ChatAgent::Claude);
+            let ended = if notification {
+                let ended = lead.finish(true).unwrap();
+                write_user_message_locked(
+                    &lead.manager,
+                    &mut lead.session.lock().unwrap(),
+                    &lead.key,
+                    "host notification",
+                    &[],
+                    Some("octiq-notification-test"),
+                )
+                .unwrap();
+                ended
+            } else {
+                queue_waiting_turn(
+                    &lead.manager,
+                    &lead.key,
+                    &lead.key,
+                    "ordinary handoff",
+                    &[],
+                    Some("user-handoff".into()),
+                )
+                .unwrap();
+                lead.finish(true).unwrap()
+            };
+            lead.manager
+                .orchestrations
+                .auto_approve_at_turn_end_with(
+                    ended,
+                    || panic!("a next turn vetoes even without plan edits"),
+                    || {},
+                )
+                .unwrap();
+            assert!(!lead.approved());
+            lead.apply(lead.finish(true).unwrap());
+            assert!(lead.approved());
+        }
+    }
+
+    #[test]
+    fn auto_plan_persistent_stop_then_clean_turn_in_same_process_is_eligible() {
+        for codex in [false, true] {
+            let lead = Lead::new(if codex {
+                ChatAgent::Codex
+            } else {
+                ChatAgent::Claude
+            });
+            if codex {
+                lead.manager.test_as_codex_thread(&lead.key, Access::Auto);
+            }
+            let (pid, launch) = {
+                let s = lead.session.lock().unwrap();
+                (s.child.id(), s.launch_id.clone())
+            };
+            chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+            assert!(lead.finish(true).is_none(), "cut-off turn must not qualify");
+            assert!(!lead.approved());
             assert_eq!(
-                lead.approved(),
-                matches!(race, "idle" | "new-turn" | "new-turn-ended"),
-                "{race}"
+                send_turn(
+                    lead.manager.clone(),
+                    lead.key.clone(),
+                    "next real turn".into(),
+                    None,
+                    None,
+                    Some("user-after-stop".into())
+                )
+                .unwrap(),
+                Sent::Written
             );
+            {
+                let s = lead.session.lock().unwrap();
+                assert_eq!(s.child.id(), pid);
+                assert_eq!(s.launch_id, launch);
+            }
+            lead.apply(
+                lead.finish(true)
+                    .expect("same process's next clean turn is eligible"),
+            );
+            assert!(lead.approved());
         }
     }
 
@@ -15613,7 +15866,7 @@ mod auto_plan_tests {
     }
 
     #[test]
-    fn auto_plan_send_during_staged_write_is_delivered_and_does_not_veto() {
+    fn auto_plan_send_during_staged_write_is_delivered_and_vetoes() {
         use std::io::BufRead;
         let mut lead = Lead::new(ChatAgent::Claude);
         end_process(&lead.manager, &lead.key).unwrap();
@@ -15662,6 +15915,9 @@ mod auto_plan_tests {
                 },
             )
             .unwrap();
+        assert!(!lead.approved());
+        assert!(crate::transcript::of_type(&lead.key, "octiq_plan_auto_approved").is_empty());
+        lead.apply(lead.finish(true).unwrap());
         assert!(lead.approved());
         assert_eq!(
             crate::transcript::of_type(&lead.key, "octiq_plan_auto_approved").len(),
@@ -15871,6 +16127,7 @@ mod auto_plan_tests {
                     // Real pipe delivery, rather than accepting the envelope
                     // again and reporting Started without sending any bytes.
                     write_user_message_locked(
+                        &lead.manager,
                         &mut next.lock().unwrap(),
                         &lead.key,
                         &turn.text,
@@ -15946,6 +16203,7 @@ mod auto_plan_tests {
             ".handoffs",
             ".auto_plan_launches",
             ".stop_epochs",
+            ".turn_sequences",
         ] {
             assert!(
                 !production.contains(forbidden),

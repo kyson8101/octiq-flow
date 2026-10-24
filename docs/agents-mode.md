@@ -1209,12 +1209,31 @@ the active chat index cannot enable it. An enable whose record cannot be saved
 is refused; disable acts immediately and retries an owed save.
 
 At a clean end of the lead's own turn (including a host notification turn),
-the host rechecks the setting and the whole pending, nonempty revision under
-the ledger lock. It auto-approves only if every waiting task's effective
-worker access is at most Auto and no task is a peer request. A Full task holds
-the whole revision for the person's card. New tasks after approval wait for
-the next clean turn end. A Stop, interrupt, failed/refused turn or ended process
-never approves, and a new turn already in flight wins over the old full stop.
+the host captures its launch identity, Stop epoch, turn sequence and refusal
+latch under the existing writer lock, then releases every chat lock. Approval
+uses only the ledger: its first snapshot and final publication require the
+epoch and turn sequence to remain unchanged. Every real prompt start advances
+the sequence under its writer lock before writing (including queued handoffs,
+host notifications and Codex app-server turns); new launches advance it before
+executing their first prompt. Any later turn vetoes the old clean end, even
+without plan edits. That later turn's own clean end can retry.
+
+Stop, interrupt and intentional process removal advance the epoch and revoke
+launch evidence. A persistent provider refreshes its launch evidence only when
+a real new turn starts, so Stop cancels the cut-off turn but does not disable
+auto-approval for the remaining life of that process. Natural one-shot reaping
+preserves evidence for buffered clean output. The epoch, sequence and launches
+maps are leaves, never held while acquiring another lock; launch validation
+happens outside the ledger. The staged write checks consent, revision and
+waiting set, then brackets its unchanged-epoch CAS with sequence checks just
+before rename. No chat lock spans auto-approval ledger I/O, and auto-approval
+never acquires a chat lock under the ledger.
+
+The host auto-approves only a whole pending, nonempty revision whose every
+waiting task's effective worker access is at most Auto and no task is a peer
+request. A Full task holds the whole revision for the person's card. A failed
+or refused turn or intentionally ended process never approves. Other task,
+permission and safety gates remain in force.
 
 Approval still uses the normal transition and approved task shape, with no
 workspace choices (the host's workspace advice applies). Its consent says
