@@ -122,44 +122,61 @@ impl OrchestrationStore {
         Ok(saved)
     }
 
-    /// Mark under chat locks, release them all, then take only the ledger.
-    /// Never wait for a chat lock under the ledger, or vice versa here.
-    /// The mark queues sends/starts; Stop revokes it without waiting for I/O.
+    /// Evidence arrives with every chat lock already released. The two
+    /// ledger-only steps pin a revision/waiting set, then stage its approval.
+    /// A next turn may continue normally; its edits invalidate the snapshot.
     pub(crate) fn auto_approve_at_turn_end(
         &self,
-        chats: &Arc<ChatManager>,
         ended: crate::agent_chat::CleanTurnEnd,
     ) -> Result<(), String> {
-        // A ledger-only lookup first keeps ordinary chats/workers off the
-        // mark path. Consent is rechecked in the later ledger transaction.
-        if !self.auto_plan_get(&ended.chat_key)?.enabled {
-            return Ok(());
-        }
-        let Some(mark) = ended.mark_idle(chats) else {
-            return Ok(());
+        self.auto_approve_at_turn_end_with(ended, || {}, || {})
+    }
+
+    // Hooks keep deterministic race tests on the real approval/commit path.
+    // Neither production hook does anything or holds a chat lock.
+    pub(crate) fn auto_approve_at_turn_end_with(
+        &self,
+        ended: crate::agent_chat::CleanTurnEnd,
+        after_snapshot: impl FnOnce(),
+        before_commit: impl FnOnce(),
+    ) -> Result<(), String> {
+        let expected = {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            if let Some(error) = &inner.load_error {
+                return Err(error.clone());
+            }
+            if !inner.data.auto_plan_chats.contains_key(&ended.chat_key) {
+                return Ok(());
+            }
+            pending_plans(&inner.data, &ended.chat_key)
         };
+        after_snapshot();
         let result = (|| {
             let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-            if !inner.data.auto_plan_chats.contains_key(&ended.chat_key) {
+            if !inner.data.auto_plan_chats.contains_key(&ended.chat_key)
+                || pending_plans(&inner.data, &ended.chat_key) != expected
+            {
                 return Ok(Vec::new());
             }
             self.mutate_locked_at_commit(
                 &mut inner,
                 None,
                 |data| approve_in(data, &ended.chat_key),
-                || {
-                    // Atomic decision point immediately before publication,
-                    // after workspace checks AND the staged ledger write.
-                    // A prior Stop vetoes the entire clone, including outbox.
-                    mark.decide()
-                        .then_some(())
-                        .ok_or_else(|| crate::agent_chat::AUTO_PLAN_REVOKED.into())
+                |published| {
+                    before_commit();
+                    // The unchanged ledger is still locked, including consent,
+                    // revision and waiting set. No session/queue/launches lock
+                    // is acquired here: Stop vetoes through the evidence atomic.
+                    if !published.auto_plan_chats.contains_key(&ended.chat_key)
+                        || pending_plans(published, &ended.chat_key) != expected
+                        || !ended.decide()
+                    {
+                        return Err(crate::agent_chat::AUTO_PLAN_REVOKED.into());
+                    }
+                    Ok(())
                 },
             )
         })();
-        // This also hands over queued messages on cancellation/save failure.
-        // No ledger guard survives into the chat-side cleanup.
-        drop(mark);
         let approved = match result {
             Err(why) if why == crate::agent_chat::AUTO_PLAN_REVOKED => Vec::new(),
             other => other?,
@@ -206,6 +223,30 @@ impl OrchestrationStore {
         }
         Ok(())
     }
+}
+
+/// Snapshot every pending revision, including held plans. A change to the
+/// waiting set cannot silently become part of an earlier clean turn's consent.
+fn pending_plans(data: &Stored, chat: &str) -> BTreeMap<String, (u32, Vec<String>)> {
+    data.runs
+        .values()
+        .filter(|run| {
+            run.coordinator_chat_key == chat
+                && !run_has_ended(run)
+                && run.archived_at.is_none()
+                && run.awaiting_plan_approval()
+        })
+        .map(|run| {
+            let mut waiting: Vec<_> = awaiting_approval(data, &run.id)
+                .map(|t| t.id.clone())
+                .collect();
+            waiting.sort();
+            (
+                run.id.clone(),
+                (run.plan_approval.as_ref().unwrap().revision, waiting),
+            )
+        })
+        .collect()
 }
 
 fn approve_in(data: &mut Stored, chat: &str) -> Result<Vec<Run>, String> {
@@ -326,28 +367,31 @@ mod tests {
         let (run, _) = pending(&store, Access::Auto);
         store.auto_plan_set("chat:master", true).unwrap();
         let before = fs::read(&path).unwrap();
-        let mut inner = store.inner.lock().unwrap();
-        let refused = store.mutate_locked_at_commit(
-            &mut inner,
-            None,
-            |data| approve_in(data, "chat:master"),
-            || {
-                // The full candidate approval (including notices/inbox) is
-                // already written, while the published ledger is unchanged.
-                assert_eq!(fs::read(&path).unwrap(), before);
-                let staged: Vec<_> = fs::read_dir(&*dir)
-                    .unwrap()
-                    .map(|entry| entry.unwrap().path())
-                    .filter(|entry| entry != &path)
-                    .collect();
-                assert_eq!(staged.len(), 1);
-                let staged: serde_json::Value =
-                    serde_json::from_slice(&fs::read(&staged[0]).unwrap()).unwrap();
-                assert!(!staged["auto_plan_notices"].as_object().unwrap().is_empty());
-                Err(crate::agent_chat::AUTO_PLAN_REVOKED.into())
-            },
-        );
-        assert_eq!(refused.unwrap_err(), crate::agent_chat::AUTO_PLAN_REVOKED);
+        let chats = ChatManager::default();
+        chats.test_launch("chat:master");
+        let ended = chats.test_clean_turn_end("chat:master");
+        store
+            .auto_approve_at_turn_end_with(
+                ended,
+                || {},
+                || {
+                    // The full candidate approval (including notices/inbox) is
+                    // already written, while the published ledger is unchanged.
+                    assert_eq!(fs::read(&path).unwrap(), before);
+                    let staged: Vec<_> = fs::read_dir(&*dir)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().path())
+                        .filter(|entry| entry != &path)
+                        .collect();
+                    assert_eq!(staged.len(), 1);
+                    let staged: serde_json::Value =
+                        serde_json::from_slice(&fs::read(&staged[0]).unwrap()).unwrap();
+                    assert!(!staged["auto_plan_notices"].as_object().unwrap().is_empty());
+                    chats.test_end("chat:master"); // increments the evidence epoch
+                },
+            )
+            .unwrap();
+        let inner = store.inner.lock().unwrap();
         assert_eq!(
             inner.data.runs[&run.id]
                 .plan_approval

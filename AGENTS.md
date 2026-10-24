@@ -2913,15 +2913,24 @@ tick box share the ledger's `auto_plan_chats` setting, retained until switched
 off. Enabling needs its record first (Conventions C); disabling acts at once
 and owes a failed save. Workers, front desks, room seats and unlisted chats
 cannot enable it. A clean full stop of the chat's own writer, including a host
-notification turn, hands evidence out of the session lock. The host then takes
-session table → session, rechecks and marks that idle turn, releases EVERY chat
-lock, then takes only the ledger to approve. Sends and starts under the mark
-join the durable FIFO; clearing the mark hands them over even on cancellation
-or save failure. Stop remains immediate: it atomically revokes a pending mark;
-the approval's pending-to-decided CAS, after the temporary ledger write and
-immediately before rename/publication, is its decision point.
-An intentional removal revokes launch evidence under the table lock; only a
-natural one-shot reaper preserves it for a buffered full stop.
+notification turn, captures its launch id, per-chat `stop_epoch` and refusal
+latch under the existing writer session lock, then releases every chat lock.
+Approval takes only the ledger. Sends, starts and the ordinary queue keep
+working; they acquire no auto-approval mark or deferred-admission queue.
+Every intentional Stop, interrupt, replacement, end, idle sweep and expired
+grace increments the per-chat AtomicU64 epoch and revokes launch evidence;
+natural one-shot reaping alone preserves them for buffered clean output.
+The epoch map and launches map are leaves: their guards never span acquisition
+of another lock. Launch identity/success is checked before the ledger, under
+the own writer's lock; the approval path never reads the launches map.
+The pending revision and waiting set are pinned in a ledger snapshot. A new
+turn's task edits move the revision and invalidate that snapshot. The staged
+clone, outbox and inbox commit together only if consent, revision, waiting
+set and the epoch still match after the temporary write, immediately before
+rename/publication. The unchanged-epoch CAS is the decision point; Stop can
+veto without acquiring any chat lock or waiting for ledger I/O.
+No chat lock is held while the auto-approval path takes the ledger, and the
+ledger is never held while it takes a chat lock.
 Lock audit: `start_session`'s final `admit_beside_writers` takes sessions → ledger
 (read-only workspace admission), and report confirmation via `while_idle` takes
 session → ledger. Access changes (`chat_set_access_impl`'s `record_raise`,
