@@ -13,6 +13,7 @@ pub(super) struct Pending {
 // A native cancel result has no reason field. Carry the host's actual reason
 // to both the transcript and the active model turn, without approving the call.
 fn unanswered(guard: &mut ChatSession, key: &str, item_id: Option<String>, reason: &str) {
+    guard.auto_plan_refused = true;
     let text = format!("MCP confirmation was not answered: {reason}. No approval was given; this was not a user cancellation.");
     let Some(codex) = guard.codex.as_mut() else {
         return;
@@ -159,6 +160,8 @@ pub(super) fn answer(
         })
         .unwrap_or_default();
     if !confirmation(&params) {
+        let started = session.lock().ok().map(|s| s.last_active);
+        latch_codex_refusal(session, started);
         // Explicitly report the supported boundary instead of a misleading
         // generic "user rejected" resulting from an unknown-method error.
         emit_status(ChatAgent::Codex, ChatStatus {
@@ -169,6 +172,8 @@ pub(super) fn answer(
         return;
     }
     let Some(rt) = rt else {
+        let started = session.lock().ok().map(|s| s.last_active);
+        latch_codex_refusal(session, started);
         write_codex_response(session, &request_id, response("cancel"));
         return;
     };
@@ -245,6 +250,9 @@ pub(super) fn answer(
             "deny" if answer.reason == crate::permission::DENIED => "decline",
             _ => "cancel",
         };
+        if action != "accept" {
+            guard.auto_plan_refused = true;
+        }
         if let Some(stdin) = guard.stdin.as_mut() {
             let _ = write_json_line(
                 stdin,
@@ -529,6 +537,10 @@ mod tests {
                 json!({ "id": id, "result": expected })
             );
             assert!(chat.cards().is_empty());
+            assert_eq!(
+                chat.session.lock().unwrap().auto_plan_refused,
+                expected == response("decline")
+            );
         }
     }
 

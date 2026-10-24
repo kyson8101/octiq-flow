@@ -1196,6 +1196,41 @@ host queues one `plan_rejected` continuation to the coordinator naming the
 revision, reason, withdrawn new tasks and restored approved tasks; its wording
 states that it is a decision record, not an instruction to make another plan.
 
+### Automatic approval for one chat
+
+The person can enable **automatic plan approval** in the chat's Details panel
+or with the plan card's tick box. Both use the browser-only commands
+`orchestration_auto_plan_get { chatKey }` and
+`orchestration_auto_plan_set { chatKey, enabled }`, returning
+`{ chatKey, enabled, enabledAt? }`. No agent hook or MCP tool exposes them.
+The setting is kept in the profile's orchestration ledger until switched off;
+it is not a one-turn choice. Workers, front desks, room seats and chats outside
+the active chat index cannot enable it. An enable whose record cannot be saved
+is refused; disable acts immediately and retries an owed save.
+
+At a clean end of the lead's own turn (including a host notification turn),
+the host rechecks the setting and the whole pending, nonempty revision under
+the ledger lock. It auto-approves only if every waiting task's effective
+worker access is at most Auto and no task is a peer request. A Full task holds
+the whole revision for the person's card. New tasks after approval wait for
+the next clean turn end. A Stop, interrupt, failed/refused turn or ended process
+never approves, and a new turn already in flight wins over the old full stop.
+
+Approval still uses the normal transition and approved task shape, with no
+workspace choices (the host's workspace advice applies). Its consent says
+`via: "standing"` and retains the setting's `enabledAt`. Every decision records
+`octiq_plan_auto_approved { runId, revision, taskIds, taskTitles, at, enabledAt }`
+in the coordinator's transcript and queues a host notification saying the
+revision was auto-approved and the host dispatches it. A durable outbox retries
+the transcript write after a crash or temporary profile outage.
+
+The `orchestration-auto-plan` bus event carries `{ chatKey, enabled, enabledAt? }`.
+The snapshot's derived `run.autoPlan` is present only while the setting is on:
+`{ enabled: true, held?: { reason: "access" | "peerRequest", taskIds } }`.
+`held` appears only for a pending revision; peer requests take precedence when
+both reasons apply. Neither provider plan mode nor a provider mode transition
+is involved. All other plan, task, permission and safety gates still apply.
+
 ### Approving by chat
 
 You can also approve by telling the lead, as in "approve this plan", or

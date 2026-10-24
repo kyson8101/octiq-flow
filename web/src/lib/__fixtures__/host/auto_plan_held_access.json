@@ -1,0 +1,88 @@
+{
+  "attempts": [],
+  "bridges": [],
+  "gates": [],
+  "messages": [],
+  "nativeDecisions": [],
+  "notifications": [],
+  "peerAsks": [],
+  "reports": {},
+  "runs": [
+    {
+      "autoPlan": {
+        "enabled": true,
+        "held": {
+          "reason": "access",
+          "taskIds": [
+            "task_0c1af6ae104546e49ec5771cd6d56310"
+          ]
+        }
+      },
+      "coordinatorChatKey": "chat:master",
+      "createdAt": 1792822061034,
+      "id": "run_006667cb933b4e618ab9e26fd304485f",
+      "maxConcurrent": 2,
+      "objective": "Ship the feature",
+      "planApproval": {
+        "requestedAt": 1792822061034,
+        "revisedAt": 1792822061172,
+        "revision": 3,
+        "scope": "f0b4b166cd870e873a4f00d5a8204a072afcf12a9fdc1eef641ebeb47b7c7ffd",
+        "status": "pending"
+      },
+      "rootPath": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-8bf6d69dc1844a74a2f3e751ea66c69b/repo",
+      "status": "running",
+      "updatedAt": 1792822061172,
+      "workerDefaults": {
+        "access": "full",
+        "agent": "claude",
+        "effort": null,
+        "model": "sonnet",
+        "recovery": null
+      },
+      "workspaceId": "workspace",
+      "workspaceMode": "worktree"
+    }
+  ],
+  "services": [],
+  "tasks": [
+    {
+      "createdAt": 1792822061172,
+      "dependsOn": [],
+      "heldByPlan": true,
+      "id": "task_0c1af6ae104546e49ec5771cd6d56310",
+      "retriesUsed": 0,
+      "retryLimit": 2,
+      "runId": "run_006667cb933b4e618ab9e26fd304485f",
+      "size": "medium",
+      "spec": "Make the requested change",
+      "status": "ready",
+      "title": "Implement",
+      "updatedAt": 1792822061172,
+      "workspaceChoice": {
+        "advised": "worktree",
+        "options": [
+          "worktree",
+          "checkout"
+        ]
+      },
+      "workspaceProposal": {
+        "newBranch": true,
+        "plan": {
+          "baseBranch": "main",
+          "baseSha": "8e5615148d1b133e48dfabbd67c4701a9cd2f43c",
+          "branch": "feature/octiq-0c1af6ae104546e49ec5771cd6d56310",
+          "checkoutRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-8bf6d69dc1844a74a2f3e751ea66c69b/.worktrees/repo/feature/octiq-0c1af6ae104546e49ec5771cd6d56310",
+          "cwd": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-8bf6d69dc1844a74a2f3e751ea66c69b/.worktrees/repo/feature/octiq-0c1af6ae104546e49ec5771cd6d56310/",
+          "initialStatus": "",
+          "isRepo": true,
+          "managed": true,
+          "mode": "worktree",
+          "repositoryRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-8bf6d69dc1844a74a2f3e751ea66c69b/repo",
+          "warnings": []
+        },
+        "proposedAt": 1792822061034
+      }
+    }
+  ]
+}

@@ -434,6 +434,9 @@ pub fn start_scheduler(
         }
         // Before the ready wave below: a reopened task joins it once its
         // notice is in the coordinator's chat.
+        if let Err(error) = store.deliver_auto_plan_notices() {
+            eprintln!("orchestration: automatic plan approval notices failed: {error}");
+        }
         if let Err(error) = store.deliver_reopen_notices(now_ms()) {
             eprintln!("orchestration: reopen notices failed: {error}");
         }

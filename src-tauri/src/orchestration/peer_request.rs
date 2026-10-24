@@ -829,6 +829,7 @@ impl OrchestrationStore {
                     recovery: None,
                 }),
                 plan_approval: Some(PlanApproval::pending(now)),
+                auto_plan: None,
                 created_at: now,
                 updated_at: now,
                 stopped_reason: None,

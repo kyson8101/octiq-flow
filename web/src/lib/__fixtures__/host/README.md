@@ -199,3 +199,22 @@ OCTIQ_RECORD_FACTS=1 cargo test --manifest-path src-tauri/Cargo.toml --lib -- \
 
 Write each printed FACT JSON to the matching file, indented by two spaces and
 otherwise unchanged; never reconstruct these snapshots by hand.
+
+## Per-chat automatic plan approval
+
+Recorded from `orchestration/auto_plan.rs`'s host test
+`auto_plan_covers_all_access_levels_and_records_each_revision_once`. These are
+complete `orchestration_snapshot { runId }` answers, not reconstructed page data.
+
+| File | Moment |
+| --- | --- |
+| `auto_plan_approved.json` | Auto workers approved on standing consent: `planApproval.consent.via: "standing"`, `enabledAt`, and derived `autoPlan.enabled: true` |
+| `auto_plan_held_access.json` | A Full worker holds the whole pending revision: `autoPlan.held.reason: "access"` and the held task ids |
+
+```bash
+OCTIQ_RECORD_FACTS=1 cargo test --manifest-path src-tauri/Cargo.toml --lib -- \
+  auto_plan_covers_all_access_levels_and_records_each_revision_once --nocapture --test-threads=1
+```
+
+Write each printed `FACT <name> {…}` JSON to its matching file, indented by two
+spaces and otherwise unchanged. Never edit these host answers by hand.

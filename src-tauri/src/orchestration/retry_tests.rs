@@ -1249,8 +1249,11 @@ fn the_ledger_on_file_holds_nothing_a_read_derives() {
     lead.start(&retried.id).unwrap();
     lead.store.require_plan_approval(&lead.run.id).unwrap();
 
+    lead.store.auto_plan_set(&lead.key, true).unwrap();
+
     // The read says every one of them.
     let said = serde_json::to_value(lead.snapshot()).unwrap();
+    assert_eq!(said["runs"][0]["autoPlan"]["enabled"], true);
     let tasks = said["tasks"].as_array().unwrap();
     assert_eq!(tasks.len(), 3);
     assert!(tasks.iter().all(|task| task["retryLimit"] == json!(2)));
@@ -1264,6 +1267,9 @@ fn the_ledger_on_file_holds_nothing_a_read_derives() {
     // And a write after that read puts none of them in the file.
     lead.task();
     let file = lead.on_file();
+    for run in file["runs"].as_object().unwrap().values() {
+        assert!(run.get("autoPlan").is_none(), "autoPlan is derived: {run}");
+    }
     let stored = file["tasks"].as_object().unwrap();
     assert_eq!(stored.len(), 4);
     for (id, task) in stored {
