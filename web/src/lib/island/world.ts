@@ -9,11 +9,12 @@ import {
   SphereGeometry, SRGBColorSpace, TorusGeometry, Vector3,
 } from "three";
 import type { Material } from "three";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { Kit, solidMaterial } from "./kit";
 import { NightLighting, type LightPool } from "./lighting";
 import type { Plot, Resident } from "./model";
-import { CELL, PLAZA_RADIUS, TILE, TILE_TOP, cellCenter, facingFor, plotNames, plotToWorld, ringCells } from "./model";
+import { CELL, PLAZA_RADIUS, TILE, TILE_TOP, cellCenter, facingFor, onCellTile, plotNames, plotToWorld, ringCells } from "./model";
 import { PLAYGROUND_CELL, buildPlayground, type Playground } from "./playground";
 import type { Solid } from "./nav";
 import type { Seat } from "./sim";
@@ -51,16 +52,16 @@ export function groundHeight(r: number, radius: number): number {
 }
 
 const COLORS = {
-  grass: new Color("#b5e4ce"),
-  grassDark: new Color("#efd0dc"),
-  sand: new Color("#fff0ec"),
-  wetSand: new Color("#e8c9dc"),
+  grass: new Color("#8fd9a8"),
+  grassDark: new Color("#53b781"),
+  sand: new Color("#f7c9d4"),
+  wetSand: new Color("#eeb3c3"),
   deep: new Color("#c2abd2"),
 };
 
 /** The land as one polar mesh: grass, then the beach. The honeycomb lies
  *  on it (`honeycomb`). */
-function terrain(radius: number, seed: number): Mesh {
+function terrain(radius: number, seed: number, night: { value: number }): Mesh {
   const outer = radius + 14;
   const segments = 128;
   const radii: number[] = [0];
@@ -68,6 +69,9 @@ function terrain(radius: number, seed: number): Mesh {
   radii.push(outer);
   const positions: number[] = [];
   const colors: number[] = [];
+  const nightColors: number[] = [];
+  const oldGrass = new Color("#b5e4ce"), oldDark = new Color("#efd0dc");
+  const oldSand = new Color("#fff0ec"), oldWet = new Color("#e8c9dc");
   const point = (r: number, a: number) => {
     // A ragged shoreline: the beach is wider in some places than others.
     const wobble = r > radius - 7 ? (noise(Math.cos(a) * 3, Math.sin(a) * 3, seed) - 0.5) * 2.2 : 0;
@@ -75,15 +79,21 @@ function terrain(radius: number, seed: number): Mesh {
     const x = Math.sin(a) * rr;
     const z = Math.cos(a) * rr;
     const y = groundHeight(r, radius) + (r > radius - 5 && r < radius + 8 ? (noise(x * 0.4, z * 0.4, seed + 7) - 0.5) * 0.12 : 0);
-    const color = new Color();
+    const color = new Color(), nightColor = new Color();
     if (r < radius - 5.2) {
-      color.copy(COLORS.grass).lerp(COLORS.grassDark, noise(x * 0.15, z * 0.15, seed) * 0.7);
+      const variation = noise(x * 0.15, z * 0.15, seed) * 0.7;
+      color.copy(COLORS.grass).lerp(COLORS.grassDark, variation);
+      nightColor.copy(oldGrass).lerp(oldDark, variation);
     } else if (r < radius + 0.4) {
-      color.copy(COLORS.sand).lerp(COLORS.wetSand, smooth(radius - 1.5, radius + 0.4, r));
+      const wet = smooth(radius - 1.5, radius + 0.4, r);
+      color.copy(COLORS.sand).lerp(COLORS.wetSand, wet);
+      nightColor.copy(oldSand).lerp(oldWet, wet);
     } else {
-      color.copy(COLORS.wetSand).lerp(COLORS.deep, smooth(radius + 0.4, radius + 8, r));
+      const deep = smooth(radius + 0.4, radius + 8, r);
+      color.copy(COLORS.wetSand).lerp(COLORS.deep, deep);
+      nightColor.copy(oldWet).lerp(COLORS.deep, deep);
     }
-    return { p: [x, y, z], c: [color.r, color.g, color.b] };
+    return { p: [x, y, z], c: [color.r, color.g, color.b], n: [nightColor.r, nightColor.g, nightColor.b] };
   };
   for (let k = 0; k < radii.length - 1; k++) {
     for (let s = 0; s < segments; s++) {
@@ -95,15 +105,24 @@ function terrain(radius: number, seed: number): Mesh {
       for (const tri of k === 0 ? [[p00, p10, p11]] : [[p00, p10, p11], [p00, p11, p01]]) {
         // One colour per triangle: the flat, faceted look.
         const c = tri[0].c;
-        for (const v of tri) { positions.push(...v.p); colors.push(...c); }
+        for (const v of tri) { positions.push(...v.p); colors.push(...c); nightColors.push(...tri[0].n); }
       }
     }
   }
   const geometry = new BufferGeometry();
   geometry.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
   geometry.setAttribute("color", new BufferAttribute(new Float32Array(colors), 3));
+  geometry.setAttribute("nightColor", new BufferAttribute(new Float32Array(nightColors), 3));
   geometry.computeVertexNormals();
-  const mesh = new Mesh(geometry, new MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95 }));
+  const material = new MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95 });
+  // Preserve the approved night palette on the GPU; no terrain buffer writes per frame.
+  material.onBeforeCompile = shader => {
+    shader.uniforms.uCandyNight = night;
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nattribute vec3 nightColor;\nuniform float uCandyNight;")
+      .replace("#include <color_vertex>", "#include <color_vertex>\nvColor.rgb = mix(vColor.rgb, nightColor, uCandyNight);");
+  };
+  const mesh = new Mesh(geometry, material);
   mesh.receiveShadow = true;
   mesh.name = "terrain";
   return mesh;
@@ -209,7 +228,10 @@ export function buildScenery(opts: {
   const disposables: { dispose(): void }[] = [];
   const own = <T extends { dispose(): void }>(thing: T) => { disposables.push(thing); return thing; };
 
-  const land = terrain(radius, seed);
+  const terrainNight = { value: 0 };
+  const land = terrain(radius, seed, terrainNight);
+  (land.material as Material).polygonOffset = true;
+  (land.material as Material).polygonOffsetUnits = 2;
   own(land.geometry);
   own(land.material as Material);
   group.add(land);
@@ -230,6 +252,13 @@ export function buildScenery(opts: {
   own(skyDome.mesh.material as Material);
   group.add(skyDome.mesh);
 
+  // Tune scenery alone under the existing ACES lighting; persona materials stay untouched.
+  const dayNight: { material: MeshStandardMaterial; day: Color; night: Color }[] = [];
+  const candyMaterial = (day: string, night: string, roughness = 0.95) => {
+    const material = own(solidMaterial(day, roughness));
+    dayNight.push({ material, day: new Color(day), night: new Color(night) });
+    return material;
+  };
   const materials: Record<string, Material> = {
     wood: own(solidMaterial("#ce9c78")),
     darkWood: own(solidMaterial("#77505a")),
@@ -254,18 +283,31 @@ export function buildScenery(opts: {
     light1: own(new MeshBasicMaterial({ color: "#ff9f8a" })),
     light2: own(new MeshBasicMaterial({ color: "#9fe0ff" })),
     light3: own(new MeshBasicMaterial({ color: "#c8a8ff" })),
-    path: own(solidMaterial("#fff0e7", 0.95)),
-    plaza: own(solidMaterial("#f8dce8", 0.9)),
-    plazaInner: own(solidMaterial("#edd1e2", 0.9)),
-    tileAgent: own(solidMaterial("#b8e1cd", 0.95)),
-    tileBot: own(solidMaterial("#ecd1de", 0.95)),
-    tileEmpty: own(solidMaterial("#cce8da", 0.95)),
-    tileEdge: own(solidMaterial("#a4caba", 0.95)),
+    path: candyMaterial("#edb0c4", "#fff0e7"),
+    plaza: candyMaterial("#f1bdd3", "#f8dce8", 0.9),
+    plazaInner: candyMaterial("#df9fc5", "#edd1e2", 0.9),
+    tileAgent: candyMaterial("#80d9a6", "#b8e1cd"),
+    tileBot: candyMaterial("#f1b2cf", "#ecd1de"),
+    tileEmpty: candyMaterial("#9bd9b1", "#cce8da"),
+    tileLemon: candyMaterial("#edda8b", "#cce8da"),
+    tileLilac: candyMaterial("#c7a5e2", "#cce8da"),
+    tileEdge: candyMaterial("#dd85aa", "#a4caba"),
     cocoa: own(solidMaterial("#80525b", 0.32)),
     caramel: own(solidMaterial("#e6bb8c")),
     mint: own(solidMaterial("#a4ddcf")),
     playTile: own(solidMaterial("#f4d8e9", 0.95)),
+    lemon: own(solidMaterial("#efd17e")),
   };
+  // The 1 cm icing layers share depth values at whole-island zoom. Pull the
+  // icing forward in order; pushing paths back would bury them under grass.
+  for (const [key, offset] of [["tileEdge", -1], ["plaza", -1], ["plazaInner", -2],
+    ["tileAgent", -2], ["tileBot", -2], ["tileEmpty", -2], ["tileLemon", -2],
+    ["tileLilac", -2], ["playTile", -2]] as const) {
+    const material = materials[key];
+    material.polygonOffset = true;
+    material.polygonOffsetFactor = offset;
+    material.polygonOffsetUnits = offset * 2;
+  }
   const kit = new Kit(materials);
   const box = own(new RoundedBoxGeometry(1, 1, 1, 2, 0.12));
   const cylinder = own(new CylinderGeometry(0.5, 0.5, 1, 12));
@@ -283,8 +325,8 @@ export function buildScenery(opts: {
 
   // The honeycomb. Every cell of every ring up to the outermost in use is a
   // path-coloured hexagon, and on it a tile a little smaller: the gaps are
-  // the paths between plots. A plot's tile is a shade of green by who lives
-  // there; a cell nobody has yet is a paler, bare tile.
+  // the paths between plots. Occupied tiles keep their owner-kind tint;
+  // empty cells alternate mint, lemon and lilac with a strawberry icing edge.
   const hex = own(new CylinderGeometry(1, 1, 1, 6));
   const bevel = own(new CylinderGeometry(0.97, 1, 1, 6));
   const outermost = Math.max(2, ...plots.map((plot) => plot.ring));
@@ -297,7 +339,7 @@ export function buildScenery(opts: {
       if (k === 0) continue;
       const plot = owners.get(`${q},${r}`);
       const tone = `${q},${r}` === playCell ? "playTile"
-        : !plot ? "tileEmpty" : plot.owner.kind === "agent" ? "tileAgent" : "tileBot";
+        : !plot ? ["tileEmpty", "tileLemon", "tileLilac"][((q - r) % 3 + 3) % 3] : plot.owner.kind === "agent" ? "tileAgent" : "tileBot";
       kit.add("tileEdge", hex, c.x, TILE_TOP / 2 - 0.005, c.z, { sx: TILE, sy: TILE_TOP - 0.01, sz: TILE });
       kit.add(tone, bevel, c.x, TILE_TOP / 2 + 0.005, c.z, { sx: TILE - 0.08, sy: TILE_TOP - 0.01, sz: TILE - 0.08 });
     }
@@ -362,7 +404,7 @@ export function buildScenery(opts: {
     const cz = Math.sin(toward) * r;
     const face = Math.atan2(-cx, -cz);
     kit.addAt(cx, cz, face, "wood", box, 0, top + 0.27, 0, { sx: 1.9, sy: 0.08, sz: 0.5 });
-    kit.addAt(cx, cz, face, "wood", box, 0, top + 0.55, -0.24, { sx: 1.9, sy: 0.32, sz: 0.07 });
+    kit.addAt(cx, cz, face, k % 3 === 0 ? "red" : k % 3 === 1 ? "mint" : "leafLight", box, 0, top + 0.55, -0.24, { sx: 1.9, sy: 0.32, sz: 0.07 });
     for (const x of [-0.8, 0.8]) kit.addAt(cx, cz, face, "darkWood", box, x, top + 0.13, 0, { sx: 0.1, sy: 0.26, sz: 0.44 });
     solids.push({ cx, cz, hx: 0.95, hz: 0.3, yaw: face });
     for (const side of [-0.45, 0.45]) {
@@ -436,9 +478,37 @@ export function buildScenery(opts: {
     if (Math.hypot(x - playAt.x, z - playAt.z) < CELL + reach + 0.5) return false;
     return plots.every(p => Math.hypot(x - p.x, z - p.z) > p.radius + reach + 0.8);
   };
+  // Hex vertices leave triangular pockets between tiles. Keep the full candy
+  // footprint off every tile and both reserved cells, leaving the path middles open.
+  const inlandSites = new Set<string>();
+  for (let ring = 1; ring <= outermost; ring++) for (const [q, r] of ringCells(ring)) {
+    const c = cellCenter(q, r);
+    for (let corner = 0; corner < 6; corner++) {
+      const a = corner * Math.PI / 3;
+      const x = c.x + Math.sin(a) * CELL, z = c.z + Math.cos(a) * CELL;
+      const key = `${Math.round(x * 100)},${Math.round(z * 100)}`;
+      if (inlandSites.has(key) || Math.hypot(x, z) > radius - 8) continue;
+      inlandSites.add(key);
+      if (onCellTile(x, z, TILE + 0.55)
+        || Math.hypot(x, z) < CELL + 0.8
+        || Math.hypot(x - playAt.x, z - playAt.z) < CELL + 0.8) continue;
+      const lollipop = inlandSites.size % 3 === 0;
+      const tone = ["red", "leafLight", "lemon", "mint"][inlandSites.size % 4];
+      if (lollipop) {
+        kit.add("white", cylinder, x, 0.6, z, { sx: 0.11, sy: 1.2, sz: 0.11 });
+        kit.add(tone, ball, x, 1.28, z, { sx: 0.85, sy: 0.85, sz: 0.5 });
+        kit.add("white", ball, x, 1.28, z + 0.22, { sx: 0.33, sy: 0.33, sz: 0.1 });
+      } else {
+        kit.add(tone, ball, x, 0.33, z, { sx: 0.85, sy: 1.0, sz: 0.85 });
+        kit.add("white", ball, x - 0.12, 0.62, z + 0.14, { sx: 0.13, sy: 0.07, sz: 0.13 });
+      }
+      solids.push({ cx: x, cz: z, hx: 0.43, hz: 0.43, yaw: 0 });
+    }
+  }
+  const rainbowAngle = -0.2;
   const keepClear = (a: number) => {
     const near = (b: number) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b))) < 0.2;
-    return near(dockAngle) || near(lighthouseAngle) || near(0.65) || near(1.55);
+    return near(rainbowAngle) || near(dockAngle) || near(lighthouseAngle) || near(0.65) || near(1.55);
   };
   for (let k = 0; k < 22; k++) {
     const a = (k / 22) * Math.PI * 2 + random(k) * 0.18;
@@ -480,40 +550,56 @@ export function buildScenery(opts: {
   // and the original 2.2 m path kept open between them.
   const gateD = radius - 1.8;
   const gateX = dx * gateD, gateZ = dz * gateD;
-  if (coastClear(gateX, gateZ, 2.2)) {
-    for (const side of [-1.6, 1.6]) {
-      kit.addAt(gateX, gateZ, dockAngle, "caramel", box, side, 1.55, 0, { sx: 0.65, sy: 3.1, sz: 0.7 });
-      for (let i = 0; i < 5; i++) kit.addAt(gateX, gateZ, dockAngle, "white", ball, side, 0.5 + i * 0.5, 0.38, { sx: 0.2, sy: 0.2, sz: 0.12 });
-      solids.push({ cx: gateX + Math.cos(dockAngle) * side, cz: gateZ - Math.sin(dockAngle) * side, hx: 0.35, hz: 0.4, yaw: dockAngle });
+  if (coastClear(gateX, gateZ, 2.8)) {
+    for (const side of [-1.8, 1.8]) {
+      kit.addAt(gateX, gateZ, dockAngle, "caramel", box, side, 2.1, 0, { sx: 0.85, sy: 4.2, sz: 0.9 });
+      for (let i = 0; i < 5; i++) kit.addAt(gateX, gateZ, dockAngle, "white", ball, side, 0.7 + i * 0.7, 0.48, { sx: 0.2, sy: 0.2, sz: 0.12 });
+      solids.push({ cx: gateX + Math.cos(dockAngle) * side, cz: gateZ - Math.sin(dockAngle) * side, hx: 0.45, hz: 0.5, yaw: dockAngle });
     }
-    kit.addAt(gateX, gateZ, dockAngle, "caramel", box, 0, 3.12, 0, { sx: 3.9, sy: 0.6, sz: 0.7 });
-    kit.addAt(gateX, gateZ, dockAngle, "white", box, 0, 3.46, 0, { sx: 4.0, sy: 0.14, sz: 0.78 });
-    kit.addAt(gateX, gateZ, dockAngle, "red", ball, 0, 3.2, 0.4, { sx: 0.42, sy: 0.42, sz: 0.16 });
+    kit.addAt(gateX, gateZ, dockAngle, "caramel", box, 0, 4.2, 0, { sx: 4.6, sy: 0.8, sz: 0.9 });
+    kit.addAt(gateX, gateZ, dockAngle, "white", box, 0, 4.65, 0, { sx: 4.7, sy: 0.16, sz: 0.98 });
+    kit.addAt(gateX, gateZ, dockAngle, "red", ball, 0, 4.3, 0.5, { sx: 0.62, sy: 0.62, sz: 0.18 });
   }
 
-  // Two small destination sculptures, on unclaimed shoreline only.
+  // A low-poly rainbow spans the coastal path. Only the two candy feet are
+  // nav solids: the high bands must never seal the walkable opening.
+  const rainbowR = radius - 3;
+  const rx = Math.sin(rainbowAngle) * rainbowR, rz = Math.cos(rainbowAngle) * rainbowR;
+  if (coastClear(rx, rz, 5.5)) {
+    for (let band = 0; band < 5; band++) {
+      const arc = own(new TorusGeometry(3.4 + band * 0.42, 0.24, 4, 20, Math.PI));
+      kit.addAt(rx, rz, rainbowAngle, ["mint", "blue", "leafLight", "lemon", "red"][band], arc, 0, 0.4, 0);
+    }
+    for (const side of [-4.25, 4.25]) {
+      kit.addAt(rx, rz, rainbowAngle, "white", ball, side, 0.3, 0, { sx: 2.1, sy: 0.9, sz: 1.4 });
+      solids.push({ cx: rx + Math.cos(rainbowAngle) * side, cz: rz - Math.sin(rainbowAngle) * side,
+        hx: 1.1, hz: 0.7, yaw: rainbowAngle });
+    }
+  }
+
+  // Larger destination sculptures, on unclaimed shoreline only.
   for (const [a, kind] of [[0.65, "donut"], [1.55, "fountain"]] as const) {
     const r = radius - 3.0, x = Math.sin(a) * r, z = Math.cos(a) * r;
-    if (!coastClear(x, z, 2.0)) continue;
+    if (!coastClear(x, z, 2.9)) continue;
     const y = groundHeight(r, radius);
-    kit.add("white", cylinder, x, y + 0.12, z, { sx: 3.6, sy: 0.24, sz: 3.6 });
-    solids.push({ cx: x, cz: z, hx: 1.85, hz: 1.85, yaw: 0 });
+    kit.add("white", cylinder, x, y + 0.12, z, { sx: 5.1, sy: 0.3, sz: 5.1 });
+    solids.push({ cx: x, cz: z, hx: 2.6, hz: 2.6, yaw: 0 });
     if (kind === "donut") {
-      kit.addAt(x, z, a, "caramel", donut, 0, y + 1.65, 0, { sx: 1.1, sy: 1.1, sz: 1.1 });
-      kit.addAt(x, z, a, "red", donut, 0, y + 1.65, 0.2, { sx: 1.08, sy: 1.08, sz: 0.7 });
+      kit.addAt(x, z, a, "caramel", donut, 0, y + 2.55, 0, { sx: 1.65, sy: 1.65, sz: 1.65 });
+      kit.addAt(x, z, a, "red", donut, 0, y + 2.55, 0.3, { sx: 1.62, sy: 1.62, sz: 1.05 });
       for (let i = 0; i < 12; i++) {
         const t = i * Math.PI / 6;
-        kit.addAt(x, z, a, i % 2 ? "white" : "mint", box, Math.sin(t) * 1.28, y + 1.65 + Math.cos(t) * 1.28, 0.49,
-          { sx: 0.09, sy: 0.22, sz: 0.07, rz: t + 0.4 });
+        kit.addAt(x, z, a, i % 2 ? "white" : "mint", box, Math.sin(t) * 1.92, y + 2.55 + Math.cos(t) * 1.92, 0.74,
+          { sx: 0.14, sy: 0.33, sz: 0.1, rz: t + 0.4 });
       }
     } else {
-      kit.add("caramel", cylinder, x, y + 0.4, z, { sx: 3.1, sy: 0.5, sz: 3.1 });
-      kit.add("cocoa", cylinder, x, y + 0.66, z, { sx: 2.8, sy: 0.06, sz: 2.8 });
+      kit.add("caramel", cylinder, x, y + 0.55, z, { sx: 4.5, sy: 0.7, sz: 4.5 });
+      kit.add("cocoa", cylinder, x, y + 0.92, z, { sx: 4.1, sy: 0.08, sz: 4.1 });
       for (let tier = 0; tier < 3; tier++) {
-        const w = 1.8 - tier * 0.55;
-        kit.add("cocoa", cone, x, y + 0.95 + tier * 0.55, z, { sx: w, sy: 0.75, sz: w });
+        const w = 2.7 - tier * 0.78;
+        kit.add("cocoa", cone, x, y + 1.35 + tier * 0.85, z, { sx: w, sy: 1.1, sz: w });
       }
-      kit.add("white", ball, x, y + 2.5, z, { sx: 0.4, sy: 0.35, sz: 0.4 });
+      kit.add("white", ball, x, y + 3.8, z, { sx: 0.6, sy: 0.5, sz: 0.6 });
       lightPools.push({ x, y: y + 0.25, z, width: 3.5, depth: 3.5 });
     }
   }
@@ -555,6 +641,36 @@ export function buildScenery(opts: {
     }
     solids.push({ cx: corner.x, cz: corner.z, hx: 0.15, hz: 0.15, yaw: 0 });
   }
+
+  // Sugar-cloud mini-islands over the sea: bake all coloured pieces into
+  // one vertex-colour mesh. The entire cluster bobs with one transform.
+  const floatingPieces: BufferGeometry[] = [];
+  const sugarPiece = (shape: BufferGeometry, color: string, x: number, y: number, z: number, sx: number, sy: number, sz: number, flip = false) => {
+    const piece = shape.index ? shape.toNonIndexed() : shape.clone();
+    piece.deleteAttribute("uv");
+    piece.scale(sx, sy, sz);
+    if (flip) piece.rotateX(Math.PI);
+    piece.translate(x, y, z);
+    const tint = new Color(color), count = piece.getAttribute("position").count;
+    const colors = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) { colors[i * 3] = tint.r; colors[i * 3 + 1] = tint.g; colors[i * 3 + 2] = tint.b; }
+    piece.setAttribute("color", new BufferAttribute(colors, 3));
+    floatingPieces.push(piece);
+  };
+  for (let i = 0; i < 3; i++) {
+    const a = -0.26 + i * 0.25, r = radius + 13 + i % 2 * 4;
+    const x = Math.sin(a) * r, z = Math.cos(a) * r, y = 9 + i % 2 * 4;
+    sugarPiece(cone, "#ba91d7", x, y - 1, z, 6, 3, 4.8, true);
+    for (let puff = 0; puff < 4; puff++) sugarPiece(ball, puff % 2 ? "#f3b6d3" : "#b0e6c5",
+      x + (puff - 1.5) * 1.55, y + puff % 2 * 0.5, z, 3.5, 1.5, 3.8);
+    sugarPiece(cylinder, "#fff0ce", x, y + 1.6, z, 0.2, 2.2, 0.2);
+    sugarPiece(ball, ["#ea93b6", "#b49cdd", "#efd17d"][i], x, y + 3, z, 1.8, 1.8, 1.2);
+  }
+  const floatingGeometry = own(mergeGeometries(floatingPieces, false)!);
+  floatingPieces.forEach(piece => piece.dispose());
+  const floating = new Mesh(floatingGeometry, own(new MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85 })));
+  floating.name = "floating-sugar-islands";
+  group.add(floating);
 
   // Cotton-candy clouds are two merged meshes, drifting as one group.
   // Stars share a third mesh and fade with the same clock as the lamps.
@@ -602,6 +718,19 @@ export function buildScenery(opts: {
       { sx: 0.09, sy: 0.035, sz: 0.24, ry: a * 4 });
   }
 
+  // Sparse, readable sprinkles on grass and plaza paving. Flush geometry has
+  // no walking-height footprint; keep benches, the wish tree and play cell clear.
+  for (let i = 0; i < 180; i++) {
+    const a = random(i + 1100) * Math.PI * 2;
+    const plaza = i < 42;
+    const r = plaza ? 2.1 + random(i + 1200) * 3.5 : 9 + random(i + 1200) * (radius - 15);
+    const x = Math.sin(a) * r, z = Math.cos(a) * r;
+    if (!plaza && (onCellTile(x, z, TILE + 0.15) || Math.hypot(x - playAt.x, z - playAt.z) < CELL + 0.5)) continue;
+    if (plaza && solids.some(s => Math.hypot(x - s.cx, z - s.cz) < Math.hypot(s.hx, s.hz) + 0.3)) continue;
+    kit.add(["red", "lemon", "leafLight", "mint"][i % 4], box, x, plaza ? top + 0.03 : 0.045, z,
+      { sx: 0.14, sy: 0.045, sz: 0.4, ry: a * 4 });
+  }
+
   const built = kit.build(opts.shadows);
   built.name = "candy-scenery";
   built.traverse((object) => {
@@ -629,6 +758,9 @@ export function buildScenery(opts: {
     group, seats, solids, dock, walkways, deck: 0.19, playground,
     update(t, nightness, colors, seaColor) {
       water.time.value = t;
+      terrainNight.value = nightness;
+      for (const tint of dayNight) tint.material.color.copy(tint.day).lerp(tint.night, nightness);
+      floating.position.y = Math.sin(t * 0.65) * 0.35;
       clouds.rotation.y = Math.sin(t * 0.035) * 0.035;
       cloudWhite.color.copy(cloudDay).lerp(cloudNight, nightness);
       cloudPink.color.copy(pinkDay).lerp(pinkNight, nightness);
@@ -674,8 +806,8 @@ export function timeOfDay(hour: number): { top: Color; horizon: Color; sea: Colo
     { h: 0, top: "#201c46", horizon: "#51406d", sea: "#285b70", night: 1, sun: "#9fb6ff", power: 0.35, hemi: 0.55 },
     { h: 5.5, top: "#29204e", horizon: "#65507e", sea: "#315e78", night: 1, sun: "#9fb6ff", power: 0.35, hemi: 0.55 },
     { h: 6.6, top: "#9d8bc9", horizon: "#ffc6a6", sea: "#76b9bd", night: 0.4, sun: "#ffc59a", power: 1.6, hemi: 1.0 },
-    { h: 8, top: "#b9b5ef", horizon: "#ffe1eb", sea: "#62cfc8", night: 0, sun: "#fff4e2", power: 2.7, hemi: 1.45 },
-    { h: 17.2, top: "#b9b5ef", horizon: "#ffe1eb", sea: "#62cfc8", night: 0, sun: "#fff4e2", power: 2.7, hemi: 1.45 },
+    { h: 8, top: "#b9b5ef", horizon: "#ffe1eb", sea: "#28c9c4", night: 0, sun: "#fff4e2", power: 2.7, hemi: 1.45 },
+    { h: 17.2, top: "#b9b5ef", horizon: "#ffe1eb", sea: "#28c9c4", night: 0, sun: "#fff4e2", power: 2.7, hemi: 1.45 },
     { h: 18.8, top: "#9d7fba", horizon: "#ffb487", sea: "#679ba9", night: 0.35, sun: "#ffad7a", power: 1.6, hemi: 1.0 },
     { h: 20.3, top: "#312552", horizon: "#63517f", sea: "#345b74", night: 0.9, sun: "#9fb6ff", power: 0.45, hemi: 0.6 },
     { h: 24, top: "#201c46", horizon: "#51406d", sea: "#285b70", night: 1, sun: "#9fb6ff", power: 0.35, hemi: 0.55 },

@@ -6,25 +6,37 @@ appears: no extra random residents such as Chip, and no random-invite button.
 Historical NPC data is retained on disk but excluded from characters, plots,
 wishes and the open-wish limit. New islands never create NPCs.
 
-The page is a low-poly candy fantasy world: mint and strawberry grass tiles,
-frosting-white beaches, a turquoise soda lagoon, and a cotton-candy pink/lilac
+The page is a low-poly candy fantasy world: clear mint grass with darker mint
+facets, strawberry-milk pink beaches, a turquoise soda lagoon, and a cotton-candy pink/lilac
 sky. After dusk the sky turns lavender/indigo and sugar stars fade in. The
 existing day/night clock, weather controls and warm interior lighting remain.
+Empty honeycomb tiles alternate mint, lemon and lilac with strawberry icing
+edges and pink paths; occupied tiles retain their owner-kind tint. Scenery
+colours blend back to the approved night palette without changing global
+lighting, tone mapping or the robots' materials. Ground and icing layers use
+depth offsets to keep the thin layers distinct at whole-island zoom.
 
 The plaza keeps its wish letters, benches and original layout, with a
-strawberry-frosted wish tree and striped candy-cane lamps. The playground keeps
+strawberry-frosted wish tree, striped candy-cane lamps, candy bench backs and
+sparse paving sprinkles. Gumdrops and small lollipops sit in the triangular
+path-ring pockets between tiles, outside plots and both reserved cells. The playground keeps
 its slide, seesaw and swings, now in soft confectionery colours. Along the
 shore stand lollipop trees, gumdrop bushes, rock-candy crystals and a striped
 peppermint lighthouse. A gingerbread gate frames the dock path, while a
-strawberry donut sculpture and a tiered cocoa fountain stand on clear coastal
-patches. Sugar sprinkles dust the empty grass; cotton-candy clouds drift slowly
-over the sea. Landmarks are omitted wherever their footprint would overlap a
-plot, the plaza or the playground; the gate's passage stays open. Every new
-solid footprint joins the navigation grid.
+larger strawberry donut sculpture and tiered cocoa fountain stand on clear coastal
+patches. A five-band low-poly rainbow spans a clear coastal path. Sugar sprinkles
+dust the empty grass; cotton-candy clouds drift slowly over the sea, alongside
+three floating sugar-cloud mini-islands that bob together. Landmarks are omitted
+wherever their footprint would overlap a plot, the plaza or the playground;
+the gate and rainbow passages stay open, with only their feet blocking navigation.
+Every new walking-height solid footprint joins the navigation grid.
 
 These are client scenery, never stored assets or placements. They do not alter
 agent persona colours, real-work states, the host schema or the roofless rule.
 Static shapes merge by material; clouds use two merged meshes and stars one.
+The floating mini-islands use one vertex-colour mesh and one per-frame position
+change, with no per-frame geometry or colour allocation. The terrain's day/night
+palette blends in the vertex shader rather than rewriting buffers each frame.
 New sky motion follows reduced motion and pauses with the hidden page; all
 scene resources are released when the view is disposed.
 
