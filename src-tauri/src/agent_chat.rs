@@ -464,6 +464,8 @@ struct ChatSession {
     /// full stop has not been read yet. Set and cleared under this session's
     /// lock, and gone with the process: nothing else records an unwind.
     cut_off: CutOff,
+    auto_approving: Option<Arc<AutoApproving>>,
+    auto_plan_refused: bool,
     /// The removal of the registered agent whose conversation this is, once
     /// one has looked at this process (`LeavingMark::working`). Set under
     /// this session's lock, which every prompt is written under.
@@ -684,6 +686,10 @@ impl ChatSession {
     /// Something was sent to the agent: it is working from here until it says
     /// otherwise.
     fn turn_started(&mut self) {
+        if let Some(mark) = &self.auto_approving {
+            mark.revoke();
+        }
+        self.auto_plan_refused = false;
         self.busy = true;
         self.last_active = Instant::now();
     }
@@ -1055,6 +1061,8 @@ pub struct ChatManager {
     /// Updated under the session table in grant_capability. A buffered clean
     /// full stop can then distinguish that exit from a replacement launch.
     auto_plan_launches: Mutex<HashMap<String, String>>,
+    // Set/removed under sessions; never held while taking the ledger.
+    auto_approving: Mutex<HashMap<String, Arc<AutoApproving>>>,
     /// How each running agent was last started — see `StartContext`. Keyed by
     /// process key, so each chat resumes independently.
     starts: Mutex<HashMap<String, StartContext>>,
@@ -1204,6 +1212,58 @@ fn is_person_turn_id(turn_id: &str) -> bool {
 }
 
 impl ChatManager {
+    /// Called under sessions, like every intentional table removal. Natural
+    /// reaping alone keeps the launch evidence for a buffered full stop.
+    fn revoke_auto_plan(&self, key: &str) {
+        self.auto_plan_launches
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(key);
+        if let Some(mark) = self
+            .auto_approving
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+        {
+            mark.revoke();
+        }
+    }
+
+    /// Starts and sends arriving during the ledger-only phase join the same
+    /// durable FIFO as busy-turn messages. The caller holds sessions, so the
+    /// approval cleanup cannot clear its mark before the enqueue completes.
+    fn queue_during_auto_approval(
+        &self,
+        _sessions: &HashMap<String, Arc<Mutex<ChatSession>>>,
+        key: &str,
+        stream_key: &str,
+        prompt: Option<&str>,
+        images: &[String],
+        turn_id: Option<String>,
+    ) -> Result<bool, String> {
+        if !self
+            .auto_approving
+            .lock()
+            .map_err(|e| e.to_string())?
+            .contains_key(key)
+        {
+            return Ok(false);
+        }
+        crate::profile::available()?;
+        if let Some(leaving) = self.leaving_refusal(key) {
+            return Err(leaving);
+        }
+        if let Some(id) = turn_id.as_deref() {
+            if durable_user_turn_exists(stream_key, id)? {
+                return Ok(true);
+            }
+        }
+        if let Some(text) = prompt {
+            queue_waiting_turn(self, key, stream_key, text, images, turn_id)?;
+        }
+        Ok(true)
+    }
+
     /// The chat a hook caller is, and the launch it is, from the capability
     /// that launch was given (`LaunchCapability`). `None` unless `secret` is
     /// the current capability of the process running under `session_key`
@@ -1257,6 +1317,7 @@ impl ChatManager {
         chat_key: &str,
         launch_id: &str,
     ) -> String {
+        self.revoke_auto_plan(session_key);
         let secret = mint_capability();
         if let Ok(mut launches) = self.auto_plan_launches.lock() {
             launches.insert(session_key.into(), launch_id.into());
@@ -1757,12 +1818,16 @@ impl ChatManager {
         let Ok(sessions) = self.sessions.lock() else {
             return Vec::new();
         };
-        gone.into_iter()
+        let idle: Vec<_> = gone
+            .into_iter()
             .filter(|key| {
                 sessions
                     .get(key)
                     .is_some_and(|s| s.try_lock().is_ok_and(|s| !s.busy))
             })
+            .collect();
+        drop(sessions);
+        idle.into_iter()
             .filter(|key| !self.background.has_running(key) && !self.jobs.has_running(key))
             .filter(|key| self.orchestrations.refusal_owner(key).is_none())
             .collect()
@@ -2706,6 +2771,19 @@ fn start_waiting_queues_with(
         return waiting.into_iter().map(|(key, _)| key).collect();
     }
     for (session_key, Waiting { stream_key, .. }) in waiting {
+        // Marked sends were accepted while the ledger was busy. Admission
+        // is deferred, never bypassed; retry it without holding chat locks.
+        if let Some(start) = manager.start_context(&session_key) {
+            if let Err(why) = manager.admit_beside_writers(
+                &session_key,
+                &stream_key,
+                std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()),
+                start.access != Some(Access::Read),
+            ) {
+                manager.keep_waiting(&session_key, &stream_key, None, &why);
+                continue;
+            }
+        }
         // The session table first, like every send and every start: the
         // queue does not change, and no process takes this key, while its
         // first message is taken.
@@ -3082,7 +3160,38 @@ fn chat_start_with_user_turn(
     lite: Option<bool>,
     user_turn_id: Option<String>,
 ) -> Result<(), String> {
-    let _claim = manager.hold_start(&key)?;
+    {
+        let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        if manager.queue_during_auto_approval(
+            &sessions,
+            &key,
+            &key,
+            prompt.as_deref(),
+            images.as_deref().unwrap_or_default(),
+            user_turn_id.clone(),
+        )? {
+            return Ok(());
+        }
+    }
+    let _claim = match manager.hold_start(&key) {
+        Ok(claim) => claim,
+        Err(why) => {
+            // The clean-end reader can set its mark between the first look
+            // and the start claim. Recheck under the table before refusing.
+            let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+            if manager.queue_during_auto_approval(
+                &sessions,
+                &key,
+                &key,
+                prompt.as_deref(),
+                images.as_deref().unwrap_or_default(),
+                user_turn_id.clone(),
+            )? {
+                return Ok(());
+            }
+            return Err(why);
+        }
+    };
     let mut agent = agent;
     let mut model = model;
     let mut effort = effort;
@@ -3763,14 +3872,21 @@ pub(crate) fn start_session(
         session_key,
         stream_key: key,
     } = voice;
-    if manager
-        .sessions
-        .lock()
-        .map_err(|e| e.to_string())?
-        .contains_key(&session_key)
-        || manager.claimed_elsewhere(&session_key)
     {
-        return Err(format!("chat '{session_key}' is already running"));
+        let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        if manager.queue_during_auto_approval(
+            &sessions,
+            &session_key,
+            &key,
+            prompt.as_deref(),
+            images.as_deref().unwrap_or_default(),
+            user_turn_id.clone(),
+        )? {
+            return Ok(());
+        }
+        if sessions.contains_key(&session_key) || manager.claimed_elsewhere(&session_key) {
+            return Err(format!("chat '{session_key}' is already running"));
+        }
     }
     // No agent is started on a turn whose record cannot be kept: the
     // profile folder went away under the server (`profile.rs`). The person
@@ -3813,8 +3929,28 @@ pub(crate) fn start_session(
     )?;
     let manager_for_exit = manager.clone();
     let session_key_for_exit = session_key.clone();
+    // Lock audit: legacy admission uses sessions -> ledger (read-only), as
+    // does report confirmation through while_idle's session -> ledger.
+    // chat_set_access_impl also saves resume context under its session lock;
+    // require_workspace_available and replaced_binary_keys drop their first
+    // store/table guard before consulting the other. Worker archive/dispatch,
+    // ended-worker Stop/recovery and mission/workspace cleanup use snapshots
+    // or finish their ledger mutation before taking chat locks. There must be
+    // NO ledger -> blocking chat lock path: agent removal uses only try_lock,
+    // and auto approval marks then releases ALL chat locks before
+    // taking the ledger. No chat lock spans auto-approval persist I/O.
     // Keep creation and insertion atomic with other starts and sends.
     let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+    if manager.queue_during_auto_approval(
+        &sessions,
+        &session_key,
+        &key,
+        prompt.as_deref(),
+        images.as_deref().unwrap_or_default(),
+        user_turn_id.clone(),
+    )? {
+        return Ok(());
+    }
     if let Some(id) = user_turn_id
         .as_deref()
         .and_then(|id| id.strip_prefix("octiq-provider-switch-"))
@@ -4195,6 +4331,8 @@ pub(crate) fn start_session(
         busy: has_prompt && (!prompt.trim().is_empty() || !images.is_empty()),
         last_active: Instant::now(),
         cut_off: CutOff::No,
+        auto_approving: None,
+        auto_plan_refused: false,
         leaving: None,
     }));
     sessions.insert(session_key.clone(), session.clone());
@@ -4701,8 +4839,8 @@ pub(crate) fn start_session(
                         );
                         // After the full stop is in the transcript and on the
                         // bus: the tick is the last thing said about the turn.
-                        // The session lock above has gone. Auto approval takes
-                        // the ledger FIRST, then rechecks this exact idle turn.
+                        // All chat locks are released before auto approval takes
+                        // the ledger; a per-chat mark fences its idle turn.
                         if let Some(ended) = auto_plan_end {
                             if let Err(error) = reading
                                 .orchestrations
@@ -4836,6 +4974,13 @@ pub(crate) fn start_session(
                         // waiting is dropped here rather than left to surface
                         // in whatever is started under this key later.
                         let queued_turn = if manager_for_exit
+                            .auto_approving
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .contains_key(&session_key_for_exit)
+                        {
+                            None // The approval mark owns this queue until it clears.
+                        } else if manager_for_exit
                             .auto_resumes
                             .switch_waits(&session_key_for_exit)
                         {
@@ -4977,7 +5122,7 @@ fn write_user_message_locked(
 ) -> Result<(), String> {
     // The invariant of `CutOff`, kept here because every prompt comes
     // through here: an agent that has not stopped is not given another turn.
-    if session.cut_off != CutOff::No {
+    if session.cut_off != CutOff::No || session.auto_approving.is_some() {
         return Err(STILL_STOPPING.into());
     }
     // And the invariant of `Leaving`, for the same reason: a registered
@@ -5033,7 +5178,7 @@ fn write_user_message_locked(
 /// so nobody is meant to read this.
 const STILL_STOPPING: &str = "this chat is still stopping its last turn";
 
-/// Evidence of a clean own-writer full stop, rechecked under the ledger lock.
+/// Evidence of a clean own-writer full stop, marked before taking the ledger.
 pub(crate) struct CleanTurnEnd {
     pub(crate) chat_key: String,
     launch_id: String,
@@ -5042,14 +5187,10 @@ pub(crate) struct CleanTurnEnd {
 }
 
 impl CleanTurnEnd {
-    /// Called with the ledger held, never from a session/table lock. Keep
-    /// both guards through the ledger save, excluding every concurrent send
-    /// and Stop. A new turn or a replaced process invalidates this evidence.
-    pub(crate) fn while_idle<T>(
-        &self,
-        manager: &ChatManager,
-        action: impl FnOnce() -> T,
-    ) -> Option<T> {
+    /// Called with NO ledger/chat locks. Mark first, then release all chat
+    /// locks before the ledger is touched. Starts/sends queue under sessions;
+    /// Stop/removal and spontaneous turns revoke the atomic decision token.
+    pub(crate) fn mark_idle(&self, manager: &Arc<ChatManager>) -> Option<AutoApprovingGuard> {
         let sessions = manager.sessions.lock().ok()?;
         let live = sessions.get(&self.chat_key);
         if live.is_some_and(|current| !Arc::ptr_eq(current, &self.process)) {
@@ -5076,7 +5217,134 @@ impl CleanTurnEnd {
         {
             return None;
         }
-        Some(action())
+        let mut marks = manager.auto_approving.lock().ok()?;
+        if marks.contains_key(&self.chat_key) {
+            return None;
+        }
+        let mark = Arc::new(AutoApproving::default());
+        marks.insert(self.chat_key.clone(), mark.clone());
+        session.auto_approving = Some(mark.clone());
+        Some(AutoApprovingGuard {
+            manager: manager.clone(),
+            key: self.chat_key.clone(),
+            process: self.process.clone(),
+            mark,
+        })
+    }
+}
+
+#[derive(Default)]
+struct AutoApproving(std::sync::atomic::AtomicU8);
+
+impl AutoApproving {
+    // Pending -> decided, just before ledger publication, is the approval's
+    // linearization point. A Stop that
+    // wins pending -> revoked first cancels the complete ledger mutation.
+    fn revoke(&self) {
+        let _ = self.0.compare_exchange(
+            0,
+            1,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+}
+
+pub(crate) const AUTO_PLAN_REVOKED: &str = "automatic plan approval was revoked";
+
+pub(crate) struct AutoApprovingGuard {
+    manager: Arc<ChatManager>,
+    key: String,
+    process: Arc<Mutex<ChatSession>>,
+    mark: Arc<AutoApproving>,
+}
+
+impl AutoApprovingGuard {
+    /// Atomic only: this runs under the ledger and must acquire no chat lock.
+    pub(crate) fn decide(&self) -> bool {
+        self.mark
+            .0
+            .compare_exchange(
+                0,
+                2,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok()
+    }
+}
+
+impl Drop for AutoApprovingGuard {
+    fn drop(&mut self) {
+        // Enqueuing under the mark cannot wait for the ledger. Before any
+        // queued prompt is dispatched, run the ordinary admission gate here,
+        // with NO chat lock held. A refusal retains the queue for retry.
+        let admission = self
+            .manager
+            .start_context(&self.key)
+            .map_or(Ok(()), |start| {
+                self.manager.admit_beside_writers(
+                    &self.key,
+                    &self.key,
+                    std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()),
+                    start.access != Some(Access::Read),
+                )
+            });
+        let next = {
+            let sessions = self
+                .manager
+                .sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            self.manager
+                .auto_approving
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.key);
+            let mut session = self.process.lock().unwrap_or_else(|e| e.into_inner());
+            session.auto_approving = None;
+            if let Err(why) = &admission {
+                if self.manager.has_queued_turns(&self.key) {
+                    self.manager.keep_waiting(&self.key, &self.key, None, why);
+                }
+                return;
+            }
+            if sessions
+                .get(&self.key)
+                .is_some_and(|live| Arc::ptr_eq(live, &self.process))
+            {
+                if !session.busy && session.cut_off == CutOff::No {
+                    if let Some(why) = dispatch_next_persistent_turn(
+                        &self.manager,
+                        &self.key,
+                        &self.key,
+                        &mut session,
+                    ) {
+                        eprintln!("chat: could not hand over after automatic plan approval: {why}");
+                    }
+                }
+                None
+            } else if !sessions.contains_key(&self.key) {
+                let next = self.manager.take_queued_turn(&self.key);
+                if next.is_some() {
+                    self.manager
+                        .handoffs
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(self.key.clone());
+                }
+                next
+            } else {
+                None
+            }
+        };
+        if let Some(turn) = next {
+            if let Err(why) = carry_queued_turn(&self.manager, &self.key, &self.key, turn, |turn| {
+                start_queued_turn(self.manager.clone(), &self.key, &self.key, turn, false)
+            }) {
+                eprintln!("chat: could not resume after automatic plan approval: {why}");
+            }
+        }
     }
 }
 
@@ -5093,6 +5361,7 @@ fn end_turn_for_auto_plan(
     // is a normal turn here; a room seat's process key is never its chat key.
     let eligible = clean
         && !refused
+        && !session.auto_plan_refused
         && session.busy
         && session.cut_off == CutOff::No
         && session_key == stream_key;
@@ -5232,6 +5501,7 @@ fn grace_ran_out_with(
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(session_key.to_string());
         }
+        manager.revoke_auto_plan(session_key);
         sessions.remove(session_key);
         drop(sessions);
         stop_process(manager, session_key, &mut guard);
@@ -5345,6 +5615,9 @@ fn dispatch_next_persistent_turn(
     // handed over once the folder is back (`start_waiting_queues`).
     if let Err(away) = crate::profile::available() {
         manager.keep_waiting(session_key, stream_key, None, &away);
+        return None;
+    }
+    if session.auto_approving.is_some() {
         return None;
     }
     let turn = manager.take_queued_turn(session_key)?;
@@ -5621,6 +5894,7 @@ fn deliver_orchestration_notification_with_start(
             // Read under the session lock, which the interrupt that sets it
             // and the full stop that clears it both hold.
             if session.busy
+                || session.auto_approving.is_some()
                 || session.cut_off != CutOff::No
                 || !provider_for(session.agent)
                     .capabilities()
@@ -5938,6 +6212,19 @@ fn send_turn(
     }
     // As for a start: a message whose record cannot be kept is not sent.
     crate::profile::available()?;
+    {
+        let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        if manager.queue_during_auto_approval(
+            &sessions,
+            &key,
+            &key,
+            Some(&text),
+            images.as_deref().unwrap_or_default(),
+            user_turn_id.clone(),
+        )? {
+            return Ok(Sent::Queued);
+        }
+    }
     if let Some(start) = manager.start_context(&key) {
         manager.admit_beside_writers(
             &key,
@@ -5966,6 +6253,16 @@ fn send_turn(
         };
         if already {
             return Ok(Sent::Already);
+        }
+        if manager.queue_during_auto_approval(
+            &sessions,
+            &session_key,
+            &key,
+            Some(&text),
+            &images,
+            user_turn_id.clone(),
+        )? {
+            return Ok(Sent::Queued);
         }
         let Some(session) = sessions.get(&session_key).cloned() else {
             // A queue that waits for the profile folder (`keep_waiting`) is
@@ -6024,6 +6321,7 @@ fn send_turn(
                 .input
                 .accepts_stdin();
             if one_shot
+                || guard.auto_approving.is_some()
                 || guard.busy
                 || guard.cut_off != CutOff::No
                 || manager.has_queued_turns(&session_key)
@@ -6041,7 +6339,9 @@ fn send_turn(
                 // A queued turn is still work the person is waiting for. This also
                 // prevents the idle sweeper from ending the process in the handoff
                 // before its reaper starts the resume.
-                guard.turn_started();
+                if guard.auto_approving.is_none() && !guard.busy {
+                    guard.turn_started();
+                }
                 return Ok(Sent::Queued);
             }
             if let Some(turn_id) = user_turn_id.as_deref() {
@@ -6227,6 +6527,8 @@ pub fn chat_start_queued_impl(
         .lock()
         .map_err(|e| e.to_string())?
         .insert(session_key.clone());
+    manager.revoke_auto_plan(&session_key);
+    guard.cut_off = CutOff::Ended;
     sessions.remove(&session_key);
     guard.stdin.take();
     let _ = guard.child.kill();
@@ -6275,6 +6577,9 @@ fn relaunches_to_continue(agent: ChatAgent) -> bool {
 
 /// Send the interrupt understood by a provider with a persistent stdin.
 fn interrupt_persistent_turn(session: &mut ChatSession) -> Result<(), String> {
+    if let Some(mark) = &session.auto_approving {
+        mark.revoke();
+    }
     if session.codex.is_some() {
         write_codex_interrupt_locked(session)?;
         session.turn_ended();
@@ -6336,13 +6641,11 @@ fn interrupt_session(
 ) -> Result<Stopped, String> {
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        manager.revoke_auto_plan(session_key);
         match sessions.get(session_key).cloned() {
             Some(session) => session,
             None => {
                 // Stop after a natural reaper still vetoes its buffered stop.
-                if let Ok(mut launches) = manager.auto_plan_launches.lock() {
-                    launches.remove(session_key);
-                }
                 return Err("no such chat".into());
             }
         }
@@ -6375,6 +6678,8 @@ fn interrupt_session(
                 .map_err(|e| e.to_string())?
                 .insert(session_key.to_string());
         }
+        manager.revoke_auto_plan(session_key);
+        guard.cut_off = CutOff::Ended;
         sessions.remove(session_key);
         guard.stdin.take();
         let _ = guard.child.kill();
@@ -6548,6 +6853,16 @@ fn answer_codex_server_request(
     }
 }
 
+// A late native answer belongs only to the turn that requested it. Keep
+// this on the session, since successful Codex full stops carry no denials.
+fn latch_codex_refusal(session: &Arc<Mutex<ChatSession>>, started: Option<Instant>) {
+    if let Ok(mut guard) = session.lock() {
+        if guard.busy && Some(guard.last_active) == started {
+            guard.auto_plan_refused = true;
+        }
+    }
+}
+
 fn answer_codex_approval(
     session: &Arc<Mutex<ChatSession>>,
     key: &str,
@@ -6556,6 +6871,7 @@ fn answer_codex_approval(
     method: &str,
     params: Value,
 ) {
+    let turn_started = session.lock().ok().map(|s| s.last_active);
     let command = params.get("command").and_then(Value::as_str);
     let grant_root = params.get("grantRoot").and_then(Value::as_str);
     let reason = params.get("reason").and_then(Value::as_str);
@@ -6598,6 +6914,7 @@ fn answer_codex_approval(
         ..Default::default()
     };
     let Some(rt) = rt else {
+        latch_codex_refusal(session, turn_started);
         write_codex_response(session, &request_id, json!({ "decision": "decline" }));
         return;
     };
@@ -6611,6 +6928,9 @@ fn answer_codex_approval(
         } else {
             "decline"
         };
+        if decision == "decline" {
+            latch_codex_refusal(&session, turn_started);
+        }
         note_permission_outcome(&key, call.as_deref(), &answer);
         write_codex_response(&session, &request_id, json!({ "decision": decision }));
     });
@@ -7237,6 +7557,11 @@ pub fn chat_complete_impl(
                     .lock()
                     .map_err(|e| e.to_string())?
                     .contains(key)
+                    && !manager
+                        .auto_approving
+                        .lock()
+                        .map_err(|e| e.to_string())?
+                        .contains_key(key)
                 {
                     if manager.completing_turn(key).is_some() {
                         return Err(ALREADY_COMPLETING.into());
@@ -7261,11 +7586,14 @@ pub fn chat_complete_impl(
                 // not wrapped anything up (review of 2fd3231, H2).
                 if one_shot
                     || guard.busy
+                    || guard.auto_approving.is_some()
                     || guard.cut_off != CutOff::No
                     || manager.has_queued_turns(key)
                 {
                     queue()?;
-                    guard.turn_started();
+                    if guard.auto_approving.is_none() && !guard.busy {
+                        guard.turn_started();
+                    }
                     "queued"
                 } else {
                     manager.begin_completion(key, &turn_id, "started")?;
@@ -7484,6 +7812,7 @@ fn close_completed(
                     Unticked::Unsaved(why) => could_not_mark_done(&why),
                 })?;
             drop(running);
+            manager.revoke_auto_plan(key);
             sessions.remove(key);
             // Said here, so nothing a later start says can come before it.
             announce_index_change(id, false);
@@ -7618,6 +7947,8 @@ impl ChatManager {
                 busy: false,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                auto_approving: None,
+                auto_plan_refused: false,
                 leaving: None,
             })),
         );
@@ -7692,6 +8023,8 @@ impl ChatManager {
                 busy,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                auto_approving: None,
+                auto_plan_refused: false,
                 leaving: None,
             })),
         );
@@ -7727,6 +8060,8 @@ impl ChatManager {
                 busy,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                auto_approving: None,
+                auto_plan_refused: false,
                 leaving: None,
             })),
         );
@@ -7947,9 +8282,7 @@ fn end_process_when(
         }
         // Invalidate under the table lock, before the old Arc can be
         // mistaken for a naturally reaped process by automatic approval.
-        if let Ok(mut launches) = manager.auto_plan_launches.lock() {
-            launches.remove(key);
-        }
+        manager.revoke_auto_plan(key);
         sessions.remove(key)
     };
     // Ending the process on purpose ends a completion in it, running or
@@ -7969,6 +8302,9 @@ fn end_process_when(
 /// End the process of a session that has been taken out of the session
 /// table. Called with the session held.
 fn stop_process(manager: &ChatManager, key: &str, session: &mut ChatSession) {
+    if let Some(mark) = &session.auto_approving {
+        mark.revoke();
+    }
     session.cut_off = CutOff::Ended;
     if let Some(codex) = session.codex.as_mut() {
         codex.elicitations.clear();
@@ -10257,6 +10593,8 @@ mod tests {
                 busy,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                auto_approving: None,
+                auto_plan_refused: false,
                 leaving: None,
             }))
         };
@@ -10322,6 +10660,8 @@ mod tests {
                 busy: false,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                auto_approving: None,
+                auto_plan_refused: false,
                 leaving: None,
             })),
         );
@@ -10356,6 +10696,8 @@ mod tests {
                 busy: true,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                auto_approving: None,
+                auto_plan_refused: false,
                 leaving: None,
             })),
         );
@@ -10620,6 +10962,8 @@ mod tests {
             busy,
             last_active: Instant::now(),
             cut_off: CutOff::No,
+            auto_approving: None,
+            auto_plan_refused: false,
             leaving: None,
         }))
     }
@@ -10647,6 +10991,8 @@ mod tests {
                 busy: true,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                auto_approving: None,
+                auto_plan_refused: false,
                 leaving: None,
             })),
             stdout,
@@ -11598,6 +11944,8 @@ mod tests {
             busy: true,
             last_active: Instant::now(),
             cut_off: CutOff::No,
+            auto_approving: None,
+            auto_plan_refused: false,
             leaving: None,
         }));
         manager
@@ -11691,6 +12039,8 @@ mod tests {
                 busy: true,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                auto_approving: None,
+                auto_plan_refused: false,
                 leaving: None,
             })),
         );
@@ -11812,6 +12162,8 @@ mod tests {
             busy: true,
             last_active: Instant::now(),
             cut_off: CutOff::No,
+            auto_approving: None,
+            auto_plan_refused: false,
             leaving: None,
         }));
         manager
@@ -12059,6 +12411,8 @@ mod idle_tests {
                 .checked_sub(ago)
                 .expect("a clock with some run-up behind it"),
             cut_off: CutOff::No,
+            auto_approving: None,
+            auto_plan_refused: false,
             leaving: None,
         }))
     }
@@ -12539,6 +12893,8 @@ mod question_delivery_tests {
                 busy: true,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                auto_approving: None,
+                auto_plan_refused: false,
                 leaving: None,
             })),
         );
@@ -12733,6 +13089,8 @@ mod question_delivery_tests {
                 busy: false,
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
+                auto_approving: None,
+                auto_plan_refused: false,
                 leaving: None,
             })),
         );
@@ -13311,6 +13669,8 @@ mod completion_tests {
             busy,
             last_active: Instant::now(),
             cut_off: CutOff::No,
+            auto_approving: None,
+            auto_plan_refused: false,
             leaving: None,
         }))
     }
@@ -15512,19 +15872,246 @@ mod auto_plan_tests {
     }
 
     #[test]
-    fn auto_plan_idle_guard_holds_the_session_table_and_session_until_approval_finishes() {
+    fn auto_plan_mark_releases_all_chat_locks_and_queues_sends_and_starts() {
         let lead = Lead::new(ChatAgent::Claude);
         let ended = lead.finish(true).unwrap();
-        ended
-            .while_idle(&lead.manager, || {
-                assert!(lead.manager.sessions.try_lock().is_err());
-                assert!(lead.session.try_lock().is_err());
-            })
-            .unwrap();
-        // The call above started with NO session locks. The production
-        // caller acquires the ledger before entering this same idle guard;
-        // mutate_locked never reacquires it while either guard is held.
-        lead.apply(ended);
+        let mark = ended.mark_idle(&lead.manager).unwrap();
+        assert!(lead.manager.sessions.try_lock().is_ok());
+        assert!(lead.session.try_lock().is_ok());
+        assert!(lead.manager.queued_turns.try_lock().is_ok());
+        assert!(lead.manager.handoffs.try_lock().is_ok());
+        assert!(lead.manager.auto_plan_launches.try_lock().is_ok());
+        assert_eq!(
+            send_turn(
+                lead.manager.clone(),
+                lead.key.clone(),
+                "first".into(),
+                None,
+                None,
+                Some("marked-send".into())
+            )
+            .unwrap(),
+            Sent::Queued
+        );
+        start_session(
+            lead.manager.clone(),
+            Voice::host(lead.key.clone()),
+            "/not-used".into(),
+            ChatAgent::Claude,
+            None,
+            None,
+            Some("second".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("marked-start".into()),
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(lead.manager.queued_messages(&lead.key), 2);
+        assert!(!lead.session.lock().unwrap().busy);
+        assert!(mark.decide());
+        drop(mark);
+        assert!(lead.session.lock().unwrap().busy);
+        assert_eq!(lead.manager.queued_messages(&lead.key), 1);
+        assert_eq!(
+            lead.session.lock().unwrap().answering.as_deref(),
+            Some("marked-send")
+        );
+        // Normal full stop dispatches the second message in the same FIFO.
+        assert!(lead.finish(true).is_none());
+        assert_eq!(
+            lead.session.lock().unwrap().answering.as_deref(),
+            Some("marked-start")
+        );
+        assert_eq!(lead.manager.queued_messages(&lead.key), 0);
+    }
+
+    #[test]
+    fn auto_plan_stop_and_spontaneous_turn_veto_a_pending_mark() {
+        for intervention in ["stop", "end", "turn"] {
+            let lead = Lead::new(ChatAgent::Claude);
+            let ended = lead.finish(true).unwrap();
+            let mark = ended.mark_idle(&lead.manager).unwrap();
+            match intervention {
+                "stop" => {
+                    chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+                }
+                "end" => {
+                    end_process(&lead.manager, &lead.key).unwrap();
+                }
+                _ => lead.session.lock().unwrap().turn_started(),
+            }
+            assert!(!mark.decide(), "{intervention}");
+            drop(mark);
+            assert!(!lead.approved());
+        }
+    }
+
+    #[test]
+    fn auto_plan_live_one_shot_stop_revokes_a_successful_buffered_full_stop() {
+        for ended_first in [false, true] {
+            let lead = Lead::new(ChatAgent::Pi);
+            assert!(relaunches_to_continue(ChatAgent::Pi));
+            {
+                let sessions = lead.manager.sessions.lock().unwrap();
+                lead.manager
+                    .grant_capability(&sessions, &lead.key, &lead.key, "test-launch");
+            }
+            {
+                let mut session = lead.session.lock().unwrap();
+                session.stdin.take();
+                assert!(session.child.wait().unwrap().success());
+            }
+            let ended = ended_first.then(|| lead.finish(true).unwrap());
+            // The exited process is still IN the table: exercise the live
+            // one-shot branch, never the no-session Stop branch.
+            assert!(lead
+                .manager
+                .sessions
+                .lock()
+                .unwrap()
+                .contains_key(&lead.key));
+            chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+            assert!(!lead
+                .manager
+                .auto_plan_launches
+                .lock()
+                .unwrap()
+                .contains_key(&lead.key));
+            assert!(lead.finish(true).is_none());
+            if let Some(ended) = ended {
+                lead.apply(ended);
+            }
+            assert!(!lead.approved());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn auto_plan_codex_native_decline_latches_until_the_next_turn() {
+        struct Browser;
+        impl Drop for Browser {
+            fn drop(&mut self) {
+                crate::bus::client_left();
+            }
+        }
+        crate::bus::client_joined();
+        let _browser = Browser;
+        let lead = Lead::new(ChatAgent::Codex);
+        lead.manager.test_as_codex_thread(&lead.key, Access::Auto);
+        answer_codex_approval(
+            &lead.session,
+            &lead.key,
+            Some(&tokio::runtime::Handle::current()),
+            json!(1),
+            "item/commandExecution/requestApproval",
+            json!({"command":"echo declined", "itemId":"native-decline"}),
+        );
+        let card = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(card) = crate::permission::pending()
+                    .into_iter()
+                    .map(|card| serde_json::to_value(card).unwrap())
+                    .find(|card| card["chatKey"] == lead.key)
+                {
+                    break card;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            send_turn(
+                lead.manager.clone(),
+                lead.key.clone(),
+                "follow-up".into(),
+                None,
+                None,
+                Some("native-follow-up".into())
+            )
+            .unwrap(),
+            Sent::Queued
+        );
+        assert!(crate::permission::decide(
+            card["id"].as_str().unwrap(),
+            crate::permission::Decision::Deny,
+            false
+        ));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !lead.session.lock().unwrap().auto_plan_refused {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(lead.finish(true).is_none());
+        assert!(!lead.approved());
+        // The queued turn starts only after the refused turn ends.
+        assert_eq!(
+            lead.session.lock().unwrap().answering.as_deref(),
+            Some("native-follow-up")
+        );
+        lead.apply(lead.finish(true).unwrap());
         assert!(lead.approved());
+    }
+
+    #[test]
+    fn auto_plan_concurrent_start_session_and_turn_end_finish_within_timeout() {
+        // A bad cwd guarantees no real provider/model is ever launched, while
+        // still traversing BOTH workspace admissions and the session table.
+        for _ in 0..12 {
+            let lead = Arc::new(Lead::new(ChatAgent::Claude));
+            let ended = lead.finish(true).unwrap();
+            let root = crate::test_dir::TestDir::new("auto-plan-concurrent-start");
+            let cwd = root.join("missing").to_string_lossy().to_string();
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+            let (done, received) = std::sync::mpsc::channel();
+            let start_lead = lead.clone();
+            let start_barrier = barrier.clone();
+            let start_done = done.clone();
+            thread::spawn(move || {
+                start_barrier.wait();
+                let result = start_session(
+                    start_lead.manager.clone(),
+                    Voice::host(format!("chat:start-{}", uuid::Uuid::new_v4())),
+                    cwd,
+                    ChatAgent::Claude,
+                    None,
+                    Some(Access::Auto),
+                    Some("never run".into()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                );
+                assert!(result.is_err());
+                start_done.send(()).unwrap();
+            });
+            let approval_lead = lead.clone();
+            let approval_barrier = barrier.clone();
+            thread::spawn(move || {
+                approval_barrier.wait();
+                approval_lead.apply(ended);
+                done.send(()).unwrap();
+            });
+            barrier.wait();
+            received
+                .recv_timeout(Duration::from_secs(10))
+                .expect("start/approval must not deadlock");
+            received
+                .recv_timeout(Duration::from_secs(10))
+                .expect("approval/start must not deadlock");
+            assert!(lead.approved());
+        }
     }
 }

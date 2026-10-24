@@ -2914,13 +2914,36 @@ off. Enabling needs its record first (Conventions C); disabling acts at once
 and owes a failed save. Workers, front desks, room seats and unlisted chats
 cannot enable it. A clean full stop of the chat's own writer, including a host
 notification turn, hands evidence out of the session lock. The host then takes
-ledger → session table → session, rechecks the same idle turn, and approves
+session table → session, rechecks and marks that idle turn, releases EVERY chat
+lock, then takes only the ledger to approve. Sends and starts under the mark
+join the durable FIFO; clearing the mark hands them over even on cancellation
+or save failure. Stop remains immediate: it atomically revokes a pending mark;
+the approval's pending-to-decided CAS, after the temporary ledger write and
+immediately before rename/publication, is its decision point.
+An intentional removal revokes launch evidence under the table lock; only a
+natural one-shot reaper preserves it for a buffered full stop.
+Lock audit: `start_session`'s final `admit_beside_writers` takes sessions → ledger
+(read-only workspace admission), and report confirmation via `while_idle` takes
+session → ledger. Access changes (`chat_set_access_impl`'s `record_raise`,
+`remember_start`, `keep_access_for_resume`/`keep_resume_at`) also hold the
+session across ledger resume-context saves; their starts guard is released
+before the ledger is taken. `replaced_binary_keys` releases the table before its ledger
+lookup. `require_workspace_available` releases its ledger snapshot before
+sessions/starts. Ledger-held agent removal (`LeavingMark::look`,
+`turn_may_be_in_flight`) uses only nonblocking try_lock. Auto approval must
+never wait for ANY chat lock (sessions, session, queue, handoffs, launches)
+under the ledger, nor wait for the ledger while holding one; no global chat
+table spans its ledger persist I/O. Worker archive/dispatch, ended-worker
+Stop/recovery, mission cleanup and workspace lifecycle checks take chat locks
+only after ledger snapshots/mutations have returned. Auto approval approves
 the whole pending revision through `decide_plan_in` only when every waiting
 task's effective worker access is at most Auto and none is a peer request.
 Stop, interrupt, failure, refusal or a replaced/ended process approves nothing.
 `ConsentVia::Standing` keeps `enabledAt`; a durable ledger outbox records
 `octiq_plan_auto_approved` in the transcript and the normal host notification
-tells the lead the host dispatches it. Snapshot-only `run.autoPlan` explains
+tells the lead whether automatic dispatch is paused (the coordinator starts
+the workers) or the host dispatches through the normal gates. Snapshot-only
+`run.autoPlan` explains
 an access or peer-request hold. This uses no provider plan mode and changes
 none of the task, permission, safety or reserve gates.
 

@@ -1314,8 +1314,19 @@ impl OrchestrationStore {
     }
 
     fn persist(&self, data: &Stored) -> Result<(), String> {
+        self.persist_before_publish(data, || Ok(()))
+    }
+
+    /// Stage bytes before claiming a decision: Stop can still veto an
+    /// auto-approval during serialization or a slow temporary-file write.
+    /// The callback must be atomic only, never acquire a chat lock.
+    fn persist_before_publish(
+        &self,
+        data: &Stored,
+        before_publish: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
         let Some(path) = &self.path else {
-            return Ok(());
+            return before_publish();
         };
         if let Some(parent) = path.parent() {
             crate::profile::make_dir(parent)?;
@@ -1323,6 +1334,10 @@ impl OrchestrationStore {
         let bytes = serde_json::to_vec_pretty(data).map_err(|error| error.to_string())?;
         let temp = sibling_temp(path);
         fs::write(&temp, bytes).map_err(|error| error.to_string())?;
+        if let Err(why) = before_publish() {
+            let _ = fs::remove_file(&temp);
+            return Err(why);
+        }
         fs::rename(&temp, path).map_err(|error| error.to_string())
     }
 
@@ -1387,6 +1402,16 @@ impl OrchestrationStore {
         regardless: Option<&str>,
         change: impl FnOnce(&mut Stored) -> Result<T, String>,
     ) -> Result<T, String> {
+        self.mutate_locked_at_commit(inner, regardless, change, || Ok(()))
+    }
+
+    fn mutate_locked_at_commit<T>(
+        &self,
+        inner: &mut Inner,
+        regardless: Option<&str>,
+        change: impl FnOnce(&mut Stored) -> Result<T, String>,
+        before_publish: impl FnOnce() -> Result<(), String>,
+    ) -> Result<T, String> {
         if let Some(error) = &inner.load_error {
             return Err(error.clone());
         }
@@ -1403,7 +1428,10 @@ impl OrchestrationStore {
         // In the same write as the change, so no reader ever sees a plan
         // whose scope moved under an unchanged revision.
         refresh_plan_revisions(&mut next);
-        match (self.persist(&next), regardless) {
+        match (
+            self.persist_before_publish(&next, before_publish),
+            regardless,
+        ) {
             (Ok(()), _) => inner.owed = false,
             (Err(why), Some(what)) => {
                 inner.owed = true;

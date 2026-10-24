@@ -122,28 +122,47 @@ impl OrchestrationStore {
         Ok(saved)
     }
 
-    /// Lock order is ledger -> session table -> session. The stream reader
-    /// calls this only AFTER end_turn_locked has released its session lock.
-    /// The idle guard spans persist + publication in memory, so a new send,
-    /// Stop or replacement process cannot race approval into a running turn.
+    /// Mark under chat locks, release them all, then take only the ledger.
+    /// Never wait for a chat lock under the ledger, or vice versa here.
+    /// The mark queues sends/starts; Stop revokes it without waiting for I/O.
     pub(crate) fn auto_approve_at_turn_end(
         &self,
-        chats: &ChatManager,
+        chats: &Arc<ChatManager>,
         ended: crate::agent_chat::CleanTurnEnd,
     ) -> Result<(), String> {
-        let approved = {
+        // A ledger-only lookup first keeps ordinary chats/workers off the
+        // mark path. Consent is rechecked in the later ledger transaction.
+        if !self.auto_plan_get(&ended.chat_key)?.enabled {
+            return Ok(());
+        }
+        let Some(mark) = ended.mark_idle(chats) else {
+            return Ok(());
+        };
+        let result = (|| {
             let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-            // Ordinary chats and workers pay only this lookup, never a ledger
-            // write or a session-table hold on every full stop.
             if !inner.data.auto_plan_chats.contains_key(&ended.chat_key) {
-                return Ok(());
+                return Ok(Vec::new());
             }
-            ended
-                .while_idle(chats, || {
-                    self.mutate_locked(&mut inner, None, |data| approve_in(data, &ended.chat_key))
-                })
-                .transpose()?
-                .unwrap_or_default()
+            self.mutate_locked_at_commit(
+                &mut inner,
+                None,
+                |data| approve_in(data, &ended.chat_key),
+                || {
+                    // Atomic decision point immediately before publication,
+                    // after workspace checks AND the staged ledger write.
+                    // A prior Stop vetoes the entire clone, including outbox.
+                    mark.decide()
+                        .then_some(())
+                        .ok_or_else(|| crate::agent_chat::AUTO_PLAN_REVOKED.into())
+                },
+            )
+        })();
+        // This also hands over queued messages on cancellation/save failure.
+        // No ledger guard survives into the chat-side cleanup.
+        drop(mark);
+        let approved = match result {
+            Err(why) if why == crate::agent_chat::AUTO_PLAN_REVOKED => Vec::new(),
+            other => other?,
         };
         for run in approved {
             announce_plan_decision(&run);
@@ -246,9 +265,22 @@ fn approve_in(data: &mut Stored, chat: &str) -> Result<Vec<Run>, String> {
             "type": "octiq_plan_auto_approved", "runId": id, "revision": revision,
             "taskIds": task_ids, "taskTitles": task_titles, "at": at, "enabledAt": enabled_at,
         }) });
-        inbox::enqueue(data, &id, "host", chat, source, "plan_auto_approved", format!(
-            "Plan revision {revision} was auto-approved under this chat's setting; the host dispatches it."
-        ));
+        let dispatch = if run.worker_defaults.is_none() {
+            "automatic dispatch is paused; the coordinator starts the workers."
+        } else {
+            "the host dispatches it."
+        };
+        inbox::enqueue(
+            data,
+            &id,
+            "host",
+            chat,
+            source,
+            "plan_auto_approved",
+            format!(
+                "Plan revision {revision} was auto-approved under this chat's setting; {dispatch}"
+            ),
+        );
         approved.push(run);
     }
     Ok(approved)
@@ -284,6 +316,50 @@ mod tests {
         if std::env::var_os("OCTIQ_RECORD_FACTS").is_some() {
             println!("FACT {name} {}", serde_json::to_value(snapshot).unwrap());
         }
+    }
+
+    #[test]
+    fn auto_plan_veto_after_staging_keeps_memory_disk_and_outbox_unchanged() {
+        let dir = crate::test_dir::TestDir::new("auto-plan-staged-veto");
+        let path = dir.join("ledger.json");
+        let store = OrchestrationStore::load(path.clone());
+        let (run, _) = pending(&store, Access::Auto);
+        store.auto_plan_set("chat:master", true).unwrap();
+        let before = fs::read(&path).unwrap();
+        let mut inner = store.inner.lock().unwrap();
+        let refused = store.mutate_locked_at_commit(
+            &mut inner,
+            None,
+            |data| approve_in(data, "chat:master"),
+            || {
+                // The full candidate approval (including notices/inbox) is
+                // already written, while the published ledger is unchanged.
+                assert_eq!(fs::read(&path).unwrap(), before);
+                let staged: Vec<_> = fs::read_dir(&*dir)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .filter(|entry| entry != &path)
+                    .collect();
+                assert_eq!(staged.len(), 1);
+                let staged: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&staged[0]).unwrap()).unwrap();
+                assert!(!staged["auto_plan_notices"].as_object().unwrap().is_empty());
+                Err(crate::agent_chat::AUTO_PLAN_REVOKED.into())
+            },
+        );
+        assert_eq!(refused.unwrap_err(), crate::agent_chat::AUTO_PLAN_REVOKED);
+        assert_eq!(
+            inner.data.runs[&run.id]
+                .plan_approval
+                .as_ref()
+                .unwrap()
+                .status,
+            PlanStatus::Pending
+        );
+        assert!(inner.data.auto_plan_notices.is_empty());
+        assert!(inner.data.notifications.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(&*dir).unwrap().count(), 1);
     }
 
     #[test]
@@ -354,6 +430,32 @@ mod tests {
             assert_eq!(data.auto_plan_notices.len(), 2);
             assert_eq!(data.notifications.len(), 2);
         }
+    }
+
+    #[test]
+    fn auto_plan_notice_explains_paused_automatic_dispatch() {
+        let store = OrchestrationStore::default();
+        let (run, task) = pending(&store, Access::Auto);
+        store
+            .mutate(|data| {
+                data.tasks.get_mut(&task.id).unwrap().worker = Some(automation::WorkerSettings {
+                    agent: ChatAgent::Claude,
+                    access: Access::Auto,
+                    model: None,
+                    effort: None,
+                    recovery: None,
+                });
+                data.runs.get_mut(&run.id).unwrap().worker_defaults = None;
+                Ok(())
+            })
+            .unwrap();
+        store.auto_plan_set("chat:master", true).unwrap();
+        assert_eq!(apply(&store, "chat:master").len(), 1);
+        let inner = store.inner.lock().unwrap();
+        let notice = inner.data.notifications.values().next().unwrap();
+        assert!(notice.body.contains("automatic dispatch is paused"));
+        assert!(notice.body.contains("coordinator starts the workers"));
+        assert!(!notice.body.contains("the host dispatches it"));
     }
 
     #[test]

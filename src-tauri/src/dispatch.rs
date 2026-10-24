@@ -1987,8 +1987,6 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 manager.as_deref(),
             ))
         }
-        // Browser-only: the person approves an agents-mode lead's plan. Not in
-        // the agent hook's whitelist, so no agent can approve its own plan.
         "orchestration_auto_plan_get" => to_value(
             svc.orchestrations
                 .auto_plan_get(&arg::<String>(&args, "chatKey")?),
@@ -2006,6 +2004,8 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             }
             to_value(svc.orchestrations.auto_plan_set(&chat, enabled))
         }
+        // Browser-only: the person approves an agents-mode lead's plan. Not in
+        // the agent hook's whitelist, so no agent can approve its own plan.
         "orchestration_plan_approve" => to_value(
             svc.orchestrations.approve_plan_from_card_with_choices(
                 &arg::<String>(&args, "actorChatKey")?,
