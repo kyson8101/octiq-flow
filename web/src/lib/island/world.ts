@@ -478,6 +478,10 @@ export function buildScenery(opts: {
     if (Math.hypot(x - playAt.x, z - playAt.z) < CELL + reach + 0.5) return false;
     return plots.every(p => Math.hypot(x - p.x, z - p.z) > p.radius + reach + 0.8);
   };
+  // Bury coastal supports below the lowest beach under their full footprint.
+  // Include the terrain's 1.1 m shoreline wobble and 0.06 m height noise.
+  const coastBottom = (x: number, z: number, reach: number) =>
+    groundHeight(Math.hypot(x, z) + reach + 1.1, radius) - 0.12;
   // Hex vertices leave triangular pockets between tiles. Keep the full candy
   // footprint off every tile and both reserved cells, leaving the path middles open.
   const inlandSites = new Set<string>();
@@ -518,7 +522,8 @@ export function buildScenery(opts: {
     if (!coastClear(x, z, 1.2)) continue;
     const h = 2.8 + random(k + 20) * 1.4;
     const y = groundHeight(r, radius);
-    kit.add("white", cylinder, x, y + h / 2, z, { sx: 0.22, sy: h, sz: 0.22 });
+    const bottom = coastBottom(x, z, 0.11), poleTop = y + h;
+    kit.add("white", cylinder, x, (bottom + poleTop) / 2, z, { sx: 0.22, sy: poleTop - bottom, sz: 0.22 });
     // Flat candy discs, with a smaller frosting face and a sugar centre.
     kit.addAt(x, z, a, k % 2 ? "leaf" : "leafLight", cylinder, 0, y + h, 0,
       { sx: 2.1, sy: 0.38, sz: 2.1, rx: Math.PI / 2 });
@@ -552,7 +557,9 @@ export function buildScenery(opts: {
   const gateX = dx * gateD, gateZ = dz * gateD;
   if (coastClear(gateX, gateZ, 2.8)) {
     for (const side of [-1.8, 1.8]) {
-      kit.addAt(gateX, gateZ, dockAngle, "caramel", box, side, 2.1, 0, { sx: 0.85, sy: 4.2, sz: 0.9 });
+      const px = gateX + Math.cos(dockAngle) * side, pz = gateZ - Math.sin(dockAngle) * side;
+      const bottom = coastBottom(px, pz, Math.hypot(0.425, 0.45));
+      kit.addAt(gateX, gateZ, dockAngle, "caramel", box, side, (4.2 + bottom) / 2, 0, { sx: 0.85, sy: 4.2 - bottom, sz: 0.9 });
       for (let i = 0; i < 5; i++) kit.addAt(gateX, gateZ, dockAngle, "white", ball, side, 0.7 + i * 0.7, 0.48, { sx: 0.2, sy: 0.2, sz: 0.12 });
       solids.push({ cx: gateX + Math.cos(dockAngle) * side, cz: gateZ - Math.sin(dockAngle) * side, hx: 0.45, hz: 0.5, yaw: dockAngle });
     }
@@ -571,7 +578,9 @@ export function buildScenery(opts: {
       kit.addAt(rx, rz, rainbowAngle, ["mint", "blue", "leafLight", "lemon", "red"][band], arc, 0, 0.4, 0);
     }
     for (const side of [-4.25, 4.25]) {
-      kit.addAt(rx, rz, rainbowAngle, "white", ball, side, 0.3, 0, { sx: 2.1, sy: 0.9, sz: 1.4 });
+      const fx = rx + Math.cos(rainbowAngle) * side, fz = rz - Math.sin(rainbowAngle) * side;
+      const bottom = coastBottom(fx, fz, 1.05);
+      kit.addAt(rx, rz, rainbowAngle, "white", ball, side, (0.75 + bottom) / 2, 0, { sx: 2.1, sy: 0.75 - bottom, sz: 1.4 });
       solids.push({ cx: rx + Math.cos(rainbowAngle) * side, cz: rz - Math.sin(rainbowAngle) * side,
         hx: 1.1, hz: 0.7, yaw: rainbowAngle });
     }
@@ -582,7 +591,8 @@ export function buildScenery(opts: {
     const r = radius - 3.0, x = Math.sin(a) * r, z = Math.cos(a) * r;
     if (!coastClear(x, z, 2.9)) continue;
     const y = groundHeight(r, radius);
-    kit.add("white", cylinder, x, y + 0.12, z, { sx: 5.1, sy: 0.3, sz: 5.1 });
+    const bottom = coastBottom(x, z, 2.55), baseTop = y + 0.27;
+    kit.add("white", cylinder, x, (baseTop + bottom) / 2, z, { sx: 5.1, sy: baseTop - bottom, sz: 5.1 });
     solids.push({ cx: x, cz: z, hx: 2.6, hz: 2.6, yaw: 0 });
     if (kind === "donut") {
       kit.addAt(x, z, a, "caramel", donut, 0, y + 2.55, 0, { sx: 1.65, sy: 1.65, sz: 1.65 });

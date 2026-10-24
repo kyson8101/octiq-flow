@@ -12,9 +12,10 @@ sky. After dusk the sky turns lavender/indigo and sugar stars fade in. The
 existing day/night clock, weather controls and warm interior lighting remain.
 Empty honeycomb tiles alternate mint, lemon and lilac with strawberry icing
 edges and pink paths; occupied tiles retain their owner-kind tint. Scenery
-colours blend back to the approved night palette without changing global
-lighting, tone mapping or the robots' materials. Ground and icing layers use
-depth offsets to keep the thin layers distinct at whole-island zoom.
+colours blend back to the approved night palette. The HemisphereLight uses a
+pink daytime sky hue, a lilac night sky hue and a mauve ground hue; lighting
+intensities, tone mapping and the robots' materials are unchanged. Ground and
+icing layers use depth offsets to keep the thin layers distinct at whole-island zoom.
 
 The plaza keeps its wish letters, benches and original layout, with a
 strawberry-frosted wish tree, striped candy-cane lamps, candy bench backs and
