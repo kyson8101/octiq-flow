@@ -1402,7 +1402,7 @@ impl OrchestrationStore {
         regardless: Option<&str>,
         change: impl FnOnce(&mut Stored) -> Result<T, String>,
     ) -> Result<T, String> {
-        self.mutate_locked_at_commit(inner, regardless, change, || Ok(()))
+        self.mutate_locked_at_commit(inner, regardless, change, |_| Ok(()))
     }
 
     fn mutate_locked_at_commit<T>(
@@ -1410,7 +1410,7 @@ impl OrchestrationStore {
         inner: &mut Inner,
         regardless: Option<&str>,
         change: impl FnOnce(&mut Stored) -> Result<T, String>,
-        before_publish: impl FnOnce() -> Result<(), String>,
+        before_publish: impl FnOnce(&Stored) -> Result<(), String>,
     ) -> Result<T, String> {
         if let Some(error) = &inner.load_error {
             return Err(error.clone());
@@ -1429,7 +1429,7 @@ impl OrchestrationStore {
         // whose scope moved under an unchanged revision.
         refresh_plan_revisions(&mut next);
         match (
-            self.persist_before_publish(&next, before_publish),
+            self.persist_before_publish(&next, || before_publish(&inner.data)),
             regardless,
         ) {
             (Ok(()), _) => inner.owed = false,
