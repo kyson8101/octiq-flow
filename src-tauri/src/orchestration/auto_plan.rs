@@ -124,7 +124,8 @@ impl OrchestrationStore {
 
     /// Evidence arrives with every chat lock already released. The two
     /// ledger-only steps pin a revision/waiting set, then stage its approval.
-    /// A next turn may continue normally; its edits invalidate the snapshot.
+    /// A next turn continues normally and vetoes this evidence, with or
+    /// without edits, before the snapshot and again at staged publication.
     pub(crate) fn auto_approve_at_turn_end(
         &self,
         ended: crate::agent_chat::CleanTurnEnd,
@@ -145,7 +146,7 @@ impl OrchestrationStore {
             if let Some(error) = &inner.load_error {
                 return Err(error.clone());
             }
-            if !inner.data.auto_plan_chats.contains_key(&ended.chat_key) {
+            if !ended.unchanged() || !inner.data.auto_plan_chats.contains_key(&ended.chat_key) {
                 return Ok(());
             }
             pending_plans(&inner.data, &ended.chat_key)
@@ -153,7 +154,8 @@ impl OrchestrationStore {
         after_snapshot();
         let result = (|| {
             let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-            if !inner.data.auto_plan_chats.contains_key(&ended.chat_key)
+            if !ended.unchanged()
+                || !inner.data.auto_plan_chats.contains_key(&ended.chat_key)
                 || pending_plans(&inner.data, &ended.chat_key) != expected
             {
                 return Ok(Vec::new());
@@ -166,7 +168,7 @@ impl OrchestrationStore {
                     before_commit();
                     // The unchanged ledger is still locked, including consent,
                     // revision and waiting set. No session/queue/launches lock
-                    // is acquired here: Stop vetoes through the evidence atomic.
+                    // is acquired here: Stop and next turn veto through atomics.
                     if !published.auto_plan_chats.contains_key(&ended.chat_key)
                         || pending_plans(published, &ended.chat_key) != expected
                         || !ended.decide()
