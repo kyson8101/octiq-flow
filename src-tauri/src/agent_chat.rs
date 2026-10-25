@@ -465,6 +465,7 @@ struct ChatSession {
     /// lock, and gone with the process: nothing else records an unwind.
     cut_off: CutOff,
     auto_plan_refused: bool,
+    auto_plan_attribution: AutoPlanAttribution,
     /// The removal of the registered agent whose conversation this is, once
     /// one has looked at this process (`LeavingMark::working`). Set under
     /// this session's lock, which every prompt is written under.
@@ -653,6 +654,129 @@ enum CutOff {
     /// completion and moves no queue: all three belong to the chat's next
     /// process.
     Ended,
+}
+
+/// Stop makes an untagged full stop unattributable, even when the host read
+/// idle: any number of autonomous init/result pairs may already be in stdout.
+/// No discard count or observed init can prove that this backlog is drained.
+///
+/// This latch lives under the session's writer lock. A post-Stop Claude write
+/// gets a fresh native UUID; only its isReplay echo with the exact payload can
+/// open the barrier. Claude replays a prompt after its init and all previous
+/// turns' results (claude-replay-uuid.jsonl:7,16,19,21,29; the second
+/// identical prompt was written before the first result). Thus no earlier A, A',
+/// or duplicate-content prompt can unlock it. The following clean full stop
+/// belongs to that prompt. A missing/rewritten UUID fails closed. Codex uses
+/// the matching turn/start request's response and that native turn's completion
+/// instead. Observe these before normalization, without changing event shapes.
+///
+/// Every further host write replaces the target until an attributable clean
+/// end clears the latch; every Stop resets it. CutOff::Owed still discards its
+/// one cut-off result and moves the queue exactly as before: this latch never
+/// counts results or changes send/start/queue/Stop behavior. Recovery in the
+/// same PID waits for a clean end behind the provider barrier, which need not
+/// be the first real turn's end. Providers without a barrier stay latched until
+/// a new process. Approval never reads session state under the ledger.
+#[derive(Debug, Default)]
+enum AutoPlanAttribution {
+    #[default]
+    Ready,
+    Unattributed,
+    Claude {
+        uuid: String,
+        content: Value,
+        echoed: bool,
+    },
+    Codex {
+        request_id: Value,
+        turn_id: Option<String>,
+        completed: bool,
+    },
+}
+
+impl AutoPlanAttribution {
+    fn prompt(&mut self, agent: ChatAgent, native_codex: bool, payload: &mut Value) {
+        if matches!(self, Self::Ready) {
+            return;
+        }
+        *self = if native_codex {
+            Self::Codex {
+                request_id: payload["id"].clone(),
+                turn_id: None,
+                completed: false,
+            }
+        } else if agent == ChatAgent::Claude {
+            let uuid = uuid::Uuid::new_v4().to_string();
+            payload["uuid"] = json!(uuid);
+            Self::Claude {
+                uuid,
+                content: replay_content(&payload["message"]["content"]),
+                echoed: false,
+            }
+        } else {
+            Self::Unattributed
+        };
+    }
+
+    fn observe(&mut self, event: &Value) {
+        match self {
+            Self::Claude {
+                uuid,
+                content,
+                echoed,
+            } => {
+                if event["type"] == "user"
+                    && event["isReplay"] == true
+                    && event["isSynthetic"] != true
+                    && event.get("parent_tool_use_id").is_none_or(Value::is_null)
+                    && event["uuid"].as_str() == Some(uuid.as_str())
+                    && replay_content(&event["message"]["content"]) == *content
+                {
+                    *echoed = true;
+                }
+            }
+            Self::Codex {
+                request_id,
+                turn_id,
+                completed,
+            } => {
+                if event.get("id") == Some(request_id) {
+                    if let Some(id) = crate::codex_app_server::turn_id_from_response(event) {
+                        *turn_id = Some(id.to_string());
+                    }
+                }
+                if event["method"] == "turn/completed" {
+                    *completed = turn_id.as_deref().is_some_and(|id| {
+                        event.pointer("/params/turn/id").and_then(Value::as_str) == Some(id)
+                    });
+                }
+            }
+            _ => (),
+        }
+    }
+
+    fn attributable(&self) -> bool {
+        matches!(
+            self,
+            Self::Ready
+                | Self::Claude { echoed: true, .. }
+                | Self::Codex {
+                    completed: true,
+                    ..
+                }
+        )
+    }
+}
+
+/// Claude replays a single text block as a string; images/multiple blocks
+/// retain their array representation. Compare the actual provider payload.
+fn replay_content(content: &Value) -> Value {
+    if let Some(blocks) = content.as_array() {
+        if blocks.len() == 1 && blocks[0]["type"] == "text" {
+            return blocks[0]["text"].clone();
+        }
+    }
+    content.clone()
 }
 
 #[derive(Debug)]
@@ -4284,6 +4408,7 @@ pub(crate) fn start_session(
         last_active: Instant::now(),
         cut_off: CutOff::No,
         auto_plan_refused: false,
+        auto_plan_attribution: AutoPlanAttribution::Ready,
         leaving: None,
     }));
     sessions.insert(session_key.clone(), session.clone());
@@ -4409,6 +4534,9 @@ pub(crate) fn start_session(
                                 })
                             {
                                 continue;
+                            }
+                            if let Ok(mut session) = asking.lock() {
+                                session.auto_plan_attribution.observe(&event);
                             }
                             if let Some(turn_id) =
                                 crate::codex_app_server::turn_id_from_response(&event)
@@ -4546,6 +4674,9 @@ pub(crate) fn start_session(
                                 reading.background.observe(&key, &session.launch_id, &event)
                             {
                                 eprintln!("chat: cannot record background work: {error}");
+                            }
+                            if !transport.is_app_server() {
+                                session.auto_plan_attribution.observe(&event);
                             }
                             // A turn nobody wrote for: Claude woke itself when
                             // its background work finished. Until this, the
@@ -5073,7 +5204,7 @@ fn write_user_message_locked(
     // And the invariant of `Leaving`, for the same reason: a registered
     // agent that is being removed, or was, is not given another turn.
     session.not_leaving()?;
-    let payload = if let Some(codex) = session.codex.as_mut() {
+    let mut payload = if let Some(codex) = session.codex.as_mut() {
         let id = codex.request_id("turn");
         let text = if codex.has_octiq_mcp {
             routed_prompt(ChatAgent::Codex, text)
@@ -5107,6 +5238,9 @@ fn write_user_message_locked(
         .stdin
         .as_ref()
         .ok_or("this chat does not take more input")?;
+    session
+        .auto_plan_attribution
+        .prompt(session.agent, session.codex.is_some(), &mut payload);
     manager.start_auto_plan_turn(session_key, session);
     let stdin = session.stdin.as_mut().expect("stdin checked above");
     writeln!(stdin, "{payload}").map_err(|e| e.to_string())?;
@@ -5180,7 +5314,11 @@ fn end_turn_for_auto_plan(
     let eligible = clean
         && !refused
         && !session.auto_plan_refused
-        && session.busy
+        && session.auto_plan_attribution.attributable()
+        // An earlier buffered result may have marked the host idle. Positive
+        // native correlation still proves this prompt's end; Ready alone
+        // needs busy so a duplicate full stop cannot create more evidence.
+        && (session.busy || !matches!(session.auto_plan_attribution, AutoPlanAttribution::Ready))
         && session.cut_off == CutOff::No
         && session_key == stream_key;
     // Both maps are leaves. The epoch is captured before checking the
@@ -5206,6 +5344,15 @@ fn end_turn_for_auto_plan(
         turn_sequence,
         sequence,
     });
+    if eligible {
+        session.auto_plan_attribution = AutoPlanAttribution::Ready;
+    } else if session.auto_plan_attribution.attributable()
+        && !matches!(session.auto_plan_attribution, AutoPlanAttribution::Ready)
+    {
+        // The correlated turn ended unsuccessfully/refused. Its echo or native
+        // completion cannot be reused to bless a later autonomous full stop.
+        session.auto_plan_attribution = AutoPlanAttribution::Unattributed;
+    }
     let result = end_turn_locked(manager, session_key, stream_key, session, clean);
     (result, ended)
 }
@@ -6393,6 +6540,7 @@ fn interrupt_persistent_turn(
     session: &mut ChatSession,
 ) -> Result<(), String> {
     manager.revoke_auto_plan(key);
+    session.auto_plan_attribution = AutoPlanAttribution::Unattributed;
     if session.codex.is_some() {
         write_codex_interrupt_locked(session)?;
         session.turn_ended();
@@ -7776,6 +7924,7 @@ impl ChatManager {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
         );
@@ -7851,6 +8000,7 @@ impl ChatManager {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
         );
@@ -7887,6 +8037,7 @@ impl ChatManager {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
         );
@@ -10426,6 +10577,7 @@ mod tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             }))
         };
@@ -10492,6 +10644,7 @@ mod tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
         );
@@ -10527,6 +10680,7 @@ mod tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
         );
@@ -10792,6 +10946,7 @@ mod tests {
             last_active: Instant::now(),
             cut_off: CutOff::No,
             auto_plan_refused: false,
+            auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
         }))
     }
@@ -10820,6 +10975,7 @@ mod tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
             stdout,
@@ -11801,6 +11957,7 @@ mod tests {
             last_active: Instant::now(),
             cut_off: CutOff::No,
             auto_plan_refused: false,
+            auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
         }));
         manager
@@ -11895,6 +12052,7 @@ mod tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
         );
@@ -12017,6 +12175,7 @@ mod tests {
             last_active: Instant::now(),
             cut_off: CutOff::No,
             auto_plan_refused: false,
+            auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
         }));
         manager
@@ -12265,6 +12424,7 @@ mod idle_tests {
                 .expect("a clock with some run-up behind it"),
             cut_off: CutOff::No,
             auto_plan_refused: false,
+            auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
         }))
     }
@@ -12746,6 +12906,7 @@ mod question_delivery_tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
         );
@@ -12941,6 +13102,7 @@ mod question_delivery_tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
         );
@@ -13520,6 +13682,7 @@ mod completion_tests {
             last_active: Instant::now(),
             cut_off: CutOff::No,
             auto_plan_refused: false,
+            auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
         }))
     }
@@ -15508,15 +15671,60 @@ mod auto_plan_tests {
             let event = json!({"type":"system", "subtype":"init"});
             let observed = provider_for(ChatAgent::Claude).observe_event(&event);
             let mut s = self.session.lock().unwrap();
-            assert!(observed.turn_opened && !s.busy);
+            assert!(observed.turn_opened);
+            let was_busy = s.busy;
             let sequence = self.manager.turn_sequence(&self.key);
             let before = sequence.load(std::sync::atomic::Ordering::SeqCst);
-            self.manager.note_observed_turn(&self.key);
-            s.turn_started();
+            if !s.busy {
+                self.manager.note_observed_turn(&self.key);
+                s.turn_started();
+            }
             assert_eq!(
                 sequence.load(std::sync::atomic::Ordering::SeqCst),
-                before + 1
+                before + u64::from(!was_busy)
             );
+        }
+        fn replay(&self) -> Value {
+            let s = self.session.lock().unwrap();
+            let AutoPlanAttribution::Claude { uuid, content, .. } = &s.auto_plan_attribution else {
+                panic!("expected a post-Stop Claude prompt");
+            };
+            json!({"type":"user", "isReplay":true, "uuid":uuid,
+                "parent_tool_use_id":null, "message":{"role":"user", "content":content}})
+        }
+        fn observe_barrier(&self, event: &Value) {
+            self.session
+                .lock()
+                .unwrap()
+                .auto_plan_attribution
+                .observe(event);
+        }
+        fn acknowledge_prompt(&self) {
+            if self.session.lock().unwrap().codex.is_some() {
+                let request_id = match &self.session.lock().unwrap().auto_plan_attribution {
+                    AutoPlanAttribution::Codex { request_id, .. } => request_id.clone(),
+                    _ => panic!("expected post-Stop native request"),
+                };
+                self.observe_barrier(
+                    &json!({"id":request_id,"result":{"turn":{"id":"post-stop"}}}),
+                );
+                self.observe_barrier(
+                    &json!({"method":"turn/completed","params":{"turn":{"id":"post-stop"}}}),
+                );
+            } else {
+                self.observe_barrier(&self.replay());
+            }
+        }
+        fn prompt(&self, text: &str) {
+            write_user_message_locked(
+                &self.manager,
+                &mut self.session.lock().unwrap(),
+                &self.key,
+                text,
+                &[],
+                None,
+            )
+            .unwrap();
         }
         fn apply(&self, ended: CleanTurnEnd) {
             self.manager
@@ -15844,7 +16052,12 @@ mod auto_plan_tests {
             let s = lead.session.lock().unwrap();
             assert_eq!((s.child.id(), &s.launch_id), (pid, &launch));
         }
-        lead.apply(lead.finish(true).expect("real prompt restores eligibility"));
+        lead.observe_claude_init();
+        lead.acknowledge_prompt();
+        lead.apply(
+            lead.finish(true)
+                .expect("replayed real prompt restores eligibility"),
+        );
         assert!(lead.approved());
     }
 
@@ -15883,12 +16096,250 @@ mod auto_plan_tests {
                 assert_eq!(s.child.id(), pid);
                 assert_eq!(s.launch_id, launch);
             }
+            lead.acknowledge_prompt();
             lead.apply(
                 lead.finish(true)
-                    .expect("same process's next clean turn is eligible"),
+                    .expect("same process's attributable clean turn is eligible"),
             );
             assert!(lead.approved());
         }
+    }
+
+    #[test]
+    fn auto_plan_idle_stop_prompt_then_any_buffered_autonomous_results_stay_ineligible() {
+        for buffered in [1, 2, 8] {
+            let lead = Lead::new(ChatAgent::Claude);
+            lead.finish(true).unwrap();
+            let pid = lead.session.lock().unwrap().child.id();
+            chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+            assert_eq!(lead.session.lock().unwrap().cut_off, CutOff::No);
+            lead.prompt("B");
+            // B changes the revision before A's old buffered success is read.
+            lead.manager
+                .orchestrations
+                .create_task(
+                    &lead.key,
+                    lead.run.id.clone(),
+                    "Added by B".into(),
+                    "B is still running".into(),
+                    vec![],
+                    None,
+                    None,
+                )
+                .unwrap();
+            for _ in 0..buffered {
+                lead.observe_claude_init();
+                assert!(lead.finish(true).is_none());
+                assert!(!lead.approved());
+            }
+            lead.observe_claude_init();
+            lead.acknowledge_prompt();
+            lead.apply(
+                lead.finish(true)
+                    .expect("B's own replay crossed every earlier result"),
+            );
+            assert!(lead.approved());
+            assert_eq!(lead.session.lock().unwrap().child.id(), pid);
+            let events = crate::transcript::of_type(&lead.key, "octiq_plan_auto_approved");
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0]["taskIds"].as_array().unwrap().len(), 2);
+            // A following ordinary clean turn keeps its normal eligibility.
+            lead.prompt("following real turn");
+            lead.manager
+                .orchestrations
+                .create_task(
+                    &lead.key,
+                    lead.run.id.clone(),
+                    "Following revision".into(),
+                    "Own clean end".into(),
+                    vec![],
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert!(!lead.approved());
+            lead.apply(lead.finish(true).unwrap());
+            assert!(lead.approved());
+            assert_eq!(
+                crate::transcript::of_type(&lead.key, "octiq_plan_auto_approved").len(),
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn auto_plan_replay_requires_current_uuid_exact_payload_and_real_echo() {
+        let lead = Lead::new(ChatAgent::Claude);
+        lead.finish(true).unwrap();
+        chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+        lead.prompt("identical text");
+        let first = lead.replay();
+        // Another real write can follow an old buffered full stop. Identical
+        // content must not let the earlier prompt's echo unlock this one.
+        lead.observe_claude_init();
+        assert!(lead.finish(true).is_none());
+        lead.prompt("identical text");
+        let current = lead.replay();
+        assert_ne!(first["uuid"], current["uuid"]);
+        for event in [
+            first,
+            {
+                let mut e = current.clone();
+                e["isReplay"] = json!(false);
+                e
+            },
+            {
+                let mut e = current.clone();
+                e["isSynthetic"] = json!(true);
+                e
+            },
+            {
+                let mut e = current.clone();
+                e["message"]["content"] = json!("different");
+                e
+            },
+        ] {
+            lead.observe_barrier(&event);
+            assert!(!lead
+                .session
+                .lock()
+                .unwrap()
+                .auto_plan_attribution
+                .attributable());
+        }
+        lead.observe_barrier(&current);
+        lead.apply(lead.finish(true).unwrap());
+        assert!(lead.approved());
+    }
+
+    #[test]
+    fn auto_plan_busy_stop_owed_and_repeated_stop_do_not_double_count() {
+        let lead = Lead::new(ChatAgent::Claude);
+        let pid = lead.session.lock().unwrap().child.id();
+        chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+        let owed = lead.session.lock().unwrap().cut_off;
+        assert!(matches!(owed, CutOff::Owed(_)));
+        chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+        assert_eq!(lead.session.lock().unwrap().cut_off, owed);
+        queue_waiting_turn(&lead.manager, &lead.key, &lead.key, "B", &[], None).unwrap();
+        assert!(lead.finish(true).is_none());
+        assert_eq!(lead.session.lock().unwrap().cut_off, CutOff::No);
+        assert!(
+            lead.session.lock().unwrap().busy,
+            "queue handed off exactly as before"
+        );
+        let old_replay = lead.replay();
+        chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+        lead.observe_barrier(&old_replay);
+        assert!(lead.finish(true).is_none());
+        lead.prompt("C");
+        lead.observe_barrier(&old_replay);
+        assert!(!lead
+            .session
+            .lock()
+            .unwrap()
+            .auto_plan_attribution
+            .attributable());
+        lead.acknowledge_prompt();
+        lead.apply(lead.finish(true).unwrap());
+        assert!(lead.approved());
+        assert_eq!(lead.session.lock().unwrap().child.id(), pid);
+    }
+
+    #[test]
+    fn auto_plan_native_codex_requires_matching_start_response_and_completion() {
+        let lead = Lead::new(ChatAgent::Codex);
+        lead.manager.test_as_codex_thread(&lead.key, Access::Auto);
+        lead.finish(true).unwrap();
+        chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+        lead.prompt("B");
+        let request = match &lead.session.lock().unwrap().auto_plan_attribution {
+            AutoPlanAttribution::Codex { request_id, .. } => request_id.clone(),
+            _ => panic!("expected Codex request"),
+        };
+        lead.observe_barrier(&json!({"id":"older-request", "result":{"turn":{"id":"old"}}}));
+        lead.observe_barrier(&json!({"method":"turn/completed", "params":{"turn":{"id":"old"}}}));
+        assert!(lead.finish(true).is_none());
+        lead.observe_barrier(&json!({"id":request, "result":{"turn":{"id":"B"}}}));
+        lead.observe_barrier(&json!({"method":"turn/completed", "params":{"turn":{"id":"old"}}}));
+        assert!(lead.finish(true).is_none());
+        lead.observe_barrier(&json!({"method":"turn/completed", "params":{"turn":{"id":"B"}}}));
+        assert!(!lead.session.lock().unwrap().busy);
+        // The matching native completion proves the end even though an older
+        // full stop already marked the host idle. No queue behavior changes.
+        lead.apply(lead.finish(true).unwrap());
+        assert!(lead.approved());
+    }
+
+    #[test]
+    fn auto_plan_failed_or_refused_correlated_end_cannot_unlock_a_later_observed_turn() {
+        for refused in [false, true] {
+            let lead = Lead::new(ChatAgent::Claude);
+            lead.finish(true).unwrap();
+            chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+            lead.prompt("B");
+            lead.acknowledge_prompt();
+            lead.session.lock().unwrap().auto_plan_refused = refused;
+            assert!(lead.finish(refused).is_none());
+            assert!(matches!(
+                lead.session.lock().unwrap().auto_plan_attribution,
+                AutoPlanAttribution::Unattributed
+            ));
+            lead.observe_claude_init();
+            assert!(lead.finish(true).is_none());
+            lead.prompt("C");
+            lead.acknowledge_prompt();
+            lead.apply(lead.finish(true).unwrap());
+            assert!(lead.approved());
+        }
+    }
+
+    #[test]
+    fn auto_plan_recorded_claude_replays_keep_uuid_and_follow_earlier_result() {
+        let events: Vec<Value> =
+            include_str!("../../web/src/lib/__fixtures__/claude-replay-uuid.jsonl")
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+        let echoes: Vec<_> = events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e["isReplay"] == true)
+            .collect();
+        assert_eq!(echoes.len(), 2);
+        assert_eq!(echoes[0].1["uuid"], "179d9c88-72a5-4a10-a371-f465912b1878");
+        assert_eq!(echoes[1].1["uuid"], "385e4807-077b-4a55-8715-6b927ff9abc1");
+        assert_eq!(
+            echoes[0].1["message"]["content"],
+            echoes[1].1["message"]["content"]
+        );
+        assert!(events[echoes[0].0 + 1..echoes[1].0]
+            .iter()
+            .any(|e| e["type"] == "result"));
+        let lead = Lead::new(ChatAgent::Claude);
+        lead.finish(true).unwrap();
+        chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+        lead.prompt("Reply with exactly the single word ready. Do not use tools.");
+        lead.session.lock().unwrap().auto_plan_attribution = AutoPlanAttribution::Claude {
+            uuid: "385e4807-077b-4a55-8715-6b927ff9abc1".into(),
+            content: replay_content(&echoes[1].1["message"]["content"]),
+            echoed: false,
+        };
+        for event in events {
+            if event["type"] == "system" && event["subtype"] == "init" {
+                lead.observe_claude_init();
+            }
+            lead.observe_barrier(&event);
+            if event["type"] == "result" {
+                let ended = lead.finish(true);
+                if event["uuid"] == "82d73d3a-0232-4a8e-ac77-0317670dd714" {
+                    lead.apply(ended.unwrap());
+                } else {
+                    assert!(ended.is_none());
+                }
+            }
+        }
+        assert!(lead.approved());
     }
 
     #[test]
