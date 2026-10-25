@@ -2944,7 +2944,11 @@ the id), never `busy` or the idle clock. The matching turn remains refused even
 if an older buffered end marks it idle. A late answer for another write/turn
 cannot latch or clear the current turn. This includes command/file approvals,
 MCP confirmations, unsupported/no-runtime elicitation and unanswered cards
-cancelled at a full stop. Only a new real write resets this refusal ownership.
+cancelled at a full stop. Child-thread requests belong conservatively to the
+parent's current write/correlated turn; an unknown turn remains refused when
+correlation arrives. Attribution controls only auto-plan evidence: it never
+changes which elicitation card is shown, its answer, cancellation or diagnostic.
+Only a new real write resets this refusal ownership.
 The epoch, turn-sequence and launches maps are leaves: their guards never span
 acquisition of another lock. Launch identity/success is checked before the
 ledger, under the own writer's lock; approval never reads these maps.
