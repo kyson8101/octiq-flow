@@ -24,6 +24,7 @@ import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
 import { MemoryNote } from "./MemoryNote";
 import { MediaChatContext, MediaReplyContext } from "./MediaSlot";
+import { PlanAutoApprovedNote } from "./PlanAutoApprovedNote";
 import { ReopenedChatContext, ReopenedNote } from "./ReopenedNote";
 import { AnswerBubble, AnsweredInline, AnsweredPlacesContext, AskInline, AskPlacesContext, ChatQuestionsContext, LooseQuestions, type AskPlaces } from "./InlineQuestions";
 import { askAnswer, isAskTool } from "../lib/askAnswer";
@@ -333,6 +334,7 @@ function BlockView({
   if (block.kind === "notice") return <Notice text={block.text} />;
   if (block.kind === "peer") return <PeerNote block={block} />;
   if (block.kind === "memory") return <MemoryNote activity={block.activity} />;
+  if (block.kind === "planAutoApproved") return <PlanAutoApprovedNote record={block.record} />;
   if (block.kind === "reopened") return <ReopenedNote reopened={block.reopened} />;
   // A question whose answer was handed over while its call waited, from the
   // host's line in the record: drawn here unless a call above is its own.
@@ -946,7 +948,7 @@ function TurnView({
   // the top of that names the one participant who did not.
   const allEvent =
     blocks.length > 0 &&
-    blocks.every((b) => b.kind === "compacted" || b.kind === "notice" || b.kind === "peer" || b.kind === "memory" || b.kind === "reopened" || b.kind === "answered");
+    blocks.every((b) => b.kind === "compacted" || b.kind === "notice" || b.kind === "peer" || b.kind === "memory" || b.kind === "planAutoApproved" || b.kind === "reopened" || b.kind === "answered");
 
   // What was attached to this turn. Taken across the messages the turn is made
   // of, and de-duplicated by path: the agent echoes a user turn back, so the
@@ -1201,7 +1203,8 @@ function groupTurns(messages: Message[]): Message[][] {
     // second answer under the first prompt's label.
     const differentReplyTarget =
       m.replyTo?.id !== last?.[0].replyTo?.id && (!!m.replyTo || !!last?.[0].replyTo);
-    const alone = !!m.relay || !!last?.[0].relay || ownTurn || differentReplyTarget;
+    const hostPlanRecord = (message?: Message) => message?.blocks.some((b) => b.kind === "planAutoApproved");
+    const alone = !!m.relay || !!last?.[0].relay || ownTurn || differentReplyTarget || hostPlanRecord(m) || hostPlanRecord(last?.[0]);
     if (!alone && last && last[0].role === m.role && last[0].speaker?.id === m.speaker?.id)
       last.push(m);
     else turns.push([m]);

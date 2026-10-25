@@ -53,6 +53,7 @@ import { parsePeerMessages, type PeerMessage } from "./peerMessage";
 import { readChatServiceResumed } from "./carryOn";
 import { readRelay } from "./relay";
 import { mergeMemoryActivity, readMemoryActivity, type MemoryActivity } from "./memoryActivity";
+import { readPlanAutoApproved, type PlanAutoApproved } from "./planAutoApproved";
 import { readTaskReopened, type TaskReopened } from "./taskReopened";
 import { answeredMessageId, QUESTION_ANSWERED, readQuestionAnswered, type QuestionAnswered } from "./question";
 import { taskLabel, type BackgroundTask } from "./background";
@@ -120,6 +121,7 @@ export type Block =
    *  new instructions and no new approval. One folded line; the instructions
    *  are behind it (`components/ReopenedNote`). */
   | { kind: "reopened"; reopened: TaskReopened }
+  | { kind: "planAutoApproved"; record: PlanAutoApproved }
   /** The host's record of a question whose answer was handed to the agent
    *  while its call waited (`octiq_question_answered`). What was asked and
    *  what the person said, drawn where the line stands unless an `ask_user`
@@ -1202,6 +1204,14 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   // The coordinator reopened a task with new instructions. No approval was
   // asked for it, so the host says it in the coordinator's own transcript,
   // once per attempt, and the chat draws one folded line (`lib/taskReopened`).
+  if (type === "octiq_plan_auto_approved") {
+    const record = readPlanAutoApproved(e);
+    if (!record || state.messages.some((m) => m.id === record.id)) return state;
+    return { ...state, messages: [...state.messages,
+      { id: record.id, role: "assistant", blocks: [{ kind: "planAutoApproved", record }], streaming: false },
+    ] };
+  }
+
   if (type === "octiq_task_reopened") {
     const reopened = readTaskReopened(e);
     if (!reopened || state.messages.some((m) => m.id === reopened.id)) return state;

@@ -1196,6 +1196,83 @@ host queues one `plan_rejected` continuation to the coordinator naming the
 revision, reason, withdrawn new tasks and restored approved tasks; its wording
 states that it is a decision record, not an instruction to make another plan.
 
+### Automatic approval for one chat
+
+The person can enable **automatic plan approval** in the chat's Details panel
+or with the plan card's tick box. Both use the browser-only commands
+`orchestration_auto_plan_get { chatKey }` and
+`orchestration_auto_plan_set { chatKey, enabled }`, returning
+`{ chatKey, enabled, enabledAt? }`. No agent hook or MCP tool exposes them.
+The setting is kept in the profile's orchestration ledger until switched off;
+it is not a one-turn choice. Workers, front desks, room seats and chats outside
+the active chat index cannot enable it. An enable whose record cannot be saved
+is refused; disable acts immediately and retries an owed save.
+
+At a clean end of the lead's own turn (including a host notification turn),
+the host captures its launch identity, Stop epoch, turn sequence and refusal
+latch under the existing writer lock, then releases every chat lock. Approval
+uses only the ledger: its first snapshot and final publication require the
+epoch and turn sequence to remain unchanged. Every real prompt start advances
+the sequence under its writer lock before writing (including queued handoffs,
+host notifications and Codex app-server turns); new launches advance it before
+executing their first prompt. Any later turn vetoes the old clean end, even
+without plan edits. That later turn's own clean end can retry.
+
+Stop, interrupt and intentional process removal advance the epoch and revoke
+launch evidence. A persistent provider refreshes its launch evidence only when
+a real new turn starts. Every Stop/interrupt of a retained persistent process
+sets a session-locked unattributed latch, even when the host reads idle. No
+number of buffered autonomous init/result pairs clears it. Claude recovery
+requires the post-Stop prompt's `isReplay` echo with its fresh native UUID and
+exact content, excluding synthetic echoes. Codex recovery requires the matching
+turn/start request's returned native turn id and completion of that same turn.
+Only the attributable clean end clears the latch and can approve in the same
+PID; it need not be the first real turn's end. A new Stop resets the latch;
+another write replaces its target until recovery. Without correlation it stays
+latched until a new process, and the person can still approve on the plan card.
+CutOff::Owed keeps its existing queue handoff and does not clear this latch.
+Natural one-shot reaping preserves evidence for buffered clean output. A turn
+the host only observes advances the sequence, but never restores evidence a
+Stop revoked or clears attribution. Its clean end can qualify only while
+launch evidence and attribution remain intact. The epoch, sequence and launches
+maps are leaves, never held while acquiring another lock; launch validation
+happens outside the ledger. The staged write checks consent, revision and
+waiting set, then brackets its unchanged-epoch CAS with sequence checks just
+before rename. No chat lock spans auto-approval ledger I/O, and auto-approval
+never acquires a chat lock under the ledger.
+
+Native Codex refusals are bound under the session lock to the prompt's
+write identity and native turn id (or the written target when elicitation omits
+the id), never `busy` or the idle clock. The matching turn remains refused even
+if an older buffered end marks it idle. A late answer for another write/turn
+cannot latch or clear the current turn. This includes command/file approvals,
+MCP confirmations, unsupported/no-runtime elicitation and unanswered cards
+cancelled at a full stop. Child-thread requests belong conservatively to the
+parent's current write/correlated turn; an unknown turn remains refused when
+correlation arrives. Attribution controls only auto-plan evidence: it never
+changes which elicitation card is shown, its answer, cancellation or diagnostic.
+Only a new real write resets this refusal ownership.
+The host auto-approves only a whole pending, nonempty revision whose every
+waiting task's effective worker access is at most Auto and no task is a peer
+request. A Full task holds the whole revision for the person's card. A failed
+or refused turn or intentionally ended process never approves. Other task,
+permission and safety gates remain in force.
+
+Approval still uses the normal transition and approved task shape, with no
+workspace choices (the host's workspace advice applies). Its consent says
+`via: "standing"` and retains the setting's `enabledAt`. Every decision records
+`octiq_plan_auto_approved { runId, revision, taskIds, taskTitles, at, enabledAt }`
+in the coordinator's transcript and queues a host notification saying the
+revision was auto-approved and the host dispatches it. A durable outbox retries
+the transcript write after a crash or temporary profile outage.
+
+The `orchestration-auto-plan` bus event carries `{ chatKey, enabled, enabledAt? }`.
+The snapshot's derived `run.autoPlan` is present only while the setting is on:
+`{ enabled: true, held?: { reason: "access" | "peerRequest", taskIds } }`.
+`held` appears only for a pending revision; peer requests take precedence when
+both reasons apply. Neither provider plan mode nor a provider mode transition
+is involved. All other plan, task, permission and safety gates still apply.
+
 ### Approving by chat
 
 You can also approve by telling the lead, as in "approve this plan", or

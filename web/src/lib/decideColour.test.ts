@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import designSystemCss from "../design-system.css?raw";
 import stylesCss from "../styles.css?raw";
 import mangaSheet from "../manga.css?raw";
+import autoPlanCss from "../components/AutoPlan.css?raw";
 import chatPlanCss from "../components/ChatPlanCards.css?raw";
 import handoverCss from "../components/HandoverCards.css?raw";
 import questionCss from "../components/InlineQuestions.css?raw";
@@ -738,5 +739,16 @@ describe("the pending badge in the chat list", () => {
     const [base] = rules(before, "PendingActionBadge.css").filter((rule) => rule.selector === ".pending-action-badge");
     expect(base.body).toMatch(NOT_A_DECISION);
     expect(of(".pending-action-badge")[0].body).not.toMatch(NOT_A_DECISION);
+  });
+});
+
+
+describe("automatic plan consent is a setting and a recorded fact", () => {
+  const sheet = rules(autoPlanCss, "AutoPlan.css");
+  it("names its setting and record parts and uses no accent or decision fill", () => {
+    const parts = new Set(sheet.flatMap((rule) => [...rule.selector.matchAll(/\.auto-plan-([a-z-]+)/g)].map((m) => m[1])));
+    expect([...parts].sort()).toEqual(["approved", "error", "future", "held", "setting", "switch", "titles", "track"]);
+    for (const rule of sheet) expect(rule.body, rule.selector).not.toMatch(/--(accent|composer-accent|composer-ink|decide|warn)\b/);
+    expect(sheet.some((rule) => /appearance:\s*none/.test(rule.body))).toBe(true);
   });
 });

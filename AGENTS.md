@@ -2906,6 +2906,87 @@ mode; approval without a choice re-plans them as Direct and fixes that mode.
 The main chat coordinates while a
 worker owns the write lease; it must not also edit that checkout.
 
+**Per-chat automatic plan approval is the person's standing consent.** Only
+the browser socket exposes `orchestration_auto_plan_get/set { chatKey, enabled? }`;
+neither command has a hook action or MCP tool. The Details switch and plan-card
+tick box share the ledger's `auto_plan_chats` setting, retained until switched
+off. Enabling needs its record first (Conventions C); disabling acts at once
+and owes a failed save. Workers, front desks, room seats and unlisted chats
+cannot enable it. A clean full stop of the chat's own writer, including a host
+notification turn, captures its launch id, per-chat `stop_epoch`, turn sequence
+and refusal latch under the existing writer session lock, then releases every
+chat lock. Approval takes only the ledger; ordinary sends, starts and queued
+handoffs continue through their existing admission and writer paths.
+Every intentional Stop, interrupt, replacement, end, idle sweep and expired
+grace increments the per-chat AtomicU64 epoch and revokes launch evidence;
+natural one-shot reaping alone preserves them for buffered clean output.
+Every real prompt start increments the per-chat AtomicU64 turn sequence under
+its writer lock before writing, including person, queued, host notification
+and Codex app-server turns. A new launch increments it before executing its
+command-line prompt. A persistent writer refreshes its launch evidence at a
+real turn start. Every Stop/interrupt of a retained persistent process also
+sets an unattributed latch under the session lock, even while it reads idle.
+Buffered init/result pairs, however many, cannot clear it. After a post-Stop
+host write, Claude must replay that prompt's fresh native UUID and exact
+content (`isReplay`, never synthetic); Codex must return that turn/start
+request's native turn id and complete that same turn. Only that attributable
+clean end clears the latch and can qualify in the same PID. A later Stop
+resets it; another write replaces the target until recovery. Missing provider
+correlation keeps it latched until a new process. Thus recovery need not occur
+at the first real turn's end; manual plan-card approval remains available.
+Consuming CutOff::Owed still moves the queue once, without clearing the latch.
+A turn the host only observes advances the sequence, but never restores
+evidence a Stop revoked or clears attribution. Its clean end can qualify only
+while launch evidence and attribution remain intact.
+Native Codex refusals are bound under the session lock to the prompt's
+write identity and native turn id (or the written target when elicitation omits
+the id), never `busy` or the idle clock. The matching turn remains refused even
+if an older buffered end marks it idle. A late answer for another write/turn
+cannot latch or clear the current turn. This includes command/file approvals,
+MCP confirmations, unsupported/no-runtime elicitation and unanswered cards
+cancelled at a full stop. Child-thread requests belong conservatively to the
+parent's current write/correlated turn; an unknown turn remains refused when
+correlation arrives. Attribution controls only auto-plan evidence: it never
+changes which elicitation card is shown, its answer, cancellation or diagnostic.
+Only a new real write resets this refusal ownership.
+The epoch, turn-sequence and launches maps are leaves: their guards never span
+acquisition of another lock. Launch identity/success is checked before the
+ledger, under the own writer's lock; approval never reads these maps.
+The first ledger snapshot pins the pending revision and waiting set only if
+the captured epoch and turn sequence still match. Any next turn vetoes the old
+full stop, even with no plan edits or if it ended before the snapshot. Its own
+clean end retries. The staged clone, outbox and inbox commit together only if
+consent, revision, waiting set, epoch and turn sequence still match after the
+temporary write, immediately before rename/publication. The unchanged-epoch
+CAS, bracketed by unchanged-sequence checks, is the decision point. Stop and
+new turns can veto without waiting for ledger I/O or taking a chat lock there.
+No chat lock is held while the auto-approval path takes the ledger, and the
+ledger is never held while it takes a chat lock.
+Lock audit: `start_session`'s final `admit_beside_writers` takes sessions → ledger
+(read-only workspace admission), and report confirmation via `while_idle` takes
+session → ledger. Access changes (`chat_set_access_impl`'s `record_raise`,
+`remember_start`, `keep_access_for_resume`/`keep_resume_at`) also hold the
+session across ledger resume-context saves; their starts guard is released
+before the ledger is taken. `replaced_binary_keys` releases the table before its ledger
+lookup. `require_workspace_available` releases its ledger snapshot before
+sessions/starts. Ledger-held agent removal (`LeavingMark::look`,
+`turn_may_be_in_flight`) uses only nonblocking try_lock. Auto approval must
+never wait for ANY chat lock (sessions, session, queue, handoffs, launches)
+under the ledger, nor wait for the ledger while holding one; no global chat
+table spans its ledger persist I/O. Worker archive/dispatch, ended-worker
+Stop/recovery, mission cleanup and workspace lifecycle checks take chat locks
+only after ledger snapshots/mutations have returned. Auto approval approves
+the whole pending revision through `decide_plan_in` only when every waiting
+task's effective worker access is at most Auto and none is a peer request.
+Stop, interrupt, failure, refusal or a replaced/ended process approves nothing.
+`ConsentVia::Standing` keeps `enabledAt`; a durable ledger outbox records
+`octiq_plan_auto_approved` in the transcript and the normal host notification
+tells the lead whether automatic dispatch is paused (the coordinator starts
+the workers) or the host dispatches through the normal gates. Snapshot-only
+`run.autoPlan` explains
+an access or peer-request hold. This uses no provider plan mode and changes
+none of the task, permission, safety or reserve gates.
+
 **An approval fixes what a task runs as, and a time stamp or a parent id is
 not that approval.** `approved_at` says a task was approved. `Task::approved`
 (`orchestration/approval.rs`) says as what: the worker in effect when the

@@ -94,7 +94,7 @@ export type PlanApproval = {
   /** How the last approval was given. `words` is the person's own message
    *  when they approved in chat. */
   consent?: {
-    via: "button" | "conversation"; revision: number; at: number; turnId?: string; words?: string;
+    via: "button" | "conversation" | "standing"; enabledAt?: number; revision: number; at: number; turnId?: string; words?: string;
     /** A button approval: which card, and how long it had shown the revision. */
     surface?: "chat" | "panel" | "unknown"; shownMs?: number;
   };
@@ -117,6 +117,7 @@ export type OrchestrationRun = {
   workerDefaults?: WorkerDefaults | null;
   /** Agents mode: the lead's plan waits for the person before workers start. */
   planApproval?: PlanApproval;
+  autoPlan?: { enabled: true; held?: { reason: "access" | "peerRequest"; taskIds: string[] } };
   createdAt: number;
   updatedAt: number;
   stoppedReason?: string;

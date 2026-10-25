@@ -383,6 +383,31 @@ fn completion_refusal_in(
     Ok((!listed).then_some("This chat is not in the active chat index."))
 }
 
+fn require_auto_plan_chat(
+    orchestrations: &OrchestrationStore,
+    chats: &ChatManager,
+    team: &std::path::Path,
+    key: &str,
+) -> Result<(), String> {
+    if orchestrations.is_worker_chat(key)? {
+        return Err("A worker chat cannot enable automatic plan approval.".into());
+    }
+    if crate::team::is_front_desk_chat(team, key) {
+        return Err("A front desk only routes and cannot enable automatic plan approval.".into());
+    }
+    if !crate::agent_chat::is_own_voice(chats, key) {
+        return Err("A room seat cannot enable automatic plan approval for its chat.".into());
+    }
+    let listed = match key.strip_prefix("chat:") {
+        Some(id) => crate::chat_index::listed(id)?,
+        None => false,
+    };
+    if !listed {
+        return Err("This chat is not in the active chat index.".into());
+    }
+    Ok(())
+}
+
 /// The runs a chat coordinates that have not ended, and whether it is a
 /// registered agent's: the two things the wrap-up's wording turns on.
 fn completion_wrap_up(svc: &Services, key: &str) -> Result<String, String> {
@@ -1962,6 +1987,23 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 manager.as_deref(),
             ))
         }
+        "orchestration_auto_plan_get" => to_value(
+            svc.orchestrations
+                .auto_plan_get(&arg::<String>(&args, "chatKey")?),
+        ),
+        "orchestration_auto_plan_set" => {
+            let chat: String = arg(&args, "chatKey")?;
+            let enabled: bool = arg(&args, "enabled")?;
+            if enabled {
+                require_auto_plan_chat(
+                    &svc.orchestrations,
+                    &svc.chats,
+                    &crate::team::default_path(),
+                    &chat,
+                )?;
+            }
+            to_value(svc.orchestrations.auto_plan_set(&chat, enabled))
+        }
         // Browser-only: the person approves an agents-mode lead's plan. Not in
         // the agent hook's whitelist, so no agent can approve its own plan.
         "orchestration_plan_approve" => to_value(
@@ -2846,6 +2888,65 @@ mod tests {
         chats.test_launch(&chat.key);
         assert_eq!(refusal(&chat.key), None);
         chats.test_end(&chat.key);
+    }
+
+    #[test]
+    fn auto_plan_settings_are_person_only_and_refuse_worker_desk_seat_and_unlisted_chats() {
+        let svc = Services::load();
+        let dir = crate::test_dir::TestDir::new("auto-plan-eligibility");
+        let team = dir.0.join("team.json");
+        std::fs::write(&team, r#"{"agents":[],"front_desk_chats":[{"chatKey":"chat:desk","agentId":"a1","sessionIds":[],"createdAt":1}]}"#).unwrap();
+        svc.chats.test_seat("chat:room#second", "chat:room");
+        for (chat, reason) in [
+            ("chat:orch-worker", "worker"),
+            ("chat:desk", "front desk"),
+            ("chat:room#second", "room seat"),
+            ("chat:not-listed-auto-plan", "active chat index"),
+        ] {
+            let error =
+                require_auto_plan_chat(&svc.orchestrations, &svc.chats, &team, chat).unwrap_err();
+            assert!(error.contains(reason), "{error}");
+            assert!(!svc.orchestrations.auto_plan_get(chat).unwrap().enabled);
+        }
+        let chat = ListedChat::new();
+        assert!(require_auto_plan_chat(&svc.orchestrations, &svc.chats, &team, &chat.key).is_ok());
+        let call = |enabled| {
+            dispatch(
+                &svc,
+                "orchestration_auto_plan_set",
+                json!({"chatKey":chat.key,"enabled":enabled}),
+            )
+            .unwrap()
+        };
+        let on = call(true);
+        assert_eq!(on["chatKey"], chat.key);
+        assert_eq!(on["enabled"], true);
+        assert!(on["enabledAt"].is_i64());
+        assert_eq!(
+            dispatch(
+                &svc,
+                "orchestration_auto_plan_get",
+                json!({"chatKey":chat.key})
+            )
+            .unwrap(),
+            on
+        );
+        let off = call(false);
+        assert_eq!(off["enabled"], false);
+        assert!(off.get("enabledAt").is_none());
+        assert!(dispatch(
+            &svc,
+            "orchestration_auto_plan_set",
+            json!({"chatKey":"chat:not-listed-auto-plan","enabled":true})
+        )
+        .is_err());
+        // Revocation needs no launch or active index membership.
+        assert!(dispatch(
+            &svc,
+            "orchestration_auto_plan_set",
+            json!({"chatKey":"chat:not-listed-auto-plan","enabled":false})
+        )
+        .is_ok());
     }
 
     #[test]

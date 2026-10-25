@@ -8,11 +8,19 @@ pub(super) struct Pending {
     _cancel: tokio::sync::oneshot::Sender<()>,
     item_id: Option<String>,
     started: Instant,
+    pub(super) target: CodexRefusalTarget,
 }
 
 // A native cancel result has no reason field. Carry the host's actual reason
 // to both the transcript and the active model turn, without approving the call.
-fn unanswered(guard: &mut ChatSession, key: &str, item_id: Option<String>, reason: &str) {
+fn unanswered(
+    guard: &mut ChatSession,
+    key: &str,
+    item_id: Option<String>,
+    target: &CodexRefusalTarget,
+    reason: &str,
+) {
+    guard.latch_codex_refusal(target);
     let text = format!("MCP confirmation was not answered: {reason}. No approval was given; this was not a user cancellation.");
     let Some(codex) = guard.codex.as_mut() else {
         return;
@@ -127,6 +135,7 @@ pub(super) fn resolved(session: &Arc<Mutex<ChatSession>>, key: &str, request_id:
                 &mut guard,
                 key,
                 pending.item_id,
+                &pending.target,
                 &format!(
                     "Codex closed the confirmation after {} ms before the host received an answer",
                     pending.started.elapsed().as_millis()
@@ -143,22 +152,26 @@ pub(super) fn answer(
     request_id: Value,
     params: Value,
 ) {
-    let (tool, item_id) = session
+    let (tool, item_id, target) = session
         .lock()
         .ok()
-        .and_then(|guard| {
-            let codex = guard.codex.as_ref()?;
-            let call = native_call(codex, &params);
-            Some((
+        .map(|guard| {
+            let call = guard
+                .codex
+                .as_ref()
+                .and_then(|codex| native_call(codex, &params));
+            (
                 params["_meta"]["tool_name"]
                     .as_str()
                     .or_else(|| call.and_then(|(_, item)| item["tool"].as_str()))
                     .map(str::to_owned),
                 call.map(|(id, _)| id.to_owned()),
-            ))
+                Some(guard.codex_refusal_target(&params)),
+            )
         })
         .unwrap_or_default();
     if !confirmation(&params) {
+        latch_codex_refusal(session, target.as_ref());
         // Explicitly report the supported boundary instead of a misleading
         // generic "user rejected" resulting from an unknown-method error.
         emit_status(ChatAgent::Codex, ChatStatus {
@@ -169,6 +182,7 @@ pub(super) fn answer(
         return;
     }
     let Some(rt) = rt else {
+        latch_codex_refusal(session, target.as_ref());
         write_codex_response(session, &request_id, response("cancel"));
         return;
     };
@@ -182,6 +196,9 @@ pub(super) fn answer(
         write_codex_response(session, &request_id, response("cancel"));
         return;
     }
+    // Even missing attribution is evidence only. Bind an unknown request to
+    // the current write rather than changing its permission flow.
+    let target = target.unwrap_or_else(|| guard.codex_refusal_target(&Value::Null));
     let Some(codex) = guard.codex.as_mut() else {
         return;
     };
@@ -191,6 +208,7 @@ pub(super) fn answer(
             _cancel: tx,
             item_id: item_id.clone(),
             started: Instant::now(),
+            target,
         },
     );
     drop(guard);
@@ -227,24 +245,31 @@ pub(super) fn answer(
             answer = crate::permission::ask(ask) => answer,
         };
         // Resolution, Stop and the response all claim the same entry under
-        // the session lock. A late click can never write into a later turn.
+        // the session lock. A withdrawn card can never write a late reply.
         let Ok(mut guard) = session.lock() else {
             return;
         };
         let Some(codex) = guard.codex.as_mut() else {
             return;
         };
-        if codex.elicitations.remove(&request_id.to_string()).is_none() {
+        let Some(pending) = codex.elicitations.remove(&request_id.to_string()) else {
             return;
-        }
+        };
+        // Claiming the pending request controls routing, as before auto-plan.
+        // Attribution affects only evidence; it cannot hide a card, discard
+        // its answer or suppress the existing cancellation diagnostics.
+        let target = &pending.target;
         if answer.decision != "allow" && answer.reason != crate::permission::DENIED {
-            unanswered(&mut guard, &key, item_id, &answer.reason);
+            unanswered(&mut guard, &key, item_id, target, &answer.reason);
         }
         let action = match answer.decision {
             "allow" => "accept",
             "deny" if answer.reason == crate::permission::DENIED => "decline",
             _ => "cancel",
         };
+        if action != "accept" {
+            guard.latch_codex_refusal(target);
+        }
         if let Some(stdin) = guard.stdin.as_mut() {
             let _ = write_json_line(
                 stdin,
@@ -282,6 +307,7 @@ mod tests {
                 .as_mut()
                 .unwrap()
                 .active_turn_id = Some("turn-1".into());
+            session.lock().unwrap().auto_plan_turn.native_id = Some("turn-1".into());
             Self {
                 svc,
                 key,
@@ -380,6 +406,48 @@ mod tests {
             json!("Allow the octiq MCP server to run tool \"orchestration_run_create\"?");
         params["_meta"]["tool_params"] = json!({"objective":"Resume the roadmap"});
         params
+    }
+
+    // Person-facing routing must not depend on auto-plan evidence. This chat
+    // has no standing consent; the same fixture also ran on 4497b0a.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn child_thread_confirmation_preserves_card_and_answer_routing() {
+        for (thread, turn) in [
+            ("child-thread", "child-turn"),
+            ("thread-1", "turn-1"),
+            ("thread-1", "older-turn"),
+        ] {
+            for (decision, action) in [
+                (crate::permission::Decision::Allow, "accept"),
+                (crate::permission::Decision::Deny, "decline"),
+            ] {
+                let mut chat = Chat::new();
+                let mut params = approval();
+                params["threadId"] = json!(thread);
+                params["turnId"] = json!(turn);
+                chat.ask(json!(81), params, true);
+                let card = chat.card().await;
+                assert_eq!(card["sessionId"], thread);
+                assert_eq!(card["chatKey"], chat.key);
+                assert_eq!(card["provider"], "codex");
+                assert_eq!(card["toolName"], "octiq confirmation");
+                assert_eq!(card["once"], true);
+                assert!(card["toolInput"]["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Resume the roadmap"));
+                assert!(crate::permission::decide(
+                    card["id"].as_str().unwrap(),
+                    decision,
+                    false,
+                ));
+                assert_eq!(
+                    chat.written().await,
+                    json!({"id":81, "result":response(action)})
+                );
+                assert!(chat.cards().is_empty());
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -529,7 +597,221 @@ mod tests {
                 json!({ "id": id, "result": expected })
             );
             assert!(chat.cards().is_empty());
+            assert_eq!(
+                chat.session.lock().unwrap().auto_plan_turn.refused(),
+                expected == response("decline")
+            );
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn idle_native_refusals_cover_confirmation_unsupported_and_no_runtime() {
+        for kind in [
+            "decline",
+            "resolved",
+            "unsupported",
+            "no-runtime",
+            "no-turn-id",
+        ] {
+            let mut chat = Chat::new();
+            chat.session.lock().unwrap().turn_ended();
+            assert!(!chat.session.lock().unwrap().busy);
+            let mut params = approval();
+            if kind == "unsupported" {
+                params["mode"] = json!("url");
+            }
+            if kind == "no-turn-id" {
+                params.as_object_mut().unwrap().remove("turnId");
+            }
+            chat.ask(json!(90), params, kind != "no-runtime");
+            if matches!(kind, "decline" | "resolved" | "no-turn-id") {
+                let card = chat.card().await;
+                if kind == "resolved" {
+                    resolved(&chat.session, &chat.key, &json!(90));
+                    assert_eq!(chat.written().await["method"], "turn/steer");
+                    chat.cleared().await;
+                } else {
+                    assert!(crate::permission::decide(
+                        card["id"].as_str().unwrap(),
+                        crate::permission::Decision::Deny,
+                        false
+                    ));
+                    assert_eq!(chat.written().await["result"], response("decline"));
+                }
+            } else {
+                assert_eq!(chat.written().await["result"], response("cancel"));
+            }
+            assert!(
+                chat.session.lock().unwrap().auto_plan_turn.refused(),
+                "{kind}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn child_and_other_parent_turns_preserve_cancellation_paths() {
+        for thread in ["child-thread", "thread-1"] {
+            for kind in [
+                "unsupported",
+                "no-runtime",
+                "resolved",
+                "full-stop",
+                "abstain",
+            ] {
+                let mut chat = Chat::new();
+                let mut params = approval();
+                params["threadId"] = json!(thread);
+                params["turnId"] = json!("other-turn");
+                if kind == "unsupported" {
+                    params["mode"] = json!("url");
+                }
+                chat.ask(json!(82), params, kind != "no-runtime");
+                if matches!(kind, "unsupported" | "no-runtime") {
+                    assert_eq!(
+                        chat.written().await,
+                        json!({"id":82, "result":response("cancel")})
+                    );
+                    assert!(chat.cards().is_empty());
+                } else {
+                    let card = chat.card().await;
+                    match kind {
+                        "resolved" => resolved(&chat.session, &chat.key, &json!(82)),
+                        "full-stop" => chat.session.lock().unwrap().turn_ended(),
+                        "abstain" => assert!(crate::permission::decide(
+                            card["id"].as_str().unwrap(),
+                            crate::permission::Decision::Abstain,
+                            false,
+                        )),
+                        _ => unreachable!(),
+                    }
+                    if kind != "full-stop" {
+                        let notice = chat.written().await;
+                        assert_eq!(notice["method"], "turn/steer");
+                        assert!(notice["params"]["input"][0]["text"]
+                            .as_str()
+                            .unwrap()
+                            .contains("MCP confirmation was not answered"));
+                    }
+                    if kind == "abstain" {
+                        assert_eq!(
+                            chat.written().await,
+                            json!({"id":82, "result":response("cancel")})
+                        );
+                    }
+                    chat.cleared().await;
+                    assert!(!crate::permission::decide(
+                        card["id"].as_str().unwrap(),
+                        crate::permission::Decision::Allow,
+                        false,
+                    ));
+                }
+                // Resolved/full-stop requests never send a later acceptance
+                // or cancellation; unsupported/no-runtime remain cancel.
+                write_codex_response(&chat.session, &json!(99), json!({"barrier":true}));
+                assert_eq!(chat.written().await["id"], 99);
+                let guard = chat.session.lock().unwrap();
+                assert_eq!(guard.auto_plan_turn.refused(), thread == "child-thread");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn child_decline_without_parent_correlation_stays_closed_after_response() {
+        for child in [false, true] {
+            let mut chat = Chat::new();
+            {
+                let mut guard = chat.session.lock().unwrap();
+                guard
+                    .auto_plan_turn
+                    .prompt(true, &json!({"id":"parent-start"}));
+            }
+            let mut params = approval();
+            if child {
+                params["threadId"] = json!("child-thread");
+                params["turnId"] = json!("child-turn");
+            } else {
+                // Neither thread nor turn attribution is available.
+                params.as_object_mut().unwrap().remove("threadId");
+                params.as_object_mut().unwrap().remove("turnId");
+            }
+            chat.ask(json!(83), params, true);
+            let card = chat.card().await;
+            assert!(crate::permission::decide(
+                card["id"].as_str().unwrap(),
+                crate::permission::Decision::Deny,
+                false,
+            ));
+            assert_eq!(chat.written().await["result"], response("decline"));
+            let mut guard = chat.session.lock().unwrap();
+            assert!(guard.auto_plan_refused);
+            guard.auto_plan_turn.observe_codex(
+                &json!({"id":"parent-start", "result":{"turn":{"id":"parent-turn"}}}),
+            );
+            assert!(
+                guard.auto_plan_refused,
+                "later correlation cannot clear an unknown decline"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn late_confirmation_answer_or_resolution_cannot_latch_a_new_write() {
+        for thread in ["thread-1", "child-thread"] {
+            for resolution in [false, true] {
+                for already_refused in [false, true] {
+                    let mut chat = Chat::new();
+                    let mut params = approval();
+                    params["threadId"] = json!(thread);
+                    chat.ask(json!(91), params, true);
+                    let card = chat.card().await;
+                    // Keep the old pending request across a new real write.
+                    // Routing still answers it; only evidence ignores it.
+                    {
+                        let mut guard = chat.session.lock().unwrap();
+                        guard
+                            .auto_plan_turn
+                            .prompt(true, &json!({"id":"new-request"}));
+                        guard.auto_plan_turn.observe_codex(
+                            &json!({"id":"new-request", "result":{"turn":{"id":"new-turn"}}}),
+                        );
+                        guard.turn_started();
+                        if already_refused {
+                            let target = guard.codex_refusal_target(&json!({"turnId":"new-turn"}));
+                            guard.latch_codex_refusal(&target);
+                        }
+                    }
+                    if resolution {
+                        resolved(&chat.session, &chat.key, &json!(91));
+                        assert_eq!(chat.written().await["method"], "turn/steer");
+                    } else {
+                        assert!(crate::permission::decide(
+                            card["id"].as_str().unwrap(),
+                            crate::permission::Decision::Deny,
+                            false,
+                        ));
+                        assert_eq!(
+                            chat.written().await,
+                            json!({"id":91, "result":response("decline")})
+                        );
+                    }
+                    chat.cleared().await;
+                    let guard = chat.session.lock().unwrap();
+                    assert!(!guard.auto_plan_refused);
+                    assert_eq!(guard.auto_plan_turn.refused(), already_refused);
+                    assert_eq!(guard.auto_plan_turn.native_id.as_deref(), Some("new-turn"));
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clearing_current_confirmation_at_buffered_end_preserves_its_refusal() {
+        let chat = Chat::new();
+        chat.ask(json!(92), approval(), true);
+        chat.card().await;
+        chat.session.lock().unwrap().turn_ended();
+        chat.cleared().await;
+        assert!(chat.session.lock().unwrap().auto_plan_turn.refused());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
