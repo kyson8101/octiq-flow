@@ -65,6 +65,81 @@ describe("saving the chat cache", () => {
     expect(kept.find((c) => c.id === "c0")?.messages).toEqual([]);
   });
 
+  it("keeps old active chats and pins ahead of newer workers and done chats", () => {
+    const others = Array.from({ length: 90 }, (_, i) => i % 2
+      ? { ...chat(`done-${i}`, i + 100, 1), doneAt: i + 100 }
+      : chat(`orch-${i}`, i + 100, 1));
+    const active = chat("old-active", 2, 1);
+    const resumed = { ...chat("old-resumed", 3, 1), doneAt: 2 };
+    const pinned = { ...chat("old-pin", 1, 1), pinned: true, doneAt: 1 };
+
+    saveConversations([...others, active, resumed, pinned]);
+
+    const kept = loadConversations();
+    expect(kept).toHaveLength(80);
+    expect(kept.slice(0, 3).map((c) => c.id)).toEqual(["old-pin", "old-resumed", "old-active"]);
+    expect(kept.slice(3).map((c) => c.id)).toEqual(others.slice(13).reverse().map((c) => c.id));
+  });
+
+  it("keeps more than eighty active rows as metadata when transcripts exceed budget", () => {
+    const list = Array.from({ length: 90 }, (_, i) => ({ ...chat(`active-${i}`, i, 64), seq: i + 1 }));
+
+    saveConversations(list);
+
+    const kept = loadConversations();
+    expect(kept.map((c) => c.id)).toEqual(list.slice().reverse().map((c) => c.id));
+    expect(kept.some((c) => c.messages.length === 0)).toBe(true);
+    expect(kept.filter((c) => !c.messages.length).every((c) => c.seq === undefined)).toBe(true);
+    expect(storedBytes()).toBeLessThanOrEqual(3 * 1024 * 1024);
+  });
+
+  it("keeps every active row beyond the count cap when only metadata fits the quota", () => {
+    const list = Array.from({ length: 90 }, (_, i) => ({ ...chat(`active-${i}`, i, 64), seq: i + 1 }));
+    saveConversations(list.map((c) => ({ ...c, messages: [], seq: undefined })));
+    const CAP = storedBytes();
+    held.clear();
+    quota(CAP);
+
+    saveConversations(list);
+
+    const kept = loadConversations();
+    expect(kept.map((c) => c.id)).toEqual(list.slice().reverse().map((c) => c.id));
+    expect(kept.every((c) => !c.messages.length && c.seq === undefined)).toBe(true);
+  });
+
+  it("evicts other metadata before active chats and pins under quota pressure", () => {
+    const list = [
+      chat("orch-newest", 100, 4),
+      { ...chat("new-done", 99, 4), doneAt: 99 },
+      chat("active-new", 3, 4),
+      chat("active-old", 2, 4),
+      { ...chat("pinned-oldest", 1, 4), pinned: true, doneAt: 1 },
+    ];
+    saveConversations(list.map((c) => ({ ...c, messages: [] })));
+    const metadata = JSON.parse(held.get("octiq.v2.conversations")!);
+    const CAP = JSON.stringify(metadata.slice(0, 3)).length;
+    held.clear();
+    quota(CAP);
+
+    saveConversations(list);
+
+    expect(loadConversations().map((c) => c.id)).toEqual(["pinned-oldest", "active-new", "active-old"]);
+    expect(loadConversations().every((c) => !c.messages.length)).toBe(true);
+  });
+
+  it("evicts other metadata before pins when metadata alone exceeds budget", () => {
+    const list = [
+      { ...chat("orch-newer", 3, 0), title: "x".repeat(1600 * 1024), messages: [] },
+      { ...chat("orch-older", 2, 0), title: "x".repeat(1600 * 1024), messages: [] },
+      { ...chat("old-pin", 1, 0), pinned: true, messages: [] },
+    ];
+
+    saveConversations(list);
+
+    expect(loadConversations().map((c) => c.id)).toEqual(["old-pin", "orch-newer"]);
+    expect(storedBytes()).toBeLessThanOrEqual(3 * 1024 * 1024);
+  });
+
   it("leaves room for everything else in the store", () => {
     saveConversations(Array.from({ length: 16 }, (_, i) => chat(`c${i}`, i, 512)));
 
