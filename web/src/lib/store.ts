@@ -137,15 +137,16 @@ export function loadConversations(): Conversation[] {
 }
 
 export function saveConversations(list: Conversation[]): void {
-  // Bounded, dropping the LEAST RECENTLY USED first: a long transcript of tool
-  // results can be large, and a quota error would otherwise lose the whole
-  // store rather than one entry. This is eviction order only — what the sidebar
+  // Bounded, keeping sidebar rows before transcripts: a long transcript of
+  // tool results can be large, and a quota error would otherwise lose the whole
+  // store. Rows are dropped LEAST RECENTLY USED first only after every
+  // transcript is gone. This is eviction order only — what the sidebar
   // shows is ordered by byTask, which uses meaningful activity rather than
   // streaming deltas.
   const ordered = [...list].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_CONVERSATIONS);
 
-  // Each conversation is serialised ONCE, and what fits is joined back into an
-  // array. This used to stringify the whole LIST again for every candidate
+  // Each full conversation is serialised ONCE, and what fits is joined back
+  // into an array. This used to stringify the whole LIST again for every candidate
   // length, walking down one row at a time until something came in under
   // budget — so a live 20 MB chat sitting at the top of the list meant eighty
   // passes over twenty megabytes before writing `[]`. That ran on the main
@@ -156,6 +157,7 @@ export function saveConversations(list: Conversation[]): void {
   // shared, and a write that succeeds by taking the last of it is the thing
   // being prevented, not a success.
   const kept: string[] = [];
+  const transcripts: { index: number; row: Conversation; size: number }[] = [];
   let used = 2; // the brackets
   for (const c of ordered) {
     // Stamped HERE, on the one path that writes, so no caller can leave a
@@ -172,24 +174,36 @@ export function saveConversations(list: Conversation[]): void {
       json = JSON.stringify({ ...row, messages: [], seq: undefined });
       cost = json.length + (kept.length ? 1 : 0);
       if (used + cost > BUDGET) continue;
+    } else if (row.messages.length || row.seq !== undefined) {
+      transcripts.push({ index: kept.length, row, size: json.length });
     }
     kept.push(json);
     used += cost;
   }
 
-  // Down to nothing, not down to one. A store that will not fit is worse than
-  // an empty one: the chats are on the server too, and reopening one replays it
-  // from there — whereas a browser wedged at its quota breaks every OTHER thing
-  // that wants to write, which is a much quieter and much longer-lived fault.
-  for (let n = kept.length; n >= 0; n--) {
+  // The quota is shared, and the browser may refuse before our budget does.
+  // Strip the largest serialised rows first, keeping every sidebar row while
+  // there is still a transcript to give up. Each metadata copy is serialised
+  // once too; retries only re-JOIN strings, never re-serialise transcripts.
+  const write = (n: number): boolean => {
     try {
-      // Re-JOINING what is already serialised, never re-serialising it.
       localStorage.setItem(KEY, `[${kept.slice(0, n).join(",")}]`);
-      return;
+      return true;
     } catch {
-      // Over quota anyway — the budget is this app's guess at the browser's,
-      // and the browser is the one that knows. Drop the oldest and try again.
+      return false;
     }
+  };
+  if (write(kept.length)) return;
+  for (const { index, row } of transcripts.sort((a, b) => b.size - a.size)) {
+    kept[index] = JSON.stringify({ ...row, messages: [], seq: undefined });
+    if (write(kept.length)) return;
+  }
+
+  // Only metadata remains. Drop the oldest rows down to nothing, not down to
+  // one: a browser wedged at its quota breaks every OTHER thing that wants to
+  // write, while chats can still be restored from the server.
+  for (let n = kept.length - 1; n >= 0; n--) {
+    if (write(n)) return;
   }
 }
 
