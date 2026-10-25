@@ -8,12 +8,22 @@ pub(super) struct Pending {
     _cancel: tokio::sync::oneshot::Sender<()>,
     item_id: Option<String>,
     started: Instant,
+    pub(super) target: CodexRefusalTarget,
 }
 
 // A native cancel result has no reason field. Carry the host's actual reason
 // to both the transcript and the active model turn, without approving the call.
-fn unanswered(guard: &mut ChatSession, key: &str, item_id: Option<String>, reason: &str) {
-    guard.auto_plan_refused = true;
+fn unanswered(
+    guard: &mut ChatSession,
+    key: &str,
+    item_id: Option<String>,
+    target: &CodexRefusalTarget,
+    reason: &str,
+) {
+    if !guard.codex_target_is_current(target) {
+        return;
+    }
+    guard.latch_codex_refusal(target);
     let text = format!("MCP confirmation was not answered: {reason}. No approval was given; this was not a user cancellation.");
     let Some(codex) = guard.codex.as_mut() else {
         return;
@@ -128,6 +138,7 @@ pub(super) fn resolved(session: &Arc<Mutex<ChatSession>>, key: &str, request_id:
                 &mut guard,
                 key,
                 pending.item_id,
+                &pending.target,
                 &format!(
                     "Codex closed the confirmation after {} ms before the host received an answer",
                     pending.started.elapsed().as_millis()
@@ -144,7 +155,7 @@ pub(super) fn answer(
     request_id: Value,
     params: Value,
 ) {
-    let (tool, item_id) = session
+    let (tool, item_id, target) = session
         .lock()
         .ok()
         .and_then(|guard| {
@@ -156,12 +167,12 @@ pub(super) fn answer(
                     .or_else(|| call.and_then(|(_, item)| item["tool"].as_str()))
                     .map(str::to_owned),
                 call.map(|(id, _)| id.to_owned()),
+                guard.codex_refusal_target(&params),
             ))
         })
         .unwrap_or_default();
     if !confirmation(&params) {
-        let started = session.lock().ok().map(|s| s.last_active);
-        latch_codex_refusal(session, started);
+        latch_codex_refusal(session, target.as_ref());
         // Explicitly report the supported boundary instead of a misleading
         // generic "user rejected" resulting from an unknown-method error.
         emit_status(ChatAgent::Codex, ChatStatus {
@@ -172,8 +183,7 @@ pub(super) fn answer(
         return;
     }
     let Some(rt) = rt else {
-        let started = session.lock().ok().map(|s| s.last_active);
-        latch_codex_refusal(session, started);
+        latch_codex_refusal(session, target.as_ref());
         write_codex_response(session, &request_id, response("cancel"));
         return;
     };
@@ -187,6 +197,11 @@ pub(super) fn answer(
         write_codex_response(session, &request_id, response("cancel"));
         return;
     }
+    let Some(target) = target.filter(|target| guard.codex_target_is_current(target)) else {
+        drop(guard);
+        write_codex_response(session, &request_id, response("cancel"));
+        return;
+    };
     let Some(codex) = guard.codex.as_mut() else {
         return;
     };
@@ -196,6 +211,7 @@ pub(super) fn answer(
             _cancel: tx,
             item_id: item_id.clone(),
             started: Instant::now(),
+            target: target.clone(),
         },
     );
     drop(guard);
@@ -239,11 +255,19 @@ pub(super) fn answer(
         let Some(codex) = guard.codex.as_mut() else {
             return;
         };
-        if codex.elicitations.remove(&request_id.to_string()).is_none() {
+        if !codex
+            .elicitations
+            .get(&request_id.to_string())
+            .is_some_and(|p| p.target == target)
+        {
+            return;
+        }
+        codex.elicitations.remove(&request_id.to_string());
+        if !guard.codex_target_is_current(&target) {
             return;
         }
         if answer.decision != "allow" && answer.reason != crate::permission::DENIED {
-            unanswered(&mut guard, &key, item_id, &answer.reason);
+            unanswered(&mut guard, &key, item_id, &target, &answer.reason);
         }
         let action = match answer.decision {
             "allow" => "accept",
@@ -251,7 +275,7 @@ pub(super) fn answer(
             _ => "cancel",
         };
         if action != "accept" {
-            guard.auto_plan_refused = true;
+            guard.latch_codex_refusal(&target);
         }
         if let Some(stdin) = guard.stdin.as_mut() {
             let _ = write_json_line(
@@ -290,6 +314,7 @@ mod tests {
                 .as_mut()
                 .unwrap()
                 .active_turn_id = Some("turn-1".into());
+            session.lock().unwrap().auto_plan_turn.native_id = Some("turn-1".into());
             Self {
                 svc,
                 key,
@@ -538,10 +563,115 @@ mod tests {
             );
             assert!(chat.cards().is_empty());
             assert_eq!(
-                chat.session.lock().unwrap().auto_plan_refused,
+                chat.session.lock().unwrap().auto_plan_turn.refused(),
                 expected == response("decline")
             );
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn idle_native_refusals_cover_confirmation_unsupported_and_no_runtime() {
+        for kind in [
+            "decline",
+            "resolved",
+            "unsupported",
+            "no-runtime",
+            "no-turn-id",
+        ] {
+            let mut chat = Chat::new();
+            chat.session.lock().unwrap().turn_ended();
+            assert!(!chat.session.lock().unwrap().busy);
+            let mut params = approval();
+            if kind == "unsupported" {
+                params["mode"] = json!("url");
+            }
+            if kind == "no-turn-id" {
+                params.as_object_mut().unwrap().remove("turnId");
+            }
+            chat.ask(json!(90), params, kind != "no-runtime");
+            if matches!(kind, "decline" | "resolved" | "no-turn-id") {
+                let card = chat.card().await;
+                if kind == "resolved" {
+                    resolved(&chat.session, &chat.key, &json!(90));
+                    assert_eq!(chat.written().await["method"], "turn/steer");
+                    chat.cleared().await;
+                } else {
+                    assert!(crate::permission::decide(
+                        card["id"].as_str().unwrap(),
+                        crate::permission::Decision::Deny,
+                        false
+                    ));
+                    assert_eq!(chat.written().await["result"], response("decline"));
+                }
+            } else {
+                assert_eq!(chat.written().await["result"], response("cancel"));
+            }
+            assert!(
+                chat.session.lock().unwrap().auto_plan_turn.refused(),
+                "{kind}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn late_confirmation_answer_or_resolution_cannot_latch_a_new_write() {
+        for resolution in [false, true] {
+            let chat = Chat::new();
+            chat.ask(json!(91), approval(), true);
+            let card = chat.card().await;
+            // A new write replaces identity before the old callback can take
+            // the session lock; leave the pending entry to exercise the check.
+            {
+                let mut guard = chat.session.lock().unwrap();
+                guard
+                    .auto_plan_turn
+                    .prompt(true, &json!({"id":"new-request"}));
+                guard.auto_plan_turn.observe_codex(
+                    &json!({"id":"new-request", "result":{"turn":{"id":"new-turn"}}}),
+                );
+                guard.turn_started();
+            }
+            if resolution {
+                resolved(&chat.session, &chat.key, &json!(91));
+                chat.cleared().await;
+            } else {
+                assert!(crate::permission::decide(
+                    card["id"].as_str().unwrap(),
+                    crate::permission::Decision::Deny,
+                    false
+                ));
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    while !chat
+                        .session
+                        .lock()
+                        .unwrap()
+                        .codex
+                        .as_ref()
+                        .unwrap()
+                        .elicitations
+                        .is_empty()
+                    {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .unwrap();
+            }
+            let guard = chat.session.lock().unwrap();
+            assert!(!guard.auto_plan_refused);
+            assert!(!guard.auto_plan_turn.refused());
+            assert_eq!(guard.auto_plan_turn.native_id.as_deref(), Some("new-turn"));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clearing_current_confirmation_at_buffered_end_preserves_its_refusal() {
+        let chat = Chat::new();
+        chat.ask(json!(92), approval(), true);
+        chat.card().await;
+        chat.session.lock().unwrap().turn_ended();
+        chat.cleared().await;
+        assert!(chat.session.lock().unwrap().auto_plan_turn.refused());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

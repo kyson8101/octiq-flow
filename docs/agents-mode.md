@@ -1241,6 +1241,13 @@ waiting set, then brackets its unchanged-epoch CAS with sequence checks just
 before rename. No chat lock spans auto-approval ledger I/O, and auto-approval
 never acquires a chat lock under the ledger.
 
+Native Codex refusals are bound under the session lock to the prompt's
+write identity and native turn id (or the written target when elicitation omits
+the id), never `busy` or the idle clock. The matching turn remains refused even
+if an older buffered end marks it idle. A late answer for another write/turn
+cannot latch or clear the current turn. This includes command/file approvals,
+MCP confirmations, unsupported/no-runtime elicitation and unanswered cards
+cancelled at a full stop. Only a new real write resets this refusal ownership.
 The host auto-approves only a whole pending, nonempty revision whose every
 waiting task's effective worker access is at most Auto and no task is a peer
 request. A Full task holds the whole revision for the person's card. A failed

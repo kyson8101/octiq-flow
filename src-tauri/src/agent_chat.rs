@@ -28,7 +28,7 @@
 //! interactive shell's PATH, so `claude` would simply not be found.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
@@ -465,6 +465,7 @@ struct ChatSession {
     /// lock, and gone with the process: nothing else records an unwind.
     cut_off: CutOff,
     auto_plan_refused: bool,
+    auto_plan_turn: AutoPlanTurn,
     auto_plan_attribution: AutoPlanAttribution,
     /// The removal of the registered agent whose conversation this is, once
     /// one has looked at this process (`LeavingMark::working`). Set under
@@ -768,6 +769,106 @@ impl AutoPlanAttribution {
     }
 }
 
+/// Refusals belong to a written prompt/native turn, never the host's idle
+/// clock. A buffered older full stop may change that clock while this target
+/// is still running. Keep native declines until the matching start response
+/// binds its id; declines for other ids cannot veto this target's clean end.
+#[derive(Debug)]
+struct AutoPlanTurn {
+    write_id: uuid::Uuid,
+    request_id: Option<Value>,
+    native_id: Option<String>,
+    declined: HashSet<String>,
+}
+
+impl Default for AutoPlanTurn {
+    fn default() -> Self {
+        Self {
+            write_id: uuid::Uuid::new_v4(),
+            request_id: None,
+            native_id: None,
+            declined: HashSet::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CodexRefusalTarget {
+    write_id: uuid::Uuid,
+    native_id: Option<String>,
+}
+
+impl AutoPlanTurn {
+    fn prompt(&mut self, native_codex: bool, payload: &Value) {
+        *self = Self {
+            request_id: native_codex.then(|| payload["id"].clone()),
+            ..Self::default()
+        };
+    }
+
+    fn observe_codex(&mut self, event: &Value) {
+        if self
+            .request_id
+            .as_ref()
+            .is_some_and(|id| event.get("id") == Some(id))
+        {
+            if let Some(id) = crate::codex_app_server::turn_id_from_response(event) {
+                self.native_id = Some(id.to_owned());
+            }
+        }
+    }
+
+    fn refused(&self) -> bool {
+        self.native_id.as_ref().map_or_else(
+            // Until the matching start response arrives we cannot rule out
+            // this native refusal. Missing/out-of-order correlation is closed.
+            || !self.declined.is_empty(),
+            |id| self.declined.contains(id),
+        )
+    }
+}
+
+impl ChatSession {
+    fn codex_refusal_target(&self, params: &Value) -> Option<CodexRefusalTarget> {
+        let codex = self.codex.as_ref()?;
+        if params["threadId"]
+            .as_str()
+            .is_some_and(|id| id != codex.thread_id)
+        {
+            return None;
+        }
+        Some(CodexRefusalTarget {
+            write_id: self.auto_plan_turn.write_id,
+            // Elicitation may omit turnId. Use the written target, not the
+            // active_turn_id that an old buffered event can overwrite/clear.
+            native_id: params["turnId"]
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| self.auto_plan_turn.native_id.clone()),
+        })
+    }
+
+    fn codex_target_is_current(&self, target: &CodexRefusalTarget) -> bool {
+        self.auto_plan_turn.write_id == target.write_id
+            && !target
+                .native_id
+                .as_ref()
+                .zip(self.auto_plan_turn.native_id.as_ref())
+                .is_some_and(|(target, current)| target != current)
+    }
+
+    fn latch_codex_refusal(&mut self, target: &CodexRefusalTarget) {
+        if self.auto_plan_turn.write_id != target.write_id {
+            return;
+        }
+        if let Some(id) = &target.native_id {
+            self.auto_plan_turn.declined.insert(id.clone());
+        } else {
+            self.auto_plan_refused = true;
+        }
+    }
+}
+
 /// Claude replays a single text block as a string; images/multiple blocks
 /// retain their array representation. Compare the actual provider payload.
 fn replay_content(content: &Value) -> Value {
@@ -816,6 +917,17 @@ impl ChatSession {
 
     /// The agent reached its own full stop. The clock starts now.
     fn turn_ended(&mut self) {
+        // Clearing an unanswered current confirmation is a refusal too. An
+        // older buffered end can cancel its card while a newer target runs.
+        let cancelled: Vec<_> = self
+            .codex
+            .as_ref()
+            .into_iter()
+            .flat_map(|codex| codex.elicitations.values().map(|p| p.target.clone()))
+            .collect();
+        for target in cancelled {
+            self.latch_codex_refusal(&target);
+        }
         if let Some(codex) = self.codex.as_mut() {
             codex.elicitations.clear();
             codex.mcp_calls.clear();
@@ -4408,6 +4520,7 @@ pub(crate) fn start_session(
         last_active: Instant::now(),
         cut_off: CutOff::No,
         auto_plan_refused: false,
+        auto_plan_turn: AutoPlanTurn::default(),
         auto_plan_attribution: AutoPlanAttribution::Ready,
         leaving: None,
     }));
@@ -4537,6 +4650,7 @@ pub(crate) fn start_session(
                             }
                             if let Ok(mut session) = asking.lock() {
                                 session.auto_plan_attribution.observe(&event);
+                                session.auto_plan_turn.observe_codex(&event);
                             }
                             if let Some(turn_id) =
                                 crate::codex_app_server::turn_id_from_response(&event)
@@ -5241,6 +5355,9 @@ fn write_user_message_locked(
     session
         .auto_plan_attribution
         .prompt(session.agent, session.codex.is_some(), &mut payload);
+    session
+        .auto_plan_turn
+        .prompt(session.codex.is_some(), &payload);
     manager.start_auto_plan_turn(session_key, session);
     let stdin = session.stdin.as_mut().expect("stdin checked above");
     writeln!(stdin, "{payload}").map_err(|e| e.to_string())?;
@@ -5314,6 +5431,10 @@ fn end_turn_for_auto_plan(
     let eligible = clean
         && !refused
         && !session.auto_plan_refused
+        && !session.auto_plan_turn.refused()
+        && !session.codex.as_ref().is_some_and(|codex| {
+            codex.elicitations.values().any(|p| session.codex_target_is_current(&p.target))
+        })
         && session.auto_plan_attribution.attributable()
         // An earlier buffered result may have marked the host idle. Positive
         // native correlation still proves this prompt's end; Ready alone
@@ -6828,11 +6949,9 @@ fn answer_codex_server_request(
 
 // A late native answer belongs only to the turn that requested it. Keep
 // this on the session, since successful Codex full stops carry no denials.
-fn latch_codex_refusal(session: &Arc<Mutex<ChatSession>>, started: Option<Instant>) {
-    if let Ok(mut guard) = session.lock() {
-        if guard.busy && Some(guard.last_active) == started {
-            guard.auto_plan_refused = true;
-        }
+fn latch_codex_refusal(session: &Arc<Mutex<ChatSession>>, target: Option<&CodexRefusalTarget>) {
+    if let (Ok(mut guard), Some(target)) = (session.lock(), target) {
+        guard.latch_codex_refusal(target);
     }
 }
 
@@ -6844,7 +6963,10 @@ fn answer_codex_approval(
     method: &str,
     params: Value,
 ) {
-    let turn_started = session.lock().ok().map(|s| s.last_active);
+    let target = session
+        .lock()
+        .ok()
+        .and_then(|s| s.codex_refusal_target(&params));
     let command = params.get("command").and_then(Value::as_str);
     let grant_root = params.get("grantRoot").and_then(Value::as_str);
     let reason = params.get("reason").and_then(Value::as_str);
@@ -6887,7 +7009,7 @@ fn answer_codex_approval(
         ..Default::default()
     };
     let Some(rt) = rt else {
-        latch_codex_refusal(session, turn_started);
+        latch_codex_refusal(session, target.as_ref());
         write_codex_response(session, &request_id, json!({ "decision": "decline" }));
         return;
     };
@@ -6902,7 +7024,7 @@ fn answer_codex_approval(
             "decline"
         };
         if decision == "decline" {
-            latch_codex_refusal(&session, turn_started);
+            latch_codex_refusal(&session, target.as_ref());
         }
         note_permission_outcome(&key, call.as_deref(), &answer);
         write_codex_response(&session, &request_id, json!({ "decision": decision }));
@@ -7924,6 +8046,7 @@ impl ChatManager {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
@@ -8000,6 +8123,7 @@ impl ChatManager {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
@@ -8037,6 +8161,7 @@ impl ChatManager {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
@@ -10577,6 +10702,7 @@ mod tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             }))
@@ -10644,6 +10770,7 @@ mod tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
@@ -10680,6 +10807,7 @@ mod tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
@@ -10946,6 +11074,7 @@ mod tests {
             last_active: Instant::now(),
             cut_off: CutOff::No,
             auto_plan_refused: false,
+            auto_plan_turn: AutoPlanTurn::default(),
             auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
         }))
@@ -10975,6 +11104,7 @@ mod tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
@@ -11957,6 +12087,7 @@ mod tests {
             last_active: Instant::now(),
             cut_off: CutOff::No,
             auto_plan_refused: false,
+            auto_plan_turn: AutoPlanTurn::default(),
             auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
         }));
@@ -12052,6 +12183,7 @@ mod tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
@@ -12175,6 +12307,7 @@ mod tests {
             last_active: Instant::now(),
             cut_off: CutOff::No,
             auto_plan_refused: false,
+            auto_plan_turn: AutoPlanTurn::default(),
             auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
         }));
@@ -12424,6 +12557,7 @@ mod idle_tests {
                 .expect("a clock with some run-up behind it"),
             cut_off: CutOff::No,
             auto_plan_refused: false,
+            auto_plan_turn: AutoPlanTurn::default(),
             auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
         }))
@@ -12906,6 +13040,7 @@ mod question_delivery_tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
@@ -13102,6 +13237,7 @@ mod question_delivery_tests {
                 last_active: Instant::now(),
                 cut_off: CutOff::No,
                 auto_plan_refused: false,
+                auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
             })),
@@ -13682,6 +13818,7 @@ mod completion_tests {
             last_active: Instant::now(),
             cut_off: CutOff::No,
             auto_plan_refused: false,
+            auto_plan_turn: AutoPlanTurn::default(),
             auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
         }))
@@ -15693,11 +15830,9 @@ mod auto_plan_tests {
                 "parent_tool_use_id":null, "message":{"role":"user", "content":content}})
         }
         fn observe_barrier(&self, event: &Value) {
-            self.session
-                .lock()
-                .unwrap()
-                .auto_plan_attribution
-                .observe(event);
+            let mut session = self.session.lock().unwrap();
+            session.auto_plan_attribution.observe(event);
+            session.auto_plan_turn.observe_codex(event);
         }
         fn acknowledge_prompt(&self) {
             if self.session.lock().unwrap().codex.is_some() {
@@ -16267,6 +16402,282 @@ mod auto_plan_tests {
         assert!(!lead.session.lock().unwrap().busy);
         // The matching native completion proves the end even though an older
         // full stop already marked the host idle. No queue behavior changes.
+        lead.apply(lead.finish(true).unwrap());
+        assert!(lead.approved());
+    }
+
+    async fn native_card(lead: &Lead) -> Value {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(card) = crate::permission::pending()
+                    .into_iter()
+                    .map(|card| serde_json::to_value(card).unwrap())
+                    .find(|card| card["chatKey"] == lead.key)
+                {
+                    break card;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn decline_and_wait(lead: &Lead, card: &Value) {
+        assert!(crate::permission::decide(
+            card["id"].as_str().unwrap(),
+            crate::permission::Decision::Deny,
+            false
+        ));
+        // This durable outcome follows the latch in the native callback. Do
+        // not synchronize on busy/refusal itself: the broken baseline drops it.
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while crate::transcript::of_type(&lead.key, crate::outcome::TOOL_EVENT).is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn auto_plan_buffered_a_send_now_cancel_b_declined_c_never_approves() {
+        crate::bus::client_joined();
+        for method in [
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+        ] {
+            let lead = Lead::new(ChatAgent::Codex);
+            lead.manager.test_as_codex_thread(&lead.key, Access::Auto);
+            let pid = lead.session.lock().unwrap().child.id();
+            // A's completion is in stdout but the reader has not consumed it.
+            lead.session
+                .lock()
+                .unwrap()
+                .codex
+                .as_mut()
+                .unwrap()
+                .active_turn_id = Some("A".into());
+            assert!(lead.session.lock().unwrap().busy);
+            assert_eq!(
+                send_turn(
+                    lead.manager.clone(),
+                    lead.key.clone(),
+                    "B".into(),
+                    None,
+                    None,
+                    Some("queued-B".into())
+                )
+                .unwrap(),
+                Sent::Queued
+            );
+            assert!(
+                chat_start_queued_impl(&lead.manager, lead.key.clone(), "queued-B".into()).unwrap()
+            );
+            assert_eq!(lead.session.lock().unwrap().cut_off, CutOff::No);
+            assert!(!lead.session.lock().unwrap().busy);
+            assert!(
+                chat_cancel_queued_impl(&lead.manager, lead.key.clone(), "queued-B".into())
+                    .unwrap()
+            );
+            assert_eq!(
+                send_turn(
+                    lead.manager.clone(),
+                    lead.key.clone(),
+                    "C".into(),
+                    None,
+                    None,
+                    Some("written-C".into())
+                )
+                .unwrap(),
+                Sent::Written
+            );
+            let request = match &lead.session.lock().unwrap().auto_plan_attribution {
+                AutoPlanAttribution::Codex { request_id, .. } => request_id.clone(),
+                _ => panic!("C must be correlated"),
+            };
+            // Drain old A, which incorrectly makes the host idle during C.
+            lead.observe_barrier(&json!({"method":"turn/completed", "params":{"turn":{"id":"A"}}}));
+            assert!(lead.finish(true).is_none());
+            lead.observe_barrier(&json!({"id":request, "result":{"turn":{"id":"C"}}}));
+            lead.session
+                .lock()
+                .unwrap()
+                .codex
+                .as_mut()
+                .unwrap()
+                .active_turn_id = Some("C".into());
+            assert!(!lead.session.lock().unwrap().busy);
+            answer_codex_approval(
+                &lead.session,
+                &lead.key,
+                Some(&tokio::runtime::Handle::current()),
+                json!(301),
+                method,
+                json!({"threadId":"thread-1", "turnId":"C",
+                    "command":"echo declined", "grantRoot":"/tmp", "itemId":"declined-C"}),
+            );
+            let card = native_card(&lead).await;
+            decline_and_wait(&lead, &card).await;
+            lead.observe_barrier(&json!({"method":"turn/completed", "params":{"turn":{"id":"C"}}}));
+            assert!(
+                lead.finish(true).is_none(),
+                "a matching clean C cannot erase the person's decline"
+            );
+            assert!(!lead.approved());
+            assert!(crate::transcript::of_type(&lead.key, "octiq_plan_auto_approved").is_empty());
+            // A new real, correlated turn may recover in the same process.
+            lead.prompt("D");
+            lead.acknowledge_prompt();
+            lead.apply(lead.finish(true).unwrap());
+            assert!(lead.approved());
+            assert_eq!(lead.session.lock().unwrap().child.id(), pid);
+        }
+        crate::bus::client_left();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn auto_plan_late_native_decline_cannot_latch_a_newer_written_target() {
+        crate::bus::client_joined();
+        for include_native_id in [false, true] {
+            let lead = Lead::new(ChatAgent::Codex);
+            lead.manager.test_as_codex_thread(&lead.key, Access::Auto);
+            chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+            lead.finish(false);
+            lead.prompt("C");
+            let mut params = json!({"command":"echo C", "itemId":"late-C"});
+            if include_native_id {
+                params["turnId"] = json!("C");
+            }
+            answer_codex_approval(
+                &lead.session,
+                &lead.key,
+                Some(&tokio::runtime::Handle::current()),
+                json!(302),
+                "item/commandExecution/requestApproval",
+                params,
+            );
+            let card = native_card(&lead).await;
+            lead.finish(false);
+            lead.prompt("D");
+            decline_and_wait(&lead, &card).await;
+            lead.acknowledge_prompt();
+            lead.apply(lead.finish(true).expect("late C answer cannot latch D"));
+            assert!(lead.approved());
+        }
+        crate::bus::client_left();
+    }
+
+    #[test]
+    fn auto_plan_declines_are_native_turn_specific_before_or_after_start_response() {
+        for response_first in [false, true] {
+            let lead = Lead::new(ChatAgent::Codex);
+            lead.manager.test_as_codex_thread(&lead.key, Access::Auto);
+            lead.finish(true);
+            chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+            lead.prompt("C");
+            let request = lead
+                .session
+                .lock()
+                .unwrap()
+                .auto_plan_turn
+                .request_id
+                .clone()
+                .unwrap();
+            let response = json!({"id":request, "result":{"turn":{"id":"C"}}});
+            if response_first {
+                lead.observe_barrier(&response);
+            }
+            // A request from an older/other turn may itself be buffered until
+            // after the new write; its native id must not poison C either.
+            answer_codex_approval(
+                &lead.session,
+                &lead.key,
+                None,
+                json!(303),
+                "item/fileChange/requestApproval",
+                json!({"turnId":"older"}),
+            );
+            if !response_first {
+                lead.observe_barrier(&response);
+            }
+            assert!(!lead.session.lock().unwrap().auto_plan_turn.refused());
+            // Conversely C's decline cannot be cleared by an older answer.
+            answer_codex_approval(
+                &lead.session,
+                &lead.key,
+                None,
+                json!(304),
+                "item/fileChange/requestApproval",
+                json!({"turnId":"C"}),
+            );
+            answer_codex_approval(
+                &lead.session,
+                &lead.key,
+                None,
+                json!(305),
+                "item/fileChange/requestApproval",
+                json!({"turnId":"older"}),
+            );
+            lead.observe_barrier(&json!({"method":"turn/completed", "params":{"turn":{"id":"C"}}}));
+            assert!(lead.finish(true).is_none());
+            assert!(!lead.approved());
+        }
+    }
+
+    #[test]
+    fn auto_plan_native_decline_before_start_response_is_closed_even_without_stop() {
+        let lead = Lead::new(ChatAgent::Codex);
+        lead.manager.test_as_codex_thread(&lead.key, Access::Auto);
+        lead.prompt("C");
+        answer_codex_approval(
+            &lead.session,
+            &lead.key,
+            None,
+            json!(306),
+            "item/commandExecution/requestApproval",
+            json!({"turnId":"C"}),
+        );
+        assert!(lead.session.lock().unwrap().auto_plan_turn.refused());
+        // No turn/start response to identify this end, and a refusal already
+        // exists: Ready cannot treat missing correlation as a clean turn.
+        assert!(lead.finish(true).is_none());
+        assert!(!lead.approved());
+    }
+
+    #[test]
+    fn auto_plan_claude_recovery_denial_blocks_its_correlated_full_stop() {
+        let lead = Lead::new(ChatAgent::Claude);
+        // Same Send now/cancel/write/buffered-end order. Claude's denial is
+        // stream-ordered after its own replay, rather than an async callback.
+        queue_waiting_turn(
+            &lead.manager,
+            &lead.key,
+            &lead.key,
+            "B",
+            &[],
+            Some("B".into()),
+        )
+        .unwrap();
+        chat_start_queued_impl(&lead.manager, lead.key.clone(), "B".into()).unwrap();
+        chat_cancel_queued_impl(&lead.manager, lead.key.clone(), "B".into()).unwrap();
+        lead.prompt("C");
+        assert!(lead.finish(true).is_none());
+        lead.observe_claude_init();
+        lead.acknowledge_prompt();
+        let ((_, refusal), end) = end_turn_for_auto_plan(
+            &lead.manager,
+            &lead.key,
+            &lead.key,
+            &mut lead.session.lock().unwrap(),
+            true,
+            true,
+        );
+        assert!(refusal.is_none());
+        assert!(end.is_none());
+        assert!(!lead.approved());
+        lead.prompt("D");
+        lead.acknowledge_prompt();
         lead.apply(lead.finish(true).unwrap());
         assert!(lead.approved());
     }
