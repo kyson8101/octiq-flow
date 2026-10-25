@@ -15,6 +15,8 @@
 // opened on the phone is not the one on the laptop. A server-side store is the
 // obvious next step, and the shape here (id, projectId, sessionId, messages)
 // is what it would hold.
+import { isChatDone } from "./chatFilter";
+import { isWorkerChat } from "./orchestration";
 import { readTaskBrief } from "./taskBrief";
 import type { Message } from "./chat";
 import { BUILD_STAMP, ourBuild } from "./buildStamp";
@@ -100,7 +102,7 @@ const KEY = "octiq.v2.conversations";
 /** The same key, for a test that plants a row this module would never write.
  *  Exported so it is stated once rather than re-typed wherever it is needed. */
 export const CONVERSATIONS_KEY = KEY;
-/** Plenty to scroll through, few enough to stay inside a localStorage quota. */
+/** Fill up to this many rows after keeping every pinned and active chat. */
 const MAX_CONVERSATIONS = 80;
 
 /** How much of the browser's store the transcripts may take.
@@ -137,13 +139,19 @@ export function loadConversations(): Conversation[] {
 }
 
 export function saveConversations(list: Conversation[]): void {
-  // Bounded, keeping sidebar rows before transcripts: a long transcript of
-  // tool results can be large, and a quota error would otherwise lose the whole
-  // store. Rows are dropped LEAST RECENTLY USED first only after every
-  // transcript is gone. This is eviction order only — what the sidebar
-  // shows is ordered by byTask, which uses meaningful activity rather than
-  // streaming deltas.
-  const ordered = [...list].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_CONVERSATIONS);
+  // Pins and the Active view must paint before the server index arrives,
+  // even when older chats sit behind hundreds of newer workers or done rows.
+  // The count caps only the remaining rows; storage pressure gives up their
+  // transcripts first, then their metadata, oldest first within each priority.
+  // The ledger is not loaded here, so use the sidebar's reserved worker IDs.
+  const parents = new Map<string, string>();
+  const priority = (c: Conversation): number => {
+    if (c.pinned) return 0;
+    return !isChatDone(c) && !isWorkerChat(c.id, parents) ? 1 : 2;
+  };
+  const ordered = [...list]
+    .sort((a, b) => priority(a) - priority(b) || b.updatedAt - a.updatedAt)
+    .filter((c, index) => priority(c) < 2 || index < MAX_CONVERSATIONS);
 
   // Each full conversation is serialised ONCE, and what fits is joined back
   // into an array. This used to stringify the whole LIST again for every candidate
@@ -163,29 +171,23 @@ export function saveConversations(list: Conversation[]): void {
     // Stamped HERE, on the one path that writes, so no caller can leave a
     // transcript looking like this build's work when it is not.
     const row = { ...c, ...BUILD_STAMP };
-    let json = JSON.stringify(row);
-    let cost = json.length + (kept.length ? 1 : 0); // and the comma
-    // Large transcripts live in IndexedDB; smaller copies can still paint
-    // synchronously from localStorage. Keep metadata when messages do not fit.
-    if (used + cost > BUDGET) {
-      // Keep the sidebar row so reload can find the IndexedDB checkpoint
-      // without first waiting for the server's index. An empty local copy
-      // must never claim the full transcript's sequence number.
-      json = JSON.stringify({ ...row, messages: [], seq: undefined });
-      cost = json.length + (kept.length ? 1 : 0);
-      if (used + cost > BUDGET) continue;
-    } else if (row.messages.length || row.seq !== undefined) {
+    const json = JSON.stringify(row);
+    const cost = json.length + (kept.length ? 1 : 0); // and the comma
+    if (row.messages.length || row.seq !== undefined) {
       transcripts.push({ index: kept.length, row, size: json.length });
     }
     kept.push(json);
     used += cost;
   }
 
-  // The quota is shared, and the browser may refuse before our budget does.
+  // Large transcripts live in IndexedDB; keep sidebar metadata so reload can
+  // find their checkpoints before the server index. The quota is shared, and
+  // the browser may refuse before our budget does.
   // Strip the largest serialised rows first, keeping every sidebar row while
   // there is still a transcript to give up. Each metadata copy is serialised
   // once too; retries only re-JOIN strings, never re-serialise transcripts.
   const write = (n: number): boolean => {
+    if (used > BUDGET) return false;
     try {
       localStorage.setItem(KEY, `[${kept.slice(0, n).join(",")}]`);
       return true;
@@ -194,15 +196,19 @@ export function saveConversations(list: Conversation[]): void {
     }
   };
   if (write(kept.length)) return;
-  for (const { index, row } of transcripts.sort((a, b) => b.size - a.size)) {
-    kept[index] = JSON.stringify({ ...row, messages: [], seq: undefined });
+  for (const { index, row } of transcripts.sort((a, b) => b.size - a.size || b.index - a.index)) {
+    // An empty copy must never claim the full transcript's sequence number.
+    const metadata = JSON.stringify({ ...row, messages: [], seq: undefined });
+    used += metadata.length - kept[index].length;
+    kept[index] = metadata;
     if (write(kept.length)) return;
   }
 
-  // Only metadata remains. Drop the oldest rows down to nothing, not down to
-  // one: a browser wedged at its quota breaks every OTHER thing that wants to
+  // Only metadata remains. Drop other rows before active rows and pins, down to
+  // nothing: a browser wedged at its quota breaks every OTHER thing that wants to
   // write, while chats can still be restored from the server.
   for (let n = kept.length - 1; n >= 0; n--) {
+    used -= kept[n].length + (n ? 1 : 0);
     if (write(n)) return;
   }
 }
