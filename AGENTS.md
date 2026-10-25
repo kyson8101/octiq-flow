@@ -2924,11 +2924,20 @@ Every real prompt start increments the per-chat AtomicU64 turn sequence under
 its writer lock before writing, including person, queued, host notification
 and Codex app-server turns. A new launch increments it before executing its
 command-line prompt. A persistent writer refreshes its launch evidence at a
-real turn start, so its next clean turn can qualify after Stop in the same
-process; consuming the cut-off full stop alone never restores eligibility.
+real turn start. Every Stop/interrupt of a retained persistent process also
+sets an unattributed latch under the session lock, even while it reads idle.
+Buffered init/result pairs, however many, cannot clear it. After a post-Stop
+host write, Claude must replay that prompt's fresh native UUID and exact
+content (`isReplay`, never synthetic); Codex must return that turn/start
+request's native turn id and complete that same turn. Only that attributable
+clean end clears the latch and can qualify in the same PID. A later Stop
+resets it; another write replaces the target until recovery. Missing provider
+correlation keeps it latched until a new process. Thus recovery need not occur
+at the first real turn's end; manual plan-card approval remains available.
+Consuming CutOff::Owed still moves the queue once, without clearing the latch.
 A turn the host only observes advances the sequence, but never restores
-evidence a Stop revoked. Its clean end can qualify only while launch evidence
-remains intact since the last real host prompt write.
+evidence a Stop revoked or clears attribution. Its clean end can qualify only
+while launch evidence and attribution remain intact.
 The epoch, turn-sequence and launches maps are leaves: their guards never span
 acquisition of another lock. Launch identity/success is checked before the
 ledger, under the own writer's lock; approval never reads these maps.

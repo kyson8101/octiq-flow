@@ -1220,12 +1220,21 @@ without plan edits. That later turn's own clean end can retry.
 
 Stop, interrupt and intentional process removal advance the epoch and revoke
 launch evidence. A persistent provider refreshes its launch evidence only when
-a real new turn starts, so Stop cancels the cut-off turn but does not disable
-auto-approval for the remaining life of that process. Natural one-shot reaping
-preserves evidence for buffered clean output. A turn the host only observes
-advances the sequence, but never restores evidence a Stop revoked. Its clean
-end can qualify only while launch evidence remains intact since the last real
-host prompt write. The epoch, sequence and launches
+a real new turn starts. Every Stop/interrupt of a retained persistent process
+sets a session-locked unattributed latch, even when the host reads idle. No
+number of buffered autonomous init/result pairs clears it. Claude recovery
+requires the post-Stop prompt's `isReplay` echo with its fresh native UUID and
+exact content, excluding synthetic echoes. Codex recovery requires the matching
+turn/start request's returned native turn id and completion of that same turn.
+Only the attributable clean end clears the latch and can approve in the same
+PID; it need not be the first real turn's end. A new Stop resets the latch;
+another write replaces its target until recovery. Without correlation it stays
+latched until a new process, and the person can still approve on the plan card.
+CutOff::Owed keeps its existing queue handoff and does not clear this latch.
+Natural one-shot reaping preserves evidence for buffered clean output. A turn
+the host only observes advances the sequence, but never restores evidence a
+Stop revoked or clears attribution. Its clean end can qualify only while
+launch evidence and attribution remain intact. The epoch, sequence and launches
 maps are leaves, never held while acquiring another lock; launch validation
 happens outside the ledger. The staged write checks consent, revision and
 waiting set, then brackets its unchanged-epoch CAS with sequence checks just
