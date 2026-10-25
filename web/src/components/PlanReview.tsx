@@ -26,6 +26,14 @@ import { planFoldId, planLabel, sizeLabel } from "../lib/cardFold";
 import { FoldBody, FoldToggle, useFold } from "./CardFold";
 import { planHandle } from "../lib/chatPlans";
 import { approveOnce, useApproving } from "../lib/planApproving";
+import { orchestrationFeed } from "../lib/orchestrationFeed";
+
+/** The read that takes a decided plan off the card (see `approveOnce`). A
+ *  read that never answers holds the buttons for 10 s at most. */
+const readLedger = () => Promise.race([
+  orchestrationFeed.refresh(),
+  new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
+]);
 import { cardView, nextShown, PLAN_SETTLE_MS, settling, type PlanShown } from "../lib/planShown";
 import { AgentLogo } from "./AgentLogo";
 import { AgentAvatar } from "./AgentAvatar";
@@ -148,7 +156,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
       // a moment ago is refused, not approved unseen.
       await approveWithAutoPlan(async () => {
         const sent = await approveOnce(run.id, () => approvePlan(run.coordinatorChatKey, run.id, waiting, revision,
-          { surface, ...cardView(shownRef.current ?? shown, Date.now()) }, workspaceChoices));
+          { surface, ...cardView(shownRef.current ?? shown, Date.now()) }, workspaceChoices), readLedger);
         if (sent) onApproved?.();
         return sent;
       }, run.coordinatorChatKey, surface === "chat" && future && !autoEnabled);
@@ -163,7 +171,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
     setBusyAction("reject");
     try {
       const sent = await approveOnce(run.id, () => rejectPlan(run.coordinatorChatKey, run.id, waiting, revision, reason,
-        { surface, ...cardView(shownRef.current ?? shown, Date.now()) }));
+        { surface, ...cardView(shownRef.current ?? shown, Date.now()) }), readLedger);
       if (sent) onApproved?.();
     } catch (failure) {
       setError(String((failure as Error).message ?? failure));

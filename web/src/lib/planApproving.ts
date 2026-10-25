@@ -15,13 +15,22 @@ function changed() {
 }
 
 /** Run `approve` unless this plan is already being approved. `false` when it
- *  was, and nothing was sent. */
-export async function approveOnce(runId: string, approve: () => Promise<void>): Promise<boolean> {
+ *  was, and nothing was sent.
+ *
+ *  `settle` runs after the host has answered, still inside the flight: the
+ *  card is drawn from the ledger, so until a read after the decision lands it
+ *  still shows the plan as pending. Let go before that and its Approve came
+ *  back live under a decision already made, and a second press was needed (or
+ *  refused) before the card went. A failed read lets go all the same. */
+export async function approveOnce(
+  runId: string, approve: () => Promise<void>, settle?: () => Promise<void>,
+): Promise<boolean> {
   if (approving.has(runId)) return false;
   approving.add(runId);
   changed();
   try {
     await approve();
+    if (settle) await settle().catch(() => {});
     return true;
   } finally {
     approving.delete(runId);
