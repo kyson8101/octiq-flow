@@ -829,23 +829,27 @@ impl AutoPlanTurn {
 }
 
 impl ChatSession {
-    fn codex_refusal_target(&self, params: &Value) -> Option<CodexRefusalTarget> {
-        let codex = self.codex.as_ref()?;
-        if params["threadId"]
-            .as_str()
-            .is_some_and(|id| id != codex.thread_id)
-        {
-            return None;
-        }
-        Some(CodexRefusalTarget {
+    fn codex_refusal_target(&self, params: &Value) -> CodexRefusalTarget {
+        let child_thread = params["threadId"].as_str().is_some_and(|id| {
+            self.codex
+                .as_ref()
+                .is_none_or(|codex| id != codex.thread_id)
+        });
+        CodexRefusalTarget {
             write_id: self.auto_plan_turn.write_id,
-            // Elicitation may omit turnId. Use the written target, not the
-            // active_turn_id that an old buffered event can overwrite/clear.
-            native_id: params["turnId"]
-                .as_str()
-                .map(str::to_owned)
-                .or_else(|| self.auto_plan_turn.native_id.clone()),
-        })
+            // Child turn ids cannot identify the parent's turn. Conservatively
+            // bind its work to this parent write, even before correlation. A
+            // missing id uses the same written target, never active_turn_id
+            // that an old buffered event can overwrite/clear.
+            native_id: if child_thread {
+                self.auto_plan_turn.native_id.clone()
+            } else {
+                params["turnId"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| self.auto_plan_turn.native_id.clone())
+            },
+        }
     }
 
     fn codex_target_is_current(&self, target: &CodexRefusalTarget) -> bool {
@@ -6963,10 +6967,7 @@ fn answer_codex_approval(
     method: &str,
     params: Value,
 ) {
-    let target = session
-        .lock()
-        .ok()
-        .and_then(|s| s.codex_refusal_target(&params));
+    let target = session.lock().ok().map(|s| s.codex_refusal_target(&params));
     let command = params.get("command").and_then(Value::as_str);
     let grant_root = params.get("grantRoot").and_then(Value::as_str);
     let reason = params.get("reason").and_then(Value::as_str);
@@ -16563,6 +16564,79 @@ mod auto_plan_tests {
             decline_and_wait(&lead, &card).await;
             lead.acknowledge_prompt();
             lead.apply(lead.finish(true).expect("late C answer cannot latch D"));
+            assert!(lead.approved());
+        }
+        crate::bus::client_left();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn auto_plan_child_mcp_decline_blocks_its_correlated_parent_turn() {
+        crate::bus::client_joined();
+        for response_first in [false, true] {
+            let lead = Lead::new(ChatAgent::Codex);
+            lead.manager.test_as_codex_thread(&lead.key, Access::Auto);
+            lead.finish(true);
+            chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+            lead.prompt("C");
+            let request = lead
+                .session
+                .lock()
+                .unwrap()
+                .auto_plan_turn
+                .request_id
+                .clone()
+                .unwrap();
+            let response = json!({"id":request, "result":{"turn":{"id":"C"}}});
+            if response_first {
+                lead.observe_barrier(&response);
+            }
+            answer_codex_server_request(
+                &lead.manager,
+                &lead.session,
+                &lead.key,
+                Some(&tokio::runtime::Handle::current()),
+                json!({"id":307, "method":"mcpServer/elicitation/request", "params":{
+                    "threadId":"child-thread", "turnId":"child-turn", "serverName":"octiq",
+                    "mode":"form", "message":"Allow the child tool?",
+                    "requestedSchema":{"type":"object", "properties":{}}
+                }}),
+            );
+            let card = native_card(&lead).await;
+            assert_eq!(card["sessionId"], "child-thread");
+            assert!(crate::permission::decide(
+                card["id"].as_str().unwrap(),
+                crate::permission::Decision::Deny,
+                false,
+            ));
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while !lead
+                    .session
+                    .lock()
+                    .unwrap()
+                    .codex
+                    .as_ref()
+                    .unwrap()
+                    .elicitations
+                    .is_empty()
+                {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            if !response_first {
+                lead.observe_barrier(&response);
+            }
+            lead.observe_barrier(&json!({"method":"turn/completed", "params":{"turn":{"id":"C"}}}));
+            assert!(
+                lead.finish(true).is_none(),
+                "child decline belongs to parent C"
+            );
+            assert!(!lead.approved());
+            assert!(crate::transcript::of_type(&lead.key, "octiq_plan_auto_approved").is_empty());
+            lead.prompt("D");
+            lead.acknowledge_prompt();
+            lead.apply(lead.finish(true).unwrap());
             assert!(lead.approved());
         }
         crate::bus::client_left();
