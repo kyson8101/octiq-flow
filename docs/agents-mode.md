@@ -1222,7 +1222,10 @@ Stop, interrupt and intentional process removal advance the epoch and revoke
 launch evidence. A persistent provider refreshes its launch evidence only when
 a real new turn starts, so Stop cancels the cut-off turn but does not disable
 auto-approval for the remaining life of that process. Natural one-shot reaping
-preserves evidence for buffered clean output. The epoch, sequence and launches
+preserves evidence for buffered clean output. A turn the host only observes
+advances the sequence, but never restores evidence a Stop revoked. Its clean
+end can qualify only while launch evidence remains intact since the last real
+host prompt write. The epoch, sequence and launches
 maps are leaves, never held while acquiring another lock; launch validation
 happens outside the ledger. The staged write checks consent, revision and
 waiting set, then brackets its unchanged-epoch CAS with sequence checks just

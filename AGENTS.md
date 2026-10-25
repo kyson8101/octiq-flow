@@ -2926,6 +2926,9 @@ and Codex app-server turns. A new launch increments it before executing its
 command-line prompt. A persistent writer refreshes its launch evidence at a
 real turn start, so its next clean turn can qualify after Stop in the same
 process; consuming the cut-off full stop alone never restores eligibility.
+A turn the host only observes advances the sequence, but never restores
+evidence a Stop revoked. Its clean end can qualify only while launch evidence
+remains intact since the last real host prompt write.
 The epoch, turn-sequence and launches maps are leaves: their guards never span
 acquisition of another lock. Launch identity/success is checked before the
 ledger, under the own writer's lock; approval never reads these maps.

@@ -1230,12 +1230,20 @@ impl ChatManager {
             .clone()
     }
 
-    /// Called only for a real turn start, under the own writer's lock. A
-    /// queued message is not a start. Persistent processes regain launch
-    /// evidence after Stop here, never while consuming the cut-off full stop.
-    fn start_auto_plan_turn(&self, key: &str, session: &ChatSession) {
+    /// Observing an autonomous turn vetoes earlier clean ends, but never
+    /// restores launch evidence a Stop revoked. Its own clean end qualifies
+    /// only if evidence is still intact since the last real host prompt.
+    fn note_observed_turn(&self, key: &str) {
         self.turn_sequence(key)
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Called only before a real host prompt write, under the own writer's
+    /// lock. Enqueue and observed agent output are not prompt writes.
+    /// Persistent processes regain launch evidence after Stop here, never
+    /// while consuming a buffered init or the cut-off full stop.
+    fn start_auto_plan_turn(&self, key: &str, session: &ChatSession) {
+        self.note_observed_turn(key);
         if provider_for(session.agent)
             .capabilities()
             .input
@@ -4547,7 +4555,7 @@ pub(crate) fn start_session(
                             // clock had run since the previous full stop,
                             // ended the worker mid-report (feedback 4c7f5647).
                             if observed.turn_opened && !session.busy {
-                                reading.start_auto_plan_turn(&session_key, &session);
+                                reading.note_observed_turn(&session_key);
                                 session.turn_started();
                             }
                         }
@@ -15496,6 +15504,20 @@ mod auto_plan_tests {
             assert_eq!(refused, None);
             ended
         }
+        fn observe_claude_init(&self) {
+            let event = json!({"type":"system", "subtype":"init"});
+            let observed = provider_for(ChatAgent::Claude).observe_event(&event);
+            let mut s = self.session.lock().unwrap();
+            assert!(observed.turn_opened && !s.busy);
+            let sequence = self.manager.turn_sequence(&self.key);
+            let before = sequence.load(std::sync::atomic::Ordering::SeqCst);
+            self.manager.note_observed_turn(&self.key);
+            s.turn_started();
+            assert_eq!(
+                sequence.load(std::sync::atomic::Ordering::SeqCst),
+                before + 1
+            );
+        }
         fn apply(&self, ended: CleanTurnEnd) {
             self.manager
                 .orchestrations
@@ -15747,6 +15769,83 @@ mod auto_plan_tests {
             lead.apply(lead.finish(true).unwrap());
             assert!(lead.approved());
         }
+    }
+
+    #[test]
+    fn auto_plan_idle_stop_then_buffered_observed_turn_never_restores_evidence() {
+        for reaped in [false, true] {
+            let lead = Lead::new(ChatAgent::Claude);
+            let previous = lead.finish(true).unwrap();
+            if reaped {
+                // A natural reaper can remove the session before stdout is
+                // drained; its reader still owns the original session Arc.
+                lead.manager.sessions.lock().unwrap().remove(&lead.key);
+            }
+            let stopped = chat_interrupt_impl(&lead.manager, lead.key.clone());
+            assert_eq!(stopped.is_ok(), !reaped);
+            assert_eq!(lead.session.lock().unwrap().cut_off, CutOff::No);
+            lead.observe_claude_init();
+            assert!(!previous.unchanged());
+            assert!(!lead
+                .manager
+                .auto_plan_launches
+                .lock()
+                .unwrap()
+                .contains_key(&lead.key));
+            let result = json!({"type":"result", "subtype":"success", "is_error":false});
+            assert!(lead
+                .finish(ended_cleanly(ChatAgent::Claude, &result, false))
+                .is_none());
+            assert!(!lead.approved());
+            if reaped {
+                // Restore only the table entry for the test child's cleanup.
+                hold(&lead.manager, &lead.key, lead.session.clone());
+            }
+        }
+    }
+
+    #[test]
+    fn auto_plan_observed_turn_with_intact_evidence_approves_its_own_clean_end() {
+        let lead = Lead::new(ChatAgent::Claude);
+        let previous = lead.finish(true).unwrap();
+        lead.observe_claude_init();
+        assert!(!previous.unchanged(), "observed turn vetoes older evidence");
+        lead.apply(previous);
+        assert!(!lead.approved());
+        lead.apply(lead.finish(true).expect("intact launch remains eligible"));
+        assert!(lead.approved());
+    }
+
+    #[test]
+    fn auto_plan_real_prompt_after_stopped_observed_turn_restores_eligibility() {
+        let lead = Lead::new(ChatAgent::Claude);
+        lead.finish(true).unwrap();
+        let (pid, launch) = {
+            let s = lead.session.lock().unwrap();
+            (s.child.id(), s.launch_id.clone())
+        };
+        chat_interrupt_impl(&lead.manager, lead.key.clone()).unwrap();
+        lead.observe_claude_init();
+        assert!(lead.finish(true).is_none());
+        assert!(!lead.approved());
+        assert_eq!(
+            send_turn(
+                lead.manager.clone(),
+                lead.key.clone(),
+                "real prompt after buffered output".into(),
+                None,
+                None,
+                Some("user-after-observed-stop".into()),
+            )
+            .unwrap(),
+            Sent::Written
+        );
+        {
+            let s = lead.session.lock().unwrap();
+            assert_eq!((s.child.id(), &s.launch_id), (pid, &launch));
+        }
+        lead.apply(lead.finish(true).expect("real prompt restores eligibility"));
+        assert!(lead.approved());
     }
 
     #[test]
@@ -16191,6 +16290,33 @@ mod auto_plan_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn auto_plan_observed_source_never_regrants_launch_evidence() {
+        let source = include_str!("agent_chat.rs").replace("\r\n", "\n");
+        let production = source.split("\n#[cfg(test)]\nmod tests {").next().unwrap();
+        let observed = production
+            .split("if observed.turn_opened && !session.busy {")
+            .nth(1)
+            .unwrap()
+            .split('}')
+            .next()
+            .unwrap();
+        assert!(observed.contains("reading.note_observed_turn(&session_key)"));
+        assert!(!observed.contains("start_auto_plan_turn"));
+        assert!(!observed.contains("auto_plan_launches"));
+        let note = production
+            .split("fn note_observed_turn(")
+            .nth(1)
+            .unwrap()
+            .split("fn start_auto_plan_turn(")
+            .next()
+            .unwrap();
+        assert!(!note.contains("auto_plan_launches"));
+        // Exactly the definition and the host prompt writer; no output
+        // handler may restore eligibility. New launches grant separately.
+        assert_eq!(production.matches("start_auto_plan_turn(").count(), 2);
     }
 
     #[test]
