@@ -1,7 +1,18 @@
 export const PASTE_FILE_CHARS = 4000;
 export const PASTE_FILE_LINES = 80;
+export const PASTE_FILE_MAX_BYTES = 12 * 1024 * 1024;
 
 export type PastedText = { text: string; lines: number };
+
+/** Check UTF-8 bytes before upload or inline fallback. An oversized paste
+ *  cannot become an attachment, and putting it in a textarea can freeze it. */
+export function pastedTextSizeError(text: string): string | null {
+  // Every UTF-16 code unit needs at most three UTF-8 bytes.
+  if (text.length <= PASTE_FILE_MAX_BYTES / 3) return null;
+  const bytes = new TextEncoder().encode(text).byteLength;
+  if (bytes <= PASTE_FILE_MAX_BYTES) return null;
+  return `This paste is ${(bytes / (1024 * 1024)).toFixed(1)} MB, over the 12 MB limit for a pasted file. Nothing was added; it is still on your clipboard.`;
+}
 
 export function pastedTextLines(text: string): number {
   return text.split(/\r\n|\r|\n/).length;

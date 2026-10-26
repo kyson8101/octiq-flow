@@ -31,7 +31,7 @@ function Scratch() {
  <button onClick={()=>setVisible(!visible)}>Toggle composer</button>
  <span data-session>{session}</span>
  {visible && <Composer session={session} draftStore={drafts} choice={MODELS[0]} onChoice={()=>{}} access="auto" onAccess={()=>{}}
- onSend={(text,attachments)=>window.__sends.push({text,attachments,prompt:attachmentPrompt(text,attachments)})}
+ onSend={(text,attachments)=>window.__sends.push({session,text,attachments,prompt:attachmentPrompt(text,attachments)})}
  onStop={()=>{}} busy={false} effort="high" onEffort={()=>{}} lite={false} onLite={()=>{}}/>}</div>;
 }
 createRoot(document.getElementById("root")).render(<Scratch/>);`;
@@ -136,6 +136,94 @@ try {
   await page.evaluate(()=>{window.__hold=false;window.__release();});
   await page.locator(".chip").waitFor(); await clear(page);
   console.log(`width=${width}: pending switch and remount passed`);
+  // A Paste gesture owns the whole async read, including the short-text path.
+  for (const api of ["read", "readText"]) for (const value of [long, "short origin text"]) {
+   await area.fill("origin ");
+   await page.evaluate(({api,value})=>{
+    const read=()=>new Promise(resolve=>{window.__resolveRead=()=>resolve(api==="read"
+     ? [{types:["text/plain"],getType:async()=>new Blob([value],{type:"text/plain"})}] : value);});
+    Object.defineProperty(navigator,"clipboard",{configurable:true,value:api==="read" ? {read} : {readText:read}});
+   },{api,value});
+   await page.getByRole("button",{name:"Paste",exact:true}).click();
+   assert(await page.locator(".send[title='Send']").isDisabled());
+   const count=await page.evaluate(()=>window.__sends.length);
+   await page.getByRole("button",{name:"Switch chat"}).click();
+   await area.fill("other chat");
+   await page.waitForFunction(()=>!document.querySelector(".send[title='Send']").disabled);
+   await page.getByRole("button",{name:"Switch chat"}).click();
+   assert(await page.locator(".send[title='Send']").isDisabled());
+   await page.getByRole("button",{name:"Switch chat"}).click();
+   // The other chat remains usable while A's read is waiting.
+   assert.equal(await area.inputValue(),"other chat",`${api} ${value===long ? "long" : "short"}: B draft`);
+   assert(!(await page.locator(".send[title='Send']").isDisabled()));
+   const uploads=await page.evaluate(()=>window.__uploads.length);
+   await page.evaluate(async()=>{window.__resolveRead(); await new Promise(requestAnimationFrame);});
+   if(value===long) await page.waitForFunction(count=>window.__uploads.length===count+1,uploads);
+   assert.equal(await area.inputValue(),"other chat"); assert.equal(await page.locator(".chip").count(),0);
+   await page.getByRole("button",{name:"Switch chat"}).click();
+   await page.getByText("Saving pasted text…",{exact:true}).waitFor({state:"detached"});
+   if(value===long) await page.locator(".chip.is-pasted").waitFor();
+   else assert.equal(await area.inputValue(),"origin "+value);
+   await page.locator(".send[title='Send']").click();
+   const sent=await page.evaluate(()=>window.__sends.at(-1));
+   assert.equal(sent.session,"a"); assert.equal(await page.evaluate(()=>window.__sends.length),count+1);
+   assert.equal(sent.text,value===long ? "origin" : "origin "+value);
+   assert.equal(sent.attachments.length,value===long ? 1 : 0);
+   if(value===long) assert.equal(sent.attachments[0].pasted.text,value);
+   await page.getByRole("button",{name:"Switch chat"}).click();
+   assert.equal(await area.inputValue(),"other chat"); assert.equal(await page.locator(".chip").count(),0);
+   await clear(page); await page.getByRole("button",{name:"Switch chat"}).click();
+  }
+  console.log(`width=${width}: delayed read/readText × long/short origin delivery passed`);
+  for(const stage of ["item","failure","remount"]) {
+   await area.fill("origin ");
+   await page.waitForFunction(()=>!document.querySelector(".send[title='Send']").disabled);
+   await page.evaluate(({stage,long})=>{
+    window.__hold=stage==="failure";
+    const read=async()=>[{types:["text/plain"],getType:()=>stage==="item"
+     ? new Promise(resolve=>{window.__resolveItem=()=>resolve(new Blob(["short item text"]));})
+     : Promise.resolve(new Blob([long]))}];
+    const readText=()=>new Promise(resolve=>{window.__resolveRead=()=>resolve("short remounted text");});
+    Object.defineProperty(navigator,"clipboard",{configurable:true,value:stage==="remount" ? {readText} : {read}});
+   },{stage,long});
+   await page.getByRole("button",{name:"Paste",exact:true}).click();
+   if(stage==="remount") {
+    await page.getByRole("button",{name:"Toggle composer"}).click();
+    await page.getByRole("button",{name:"Toggle composer"}).click();
+    assert(await page.locator(".send[title='Send']").isDisabled());
+    await page.evaluate(()=>window.__resolveRead());
+   } else {
+    await page.waitForFunction(stage=>stage==="item" ? !!window.__resolveItem : !!window.__release,stage);
+    await page.getByRole("button",{name:"Switch chat"}).click();
+    await page.evaluate(stage=>{
+     if(stage==="item") window.__resolveItem();
+     else {window.__hold=false;window.__fail=true;window.__release();}
+    },stage);
+    await page.evaluate(()=>new Promise(requestAnimationFrame));
+    assert.equal(await area.inputValue(),""); assert.equal(await page.locator(".chip").count(),0);
+    await page.getByRole("button",{name:"Switch chat"}).click();
+   }
+   await page.getByText("Saving pasted text…",{exact:true}).waitFor({state:"detached"});
+   if(stage==="failure") await page.locator(".attach-error").getByText(/it was put in the message instead/).waitFor();
+   await page.locator(".send[title='Send']").click();
+   const sent=await page.evaluate(()=>window.__sends.at(-1));
+   assert.equal(sent.session,"a"); assert.equal(sent.attachments.length,0);
+   assert.equal(sent.text,("origin "+(stage==="item" ? "short item text" : stage==="remount" ? "short remounted text" : long)).trim());
+   await page.evaluate(()=>{window.__fail=false;window.__release=undefined;window.__resolveItem=undefined;});
+  }
+  console.log(`width=${width}: delayed item, offscreen fallback and pending read remount passed`);
+  // Two restores must not normalise the first one's CRLF through the DOM.
+  for(const selected of [false,true]) {
+   await area.fill("prefix suffix"); await area.evaluate(el=>el.setSelectionRange(7,7));
+   await paste(page,long); await page.getByRole("button",{name:"Insert as text",exact:true}).click();
+   await paste(page,long);
+   if(selected) await area.evaluate(el=>el.setSelectionRange(7+"字😀\n".repeat(20).length,7+"字😀\n".repeat(40).length));
+   else await area.evaluate(el=>el.setSelectionRange(7+"字😀\n".repeat(80).length,7+"字😀\n".repeat(80).length));
+   await page.getByRole("button",{name:"Insert as text",exact:true}).click();
+   await page.locator(".send[title='Send']").click();
+   assert.equal((await page.evaluate(()=>window.__sends.at(-1))).text,"prefix "+(selected ? "字😀\r\n".repeat(140) : long+long)+"suffix");
+  }
+  console.log(`width=${width}: consecutive CRLF restores with caret/selection passed`);
   // Failure falls back at the current caret, including the exact original CRLF.
   await area.fill("left right"); await area.evaluate(el=>el.setSelectionRange(5,5));
   await page.evaluate(()=>window.__fail=true); await paste(page,long);
@@ -145,9 +233,28 @@ try {
   await page.evaluate(()=>{window.__fail=false;window.__bridge.state="closed";}); await paste(page,long);
   await page.locator(".attach-error").getByText(/Connection is not open/).waitFor(); await clear(page);
   await page.evaluate(()=>window.__bridge.state="open");
-  await paste(page,"x".repeat(12*1024*1024+1));
-  await page.locator(".attach-error").getByText(/larger than 12 MB/).waitFor();
-  assert.equal((await area.inputValue()).length,12*1024*1024+1); await clear(page);
+  // Rejected before upload or inline insertion: a 12 MB token would freeze
+  // Chrome's textarea layout. All entry points keep the draft and selection.
+  const oversized="x".repeat(12*1024*1024+1);
+  for(const api of ["native","read","readText"]) {
+   await clear(page); await area.fill("keep selected text");
+   await area.evaluate(el=>el.setSelectionRange(5,13));
+   const uploadsBefore=await page.evaluate(()=>window.__uploads.length);
+   if(api==="native") assert(await paste(page,oversized));
+   else {
+    await page.evaluate(({api,text})=>Object.defineProperty(navigator,"clipboard",{configurable:true,value:api==="read"
+     ? {read:async()=>[{types:["text/plain"],getType:async()=>new Blob([text])}]}
+     : {readText:async()=>text}}),{api,text:oversized});
+    await page.getByRole("button",{name:"Paste",exact:true}).click();
+   }
+   await page.locator(".attach-error").getByText(/over the 12 MB limit.*Nothing was added/).waitFor();
+   assert.equal(await area.inputValue(),"keep selected text");
+   assert.deepEqual(await area.evaluate(el=>[el.selectionStart,el.selectionEnd]),[5,13]);
+   assert.equal(await page.locator(".chip").count(),0);
+   assert.equal(await page.evaluate(()=>window.__uploads.length),uploadsBefore);
+  }
+  await clear(page);
+  console.log(`width=${width}: oversized native/read/readText rejection preserves draft and selection`);
   assert.equal(await paste(page,"short"),false);
   // Clipboard files still win over even long text.
   await paste(page,long,true); await page.locator(".chip.is-image").waitFor();

@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { PASTE_FILE_CHARS, PASTE_FILE_LINES, pastedTextLabel, pastedTextLines, pastedTextName, shouldSaveAsFile } from "./longPaste";
+import { PASTE_FILE_CHARS, PASTE_FILE_LINES, PASTE_FILE_MAX_BYTES, pastedTextLabel, pastedTextLines, pastedTextName, pastedTextSizeError, shouldSaveAsFile } from "./longPaste";
 
 describe("long paste thresholds", () => {
+  it.each(["x", "字", "😀"])("rejects only UTF-8 pastes over 12 MB: %s", (character) => {
+    const bytes = new TextEncoder().encode(character).byteLength;
+    const atLimit = character.repeat(PASTE_FILE_MAX_BYTES / bytes);
+    expect(pastedTextSizeError(atLimit)).toBeNull();
+    expect(pastedTextSizeError(atLimit + "x")).toMatch(/over the 12 MB limit.*Nothing was added.*still on your clipboard/);
+  });
+  it("leaves ordinary pastes eligible for inline insertion or save", () => {
+    expect(pastedTextSizeError("short\r\n字😀")).toBeNull();
+  });
   it.each(["a", "字", "😀"])("counts Unicode characters at the boundary: %s", (character) => {
     expect(shouldSaveAsFile(character.repeat(PASTE_FILE_CHARS - 1))).toBe(false);
     expect(shouldSaveAsFile(character.repeat(PASTE_FILE_CHARS))).toBe(true);

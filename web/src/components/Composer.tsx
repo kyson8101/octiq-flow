@@ -27,8 +27,8 @@ import {
   type WorkLocationBranches,
   type WorkLocationProject,
 } from "./WorkLocation";
-import { pasteRefusal, readClipboard, reason } from "../lib/paste";
-import { pastedTextLabel, pastedTextLines, pastedTextName, shouldSaveAsFile, type PastedText } from "../lib/longPaste";
+import { pasteRefusal, readClipboard, reason, spliceTextareaText } from "../lib/paste";
+import { PASTE_FILE_MAX_BYTES, pastedTextLabel, pastedTextLines, pastedTextName, pastedTextSizeError, shouldSaveAsFile, type PastedText } from "../lib/longPaste";
 import { formatQuote, onQuote } from "../lib/quote";
 import { Drafts, type Draft } from "../lib/drafts";
 import type { BackgroundTask } from "../lib/background";
@@ -262,8 +262,9 @@ export type Attachment = {
   pasted?: PastedText;
 };
 
-type PasteSaveResult = { attachment: Attachment } | { text: string; error: string };
+type PasteSaveResult = { attachment: Attachment } | { text: string; error?: string } | { error: string | null };
 type PasteSave = { pending: number; error?: string; receive?: (pending: number, result?: PasteSaveResult) => void };
+type PasteOwner = { store: Drafts<Attachment>; session?: string };
 // The parent-owned drafts outlive a composer hidden by a read-only chat. Its
 // in-flight saves must outlive that mount too, and reach the current owner.
 const pasteSaves = new WeakMap<Drafts<Attachment>, Map<string | undefined, PasteSave>>();
@@ -273,6 +274,20 @@ function pasteSaveFor(store: Drafts<Attachment>, session?: string): PasteSave {
   let save = chats.get(session);
   if (!save) { save = { pending: 0 }; chats.set(session, save); }
   return save;
+}
+
+/** Deliver through the origin's current mount, or keep it in that chat's
+ *  draft until it returns. Never consult whichever chat is now on screen. */
+function deliverPaste(owner: PasteOwner, result: PasteSaveResult): void {
+  const save = pasteSaveFor(owner.store, owner.session);
+  if (save.receive) { save.receive(save.pending, result); return; }
+  if ("attachment" in result || "text" in result) {
+    const back = owner.store.take(owner.session);
+    owner.store.keep(owner.session, "attachment" in result
+      ? { ...back, attached: [...back.attached, result.attachment] }
+      : { ...back, text: back.text + result.text });
+  }
+  if ("error" in result) save.error = result.error ?? undefined;
 }
 
 export function AttachmentChip({ attachment: a, onRemove, onInsert }: {
@@ -729,7 +744,7 @@ export function Composer({
 
   /** Both clipboard text and ordinary files use exactly the same upload. */
   const uploadFile = useCallback(async (file: File, requireConnection = false): Promise<Attachment> => {
-    if (file.size > 12 * 1024 * 1024) throw new Error(`${file.name}: file is larger than 12 MB`);
+    if (file.size > PASTE_FILE_MAX_BYTES) throw new Error(`${file.name}: file is larger than 12 MB`);
     const bytes = new Uint8Array(await file.arrayBuffer());
     let binary = "";
     for (let i = 0; i < bytes.length; i += 8192) {
@@ -745,23 +760,28 @@ export function Composer({
     return { path, name, isImage, url: isImage ? URL.createObjectURL(file) : undefined };
   }, []);
 
-  const attachFiles = useCallback(async (files: File[]) => {
+  const attachFiles = useCallback(async (files: File[], owner?: PasteOwner) => {
     for (const file of files) {
       try {
         const attachment = await uploadFile(file);
-        setAttachError(null);
-        setAttached((prev) => [...prev, attachment]);
+        if (owner) {
+          deliverPaste(owner, { error: null });
+          deliverPaste(owner, { attachment });
+        } else {
+          setAttachError(null);
+          setAttached((prev) => [...prev, attachment]);
+        }
       } catch (err) {
-        setAttachError(reason(err));
+        if (owner) deliverPaste(owner, { error: reason(err) });
+        else setAttachError(reason(err));
       }
     }
   }, [uploadFile]);
 
   /** Put text in at the caret, the way a paste does.
    *
-   *  `setRangeText` moves the DOM value ahead of React; mirroring it straight
-   *  back into state keeps the two in step and leaves the caret where `"end"`
-   *  put it — the same trick Cmd+Enter uses to add a line break. */
+   *  The DOM normalises line endings, so only use it for the selection. Splice
+   *  into raw React state and let `setRangeText` place the visible caret. */
   const insertText = useCallback((value: string) => {
     const area = areaRef.current;
     if (!area) {
@@ -770,45 +790,36 @@ export function Composer({
     }
     area.focus({ preventScroll: true });
     const start = area.selectionStart;
-    const next = area.value.slice(0, start) + value + area.value.slice(area.selectionEnd);
-    area.setRangeText(value, start, area.selectionEnd, "end");
+    const end = area.selectionEnd;
+    area.setRangeText(value, start, end, "end");
     // Keep the original line endings in React state, even though textarea's
     // DOM value normalises CRLF. Sending without an edit keeps the exact text.
-    setText(next);
+    setText((prev) => spliceTextareaText(prev, start, end, value));
     setCaret(area.selectionStart);
   }, []);
 
   const [savingPastes, setSavingPastes] = useState(0);
-  const pasteText = useCallback(async (value: string) => {
-    if (!shouldSaveAsFile(value)) { insertText(value); return; }
-    const owner = shownFor.current;
-    const store = drafts.current;
-    const save = pasteSaveFor(store, owner);
+  const pasteText = useCallback(async (value: string, owner: PasteOwner = { store: drafts.current, session: shownFor.current }) => {
+    const error = pastedTextSizeError(value);
+    if (error) { deliverPaste(owner, { error }); return; }
+    if (!shouldSaveAsFile(value)) { deliverPaste(owner, { text: value }); return; }
+    const save = pasteSaveFor(owner.store, owner.session);
     save.pending++;
     save.receive?.(save.pending);
-    setAttachError(null);
+    deliverPaste(owner, { error: null });
     try {
       if (bridge.state !== "open") throw new Error("Connection is not open");
       const file = new File([new TextEncoder().encode(value)], pastedTextName(new Date()), { type: "text/plain" });
       const attachment = { ...await uploadFile(file, true), pasted: { text: value, lines: pastedTextLines(value) } };
-      if (save.receive) save.receive(save.pending, { attachment });
-      else {
-        const back = store.take(owner);
-        store.keep(owner, { ...back, attached: [...back.attached, attachment] });
-      }
+      deliverPaste(owner, { attachment });
     } catch (err) {
       const error = `Could not save the paste as a file (${reason(err)}); it was put in the message instead.`;
-      if (save.receive) save.receive(save.pending, { text: value, error });
-      else {
-        const back = store.take(owner);
-        store.keep(owner, { ...back, text: back.text + value });
-        save.error = error;
-      }
+      deliverPaste(owner, { text: value, error });
     } finally {
       save.pending--;
       save.receive?.(save.pending);
     }
-  }, [insertText, uploadFile]);
+  }, [uploadFile]);
 
   /** Text highlighted in a file, on its way in at the caret.
    *
@@ -835,49 +846,60 @@ export function Composer({
     // error: the tap is what gives the page the right to look at the clipboard,
     // and anything awaited in front of this spends it.
     const reading = navigator.clipboard?.read ? navigator.clipboard.read() : null;
-    setAttachError(null);
+    const owner = { store: drafts.current, session: shownFor.current };
+    const save = pasteSaveFor(owner.store, owner.session);
+    save.pending++;
+    save.receive?.(save.pending);
+    deliverPaste(owner, { error: null });
 
     /** Refused. The box takes focus so the way round it — hold, then Paste —
      *  is where the finger already is. */
     const refused = (err: unknown) => {
-      setAttachError(pasteRefusal(err));
-      areaRef.current?.focus();
+      deliverPaste(owner, { error: pasteRefusal(err) });
+      if (drafts.current === owner.store && shownFor.current === owner.session) areaRef.current?.focus();
     };
 
-    if (reading) {
-      let items: Awaited<typeof reading>;
-      try {
-        items = await reading;
-      } catch (err) {
-        refused(err);
+    try {
+      if (reading) {
+        let items: Awaited<typeof reading>;
+        try {
+          items = await reading;
+        } catch (err) {
+          refused(err);
+          return;
+        }
+        // A separate try: being refused a look and failing to read what was
+        // there are different problems, and one message for both would send
+        // someone hunting for a permission that was never the trouble.
+        try {
+          const { files, text } = await readClipboard(items);
+          if (files.length) await attachFiles(files, owner);
+          if (text) {
+            const error = pastedTextSizeError(text);
+            if (error) deliverPaste(owner, { error });
+            else if (files.length) deliverPaste(owner, { text });
+            else await pasteText(text, owner);
+          }
+          if (!files.length && !text) deliverPaste(owner, { error: "There is nothing to paste." });
+        } catch (err) {
+          deliverPaste(owner, { error: `Could not read what is on the clipboard (${reason(err)}).` });
+        }
         return;
       }
-      // A separate try: being refused a look and failing to read what was
-      // there are different problems, and one message for both would send
-      // someone hunting for a permission that was never the trouble.
-      try {
-        const { files, text } = await readClipboard(items);
-        if (files.length) await attachFiles(files);
-        if (text) {
-          if (files.length) insertText(text);
-          else await pasteText(text);
-        }
-        if (!files.length && !text) setAttachError("There is nothing to paste.");
-      } catch (err) {
-        setAttachError(`Could not read what is on the clipboard (${reason(err)}).`);
-      }
-      return;
-    }
 
-    // No `read()` at all — Firefox does not give pages one. Words only, then.
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) await pasteText(text);
-      else setAttachError("There is nothing to paste.");
-    } catch (err) {
-      refused(err);
+      // No `read()` at all — Firefox does not give pages one. Words only, then.
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) await pasteText(text, owner);
+        else deliverPaste(owner, { error: "There is nothing to paste." });
+      } catch (err) {
+        refused(err);
+      }
+    } finally {
+      save.pending--;
+      save.receive?.(save.pending);
     }
-  }, [attachFiles, insertText, pasteText]);
+  }, [attachFiles, pasteText]);
 
   /** Reference files that already exist on the machine, by path. */
   const attachPaths = useCallback((paths: string[]) => {
@@ -1010,7 +1032,10 @@ export function Composer({
       setSavingPastes(pending);
       if (!result) return;
       if ("attachment" in result) setAttached((prev) => [...prev, result.attachment]);
-      else { insertText(result.text); setAttachError(result.error); }
+      else {
+        if ("text" in result) insertText(result.text);
+        if ("error" in result) setAttachError(result.error ?? null);
+      }
     };
     save.receive = receive;
     receive(save.pending);
@@ -1283,6 +1308,12 @@ export function Composer({
                 return;
               }
               const value = e.clipboardData.getData("text/plain");
+              const error = pastedTextSizeError(value);
+              if (error) {
+                e.preventDefault();
+                setAttachError(error);
+                return;
+              }
               if (shouldSaveAsFile(value)) {
                 e.preventDefault();
                 void pasteText(value);
