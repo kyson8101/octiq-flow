@@ -1739,11 +1739,14 @@ export default function App() {
       // before beginning a backwards page against the same window.
       await chatReads.current.get(id)?.promise;
       if (!gone.current.has(id)) await catchUpChat(id, undefined, true);
+      // The history cursor has already advanced. Commit its matching messages
+      // with the loading state, rather than leaving them in the next-frame queue.
+      flushChats();
       setEarlierReads((prev) => ({ ...prev, [id]: { loading: false } }));
     } catch (error) {
       setEarlierReads((prev) => ({ ...prev, [id]: { loading: false, error: String(error) } }));
     }
-  }, [catchUpChat]);
+  }, [catchUpChat, flushChats]);
   // Stable, for the memoised transcripts: each pane asks for its own chat.
   const loadEarlier = useCallback(() => loadEarlierFor(visibleRef.current), [loadEarlierFor]);
   const loadEarlierBeside = useCallback(() => loadEarlierFor(besideRef.current), [loadEarlierFor]);

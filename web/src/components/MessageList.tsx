@@ -71,6 +71,7 @@ import {
   forgetChatPlace,
   placeFrom,
   placeTop,
+  prependPlaceFrom,
   rememberChatPlace,
   type Anchor,
   type ChatPlace,
@@ -1522,6 +1523,40 @@ const MessageListBody = function MessageList({
   // is still settling. Null once the reader takes over, or once the hold
   // expires — past that a height change is the conversation growing.
   const resuming = useRef<{ at: ChatPlace; until: number } | null>(null);
+  const holdTimer = useRef(0);
+  const releasePlace = () => {
+    window.clearTimeout(holdTimer.current);
+    holdTimer.current = 0;
+    resuming.current = null;
+    if (scrollerRef.current) scrollerRef.current.style.removeProperty("overflow-anchor");
+  };
+  const holdPlace = (at: ChatPlace) => {
+    releasePlace();
+    const back = { at, until: performance.now() + SETTLE_MS };
+    resuming.current = back;
+    // Only one anchor owns the view while restoring. Outside this hold the
+    // browser can still anchor ordinary reading and momentum scrolling.
+    if (scrollerRef.current) scrollerRef.current.style.overflowAnchor = "none";
+    // Quiet transcripts still need to hand anchoring back to the browser at
+    // the deadline. Waiting for another resize would miss its first layout.
+    holdTimer.current = window.setTimeout(() => {
+      if (resuming.current !== back) return;
+      restorePlace(back.at);
+      releasePlace();
+    }, SETTLE_MS);
+  };
+  // A restore writes scrollTop and later receives its own scroll event. That
+  // event is not another reader gesture, even if the click/flick that loaded
+  // the page is still inside the gesture window.
+  const correctedTop = useRef<number | null>(null);
+  const restorePlace = (at: ChatPlace) => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const top = placeTop(at, anchorsIn(el), el.scrollHeight - el.clientHeight);
+    if (el.scrollTop === top) return;
+    el.scrollTop = top;
+    correctedTop.current = el.scrollTop;
+  };
 
   // Only reads refs, so the copy an effect closes over on the first render
   // stays correct for the life of the component.
@@ -1618,7 +1653,8 @@ const MessageListBody = function MessageList({
     // Said now rather than left to the scroll events the glide produces: this
     // press is the decision, and it should hold even if the travel is cut
     // short by the next thing the reader does.
-    resuming.current = null;
+    releasePlace();
+    prependAnchor.current = null;
     if (conv.current) pending.current = { id: conv.current, at: null };
     flushPlace();
     glideToBottom();
@@ -1630,19 +1666,28 @@ const MessageListBody = function MessageList({
     let until = 0;
     const mark = (event?: Event) => {
       if (isJumpControl(event?.target ?? null)) return;
+      if (event) correctedTop.current = null;
       gesture.current = true;
       // The reader has taken the scroller. An animation still running under
       // their finger fights them for it, and they win either way — so it ends
       // here rather than being scrolled against. A place being restored is the
       // same fight, and goes the same way: where they are now is their place.
       stopGlide();
-      resuming.current = null;
+      releasePlace();
       window.clearTimeout(until);
       // Long enough to cover the scroll events one flick produces, short
       // enough that it cannot be mistaken for the next thing that happens.
       until = window.setTimeout(() => (gesture.current = false), 400);
     };
     const onScroll = () => {
+      const corrected = correctedTop.current;
+      correctedTop.current = null;
+      if (corrected !== null && el.scrollTop === corrected) return;
+      // The reader may keep moving (or use the map) while chat_page is in
+      // flight. Preserve their latest view when the page finally arrives.
+      if (prependAnchor.current) {
+        prependAnchor.current.at = prependPlaceFrom(el.scrollTop, anchorsIn(el));
+      }
       if (!gesture.current) {
         // Not the reader's doing, so it says nothing about whether they have
         // scrolled away — but it can still be a move they asked for (a map
@@ -1705,11 +1750,13 @@ const MessageListBody = function MessageList({
     // runs after React has already put the new conversation's turns in, so the
     // scroller no longer holds an offset that means anything about the old one.
     flushPlace();
+    releasePlace();
     conv.current = conversationId;
     if (!el) return;
     // Whatever gesture opened this chat was aimed at the sidebar, not at the
     // transcript; letting it carry over would judge the new chat by it.
     gesture.current = false;
+    correctedTop.current = null;
     // A glide belongs to the conversation it was started in. Left running it
     // would ease the NEW transcript from the old one's offset — see it as the
     // wrong chat sliding into place.
@@ -1718,16 +1765,15 @@ const MessageListBody = function MessageList({
     if (!saved) {
       stick.current = true;
       setAway(false);
-      resuming.current = null;
       el.scrollTop = el.scrollHeight;
-      return;
+      return releasePlace;
     }
     // Left part-way up: put them back there, and do NOT follow the stream.
     // Someone who parked half-way through a conversation to read it did not
     // ask to be taken to the end of it because a turn happened to arrive.
     stick.current = false;
-    resuming.current = { at: saved, until: performance.now() + SETTLE_MS };
-    el.scrollTop = placeTop(saved, anchorsIn(el), el.scrollHeight - el.clientHeight);
+    holdPlace(saved);
+    restorePlace(saved);
     // Asked of where the place actually LANDED, not assumed from there being
     // one. A place is kept for a chat whose transcript was long; reopened
     // after a compaction, or on a phone whose pane is taller than the whole
@@ -1735,6 +1781,9 @@ const MessageListBody = function MessageList({
     // from — and the button drew itself over the last message offering to take
     // the reader somewhere they already were.
     setAway(el.scrollHeight - el.scrollTop - el.clientHeight >= NEAR_BOTTOM);
+    // Layout cleanup runs before refs detach, including on unmount. A hold
+    // and its timer must never belong to the next conversation or a dead pane.
+    return releasePlace;
   }, [conversationId]);
 
   // Scrolling to the bottom ONCE is not enough, because the bottom moves
@@ -1766,8 +1815,10 @@ const MessageListBody = function MessageList({
       // so this converges rather than repeating a stale number.
       const back = resuming.current;
       if (back) {
-        if (performance.now() > back.until) resuming.current = null;
-        else el.scrollTop = placeTop(back.at, anchorsIn(el), el.scrollHeight - el.clientHeight);
+        // Rendering can cross the deadline before the timer gets its task.
+        // This layout happened with browser anchoring off, so restore FIRST.
+        restorePlace(back.at);
+        if (performance.now() >= back.until) releasePlace();
       }
       // Whether there is a way back down is a question about the height, and
       // the height is what just changed. Without this a transcript that fitted
@@ -1842,15 +1893,22 @@ const MessageListBody = function MessageList({
     [marks, turns, start],
   );
   const hasMore = start > 0 || hasEarlier;
+  // Once shown, this slot stays the same height even at the beginning of the
+  // record. A final page can contain only context, with no turns to provide
+  // room to compensate for removing the control at scrollTop=0.
+  const [historyRow, setHistoryRow] = useState({ id: conversationId, shown: hasMore });
+  const showHistoryRow = hasMore || loadingEarlier || (historyRow.id === conversationId && historyRow.shown);
+  if (historyRow.id !== conversationId || (showHistoryRow && !historyRow.shown)) {
+    setHistoryRow({ id: conversationId, shown: showHistoryRow });
+  }
   const loadMore = async () => {
     if (!hasMore || loadingEarlier || morePending.current) return;
     const el = scrollerRef.current;
     if (!el) return;
     const id = conversationId;
-    const anchors = anchorsIn(el);
-    let at = placeFrom(el.scrollTop, anchors);
-    if (!at.turn && anchors[0]) at = { top: el.scrollTop, turn: anchors[0].id, delta: el.scrollTop - anchors[0].offset };
+    const at = prependPlaceFrom(el.scrollTop, anchorsIn(el));
     prependAnchor.current = { id, first: visibleTurns[0]?.[0].id, at };
+    holdPlace(at);
     stopGlide();
     stick.current = false;
     if (start > 0) {
@@ -1861,6 +1919,12 @@ const MessageListBody = function MessageList({
     try {
       await onLoadEarlier?.();
       if (conv.current === id) setWindow({ id, ready: true, first: null });
+    } catch (error) {
+      if (conv.current === id) {
+        prependAnchor.current = null;
+        releasePlace();
+      }
+      throw error;
     } finally { morePending.current = false; }
   };
   loadMoreRef.current = () => { if (!earlierError) void loadMore(); };
@@ -1869,10 +1933,17 @@ const MessageListBody = function MessageList({
     const el = scrollerRef.current;
     if (!saved || saved.id !== conversationId || !el || saved.first === visibleTurns[0]?.[0].id) return;
     prependAnchor.current = null;
-    el.scrollTop = placeTop(saved.at, anchorsIn(el), el.scrollHeight - el.clientHeight);
-    resuming.current = { at: saved.at, until: performance.now() + SETTLE_MS };
+    holdPlace(saved.at);
+    restorePlace(saved.at);
     setAway(el.scrollHeight - el.scrollTop - el.clientHeight >= NEAR_BOTTOM);
   }, [visibleTurns, conversationId]);
+  useLayoutEffect(() => {
+    // App reports a failed page on a prop instead of rejecting the callback.
+    // It has no prepend to wait for, and the retry must remain usable.
+    if (!earlierError || loadingEarlier || !prependAnchor.current) return;
+    prependAnchor.current = null;
+    releasePlace();
+  }, [earlierError, loadingEarlier]);
 
   // Which colour each seat speaks in. Computed over the WHOLE conversation
   // rather than per turn, because the colours are handed out in order of first
@@ -1917,7 +1988,7 @@ const MessageListBody = function MessageList({
   const mapJumped = () => {
     stopGlide();
     // A jump is a place of its own, and it wins over one being restored.
-    resuming.current = null;
+    releasePlace();
     stick.current = false;
     setAway(true);
   };
@@ -1990,11 +2061,13 @@ const MessageListBody = function MessageList({
       <AskPlacesContext.Provider value={places}>
       <AnsweredPlacesContext.Provider value={answered}>
       <div className="msgs-inner" ref={innerRef}>
-        {hasMore && (
+        {showHistoryRow && (
           <div className="history-more">
-            <button type="button" disabled={loadingEarlier} onClick={() => void loadMore()}>
-              {loadingEarlier ? "Loading earlier messages…" : "Load earlier messages"}
+            {hasMore || loadingEarlier || morePending.current ? (
+            <button type="button" disabled={loadingEarlier || morePending.current} onClick={() => void loadMore()}>
+              {loadingEarlier || morePending.current ? "Loading earlier messages…" : "Load earlier messages"}
             </button>
+            ) : <span className="history-start">Start of conversation</span>}
             {earlierError && <span role="alert">Could not load earlier messages. Try again.</span>}
           </div>
         )}

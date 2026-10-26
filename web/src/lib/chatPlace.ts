@@ -149,6 +149,15 @@ export function placeFrom(top: number, anchors: readonly Anchor[]): ChatPlace {
   return { top: at, turn: best.id, delta: at - best.offset };
 }
 
+/** Loading above the first turn must follow that turn too: the load control
+ * and conversation header are above it, so the delta can be negative. */
+export function prependPlaceFrom(top: number, anchors: readonly Anchor[]): ChatPlace {
+  const at = placeFrom(top, anchors);
+  if (at.turn || !anchors.length) return at;
+  const first = anchors.reduce((a, b) => a.offset < b.offset ? a : b);
+  return { ...at, turn: first.id, delta: at.top - first.offset };
+}
+
 /** Where to put the scroller to be back at `at`, clamped to what the content
  *  can actually offer. `max` is `scrollHeight - clientHeight`.
  *
