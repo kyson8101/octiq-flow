@@ -1443,6 +1443,38 @@ impl OrchestrationStore {
         Ok(result)
     }
 
+    /// Read only the host's recorded allocations; disk inventory never reads ledger files.
+    pub(crate) fn disk_report_workspaces(
+        &self,
+    ) -> Result<std::collections::HashSet<PathBuf>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        let mut paths: std::collections::HashSet<PathBuf> = inner
+            .data
+            .tasks
+            .values()
+            .filter_map(|task| task.workspace.as_ref())
+            .filter(|ws| ws.state != workspaces::WorkspaceState::Cleaned)
+            .flat_map(|ws| {
+                std::iter::once(PathBuf::from(&ws.plan.checkout_root))
+                    .chain(ws.validation_paths.iter().map(PathBuf::from))
+            })
+            .collect();
+        // Finished/archived run status does not close a mission or release its checkout.
+        paths.extend(
+            inner
+                .data
+                .runs
+                .values()
+                .flat_map(|run| run.mission_delivery.iter())
+                .filter(|delivery| !delivery.removed)
+                .map(|delivery| PathBuf::from(&delivery.checkout_root)),
+        );
+        Ok(paths)
+    }
+
     pub fn snapshot(&self, run_id: Option<&str>) -> Result<Snapshot, String> {
         self.capture_native_decisions()?;
         let inner = self.inner.lock().map_err(|error| error.to_string())?;
@@ -10463,4 +10495,89 @@ pub(crate) mod tests {
 
 pub(crate) fn validate_fallback_worker(agent: ChatAgent, model: &str) -> Result<(), String> {
     automation::worker_model(agent, Some(model)).map(|_| ())
+}
+
+#[cfg(test)]
+mod disk_report_workspace_tests {
+    use super::*;
+    #[test]
+    fn completed_missions_and_retained_validation_paths_stay_managed() {
+        let home = crate::test_dir::TestDir::new("disk-managed-ledger");
+        let store = OrchestrationStore::default();
+        let run = tests::run(&store);
+        let task = tests::task(&store, &run, vec![]);
+        let checkout = home.join("task");
+        let validation = home.join("validation");
+        let mission = home.join("mission");
+        {
+            let mut inner = store.inner.lock().unwrap();
+            let task = inner.data.tasks.get_mut(&task.id).unwrap();
+            task.status = TaskStatus::Completed;
+            task.workspace = Some(workspaces::TaskWorkspace {
+                plan: crate::git_ops::workflow::WorkspacePlan {
+                    mode: WorkspaceMode::Worktree,
+                    cwd: checkout.to_string_lossy().into(),
+                    checkout_root: checkout.to_string_lossy().into(),
+                    repository_root: home.to_string_lossy().into(),
+                    branch: "feature/test".into(),
+                    base_branch: "develop".into(),
+                    base_sha: "test".into(),
+                    managed: true,
+                    is_repo: true,
+                    warnings: vec![],
+                    initial_status: String::new(),
+                },
+                state: workspaces::WorkspaceState::Retained,
+                lease_attempt_id: None,
+                delivery: None,
+                abandoned: false,
+                cleanup_intent: None,
+                validation_paths: vec![validation.to_string_lossy().into()],
+            });
+            let run = inner.data.runs.get_mut(&run.id).unwrap();
+            run.status = RunStatus::Completed;
+            run.mission_delivery.push(mission::MissionDelivery {
+                repository_root: home.to_string_lossy().into(),
+                checkout_root: mission.to_string_lossy().into(),
+                branch: "feature/mission".into(),
+                base_branch: "develop".into(),
+                evidence: Default::default(),
+                merged: false,
+                released: None,
+                release_note: String::new(),
+                removed: false,
+                branch_deleted: false,
+            });
+        }
+        let paths = store.disk_report_workspaces().unwrap();
+        for path in [&checkout, &validation, &mission] {
+            assert!(paths.contains(path));
+        }
+        store
+            .inner
+            .lock()
+            .unwrap()
+            .data
+            .tasks
+            .get_mut(&task.id)
+            .unwrap()
+            .workspace
+            .as_mut()
+            .unwrap()
+            .state = workspaces::WorkspaceState::Cleaned;
+        let paths = store.disk_report_workspaces().unwrap();
+        assert!(!paths.contains(&checkout) && !paths.contains(&validation));
+        assert!(paths.contains(&mission));
+        store
+            .inner
+            .lock()
+            .unwrap()
+            .data
+            .runs
+            .get_mut(&run.id)
+            .unwrap()
+            .mission_delivery[0]
+            .removed = true;
+        assert!(store.disk_report_workspaces().unwrap().is_empty());
+    }
 }
