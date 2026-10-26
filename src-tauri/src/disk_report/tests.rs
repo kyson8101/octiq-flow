@@ -331,9 +331,8 @@ fn generated_bash_is_parseable_with_hostile_paths() {
 }
 #[test]
 fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
-    let home_guard = TestDir::new("disk-worktree");
     // Git prints macOS /private/var while TestDir can use its /var alias.
-    let home = fs::canonicalize(&*home_guard).unwrap();
+    let home = TestDir::new("disk-worktree").canonicalized();
     let primary = home.join("repo");
     dir(&primary);
     git(&primary, &["init", "-b", "main"]);
@@ -572,4 +571,28 @@ fn generated_age_cleanup_preserves_recent_files_memories_and_symlinks() {
     ] {
         assert!(p.exists());
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn git_directory_symlink_does_not_discover_repository() {
+    let home = TestDir::new("disk-git-symlink");
+    let outside = TestDir::new("disk-git-admin");
+    dir(&home.join("repo"));
+    std::os::unix::fs::symlink(&*outside, home.join("repo/.git")).unwrap();
+    let mut s = scanner(&home, "linux");
+    walk(&mut s);
+    assert!(s.repos.is_empty());
+}
+
+#[test]
+fn temp_walk_never_discovers_git_repositories() {
+    let home = TestDir::new("disk-temp-git-home");
+    let temp = TestDir::new("disk-temp-git");
+    dir(&temp.join(".git"));
+    let mut s = scanner(&home, "linux");
+    s.home_device = device(&fs::symlink_metadata(&*home).unwrap());
+    s.walk(&temp, false, false, false, "temp", &mut |_, _, _, _| {})
+        .unwrap();
+    assert!(s.repos.is_empty());
 }

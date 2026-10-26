@@ -154,6 +154,9 @@ no extra software, registry writes, elevation or permission prompts are attempte
 Commands are bounded and cancellation terminates their child process. Git has a
 15-second timeout, lsof 12 seconds and Docker 8 seconds.
 
+Git repository discovery is restricted to the home phase. Windows home traversal
+skips its nested system-temp root for the separate age/in-use pass.
+
 System temp roots: macOS `$TMPDIR` (Rust OS temp resolution), Linux `/tmp` and
 `/var/tmp`, Windows `%TEMP%`. Trusted OS temp root aliases are resolved once;
 symlinks/junctions encountered inside them are never followed. Unrecognized temp

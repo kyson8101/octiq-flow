@@ -507,6 +507,13 @@ impl Scanner {
         emit: &mut impl FnMut(&str, u64, u64, Option<String>),
     ) -> Result<Size, String> {
         self.check()?;
+        if phase == "home" && self.platform == "windows" && path == std::env::temp_dir() {
+            self.skip(
+                path,
+                "System temp is scanned separately with age and process checks",
+            );
+            return Ok(Size::default());
+        }
         if let Some(reason) = protected(&self.home, path, &self.platform, &self.profile) {
             self.skip(path, reason);
             return Ok(Size {
@@ -578,10 +585,12 @@ impl Scanner {
                     }
                 }
             }
-            let is_repo = children
-                .iter()
-                .any(|p| p.file_name().is_some_and(|n| n == ".git"));
-            if is_repo {
+            let is_repo = children.iter().any(|p| {
+                p.file_name().is_some_and(|n| n == ".git")
+                    && fs::symlink_metadata(p)
+                        .is_ok_and(|meta| !redirect(&meta) && device(&meta) == self.home_device)
+            });
+            if is_repo && phase == "home" {
                 self.repos.push(path.into());
             }
             let project = project
@@ -836,7 +845,7 @@ impl Scanner {
         let mut roots_seen = HashSet::new();
         for root in roots {
             // Temp's OS path can itself be an alias (/tmp -> /private/tmp). Resolve only this trusted root.
-            let root = match fs::canonicalize(&root) {
+            let root = match crate::paths::canonicalize(&root) {
                 Ok(p) => p,
                 Err(e) => {
                     self.skip(&root, e.to_string());
@@ -953,7 +962,8 @@ impl Scanner {
             .arg(path)
             .args(args)
             .env("GIT_OPTIONAL_LOCKS", "0")
-            .env("GIT_TERMINAL_PROMPT", "0");
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_NO_LAZY_FETCH", "1");
         command(&mut cmd, &self.cancel, Duration::from_secs(15))
     }
     fn worktrees(
