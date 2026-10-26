@@ -1443,6 +1443,27 @@ impl OrchestrationStore {
         Ok(result)
     }
 
+    /// Read only the host's recorded allocations; disk inventory never reads ledger files.
+    pub(crate) fn disk_report_workspaces(
+        &self,
+    ) -> Result<std::collections::HashSet<PathBuf>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        Ok(inner
+            .data
+            .tasks
+            .values()
+            .filter_map(|task| task.workspace.as_ref())
+            .filter(|ws| ws.state != workspaces::WorkspaceState::Cleaned)
+            .flat_map(|ws| {
+                std::iter::once(PathBuf::from(&ws.plan.checkout_root))
+                    .chain(ws.validation_paths.iter().map(PathBuf::from))
+            })
+            .collect())
+    }
+
     pub fn snapshot(&self, run_id: Option<&str>) -> Result<Snapshot, String> {
         self.capture_native_decisions()?;
         let inner = self.inner.lock().map_err(|error| error.to_string())?;

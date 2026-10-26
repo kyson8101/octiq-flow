@@ -764,6 +764,20 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         .map(|path| svc.orchestrations.guard_git_operation(path))
         .transpose()?;
 
+    match cmd {
+        "disk_scan_start" => return crate::disk_report::start(&svc.orchestrations),
+        "disk_scan_cancel" => return crate::disk_report::cancel(&arg::<String>(&args, "scanId")?),
+        "disk_scan_state" => return crate::disk_report::state(),
+        "disk_cleanup_script" => {
+            return crate::disk_report::cleanup(
+                &arg::<String>(&args, "scanId")?,
+                &arg::<Vec<String>>(&args, "itemIds")?,
+                arg(&args, "allowRm")?,
+            )
+        }
+        _ => {}
+    }
+
     // Browser-facing mutation routes never drive an orchestration worker.
     // The coordinator's internal launch/message/report paths call their
     // implementations directly, without a client-controlled bypass flag.

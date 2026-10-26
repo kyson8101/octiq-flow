@@ -29,6 +29,7 @@ mod claude_allow;
 mod codex_app_server;
 mod codex_git;
 mod diagnostics;
+mod disk_report;
 mod dispatch;
 mod failover_policy;
 mod feedback;

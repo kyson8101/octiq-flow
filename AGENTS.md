@@ -226,6 +226,7 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
   remove it, delete that one entry from `permissions.allow`; the next
   Antigravity chat adds it again. No `command(...)` rule is ever written.
 - `workspaces.rs` — the "project" store (a project groups several folder paths).
+- `disk_report.rs` — manual metadata-only disk inventory, history and downloadable cleanup scripts; [contract and kinds](docs/disk-report.md).
 - `git.rs` — the **single** git-read backend (status summary, changed files,
   file diff). Read-only; shells out to `git`. Resolves each project path to its
   repo top-level and de-dups so one repo shows once. `git_ops.rs` holds
