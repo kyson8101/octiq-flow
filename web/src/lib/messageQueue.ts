@@ -1,3 +1,5 @@
+import { PASTED_TEXT_HEADING } from "./attachmentPrompt";
+import type { PastedText } from "./longPaste";
 import type { ChatState, Message } from "./chat";
 import { reconcileUnsentMessages, type ChatQueueState } from "./recovery";
 
@@ -79,14 +81,22 @@ export function reconcileQueueSnapshot(
 }
 
 /** Restore content without duplicating the app-generated file list. */
-export function reclaimedMessage(message: Message) {
+export function reclaimedMessage(message: Message, pasted?: ReadonlyMap<string, PastedText>) {
   let text = message.blocks.flatMap((b) => b.kind === "text" ? [b.text] : []).join("\n").trim();
-  const files = (message.attachments ?? []).filter((a) => !a.isImage);
-  const suffix = `Files to look at:\n${files.map((a) => `- ${a.path}`).join("\n")}`;
-  if (files.length && text.endsWith(suffix)) text = text.slice(0, -suffix.length).trimEnd();
+  // Strip only generated trailing sections whose every path is on the bubble.
+  // This also works after reload, when the in-memory paste metadata is gone.
+  const paths = new Set((message.attachments ?? []).flatMap((a) => [`- ${a.path}`, `- ${a.path} (image)`]));
+  const headings = ["Files to look at:", "Attachments:", PASTED_TEXT_HEADING];
+  for (let i = 0; i < 2; i++) {
+    const start = text.lastIndexOf("\n\n");
+    const tail = start < 0 ? text : text.slice(start + 2);
+    const [heading, ...lines] = tail.split("\n");
+    if (!headings.includes(heading) || !lines.length || !lines.every((line) => paths.has(line))) break;
+    text = start < 0 ? "" : text.slice(0, start).trimEnd();
+  }
   return {
     text,
-    attachments: (message.attachments ?? []).map((a) => ({ ...a, isImage: !!a.isImage })),
+    attachments: (message.attachments ?? []).map((a) => ({ ...a, isImage: !!a.isImage, ...(pasted?.has(a.path) ? { pasted: pasted.get(a.path)! } : {}) })),
   };
 }
 

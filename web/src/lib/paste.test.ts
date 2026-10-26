@@ -1,10 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { pasteRefusal, pastedName, readClipboard, reason, type ClipboardLike } from "./paste";
+import { pasteRefusal, pastedName, readClipboard, reason, spliceTextareaText, type ClipboardLike } from "./paste";
 
 /** One clipboard item offering itself in the formats given. */
 const item = (parts: Record<string, string>): ClipboardLike => ({
   types: Object.keys(parts),
   getType: async (type: string) => new Blob([parts[type]], { type }),
+});
+
+describe("restoring raw clipboard text at a textarea selection", () => {
+  const first = "first😀\r\n".repeat(80);
+  const second = "second\r\n".repeat(80);
+  it("keeps both consecutive CRLF restores byte-exact", () => {
+    const once = spliceTextareaText("", 0, 0, first);
+    const end = once.replace(/\r\n|\r/g, "\n").length;
+    expect(spliceTextareaText(once, end, end, second)).toBe(first + second);
+  });
+  it("maps both selection boundaries after CRLF and surrogate pairs", () => {
+    const raw = first + "replace\r\nthis" + first;
+    const start = first.replace(/\r\n/g, "\n").length;
+    expect(spliceTextareaText(raw, start, start + "replace\nthis".length, second)).toBe(first + second + first);
+  });
+  it("preserves mixed CRLF, CR and LF around an insertion", () => {
+    expect(spliceTextareaText("a\r\nb\rc\nd", 3, 6, "x\r\ny")).toBe("a\r\nbx\r\nyd");
+  });
 });
 
 describe("reading the clipboard", () => {

@@ -10014,6 +10014,45 @@ body.is-ultra .eff {
   color: var(--fg-0);
 }
 
+.chip.is-pasted {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.chip-insert {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chip-insert:hover {
+  background: var(--bg-0);
+  color: var(--fg-0);
+}
+
+.chip-insert:focus-visible {
+  outline: 2px solid var(--fg-2);
+  outline-offset: -2px;
+}
+
+.attach-saving {
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+@media (max-width: 700px), (pointer: coarse) {
+  .chip.is-pasted .chip-insert,
+  .chip.is-pasted .chip-x {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
 /* The bin only appears when the box has something in it, so it must not shout
    for the second it is there. Red on hover, where a destructive button says
    what it is at the moment of pressing it. */

@@ -28,6 +28,23 @@ export type Pasted = {
   text: string;
 };
 
+/** Textarea selections count CRLF as one LF. Translate both ends back to
+ *  offsets in the raw state before splicing, preserving every other byte. */
+export function spliceTextareaText(raw: string, start: number, end: number, text: string): string {
+  let offset = 0;
+  let position = 0;
+  while (offset < raw.length && position < start) {
+    offset += raw[offset] === "\r" && raw[offset + 1] === "\n" ? 2 : 1;
+    position++;
+  }
+  const from = offset;
+  while (offset < raw.length && position < end) {
+    offset += raw[offset] === "\r" && raw[offset + 1] === "\n" ? 2 : 1;
+    position++;
+  }
+  return raw.slice(0, from) + text + raw.slice(offset);
+}
+
 /** What to call a pasted picture. The clipboard has no name for it — it was
  *  never a file — and `pasted.png` says where it came from, which is more than
  *  a timestamp would. */
