@@ -1,0 +1,170 @@
+{
+  "scanId": "fixture-scan",
+  "scannedAt": 1792972800000,
+  "platform": "macos",
+  "home": "/Users/demo",
+  "thresholdBytes": 100000000,
+  "totalBytes": 15400000000,
+  "previousScanAt": 1792886400000,
+  "skipped": [
+    {
+      "path": "/Users/demo/Library/Protected",
+      "reason": "Permission denied; folder was not read."
+    }
+  ],
+  "items": [
+    {
+      "id": "pnpm",
+      "key": "pnpm",
+      "group": "clean",
+      "kind": "cache",
+      "label": "pnpm store",
+      "path": "/Users/demo/Library/pnpm/store",
+      "bytes": 2400000000,
+      "modifiedAt": 1790000000000,
+      "effect": "Removes unreferenced packages. Future installs may download them again.",
+      "notRecommended": false,
+      "action": {
+        "type": "tool",
+        "command": "pnpm store prune"
+      },
+      "previousBytes": 1900000000,
+      "grew": true
+    },
+    {
+      "id": "temp",
+      "key": "temp",
+      "group": "clean",
+      "kind": "cache",
+      "label": "Old build temp",
+      "path": "/private/var/folders/demo/T/old-build-artifacts",
+      "bytes": 800000000,
+      "modifiedAt": 1790000000000,
+      "effect": "Removes build temp files older than 14 days.",
+      "notRecommended": false,
+      "action": {
+        "type": "rmOlderThan",
+        "path": "/private/var/folders/demo/T/old-build-artifacts",
+        "days": 14,
+        "exclude": []
+      },
+      "previousBytes": null,
+      "grew": false
+    },
+    {
+      "id": "worktree",
+      "key": "worktree",
+      "group": "review",
+      "kind": "cache",
+      "label": "Unused feature worktree",
+      "path": "/Users/demo/03-projects/.worktrees/video/feature/long-branch-name-with-details",
+      "bytes": 1500000000,
+      "modifiedAt": 1790000000000,
+      "effect": "Removes this worktree through Git.",
+      "notRecommended": false,
+      "action": {
+        "type": "worktree",
+        "repo": "/Users/demo/03-projects/video",
+        "path": "/Users/demo/03-projects/.worktrees/video/feature/long-branch-name-with-details"
+      },
+      "previousBytes": null,
+      "grew": false,
+      "note": "Ignored files will also be removed.",
+      "worktree": {
+        "repo": "/Users/demo/03-projects/video",
+        "branch": "feature/draft",
+        "clean": true,
+        "merged": true,
+        "mainline": false,
+        "idleDays": 35,
+        "inUse": false,
+        "eligible": true,
+        "ignoredBytes": 280000000
+      }
+    },
+    {
+      "id": "docker",
+      "key": "docker",
+      "group": "review",
+      "kind": "cache",
+      "label": "Docker build cache",
+      "path": "Docker build cache",
+      "bytes": 2000000000,
+      "modifiedAt": 1790000000000,
+      "effect": "Reclaims unused build cache. Images and running containers are kept.",
+      "notRecommended": false,
+      "action": {
+        "type": "docker",
+        "command": "docker builder prune"
+      },
+      "previousBytes": null,
+      "grew": false
+    },
+    {
+      "id": "unknown",
+      "key": "unknown",
+      "group": "review",
+      "kind": "cache",
+      "label": "Local SDK archive",
+      "path": "/Users/demo/Downloads/custom-sdk-release-with-a-very-long-filename.tar.gz",
+      "bytes": 1000000000,
+      "modifiedAt": 1790000000000,
+      "effect": "Deletes the local archive. Keep it if you need this SDK version.",
+      "notRecommended": true,
+      "action": {
+        "type": "rm",
+        "path": "/Users/demo/Downloads/custom-sdk-release-with-a-very-long-filename.tar.gz"
+      },
+      "previousBytes": null,
+      "grew": false,
+      "note": "This SDK is not installed elsewhere. Keep the archive until you have verified another copy. Keep the archive until you have verified another copy. Keep the archive until you have verified another copy. Keep the archive until you have verified another copy. Keep the archive until you have verified another copy. "
+    },
+    {
+      "id": "work",
+      "key": "work",
+      "group": "work",
+      "kind": "cache",
+      "label": "Video project",
+      "path": "/Users/demo/03-projects/feature-film",
+      "bytes": 7000000000,
+      "modifiedAt": 1790000000000,
+      "effect": "Your active project. Label only.",
+      "notRecommended": false,
+      "action": null,
+      "previousBytes": null,
+      "grew": false
+    },
+    {
+      "id": "recent",
+      "key": "recent",
+      "group": "review",
+      "kind": "cache",
+      "label": "Recent chat history",
+      "path": "/Users/demo/.octiqflow/chats",
+      "bytes": 400000000,
+      "modifiedAt": 1790000000000,
+      "effect": "Keeps recent chat history intact. No cleanup action is offered.",
+      "notRecommended": true,
+      "action": null,
+      "previousBytes": null,
+      "grew": false,
+      "note": "Contains the last 14 days of chats; no safe cleanup command can target only recent files."
+    },
+    {
+      "id": "in-use",
+      "key": "in-use",
+      "group": "review",
+      "kind": "cache",
+      "label": "Unverified temp files",
+      "path": "/tmp/in-use",
+      "bytes": 300000000,
+      "modifiedAt": 1790000000000,
+      "effect": "Keeps files whose open-file checks could not be completed.",
+      "notRecommended": false,
+      "action": null,
+      "previousBytes": null,
+      "grew": false,
+      "note": "Open-file checks could not prove these files unused."
+    }
+  ]
+}

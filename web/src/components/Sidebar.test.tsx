@@ -46,6 +46,13 @@ function html(over: Partial<Parameters<typeof Sidebar>[0]> = {}, pendingView: Pe
 }
 
 describe("task-oriented Sidebar", () => {
+  it("offers Disk beside Island without agents mode", () => {
+    const out = html({ onIsland: () => {}, onDisk: () => {}, activeView: "disk" });
+    expect(out).toContain("<span>Disk</span>");
+    expect(out.indexOf("<span>Island</span>")).toBeLessThan(out.indexOf("<span>Disk</span>"));
+    expect(out).toContain('aria-current="page"><svg width="18" height="18"');
+    expect(out).not.toContain("<span>Agents</span>");
+  });
   it("presents one global chat list instead of project folders", () => {
     const out = html({ conversations: [chat("a"), chat("b", "p2")] });
     expect(out).toContain('aria-label="Chats"');

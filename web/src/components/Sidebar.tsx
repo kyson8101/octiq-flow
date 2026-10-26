@@ -38,7 +38,7 @@ export type Project = ProjectAppearance & {
   env?: Record<string, string>;
 };
 
-export type SidebarView = "search" | "settings" | "agents" | "projects" | "pulls" | "island";
+export type SidebarView = "search" | "settings" | "agents" | "projects" | "pulls" | "island" | "disk";
 
 const NONE: ReadonlySet<string> = new Set();
 const NO_WAITS: ReadonlyMap<string, unknown> = new Map();
@@ -74,7 +74,7 @@ export function Sidebar({
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, newLabel = "New task", allowEmptyCreate = true, onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
   branches = {}, chatParents = NO_PARENTS, onResize, onCollapse,
-  onSearch, onSettings, onAgents, onProjects, onPullRequests, onIsland, activeView = null,
+  onSearch, onSettings, onAgents, onProjects, onPullRequests, onIsland, onDisk, activeView = null,
   projectsReady = true, chatsReady = true,
 }: {
   /** Whether the project list has been answered. Until it has, a row's
@@ -137,6 +137,7 @@ export function Sidebar({
   /** The island page, where every agent and every 波特 (island bot) lives as
    *  a robot. */
   onIsland?: () => void;
+  onDisk?: () => void;
   onProjects?: () => void;
   /** The pull request desk, the last place before Settings. */
   onPullRequests?: () => void;
@@ -566,6 +567,10 @@ export function Sidebar({
               aria-current={activeView === "island" ? "page" : undefined}>
               <IslandIcon /><span>Island</span>
             </button></li>}
+            {onDisk && <li><button className="sidebar-place" type="button" onClick={onDisk}
+              aria-current={activeView === "disk" ? "page" : undefined}>
+              <DiskIcon /><span>Disk</span>
+            </button></li>}
             {onPullRequests && <li><button className="sidebar-place" type="button" onClick={onPullRequests}
               aria-current={activeView === "pulls" ? "page" : undefined}>
               <PullRequestIcon /><span>Pull requests</span>
@@ -690,3 +695,5 @@ function IslandIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" f
 function PullRequestIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="6" cy="5" r="2" /><circle cx="18" cy="7" r="2" /><circle cx="6" cy="19" r="2" /><path d="M6 7v10M8 5h4a6 6 0 0 1 6 6v-2" /></svg>; }
 function ProjectsIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>; }
 function PencilIcon() { return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" /></svg>; }
+
+function DiskIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M3 14h18M7 17h.01M11 17h.01" /></svg>; }
