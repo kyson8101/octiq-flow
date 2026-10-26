@@ -78,13 +78,7 @@ fn locations_and_classification_are_platform_data() {
             "review"
         );
     }
-    for name in [
-        "Holiday.fcpbundle",
-        "cut.prproj",
-        "Exports",
-        "renders",
-        "my-remotion-project",
-    ] {
+    for name in ["Holiday.fcpbundle", "cut.prproj"] {
         let c = classify(home, &home.join(name), "linux", true).unwrap();
         assert_eq!(c.group, "work");
         assert!(c.action.is_none());
@@ -399,6 +393,18 @@ fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
         .as_ref()
         .unwrap()
         .contains("Managed by an OctiqFlow run"));
+    s.work_paths.push(linked.join("film.fcpbundle"));
+    let mut personal_managed = vec![];
+    s.worktrees(&usage, &mut personal_managed, &mut |_, _, _, _| {})
+        .unwrap();
+    assert_eq!(personal_managed[0].group, "review");
+    assert!(personal_managed[0]
+        .note
+        .as_ref()
+        .unwrap()
+        .contains("Managed by an OctiqFlow run"));
+    assert!(personal_managed[0].action.is_none());
+    s.work_paths.clear();
     s.managed.clear();
     file(&linked.join("untracked"), 1, 0);
     walk(&mut s);
@@ -534,21 +540,17 @@ fn script_selection_is_bound_to_stored_scan_and_work_is_rejected() {
 }
 
 #[test]
-fn personal_work_inside_cache_never_inherits_parent_cleanup() {
+fn media_project_outputs_keep_the_parent_work_label() {
     let home = TestDir::new("disk-nested-work");
-    file(&home.join("repo/package.json"), 0, 0);
-    file(
-        &home.join("repo/node_modules/Exports/movie.mp4"),
-        THRESHOLD,
-        10,
-    );
+    file(&home.join("media/remotion.config.ts"), 0, 0);
+    file(&home.join("media/Exports/movie.mp4"), THRESHOLD, 10);
     let mut s = scanner(&home, "linux");
     walk(&mut s);
-    let items = s.items();
+    let items = disjoint_items(s.items());
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].group, "work");
     assert!(items[0].action.is_none());
-    assert!(items[0].path.ends_with("Exports"));
+    assert!(items[0].path.ends_with("media"));
 }
 
 #[cfg(unix)]
@@ -765,4 +767,69 @@ fn loading_a_legacy_report_caps_and_rewrites_only_latest_json() {
         history::load(&home).unwrap().unwrap().skipped.len(),
         SKIP_LIMIT + 1
     );
+}
+
+#[test]
+fn code_exports_and_dependency_media_names_are_not_personal_work() {
+    let home = TestDir::new("disk-code-exports");
+    file(&home.join("repo/package.json"), 0, 0);
+    file(&home.join("repo/exports/screenshot.png"), THRESHOLD, 0);
+    file(
+        &home.join("repo/remotion-fixtures/example.png"),
+        THRESHOLD,
+        0,
+    );
+    file(
+        &home.join("repo/remotion-fixtures/remotion-render.txt"),
+        1,
+        0,
+    );
+    file(&home.join("repo/renders/screenshot.png"), THRESHOLD, 0);
+    file(&home.join("repo/dist/example.mp4"), THRESHOLD, 0);
+    file(&home.join("repo/node_modules/remotion/package.json"), 0, 0);
+    file(
+        &home.join("repo/node_modules/remotion/remotion.config.ts"),
+        0,
+        0,
+    );
+    file(
+        &home.join("repo/node_modules/.remotion/renders/example.mp4"),
+        THRESHOLD,
+        0,
+    );
+    file(&home.join(".cache/example-remotion/package.json"), 0, 0);
+    file(
+        &home.join(".cache/example-remotion/remotion.config.ts"),
+        THRESHOLD,
+        0,
+    );
+    let mut s = scanner(&home, "linux");
+    walk(&mut s);
+    assert!(s.work_paths.is_empty());
+    assert!(s.items().iter().all(|i| i.group != "work"));
+    assert!(s.items().iter().any(|i| i.kind == "project-node_modules"));
+}
+
+#[test]
+fn media_outputs_need_real_filename_evidence_or_a_project_marker() {
+    let home = TestDir::new("disk-media-context");
+    file(&home.join("Exports/data.bin"), THRESHOLD, 0);
+    file(&home.join("renders/movie.mp4"), THRESHOLD, 0);
+    file(&home.join("my-remotion-project/package.json"), 0, 0);
+    file(
+        &home.join("my-remotion-project/out/result.bin"),
+        THRESHOLD,
+        0,
+    );
+    file(&home.join("code/package.json"), 0, 0);
+    file(&home.join("code/Photo Exports/portrait.jpg"), THRESHOLD, 0);
+    file(&home.join("code/film/scene.mov"), THRESHOLD, 0);
+    let mut s = scanner(&home, "linux");
+    walk(&mut s);
+    let items = disjoint_items(s.items());
+    assert_eq!(items.iter().filter(|i| i.group == "work").count(), 4);
+    assert!(!items
+        .iter()
+        .any(|i| i.path.ends_with("Exports") && !i.path.ends_with("Photo Exports")));
+    assert!(items.iter().all(|i| i.action.is_none()));
 }

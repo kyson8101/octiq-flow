@@ -71,8 +71,9 @@ excluded roots are deduplicated in `skipped`; it holds at most 500 roots plus
 one summary row reporting additional skipped/unreadable entries. An older
 oversized `latest.json` is capped and rewritten on load; this touches only the
 report file and does not append CSV rows or start a scan. `.git` contents are skipped
-and inspected only by Git. The host's in-memory ledger supplies managed task and
-mission allocations, including validation paths; scanner never opens the ledger.
+and inspected only by Git. The host's in-memory ledger supplies every task checkout/validation path whose
+workspace is not cleaned, plus every mission delivery whose `removed` is false.
+Run completion/archival does not release a mission. Scanner never opens the ledger.
 
 On macOS, `Desktop`, `Documents`, `Downloads`, `Pictures`, `Movies`, `Music`, Trash,
 `Library/Mobile Documents`, `Library/CloudStorage`, `Library/{Mail,Messages,Safari,
@@ -111,7 +112,7 @@ Unknown data is not guessed to be rebuildable or suggested for cleanup.
 | `simulators` | macOS `Library/Developer/CoreSimulator`; `.android/avd` | review, rm |
 | `toolchains` | `.rustup/toolchains`, `.nvm/versions`, `.pyenv/versions`, `.sdkman/candidates`; macOS `Library/Android/sdk`; Windows `AppData/Local/Android/Sdk` | review, rm |
 | `docker` | virtual path `docker://local`; `docker system df --format '{{json .}}'` sums CLI Size fields | review, `docker system prune` |
-| `personal-work` | `*.fcpbundle`, `*.fcplibrary`, `*.prproj`, `*.drp`, `*.dra`, `*.rpp`; `Exports`, `photo exports`, `photo-exports`, `renders`, `video projects`, `premiere projects`, `davinci projects`, names containing `remotion`; project folders containing `*.prproj`, `*.drp` or `remotion.config.*` | work label only, action null; whole subtree including out/renders is protected from suggestions |
+| `personal-work` | Media bundles/documents (`*.fcpbundle`, `*.fcplibrary`, `*.prproj`, `*.drp`, `*.dra`, `*.rpp`), folders with an immediate editor document or `remotion.config.*`, or a Remotion-named folder with its own `package.json`; qualified media/photo-export names (including `mv`, `film`, `footage`) also need media filenames. Generic `Exports`/`renders`/`out` require media filename evidence and must be outside a code project. Dependency/vendor/tool-cache trees never become personal work from these names or bundled markers. | work label only, action null; whole media project including out/renders is protected |
 | `git-worktree` | linked worktrees discovered through Git; never primary checkout | clean only if every eligibility check passes; otherwise review; worktree action |
 | `development-temp` | top-level `npm-*`, `yarn-*`, `pnpm-*`, `uv-cache-*`, `pip-cache-*`, `cargo-cache-*`, `rustc-*` | clean only if fully observed, older than 3 days and not in use; rm |
 | `ai-session-temp` | top-level `claude-*`, `codex-*` | review only if older than 3 days and not in use; rmOlderThan 3 with memory exclusions |
@@ -152,7 +153,9 @@ prompts disabled. No fetch, refresh-index write, maintenance or removal is run.
 5. No host ledger allocation still records this path.
 
 Every failing check is explained in `note`. Ledger-managed checkouts say
-`Managed by an OctiqFlow run: close it from the run panel`. Ignored output is
+`Managed by an OctiqFlow run: close it from the run panel`. Managed status always
+wins over a personal-media worktree label: the group remains review; personal
+media still has no cleanup action. Ignored output is
 measured using `git status --ignored --porcelain=v1 -z` and walk sizes, not file
 contents, and every worktree effect/script warns that ignored output is removed.
 
@@ -167,8 +170,12 @@ Commands are bounded and cancellation terminates their child process. Git has a
 The walk aggregates sizes, age buckets and newest mtime bottom-up. Directory
 names are streamed in two metadata-only passes (flags, then traversal); no child
 list or per-file tree is retained. Retained sizes are limited to threshold
-candidates, linked worktree roots and their disjoint ignored roots. Small named
-work roots are retained only as protection markers. Git worktree/ignored roots
+candidates, linked worktree roots and their disjoint ignored roots. Small confirmed media
+work roots are retained only as protection markers. Media filename evidence is
+counted from metadata/extensions, excluding dependency/cache contents; no file
+content is read. Generic output names and technical Remotion fixture names inside code projects
+are not work; a media-project marker or explicit photo/video-export context is
+required. Remotion-named code folders need their own package.json or config. Git worktree/ignored roots
 are discovered before walking a repo's children; linked worktree lists are
 reused across that repo's checkouts. The required skipped-root report is also
 retained. Cancellation is checked in both passes and bounded subprocess waits;

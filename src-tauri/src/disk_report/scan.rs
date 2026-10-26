@@ -14,6 +14,7 @@ pub(super) struct Size {
     pub old: u64,
     pub recent: u64,
     pub complete: bool,
+    pub media_files: u64,
 }
 #[derive(Clone)]
 struct Candidate {
@@ -188,26 +189,85 @@ fn named_work(name: &str) -> bool {
     ]
     .iter()
     .any(|x| n.ends_with(x))
-        || [
-            "exports",
-            "photo exports",
-            "photo-exports",
-            "renders",
-            "video projects",
-            "premiere projects",
-            "davinci projects",
-        ]
-        .contains(&n.as_str())
-        || ["remotion", "premiere", "davinci", "final cut", "final-cut"]
-            .iter()
-            .any(|p| n.contains(p))
+}
+fn qualified_media_name(name: &str) -> bool {
+    let n = name.to_lowercase();
+    [
+        "remotion",
+        "premiere",
+        "davinci",
+        "final cut",
+        "final-cut",
+        "video projects",
+    ]
+    .iter()
+    .any(|x| n.contains(x))
         || (n.contains("photo") && n.contains("export"))
+}
+fn explicit_media_export_name(name: &str) -> bool {
+    let n = name.to_lowercase();
+    ["mv", "film", "footage", "raw footage"].contains(&n.as_str())
+        || (n.contains("photo") && n.contains("export"))
+        || (n.contains("video") && (n.contains("export") || n.contains("project")))
+        || ((n.contains("premiere") || n.contains("davinci")) && n.contains("project"))
+}
+fn generic_export_name(name: &str) -> bool {
+    ["export", "exports", "render", "renders", "out"].contains(&name.to_lowercase().as_str())
+}
+fn generated_tree(home: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(home) else {
+        return false;
+    };
+    relative.components().any(|c| {
+        let n = c.as_os_str().to_string_lossy();
+        [
+            "node_modules",
+            ".pnpm",
+            ".cache",
+            "cache",
+            "caches",
+            ".npm",
+            ".cargo",
+            ".gradle",
+            ".m2",
+            ".rustup",
+            "vendor",
+            "third_party",
+        ]
+        .iter()
+        .any(|x| n.eq_ignore_ascii_case(x))
+    }) || [
+        ".android/avd",
+        ".nvm/versions",
+        ".pyenv/versions",
+        ".sdkman/candidates",
+        ".ollama",
+        ".lmstudio",
+        ".local/share/pnpm/store",
+        "Library/pnpm/store",
+        "Library/Android/sdk",
+        "Library/Developer/CoreSimulator",
+        "AppData/Local/Android/Sdk",
+    ]
+    .iter()
+    .any(|p| relative.starts_with(p))
+}
+fn media_extension(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| {
+        let ext = ext.to_string_lossy();
+        [
+            "mp4", "mov", "mkv", "avi", "webm", "m4v", "mp3", "wav", "flac", "aiff", "m4a", "jpg",
+            "jpeg", "png", "heic", "tif", "tiff", "dng", "raw",
+        ]
+        .iter()
+        .any(|x| ext.eq_ignore_ascii_case(x))
+    })
 }
 fn classify(home: &Path, path: &Path, platform: &str, project: bool) -> Option<Candidate> {
     let relative = path.strip_prefix(home).ok()?;
     let name = path.file_name()?.to_string_lossy();
     let n = name.to_lowercase();
-    if named_work(&name) {
+    if named_work(&name) && !generated_tree(home, path) {
         return Some(candidate(
             path,
             "personal-work",
@@ -622,15 +682,22 @@ impl Scanner {
             ..Size::default()
         };
         let mut item_candidate = None;
+        let mut possible_media_export = false;
         if meta.is_file() {
             size.bytes = meta.len();
+            if media_extension(path) && !generated_tree(&self.home, path) {
+                size.media_files = 1;
+            }
             self.bytes = self.bytes.saturating_add(size.bytes);
             if size.newest < self.at.saturating_sub(14 * DAY) {
                 size.old = size.bytes;
             } else {
                 size.recent = size.bytes;
             }
-            if !chat && named_work(&path.file_name().unwrap_or_default().to_string_lossy()) {
+            if !chat
+                && !generated_tree(&self.home, path)
+                && named_work(&path.file_name().unwrap_or_default().to_string_lossy())
+            {
                 item_candidate = classify(&self.home, path, &self.platform, project);
             }
         } else if meta.is_dir() {
@@ -645,7 +712,9 @@ impl Scanner {
             };
             let mut has_git = false;
             let mut project = project;
-            let mut personal = false;
+            let mut media_document = false;
+            let mut remotion_config = false;
+            let mut has_package = false;
             for entry in read {
                 self.check()?;
                 self.progress(phase, Some(path), emit);
@@ -659,6 +728,7 @@ impl Scanner {
                 };
                 let name = entry.file_name();
                 has_git |= name == ".git";
+                has_package |= name == "package.json";
                 project |= [
                     "package.json",
                     "Cargo.toml",
@@ -670,9 +740,9 @@ impl Scanner {
                 .iter()
                 .any(|n| name == *n);
                 let n = name.to_string_lossy().to_lowercase();
-                personal |= n.ends_with(".prproj")
-                    || n.ends_with(".drp")
-                    || n.starts_with("remotion.config.");
+                media_document |=
+                    n.ends_with(".prproj") || n.ends_with(".drp") || n.ends_with(".rpp");
+                remotion_config |= n.starts_with("remotion.config.");
             }
             let is_repo = has_git
                 && fs::symlink_metadata(path.join(".git"))
@@ -681,15 +751,31 @@ impl Scanner {
                 self.discover_git(path)?;
             }
             project |= is_repo;
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let generated = generated_tree(&self.home, path);
+            let named_remotion_project = name.to_lowercase().contains("remotion") && has_package;
             item_candidate = if !chat
-                && (personal || named_work(&path.file_name().unwrap_or_default().to_string_lossy()))
+                && !generated
+                && (media_document
+                    || remotion_config
+                    || named_remotion_project
+                    || named_work(&name))
             {
+                let label = if remotion_config {
+                    "Media project (Remotion config)"
+                } else if media_document {
+                    "Media project (editor document)"
+                } else if named_remotion_project {
+                    "Remotion project (name + package.json)"
+                } else {
+                    "Media bundle / project document"
+                };
                 Some(candidate(
                     path,
                     "personal-work",
                     "work",
-                    "Personal media project and outputs",
-                    "Personal work; never suggested for cleanup.",
+                    label,
+                    "Personal media work and outputs; never suggested for cleanup.",
                     None,
                 ))
             } else if listed {
@@ -697,6 +783,11 @@ impl Scanner {
             } else {
                 classify(&self.home, path, &self.platform, project)
             };
+            possible_media_export = !chat
+                && !listed
+                && !generated
+                && (explicit_media_export_name(&name)
+                    || (!project && (qualified_media_name(&name) || generic_export_name(&name))));
             if item_candidate.as_ref().is_some_and(|c| c.group == "work") {
                 self.remember_work(path);
             }
@@ -730,6 +821,7 @@ impl Scanner {
                 size.bytes = size.bytes.saturating_add(child_size.bytes);
                 size.old = size.old.saturating_add(child_size.old);
                 size.recent = size.recent.saturating_add(child_size.recent);
+                size.media_files = size.media_files.saturating_add(child_size.media_files);
                 size.newest = size.newest.max(child_size.newest);
                 size.complete &= child_size.complete;
             }
@@ -739,6 +831,16 @@ impl Scanner {
         } else {
             self.skip(path, "Special file (metadata only)");
             size.complete = false;
+        }
+        if item_candidate.is_none() && possible_media_export && size.media_files > 0 {
+            item_candidate = Some(candidate(
+                path,
+                "personal-work",
+                "work",
+                "Media exports (media filenames observed)",
+                "Personal media exports; never suggested for cleanup.",
+                None,
+            ));
         }
         if item_candidate.as_ref().is_some_and(|c| c.group == "work") {
             self.remember_work(path);
@@ -1195,7 +1297,7 @@ impl Scanner {
             let ignored_bytes = ignored.unwrap_or(0);
             let mut c=candidate(&path,"git-worktree",if eligible {"clean"} else {"review"},"Linked Git worktree","Removing this worktree also deletes .gitignore-ignored output that exists only there.",None);
             if personal {
-                c.group = "work".into();
+                c.group = if managed { "review" } else { "work" }.into();
                 c.label = "Personal media worktree (label only)".into();
                 c.action = None;
             } else {
