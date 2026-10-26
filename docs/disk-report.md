@@ -155,6 +155,16 @@ no extra software, registry writes, elevation or permission prompts are attempte
 Commands are bounded and cancellation terminates their child process. Git has a
 15-second timeout, lsof 12 seconds and Docker 8 seconds.
 
+The walk aggregates sizes, age buckets and newest mtime bottom-up. Directory
+names are streamed in two metadata-only passes (flags, then traversal); no child
+list or per-file tree is retained. Retained sizes are limited to threshold
+candidates, linked worktree roots and their disjoint ignored roots. Small named
+work roots are retained only as protection markers. Git worktree/ignored roots
+are discovered before walking a repo's children; linked worktree lists are
+reused across that repo's checkouts. The required skipped-root report is also
+retained. Cancellation is checked in both passes and bounded subprocess waits;
+progress stays throttled during the name pass as well as metadata traversal.
+
 Git repository discovery is restricted to the home phase. Windows home traversal
 skips its nested system-temp root for the separate age/in-use pass.
 

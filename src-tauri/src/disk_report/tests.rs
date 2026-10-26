@@ -338,7 +338,7 @@ fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
     git(&primary, &["init", "-b", "main"]);
     git(&primary, &["config", "user.email", "test@example.invalid"]);
     git(&primary, &["config", "user.name", "Test"]);
-    fs::write(primary.join(".gitignore"), "output/\n").unwrap();
+    fs::write(primary.join(".gitignore"), "output/\ncache.bin\n").unwrap();
     git(&primary, &["add", "."]);
     git(&primary, &["commit", "-m", "base"]);
     let linked = primary.join("target/linked");
@@ -347,6 +347,7 @@ fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
         &["worktree", "add", "-b", "task", &display(&linked)],
     );
     file(&linked.join("output/cache"), THRESHOLD, 10);
+    file(&linked.join("cache.bin"), THRESHOLD / 2, 10);
     let old = UNIX_EPOCH + Duration::from_millis(now() - 10 * DAY);
     for p in [&linked, &linked.join("output"), &linked.join(".gitignore")] {
         let mut options = fs::OpenOptions::new();
@@ -371,7 +372,7 @@ fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
     assert_eq!(i.group, "clean", "{:?}", i.note);
     let w = i.worktree.as_ref().unwrap();
     assert!(w.eligible);
-    assert_eq!(w.ignored_bytes, THRESHOLD);
+    assert_eq!(w.ignored_bytes, THRESHOLD + THRESHOLD / 2);
     assert_ne!(i.path, display(&primary));
     assert_eq!(
         items.len(),
@@ -610,4 +611,68 @@ fn temp_walk_never_discovers_git_repositories() {
     s.walk(&temp, false, false, false, "temp", &mut |_, _, _, _| {})
         .unwrap();
     assert!(s.repos.is_empty());
+}
+
+#[test]
+fn walk_retains_only_candidate_and_required_root_sizes_not_file_paths() {
+    let home = TestDir::new("disk-streaming");
+    let cache = home.join(".cache/uv");
+    file(&cache.join("payload"), THRESHOLD, 1);
+    for n in 0..2048 {
+        File::create(cache.join(format!("small-{n}"))).unwrap();
+    }
+    let mut s = scanner(&home, "linux");
+    walk(&mut s);
+    assert!(s.entries > 2048);
+    assert_eq!(s.sizes.len(), 1);
+    assert_eq!(s.candidates.len(), 1);
+    assert_eq!(s.sizes[&cache].bytes, THRESHOLD);
+}
+
+#[test]
+fn progress_is_throttled_and_can_cancel_a_walk_in_flight() {
+    let home = TestDir::new("disk-live-cancel");
+    file(&home.join(".npm/payload"), THRESHOLD, 1);
+    let mut s = scanner(&home, "linux");
+    s.home_device = device(&fs::symlink_metadata(&*home).unwrap());
+    let cancel = s.cancel.clone();
+    let mut events = 0;
+    assert!(s
+        .walk(&home, false, false, false, "home", &mut |_, _, _, _| {
+            events += 1;
+            cancel.store(true, Ordering::Relaxed);
+        })
+        .is_err());
+    assert_eq!(events, 1);
+    assert!(home.join(".npm/payload").exists());
+    let mut s = scanner(&home, "linux");
+    let mut events = 0;
+    let mut emit = |_: &str, _: u64, _: u64, _: Option<String>| {
+        events += 1;
+    };
+    for _ in 0..100 {
+        s.progress("home", None, &mut emit);
+    }
+    assert_eq!(events, 1);
+    s.last = Instant::now() - Duration::from_millis(251);
+    s.progress("home", None, &mut |_, _, _, _| {
+        events += 1;
+    });
+    assert_eq!(events, 2);
+}
+
+#[test]
+fn encoded_project_names_inside_chat_history_remain_history() {
+    let home = TestDir::new("disk-chat-media-name");
+    file(
+        &home.join(".claude/projects/my-remotion-project/old.jsonl"),
+        THRESHOLD,
+        15,
+    );
+    let mut s = scanner(&home, "linux");
+    walk(&mut s);
+    let items = s.items();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, "claude-history-older-14-days");
+    assert_eq!(items[0].group, "review");
 }

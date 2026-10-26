@@ -430,6 +430,12 @@ fn protected(home: &Path, path: &Path, platform: &str, profile: &Path) -> Option
     None
 }
 
+#[derive(Clone)]
+struct GitRoot {
+    repo: PathBuf,
+    ignored: Option<Vec<PathBuf>>,
+    inspected: bool,
+}
 pub(super) struct Scanner {
     home: PathBuf,
     platform: String,
@@ -440,6 +446,10 @@ pub(super) struct Scanner {
     pub(super) sizes: HashMap<PathBuf, Size>,
     candidates: Vec<Candidate>,
     repos: Vec<PathBuf>,
+    known_git: HashSet<PathBuf>,
+    git_roots: HashMap<PathBuf, GitRoot>,
+    wanted_sizes: HashSet<PathBuf>,
+    work_paths: Vec<PathBuf>,
     skipped: Vec<Skipped>,
     entries: u64,
     bytes: u64,
@@ -465,6 +475,10 @@ impl Scanner {
             sizes: HashMap::new(),
             candidates: Vec::new(),
             repos: Vec::new(),
+            known_git: HashSet::new(),
+            git_roots: HashMap::new(),
+            wanted_sizes: HashSet::new(),
+            work_paths: Vec::new(),
             skipped: Vec::new(),
             entries: 0,
             bytes: 0,
@@ -489,12 +503,18 @@ impl Scanner {
     fn progress(
         &mut self,
         phase: &str,
-        path: Option<String>,
+        path: Option<&Path>,
         emit: &mut impl FnMut(&str, u64, u64, Option<String>),
     ) {
         if self.last.elapsed() >= Duration::from_millis(250) {
-            emit(phase, self.entries, self.bytes, path);
+            emit(phase, self.entries, self.bytes, path.map(display));
             self.last = Instant::now();
+        }
+    }
+    fn remember_work(&mut self, path: &Path) {
+        if !self.work_paths.iter().any(|p| path.starts_with(p)) {
+            self.work_paths.retain(|p| !p.starts_with(path));
+            self.work_paths.push(path.into());
         }
     }
     fn walk(
@@ -551,12 +571,13 @@ impl Scanner {
             return Ok(Size::default());
         }
         self.entries += 1;
-        self.progress(phase, Some(display(path)), emit);
+        self.progress(phase, Some(path), emit);
         let mut size = Size {
             newest: modified(&meta),
             complete: true,
             ..Size::default()
         };
+        let mut item_candidate = None;
         if meta.is_file() {
             size.bytes = meta.len();
             self.bytes = self.bytes.saturating_add(size.bytes);
@@ -565,7 +586,12 @@ impl Scanner {
             } else {
                 size.recent = size.bytes;
             }
+            if !chat && named_work(&path.file_name().unwrap_or_default().to_string_lossy()) {
+                item_candidate = classify(&self.home, path, &self.platform, project);
+            }
         } else if meta.is_dir() {
+            // First pass retains only flags, never a directory's entire child list.
+            // Names identify projects/media without opening their manifests.
             let read = match fs::read_dir(path) {
                 Ok(r) => r,
                 Err(e) => {
@@ -573,52 +599,46 @@ impl Scanner {
                     return Ok(Size::default());
                 }
             };
-            // Read names only; never open manifests or .git files.
-            let mut children = Vec::new();
+            let mut has_git = false;
+            let mut project = project;
+            let mut personal = false;
             for entry in read {
                 self.check()?;
-                match entry {
-                    Ok(e) => children.push(e.path()),
+                self.progress(phase, Some(path), emit);
+                let entry = match entry {
+                    Ok(e) => e,
+                    // Never retry a directory whose enumeration failed.
                     Err(e) => {
-                        size.complete = false;
                         self.skip(path, e.to_string());
+                        return Ok(Size::default());
                     }
-                }
+                };
+                let name = entry.file_name();
+                has_git |= name == ".git";
+                project |= [
+                    "package.json",
+                    "Cargo.toml",
+                    "pyproject.toml",
+                    "go.mod",
+                    "pom.xml",
+                    "build.gradle",
+                ]
+                .iter()
+                .any(|n| name == *n);
+                let n = name.to_string_lossy().to_lowercase();
+                personal |= n.ends_with(".prproj")
+                    || n.ends_with(".drp")
+                    || n.starts_with("remotion.config.");
             }
-            let is_repo = children.iter().any(|p| {
-                p.file_name().is_some_and(|n| n == ".git")
-                    && fs::symlink_metadata(p)
-                        .is_ok_and(|meta| !redirect(&meta) && device(&meta) == self.home_device)
-            });
+            let is_repo = has_git
+                && fs::symlink_metadata(path.join(".git"))
+                    .is_ok_and(|m| !redirect(&m) && device(&m) == self.home_device);
             if is_repo && phase == "home" {
-                self.repos.push(path.into());
+                self.discover_git(path)?;
             }
-            let project = project
-                || is_repo
-                || children.iter().any(|p| {
-                    p.file_name().is_some_and(|n| {
-                        [
-                            "package.json",
-                            "Cargo.toml",
-                            "pyproject.toml",
-                            "go.mod",
-                            "pom.xml",
-                            "build.gradle",
-                        ]
-                        .iter()
-                        .any(|x| n == *x)
-                    })
-                });
-            let personal = children.iter().any(|p| {
-                p.file_name().is_some_and(|n| {
-                    let n = n.to_string_lossy().to_lowercase();
-                    n.ends_with(".prproj")
-                        || n.ends_with(".drp")
-                        || n.starts_with("remotion.config.")
-                })
-            });
-            let c = if personal
-                || named_work(&path.file_name().unwrap_or_default().to_string_lossy())
+            project |= is_repo;
+            item_candidate = if !chat
+                && (personal || named_work(&path.file_name().unwrap_or_default().to_string_lossy()))
             {
                 Some(candidate(
                     path,
@@ -633,12 +653,28 @@ impl Scanner {
             } else {
                 classify(&self.home, path, &self.platform, project)
             };
-            let chat = chat || c.as_ref().is_some_and(|c| c.chat);
-            let listed = listed || c.is_some();
-            if let Some(c) = c {
-                self.candidates.push(c);
+            if item_candidate.as_ref().is_some_and(|c| c.group == "work") {
+                self.remember_work(path);
             }
-            for child in children {
+            let chat = chat || item_candidate.as_ref().is_some_and(|c| c.chat);
+            let listed = listed || item_candidate.is_some();
+            let read = match fs::read_dir(path) {
+                Ok(r) => r,
+                Err(e) => {
+                    self.skip(path, e.to_string());
+                    return Ok(Size::default());
+                }
+            };
+            for entry in read {
+                self.check()?;
+                let child = match entry {
+                    Ok(e) => e.path(),
+                    Err(e) => {
+                        size.complete = false;
+                        self.skip(path, e.to_string());
+                        continue;
+                    }
+                };
                 let child_size = self.walk(&child, project, chat, listed, phase, emit)?;
                 size.bytes = size.bytes.saturating_add(child_size.bytes);
                 size.old = size.old.saturating_add(child_size.old);
@@ -650,13 +686,72 @@ impl Scanner {
             self.skip(path, "Special file (metadata only)");
             size.complete = false;
         }
-        if meta.is_file() && named_work(&path.file_name().unwrap_or_default().to_string_lossy()) {
-            if let Some(c) = classify(&self.home, path, &self.platform, project) {
-                self.candidates.push(c);
+        if item_candidate.as_ref().is_some_and(|c| c.group == "work") {
+            self.remember_work(path);
+        }
+        let keep_candidate = item_candidate.is_some() && size.bytes >= THRESHOLD;
+        if keep_candidate || self.wanted_sizes.contains(path) {
+            self.sizes.insert(path.into(), size.clone());
+        }
+        if keep_candidate {
+            self.candidates.push(item_candidate.unwrap());
+        }
+        Ok(size)
+    }
+    /// Register only the roots needed by the later Git eligibility phase.
+    /// Called before walking this repository's children, so ignored sizes can
+    /// be retained without keeping every file or every directory in memory.
+    fn discover_git(&mut self, path: &Path) -> Result<(), String> {
+        self.check()?;
+        self.repos.push(path.into());
+        if self.known_git.insert(path.into()) {
+            if let Some(output) = self.git(path, &["worktree", "list", "--porcelain", "-z"]) {
+                let paths: Vec<PathBuf> = output
+                    .split(|b| *b == 0)
+                    .filter_map(|v| v.strip_prefix(b"worktree "))
+                    .filter_map(|v| std::str::from_utf8(v).ok())
+                    .map(PathBuf::from)
+                    .collect();
+                if let Some(primary) = paths.first() {
+                    self.known_git.extend(paths.iter().cloned());
+                    for linked in paths.iter().skip(1) {
+                        if !linked.starts_with(&self.home) {
+                            self.skip(linked, "Worktree outside safely scanned home paths");
+                            continue;
+                        }
+                        self.wanted_sizes.insert(linked.clone());
+                        self.git_roots.entry(linked.clone()).or_insert(GitRoot {
+                            repo: primary.clone(),
+                            ignored: None,
+                            inspected: false,
+                        });
+                    }
+                }
+            } else {
+                self.skip(path, "git worktree list unavailable / timed out");
             }
         }
-        self.sizes.insert(path.into(), size.clone());
-        Ok(size)
+        if self.git_roots.get(path).is_some_and(|r| !r.inspected) {
+            let ignored = self
+                .git(
+                    path,
+                    &[
+                        "status",
+                        "--ignored",
+                        "--porcelain=v1",
+                        "-z",
+                        "--untracked-files=normal",
+                    ],
+                )
+                .and_then(|out| ignored_paths(path, &out));
+            if let Some(roots) = &ignored {
+                self.wanted_sizes.extend(roots.iter().cloned());
+            }
+            let root = self.git_roots.get_mut(path).unwrap();
+            root.ignored = ignored;
+            root.inspected = true;
+        }
+        Ok(())
     }
     pub(super) fn run(
         &mut self,
@@ -764,9 +859,10 @@ impl Scanner {
         let mut items = Vec::new();
         for c in &self.candidates {
             if c.group != "work"
-                && self.candidates.iter().any(|work| {
-                    work.group == "work" && work.path != c.path && work.path.starts_with(&c.path)
-                })
+                && self
+                    .work_paths
+                    .iter()
+                    .any(|work| work != &c.path && work.starts_with(&c.path))
             {
                 continue;
             }
@@ -908,10 +1004,7 @@ impl Scanner {
                     continue;
                 }
                 let size = self.walk(&path, false, ai, false, "temp", emit)?;
-                let personal = self
-                    .candidates
-                    .iter()
-                    .any(|c| c.group == "work" && c.path.starts_with(&path));
+                let personal = self.work_paths.iter().any(|p| p.starts_with(&path));
                 if size.bytes < THRESHOLD
                     || personal
                     || !size.complete
@@ -972,174 +1065,127 @@ impl Scanner {
         items: &mut Vec<Item>,
         emit: &mut impl FnMut(&str, u64, u64, Option<String>),
     ) -> Result<(), String> {
-        let mut seen = HashSet::new();
-        for repo in self.repos.clone() {
+        let roots = self.git_roots.clone();
+        for (path, root) in roots {
             self.check()?;
-            self.progress("git", Some(display(&repo)), emit);
-            let Some(output) = self.git(&repo, &["worktree", "list", "--porcelain", "-z"]) else {
-                self.skip(&repo, "git worktree list unavailable / timed out");
+            self.progress("git", Some(&path), emit);
+            let primary = root.repo;
+            if !self.sizes.contains_key(&path) {
+                self.skip(&path, "Worktree outside safely scanned home paths");
                 continue;
-            };
-            let mut first = true;
-            let mut primary = repo.clone();
-            for block in output
-                .split(|c| *c == 0)
-                .filter(|x| x.starts_with(b"worktree "))
-            {
-                let Ok(path) = std::str::from_utf8(&block[9..]) else {
-                    continue;
-                };
-                let path = PathBuf::from(path);
-                if first {
-                    first = false;
-                    primary = path;
-                    continue;
-                } // primary is always first
-                if !seen.insert(path.clone()) {
-                    continue;
-                }
-                if !path.starts_with(&self.home) || !self.sizes.contains_key(&path) {
-                    self.skip(&path, "Worktree outside safely scanned home paths");
-                    continue;
-                }
-                // Even a small worktree must prevent an ancestor cache's rm action.
-                // A worktree can be removed only through Git, never through its parent.
-                items.retain(|item| {
-                    item.group == "work" || !path.starts_with(Path::new(&item.path))
-                });
-                let size = self.sizes[&path].clone();
-                if size.bytes < THRESHOLD {
-                    continue;
-                }
-                let clean = self
-                    .git(
-                        &path,
-                        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-                    )
-                    .is_some_and(|o| o.is_empty());
-                let branch = self
-                    .git(&path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
-                    .map(|o| String::from_utf8_lossy(&o).trim().to_string())
-                    .unwrap_or_else(|| "(detached)".into());
-                let mainline = self
-                    .git(
-                        &repo,
-                        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
-                    )
-                    .map(|o| String::from_utf8_lossy(&o).trim().to_string())
-                    .or_else(|| {
-                        ["refs/heads/main", "refs/heads/master"]
-                            .iter()
-                            .find(|r| self.git(&primary, &["rev-parse", "--verify", r]).is_some())
-                            .map(|s| s.to_string())
-                    })
-                    .unwrap_or_default();
-                let merged = !mainline.is_empty()
-                    && self
-                        .git(&path, &["merge-base", "--is-ancestor", "HEAD", &mainline])
-                        .is_some();
-                let idle_days = self.at.saturating_sub(size.newest) / DAY;
-                let in_use = in_use.contains(&path);
-                let managed = self.managed.iter().any(|p| p == &path);
-                let personal = self.candidates.iter().any(|c| {
-                    c.group == "work" && (c.path.starts_with(&path) || path.starts_with(&c.path))
-                });
-                let ignored = self.ignored(&path);
-                let eligible = !personal
-                    && ignored.is_some()
-                    && clean
-                    && merged
-                    && idle_days >= 7
-                    && !in_use
-                    && !managed
-                    && size.complete;
-                let mut reasons = Vec::new();
-                if personal {
-                    reasons.push("Contains personal media work; label only");
-                }
-                if !clean {
-                    reasons.push("Uncommitted/untracked changes or git status unavailable");
-                }
-                if !merged {
-                    reasons.push("HEAD is not verified merged into mainline");
-                }
-                if idle_days < 7 {
-                    reasons.push("Files changed within 7 days");
-                }
-                if in_use {
-                    reasons.push("In use or process usage could not be verified");
-                }
-                if managed {
-                    reasons.push("Managed by an OctiqFlow run: close it from the run panel");
-                }
-                if !size.complete {
-                    reasons.push("Partial scan: skipped paths prevent eligibility");
-                }
-                if ignored.is_none() {
-                    reasons.push("Ignored-output size could not be measured");
-                }
-                let ignored_bytes = ignored.unwrap_or(0);
-                let mut c=candidate(&path,"git-worktree",if eligible {"clean"} else {"review"},"Linked Git worktree","Removing this worktree also deletes .gitignore-ignored output that exists only there.",None);
-                if personal {
-                    c.group = "work".into();
-                    c.label = "Personal media worktree (label only)".into();
-                    c.action = None;
-                } else {
-                    c.action = Some(Action::Worktree {
-                        repo: display(&primary),
-                        path: display(&path),
-                    });
-                }
-                let mut i = self.item(&c, &size);
-                if !reasons.is_empty() {
-                    i.note = Some(reasons.join("; "));
-                }
-                i.worktree = Some(Worktree {
-                    repo: display(&primary),
-                    branch,
-                    clean,
-                    merged,
-                    mainline,
-                    idle_days,
-                    in_use,
-                    eligible,
-                    ignored_bytes,
-                });
-                items.retain(|i| !Path::new(&i.path).starts_with(&path));
-                items.push(i);
             }
+            // Even a small worktree must prevent an ancestor cache's rm action.
+            // A worktree can be removed only through Git, never through its parent.
+            items.retain(|item| item.group == "work" || !path.starts_with(Path::new(&item.path)));
+            let size = self.sizes[&path].clone();
+            if size.bytes < THRESHOLD {
+                continue;
+            }
+            let clean = self
+                .git(
+                    &path,
+                    &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                )
+                .is_some_and(|o| o.is_empty());
+            let branch = self
+                .git(&path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+                .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+                .unwrap_or_else(|| "(detached)".into());
+            let mainline = self
+                .git(
+                    &primary,
+                    &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+                )
+                .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+                .or_else(|| {
+                    ["refs/heads/main", "refs/heads/master"]
+                        .iter()
+                        .find(|r| self.git(&primary, &["rev-parse", "--verify", r]).is_some())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_default();
+            let merged = !mainline.is_empty()
+                && self
+                    .git(&path, &["merge-base", "--is-ancestor", "HEAD", &mainline])
+                    .is_some();
+            let idle_days = self.at.saturating_sub(size.newest) / DAY;
+            let in_use = in_use.contains(&path);
+            let managed = self.managed.iter().any(|p| p == &path);
+            let personal = self
+                .work_paths
+                .iter()
+                .any(|p| p.starts_with(&path) || path.starts_with(p));
+            let ignored = self.ignored(&path);
+            let eligible = !personal
+                && ignored.is_some()
+                && clean
+                && merged
+                && idle_days >= 7
+                && !in_use
+                && !managed
+                && size.complete;
+            let mut reasons = Vec::new();
+            if personal {
+                reasons.push("Contains personal media work; label only");
+            }
+            if !clean {
+                reasons.push("Uncommitted/untracked changes or git status unavailable");
+            }
+            if !merged {
+                reasons.push("HEAD is not verified merged into mainline");
+            }
+            if idle_days < 7 {
+                reasons.push("Files changed within 7 days");
+            }
+            if in_use {
+                reasons.push("In use or process usage could not be verified");
+            }
+            if managed {
+                reasons.push("Managed by an OctiqFlow run: close it from the run panel");
+            }
+            if !size.complete {
+                reasons.push("Partial scan: skipped paths prevent eligibility");
+            }
+            if ignored.is_none() {
+                reasons.push("Ignored-output size could not be measured");
+            }
+            let ignored_bytes = ignored.unwrap_or(0);
+            let mut c=candidate(&path,"git-worktree",if eligible {"clean"} else {"review"},"Linked Git worktree","Removing this worktree also deletes .gitignore-ignored output that exists only there.",None);
+            if personal {
+                c.group = "work".into();
+                c.label = "Personal media worktree (label only)".into();
+                c.action = None;
+            } else {
+                c.action = Some(Action::Worktree {
+                    repo: display(&primary),
+                    path: display(&path),
+                });
+            }
+            let mut i = self.item(&c, &size);
+            if !reasons.is_empty() {
+                i.note = Some(reasons.join("; "));
+            }
+            i.worktree = Some(Worktree {
+                repo: display(&primary),
+                branch,
+                clean,
+                merged,
+                mainline,
+                idle_days,
+                in_use,
+                eligible,
+                ignored_bytes,
+            });
+            items.retain(|i| !Path::new(&i.path).starts_with(&path));
+            items.push(i);
         }
         Ok(())
     }
     fn ignored(&self, path: &Path) -> Option<u64> {
-        let Some(output) = self.git(
-            path,
-            &[
-                "status",
-                "--ignored",
-                "--porcelain=v1",
-                "-z",
-                "--untracked-files=normal",
-            ],
-        ) else {
-            return None;
-        };
-        let mut roots = Vec::new();
-        for entry in output.split(|c| *c == 0).filter(|e| e.starts_with(b"!! ")) {
-            if let Ok(name) = std::str::from_utf8(&entry[3..]) {
-                roots.push(path.join(name.trim_end_matches('/')));
-            }
-        }
-        roots.sort_by_key(|p| p.components().count());
-        let mut seen: Vec<PathBuf> = Vec::new();
-        let mut total = 0u64;
-        for root in roots {
-            if !seen.iter().any(|p| root.starts_with(p)) {
-                total = total.saturating_add(self.sizes.get(&root).map(|s| s.bytes).unwrap_or(0));
-                seen.push(root);
-            }
-        }
-        Some(total)
+        let roots = self.git_roots.get(path)?.ignored.as_ref()?;
+        roots.iter().try_fold(0u64, |total, root| {
+            self.sizes.get(root).map(|s| total.saturating_add(s.bytes))
+        })
     }
     fn docker(&mut self, items: &mut Vec<Item>) -> Result<(), String> {
         self.check()?;
@@ -1177,6 +1223,28 @@ impl Scanner {
         }
         Ok(())
     }
+}
+fn ignored_paths(path: &Path, output: &[u8]) -> Option<Vec<PathBuf>> {
+    let mut roots = Vec::new();
+    for entry in output.split(|b| *b == 0).filter(|v| v.starts_with(b"!! ")) {
+        let name = std::str::from_utf8(&entry[3..]).ok()?;
+        let relative = Path::new(name.trim_end_matches('/'));
+        if relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return None;
+        }
+        roots.push(path.join(relative));
+    }
+    roots.sort_by_key(|p| p.components().count());
+    let mut selected: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        if !selected.iter().any(|p| root.starts_with(p)) {
+            selected.push(root);
+        }
+    }
+    Some(selected)
 }
 fn docker_bytes(s: &str) -> u64 {
     let split = s
