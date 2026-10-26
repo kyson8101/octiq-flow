@@ -10,6 +10,7 @@ import {
   MAX_CHAT_PLACES,
   placeFrom,
   placeTop,
+  prependPlaceFrom,
   rememberChatPlace,
   type Anchor,
 } from "./chatPlace";
@@ -188,6 +189,24 @@ describe("anchoring a place to a turn", () => {
 });
 
 describe("going back to a place", () => {
+  it("holds the first turn below the load row through deferred layout", () => {
+    const at = prependPlaceFrom(0, [{ id: "first", offset: 104 }]);
+    expect(at).toEqual({ top: 0, turn: "first", delta: -104 });
+    for (const growth of [2848, 2958, 3099.25]) {
+      const anchors = [{ id: "older", offset: 104 }, { id: "first", offset: 104 + growth }];
+      const top = placeTop(at, anchors, 20000);
+      expect(anchors[1].offset - top).toBe(104);
+    }
+  });
+
+  it("keeps the current turn when reading during a page fetch", () => {
+    const anchors = [{ id: "first", offset: 104 }, { id: "next", offset: 600 }];
+    const at = prependPlaceFrom(650, anchors);
+    expect(at).toEqual({ top: 650, turn: "next", delta: 50 });
+    expect(placeTop(at, anchors.map(a => ({ ...a, offset: a.offset + 1000 })), 20000)).toBe(1650);
+    expect(prependPlaceFrom(0, [])).toEqual({ top: 0 });
+  });
+
   it("follows the turn rather than the pixels", () => {
     // The point of the anchor: everything above the turn grew by 500px while
     // the chat was closed, and the reader still lands on the same words.

@@ -13711,7 +13711,9 @@ body.is-ultra .eff {
   font-size: 12px;
 }
 .history-more button {
-  min-height: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  white-space: nowrap;
   padding: 8px 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -13720,6 +13722,11 @@ body.is-ultra .eff {
   cursor: pointer;
 }
 .history-more button:disabled { opacity: 0.6; cursor: wait; }
+.history-start {
+  height: 44px;
+  display: flex;
+  align-items: center;
+}
 
 .skill-reload {
   display: flex;
