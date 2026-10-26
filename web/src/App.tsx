@@ -145,6 +145,7 @@ import { ChatSearchPage } from "./components/ChatSearchPage";
 // The island draws in 3D: three.js and the island come with the page, the
 // first time it is opened, and with no other page.
 const IslandPage = lazy(() => import("./components/IslandPage"));
+const DiskPage = lazy(() => import("./components/DiskPage"));
 import { WorkspaceSlotsContext, type WorkspaceSlots } from "./components/WorkspaceHeader";
 import type { ChatSearchHit } from "./lib/chatSearch";
 import { loadAgents, type AgentInstall } from "./lib/agentInstalls";
@@ -907,6 +908,7 @@ export default function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("projects");
   const [agentsDashboard, setAgentsDashboard] = useState(false);
   const [islandPage, setIslandPage] = useState(false);
+  const [diskPage, setDiskPage] = useState(false);
   /** Words a page hands a new chat's box: the island's brief for a wish to
    *  grant. Taken by the box the way a taken-back message is (`putBack`). */
   const [seeded, setSeeded] = useState<ReclaimedMessage[] | null>(null);
@@ -914,7 +916,7 @@ export default function App() {
    *  dashboard are pages like Projects and Search: the sidebar stays, and the
    *  page's title sits in the one top bar. */
   const mainPage = prDashboardOpen || projectsPage !== null || searchPage || appSettings
-    || (agentsDashboard && agentsMode) || islandPage;
+    || (agentsDashboard && agentsMode) || islandPage || diskPage;
 
   // Chats that were picked up from an agent's own history, by conversation id.
   // Only so the empty page can say WHICH session it is about to continue —
@@ -2318,6 +2320,7 @@ export default function App() {
   const openAgentsSettings = useCallback(() => {
     setAgentsDashboard(false);
     setIslandPage(false);
+    setDiskPage(false);
     setPrDashboardOpen(false);
     setProjectsPage(null);
     setSearchPage(false);
@@ -2727,6 +2730,7 @@ export default function App() {
     setAppSettings(false);
     setAgentsDashboard(false);
     setIslandPage(false);
+    setDiskPage(false);
     setFocusBox((n) => n + 1);
   }, []);
 
@@ -2946,6 +2950,7 @@ export default function App() {
     setAppSettings(false);
     setAgentsDashboard(false);
     setIslandPage(false);
+    setDiskPage(false);
   }, [holdConversation]);
 
   // Load the task beside the main chat the way opening it would, once per
@@ -5247,7 +5252,7 @@ export default function App() {
 
 
   /** Opens one main-area page in place of the chat, closing any other. */
-  const showPage = (page: "search" | "projects" | "settings" | "agents" | "pulls" | "island") => {
+  const showPage = (page: "search" | "projects" | "settings" | "agents" | "pulls" | "island" | "disk") => {
     setProjectsScreen(false);
     setPrDashboardOpen(page === "pulls");
     setProjectsPage(page === "projects" ? { projectId: null } : null);
@@ -5255,6 +5260,7 @@ export default function App() {
     setAppSettings(page === "settings");
     setAgentsDashboard(page === "agents");
     setIslandPage(page === "island");
+    setDiskPage(page === "disk");
   };
 
   // Every action for what is on screen, in the bar's order (components/
@@ -5428,8 +5434,9 @@ export default function App() {
         onProjects={() => showPage("projects")}
         onPullRequests={() => showPage("pulls")}
         onIsland={() => showPage("island")}
+        onDisk={() => showPage("disk")}
         activeView={searchPage ? "search" : projectsPage ? "projects" : agentsDashboard && agentsMode ? "agents"
-          : prDashboardOpen ? "pulls" : appSettings ? "settings" : islandPage ? "island" : null}
+          : prDashboardOpen ? "pulls" : appSettings ? "settings" : islandPage ? "island" : diskPage ? "disk" : null}
       />
       <div className="shell-main">
       {/* The workspace's ONE top bar. The app's name and logo belong to the
@@ -5642,6 +5649,7 @@ export default function App() {
             />
           )}
 
+          {diskPage && <Suspense fallback={<section className="disk-page" aria-label="Disk report" />}><DiskPage connected={conn === "open"} onClose={() => setDiskPage(false)} /></Suspense>}
           {islandPage && (
             <Suspense fallback={<section className="projects-page" aria-label="Island" />}>
               <IslandPage
@@ -5661,6 +5669,7 @@ export default function App() {
                 onOpenChat={(chatKey) => {
                   openWorkflowChat(chatKey);
                   setIslandPage(false);
+                  setDiskPage(false);
                 }}
                 onClose={() => setIslandPage(false)}
               />
