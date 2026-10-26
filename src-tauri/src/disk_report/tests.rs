@@ -353,6 +353,7 @@ fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
         }
         options.open(p).unwrap().set_modified(old).unwrap();
     }
+    file(&home.join("unrelated.photoslibrary/data"), THRESHOLD, 0);
     let mut s = scanner(&home, "linux");
     walk(&mut s);
     let usage = InUse {
@@ -366,6 +367,12 @@ fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
     assert_eq!(i.group, "clean", "{:?}", i.note);
     let w = i.worktree.as_ref().unwrap();
     assert!(w.eligible);
+    assert!(
+        s.skipped
+            .iter()
+            .any(|row| Path::new(&row.path).ends_with("unrelated.photoslibrary")),
+        "Unrelated skipped roots must not block this clean worktree"
+    );
     assert_eq!(w.ignored_bytes, THRESHOLD + THRESHOLD / 2);
     assert_ne!(i.path, display(&primary));
     assert_eq!(
@@ -848,7 +855,14 @@ fn bash_confirmation_requires_literal_yes_including_whitespace() {
     });
     let script_path = home.join("cleanup.sh");
     fs::write(&script_path, script::generate(&[&r.items[0]], false, true)).unwrap();
-    for answer in [b" yes \n".as_slice(), b"YES\n", b"no\n", b"yes\n"] {
+    for answer in [
+        b" yes \n".as_slice(),
+        b"YES\n",
+        b"Yes\n",
+        b"no\n",
+        b"\n",
+        b"yes\n",
+    ] {
         let mut child = Command::new("bash")
             .arg(&script_path)
             .stdin(Stdio::piped())
@@ -858,5 +872,44 @@ fn bash_confirmation_requires_literal_yes_including_whitespace() {
         child.stdin.take().unwrap().write_all(answer).unwrap();
         assert!(child.wait().unwrap().success());
         assert_eq!(target.exists(), answer != b"yes\n");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn powershell_confirmation_requires_literal_yes_on_real_windows() {
+    use std::io::Write;
+    let home = TestDir::new("disk-ps-exact-confirm");
+    let target = home.join("selected 測試 ' $ data");
+    file(&target.join("data"), 1, 1);
+    let mut r = report(&home, 1);
+    r.items[0].path = display(&target);
+    r.items[0].action = Some(Action::Rm {
+        path: display(&target),
+    });
+    let script_path = home.join("cleanup.ps1");
+    fs::write(&script_path, script::generate(&[&r.items[0]], true, true)).unwrap();
+    for answer in [" yes ", "YES", "Yes", "no", "", "yes"] {
+        let mut child = Command::new("powershell.exe")
+            .args(["-NoProfile", "-File"])
+            .arg(&script_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(format!("{answer}\n").as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "answer={answer:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(target.exists(), answer != "yes", "answer={answer:?}");
     }
 }

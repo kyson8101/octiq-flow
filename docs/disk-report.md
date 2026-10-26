@@ -203,7 +203,9 @@ larger than 128 MiB are refused on load to bound memory use.
 
 The pure script generator takes `is_windows` explicitly. Bash scripts are named
 `octiq-cleanup-YYYY-MM-DD.sh`; PowerShell scripts use `.ps1`. The script first
-prints all selections and requires exactly lowercase `yes`. All paths/labels are
+prints all selections and requires exactly lowercase `yes`, preserving input
+whitespace (`IFS= read` / raw `Read-Host` with case-sensitive `-ceq`). PowerShell
+text starts with a UTF-8 BOM so Windows PowerShell 5.1 preserves Unicode paths. All paths/labels are
 quoted as data. Tool/Docker commands are fixed host strings. Worktrees use only
 `git -C <repo> worktree remove <path>`, without force. `rm`/`rmOlderThan` print
 `Skipped (no tool command): <path>` unless `allowRm` was explicitly selected.

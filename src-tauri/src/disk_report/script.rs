@@ -9,7 +9,7 @@ fn quote(value: &str, windows: bool) -> String {
 /// Pure generator: platform comes from the report, never from this machine.
 pub(super) fn generate(items: &[&Item], windows: bool, allow_rm: bool) -> String {
     let mut s = if windows {
-        "# Run this script yourself after reviewing every selected item.\n$ErrorActionPreference = 'Stop'\n$LASTEXITCODE = 0\n".to_string()
+        "\u{feff}# Run this script yourself after reviewing every selected item.\n$ErrorActionPreference = 'Stop'\n$LASTEXITCODE = 0\n".to_string()
     } else {
         "#!/usr/bin/env bash\nset -euo pipefail\n# Run this script yourself after reviewing every selected item.\n".to_string()
     };
@@ -28,7 +28,7 @@ pub(super) fn generate(items: &[&Item], windows: bool, allow_rm: bool) -> String
         )));
     }
     s.push_str(if windows {
-        "if ((Read-Host 'Type exactly yes to continue') -cne 'yes') { exit 0 }\n"
+        "if (-not ((Read-Host 'Type exactly yes to continue') -ceq 'yes')) { exit 0 }\n"
     } else {
         "IFS= read -r -p 'Type exactly yes to continue: ' answer\n[[ \"$answer\" == yes ]] || exit 0\n"
     });
