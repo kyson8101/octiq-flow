@@ -47,6 +47,82 @@ fn git(path: &Path, args: &[&str]) {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+fn old_link_mtime(path: &Path, days: u64) {
+    let at = UNIX_EPOCH + Duration::from_millis(now() - days * DAY);
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let p = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        let seconds = at.duration_since(UNIX_EPOCH).unwrap().as_secs() as libc::time_t;
+        let times = [libc::timespec {
+            tv_sec: seconds,
+            tv_nsec: 0,
+        }; 2];
+        assert_eq!(
+            unsafe {
+                libc::utimensat(
+                    libc::AT_FDCWD,
+                    p.as_ptr(),
+                    times.as_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            },
+            0
+        );
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .access_mode(0x100)
+            .custom_flags(0x02200000)
+            .open(path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    }
+}
+struct DeniedDir {
+    #[cfg(unix)]
+    path: PathBuf,
+    #[cfg(unix)]
+    before: fs::Permissions,
+    #[cfg(windows)]
+    _handle: File,
+}
+impl DeniedDir {
+    fn new(path: PathBuf) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let before = fs::metadata(&path).unwrap().permissions();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+            Self { path, before }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // A real sharing violation is deterministic even under an SSH
+            // token whose privileges can bypass a directory's deny ACL.
+            let handle = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .custom_flags(0x02000000)
+                .open(&path)
+                .unwrap();
+            Self { _handle: handle }
+        }
+    }
+}
+impl Drop for DeniedDir {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            let _ = fs::set_permissions(&self.path, self.before.clone());
+        }
+    }
+}
 #[test]
 fn locations_and_classification_are_platform_data() {
     let home = Path::new("/fake");
@@ -176,7 +252,12 @@ fn symlinks_are_not_followed() {
     let mut s = scanner(&home, "linux");
     walk(&mut s);
     assert!(s.items().is_empty());
-    assert!(s.skipped.iter().any(|p| p.reason.contains("Symlink")));
+    assert_eq!(s.entries, 2);
+    assert_eq!(
+        s.bytes,
+        fs::symlink_metadata(home.join(".npm")).unwrap().len()
+    );
+    assert!(s.skipped.is_empty());
 }
 #[cfg(windows)]
 #[test]
@@ -194,7 +275,11 @@ fn junctions_are_not_followed() {
     let mut s = scanner(&home, "windows");
     walk(&mut s);
     assert!(s.items().is_empty());
-    assert!(s.skipped.iter().any(|p| p.reason.contains("junction")));
+    assert_eq!(
+        s.bytes,
+        fs::symlink_metadata(home.join(".npm")).unwrap().len()
+    );
+    assert!(s.skipped.is_empty());
     // Remove the junction, never its target, before TestDir cleanup.
     fs::remove_dir(home.join(".npm")).unwrap();
     assert!(outside.join("data").exists());
@@ -332,18 +417,53 @@ fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
     git(&primary, &["init", "-b", "main"]);
     git(&primary, &["config", "user.email", "test@example.invalid"]);
     git(&primary, &["config", "user.name", "Test"]);
-    fs::write(primary.join(".gitignore"), "output/\ncache.bin\n").unwrap();
+    fs::write(
+        primary.join(".gitignore"),
+        "output/\ncache.bin\nnode_modules/\n",
+    )
+    .unwrap();
     git(&primary, &["add", "."]);
     git(&primary, &["commit", "-m", "base"]);
-    let linked = primary.join("target/linked");
+    let linked = primary.join("target").join("linked");
     git(
         &primary,
         &["worktree", "add", "-b", "task", &display(&linked)],
     );
     file(&linked.join("output/cache"), THRESHOLD, 10);
     file(&linked.join("cache.bin"), THRESHOLD / 2, 10);
+    let outside = TestDir::new("disk-link-target").canonicalized();
+    file(&outside.join("sentinel"), 1, 0);
+    let bin = linked.join("node_modules").join(".bin");
+    dir(&bin);
+    let link = bin.join("tool");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&*outside, &link).unwrap();
+    #[cfg(windows)]
+    {
+        let output = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&*outside)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "mklink: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let link_bytes = fs::symlink_metadata(&link).unwrap().len();
+    old_link_mtime(&link, 10);
+
     let old = UNIX_EPOCH + Duration::from_millis(now() - 10 * DAY);
-    for p in [&linked, &linked.join("output"), &linked.join(".gitignore")] {
+    for p in [
+        &linked,
+        &linked.join("output"),
+        &linked.join(".gitignore"),
+        &linked.join("node_modules"),
+        &bin,
+    ] {
         let mut options = fs::OpenOptions::new();
         options.read(true);
         #[cfg(windows)]
@@ -373,13 +493,40 @@ fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
             .any(|row| Path::new(&row.path).ends_with("unrelated.photoslibrary")),
         "Unrelated skipped roots must not block this clean worktree"
     );
-    assert_eq!(w.ignored_bytes, THRESHOLD + THRESHOLD / 2);
+    assert_eq!(w.ignored_bytes, THRESHOLD + THRESHOLD / 2 + link_bytes);
     assert_ne!(i.path, display(&primary));
     assert_eq!(
         items.len(),
         1,
         "Parent target must not retain its rm action"
     );
+    // A real permission gap is local and still prevents eligibility.
+    #[cfg(unix)]
+    let can_deny = unsafe { libc::geteuid() } != 0;
+    #[cfg(windows)]
+    let can_deny = true;
+    if can_deny {
+        let locked = linked.join("node_modules").join("locked");
+        file(&locked.join("unreadable"), 1, 10);
+        {
+            let _deny = DeniedDir::new(locked.clone());
+            let read = fs::read_dir(&locked).and_then(|rows| rows.collect::<Result<Vec<_>, _>>());
+            assert!(
+                read.is_err(),
+                "Directory enumeration unexpectedly succeeded"
+            );
+            let mut denied = scanner(&home, "linux");
+            walk(&mut denied);
+            let mut rows = denied.items();
+            denied
+                .worktrees(&usage, &mut rows, &mut |_, _, _, _| {})
+                .unwrap();
+            let row = rows.iter().find(|i| i.kind == "git-worktree").unwrap();
+            assert_eq!(row.group, "review");
+            assert!(row.note.as_ref().unwrap().contains("Partial scan:"));
+        }
+        fs::remove_dir_all(&locked).unwrap();
+    }
     let measured = s.sizes[&linked].bytes;
     s.sizes.get_mut(&linked).unwrap().bytes = THRESHOLD - 1;
     let mut smaller = s.items();
@@ -440,6 +587,11 @@ fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
         .unwrap();
     assert!(!items[0].worktree.as_ref().unwrap().merged);
     assert_eq!(items[0].group, "review");
+    git(&primary, &["worktree", "remove", &display(&linked)]);
+    assert!(
+        outside.join("sentinel").exists(),
+        "Git removal must unlink the link without entering its target"
+    );
 }
 #[test]
 fn cancelled_walk_stops_without_writes() {

@@ -661,11 +661,21 @@ impl Scanner {
             }
         };
         if redirect(&meta) {
-            self.skip(
-                path,
-                "Symlink, junction, reparse point or cloud placeholder (not followed)",
-            );
-            return Ok(Size::default());
+            // The link is fully observed by lstat. Its target is outside this
+            // traversal, not an unreadable part of this subtree.
+            self.entries += 1;
+            self.bytes = self.bytes.saturating_add(meta.len());
+            self.progress(phase, Some(path), emit);
+            let size = Size {
+                bytes: meta.len(),
+                newest: modified(&meta),
+                complete: true,
+                ..Size::default()
+            };
+            if self.wanted_sizes.contains(path) {
+                self.sizes.insert(path.into(), size.clone());
+            }
+            return Ok(size);
         }
         if device(&meta) != self.home_device {
             self.skip(

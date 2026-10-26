@@ -24,7 +24,7 @@ or commands for execution.
 Events: `disk-scan-progress { scanId, phase: "home"|"temp"|"git"|"history",
 entries, bytes, path? }`, globally throttled to at most four per second for the
 scan; `disk-scan-done { scanId, ok, error? }`. A very fast phase may emit no event.
-`entries` counts metadata entries, `bytes` counts observed regular-file lengths;
+`entries` counts metadata entries, `bytes` counts observed regular-file and link-self lengths;
 these are traversal progress, not reclaimable-space estimates.
 
 ```ts
@@ -63,6 +63,9 @@ feature's own CSV/JSON. Home comes from `paths::home_dir()`; folder creation use
 `profile::make_dir`.
 
 Never follow symlinks or Windows reparse points/junctions/cloud placeholders.
+Their own lstat length and mtime are counted; targets are never entered. A fully
+measured link is not a skipped root or a partial scan. Only unreadable entries
+and deliberately excluded/protected roots make their containing subtree partial.
 Skip special files, Photos libraries, OctiqFlow host state/profile, report
 history, job spools, Docker/container data and entries on another device than
 home. Errors are never retried. Unreadable entries are counted under the nearest
@@ -70,8 +73,8 @@ active candidate/project root, with one representative error. Deliberately
 excluded roots are deduplicated in `skipped`; it holds at most 500 roots plus
 one summary row reporting additional skipped/unreadable entries. An older
 oversized `latest.json` is capped and rewritten on load; this touches only the
-report file and does not append CSV rows or start a scan. `.git` contents are skipped
-and inspected only by Git. The host's in-memory ledger supplies every task checkout/validation path whose
+report file and does not append CSV rows or start a scan. `.git` contents are excluded by definition
+and checked only by Git; this is not a gap in measured worktree data. The host's in-memory ledger supplies every task checkout/validation path whose
 workspace is not cleaned, plus every mission delivery whose `removed` is false.
 Run completion/archival does not release a mission. Scanner never opens the ledger.
 
