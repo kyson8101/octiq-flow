@@ -436,6 +436,7 @@ struct GitRoot {
     ignored: Option<Vec<PathBuf>>,
     inspected: bool,
 }
+const SKIP_LIMIT: usize = 500;
 pub(super) struct Scanner {
     home: PathBuf,
     platform: String,
@@ -451,6 +452,10 @@ pub(super) struct Scanner {
     wanted_sizes: HashSet<PathBuf>,
     work_paths: Vec<PathBuf>,
     skipped: Vec<Skipped>,
+    skip_index: HashMap<PathBuf, usize>,
+    unreadable: HashMap<PathBuf, (u64, String)>,
+    skipped_overflow: u64,
+    error_roots: Vec<PathBuf>,
     entries: u64,
     bytes: u64,
     last: Instant,
@@ -465,6 +470,7 @@ impl Scanner {
         cancel: Arc<AtomicBool>,
         managed: HashSet<PathBuf>,
     ) -> Self {
+        let error_root = home.clone();
         Self {
             home,
             platform: platform.into(),
@@ -480,6 +486,10 @@ impl Scanner {
             wanted_sizes: HashSet::new(),
             work_paths: Vec::new(),
             skipped: Vec::new(),
+            skip_index: HashMap::new(),
+            unreadable: HashMap::new(),
+            skipped_overflow: 0,
+            error_roots: vec![error_root],
             entries: 0,
             bytes: 0,
             last: Instant::now() - Duration::from_secs(1),
@@ -495,10 +505,44 @@ impl Scanner {
         }
     }
     fn skip(&mut self, path: &Path, reason: impl Into<String>) {
+        if self.skip_index.contains_key(path) {
+            return;
+        }
+        if self.skipped.len() >= SKIP_LIMIT {
+            self.skipped_overflow += 1;
+            return;
+        }
+        self.skip_index.insert(path.into(), self.skipped.len());
         self.skipped.push(Skipped {
             path: display(path),
             reason: reason.into(),
         });
+    }
+    fn unreadable(&mut self, path: &Path, error: impl std::fmt::Display) {
+        let root = self
+            .error_roots
+            .last()
+            .filter(|root| path.starts_with(root))
+            .cloned()
+            .unwrap_or_else(|| path.to_path_buf());
+        self.skip(&root, "Entries unreadable");
+        let Some(&index) = self.skip_index.get(&root) else {
+            return;
+        };
+        let (count, first) = self
+            .unreadable
+            .entry(root)
+            .or_insert_with(|| (0, error.to_string()));
+        *count += 1;
+        self.skipped[index].reason = format!("{count} entries unreadable (first error: {first})");
+    }
+    fn skipped_report(&self) -> Vec<Skipped> {
+        let mut rows = self.skipped.clone();
+        rows.sort_by(|a, b| a.path.cmp(&b.path));
+        if self.skipped_overflow > 0 {
+            rows.push(Skipped { path: "(additional skipped entries)".into(), reason: format!("and {} more skipped or unreadable entries; report capped at {SKIP_LIMIT} roots", self.skipped_overflow) });
+        }
+        rows
     }
     fn progress(
         &mut self,
@@ -552,7 +596,7 @@ impl Scanner {
         let meta = match fs::symlink_metadata(path) {
             Ok(m) => m,
             Err(e) => {
-                self.skip(path, e.to_string());
+                self.unreadable(path, e);
                 return Ok(Size::default());
             }
         };
@@ -595,7 +639,7 @@ impl Scanner {
             let read = match fs::read_dir(path) {
                 Ok(r) => r,
                 Err(e) => {
-                    self.skip(path, e.to_string());
+                    self.unreadable(path, e);
                     return Ok(Size::default());
                 }
             };
@@ -609,7 +653,7 @@ impl Scanner {
                     Ok(e) => e,
                     // Never retry a directory whose enumeration failed.
                     Err(e) => {
-                        self.skip(path, e.to_string());
+                        self.unreadable(path, e);
                         return Ok(Size::default());
                     }
                 };
@@ -658,10 +702,17 @@ impl Scanner {
             }
             let chat = chat || item_candidate.as_ref().is_some_and(|c| c.chat);
             let listed = listed || item_candidate.is_some();
+            let grouped = item_candidate.is_some() || is_repo;
+            if grouped {
+                self.error_roots.push(path.into());
+            }
             let read = match fs::read_dir(path) {
                 Ok(r) => r,
                 Err(e) => {
-                    self.skip(path, e.to_string());
+                    self.unreadable(path, e);
+                    if grouped {
+                        self.error_roots.pop();
+                    }
                     return Ok(Size::default());
                 }
             };
@@ -671,7 +722,7 @@ impl Scanner {
                     Ok(e) => e.path(),
                     Err(e) => {
                         size.complete = false;
-                        self.skip(path, e.to_string());
+                        self.unreadable(path, e);
                         continue;
                     }
                 };
@@ -681,6 +732,9 @@ impl Scanner {
                 size.recent = size.recent.saturating_add(child_size.recent);
                 size.newest = size.newest.max(child_size.newest);
                 size.complete &= child_size.complete;
+            }
+            if grouped {
+                self.error_roots.pop();
             }
         } else {
             self.skip(path, "Special file (metadata only)");
@@ -806,21 +860,7 @@ impl Scanner {
         self.docker(&mut items)?;
         self.check()?;
         self.progress("history", None, &mut emit);
-        // Keep work/worktree/cache roots disjoint; chat's two age buckets share a path intentionally.
-        items.sort_by_key(|i| Path::new(&i.path).components().count());
-        let mut selected: Vec<Item> = Vec::new();
-        for item in items {
-            if selected.iter().any(|parent| {
-                parent.path != item.path && Path::new(&item.path).starts_with(&parent.path)
-            }) {
-                continue;
-            }
-            selected.push(item);
-        }
-        selected.sort_by_key(|i| std::cmp::Reverse(i.bytes));
-        self.skipped.sort_by(|a, b| a.path.cmp(&b.path));
-        self.skipped
-            .dedup_by(|a, b| a.path == b.path && a.reason == b.reason);
+        let selected = disjoint_items(items);
         let mut report = Report {
             scan_id: self.id.clone(),
             scanned_at: self.at,
@@ -829,7 +869,7 @@ impl Scanner {
             threshold_bytes: THRESHOLD,
             total_bytes: selected.iter().map(|i| i.bytes).sum(),
             items: selected,
-            skipped: self.skipped.clone(),
+            skipped: self.skipped_report(),
             previous_scan_at: None,
         };
         history::compare(&mut report, &history);
@@ -1003,7 +1043,10 @@ impl Scanner {
                     self.skip(&path, "Unrecognized temp entry; never a cleanup suggestion");
                     continue;
                 }
-                let size = self.walk(&path, false, ai, false, "temp", emit)?;
+                self.error_roots.push(path.clone());
+                let result = self.walk(&path, false, ai, false, "temp", emit);
+                self.error_roots.pop();
+                let size = result?;
                 let personal = self.work_paths.iter().any(|p| p.starts_with(&path));
                 if size.bytes < THRESHOLD
                     || personal
@@ -1223,6 +1266,54 @@ impl Scanner {
         }
         Ok(())
     }
+}
+/// Parents retain their full aggregate; descendants are not separate treemap
+/// tiles. Only the two disjoint history age buckets may share the same path.
+fn disjoint_items(mut items: Vec<Item>) -> Vec<Item> {
+    let priority = |item: &Item| {
+        if item.group == "work" {
+            0
+        } else if item.kind == "git-worktree" {
+            1
+        } else {
+            2
+        }
+    };
+    items.sort_by_key(|i| (Path::new(&i.path).components().count(), priority(i)));
+    let mut selected: Vec<Item> = Vec::new();
+    for item in items {
+        if selected.iter().any(|parent| {
+            if parent.path != item.path {
+                Path::new(&item.path).starts_with(&parent.path)
+            } else {
+                !complementary_history(&parent.kind, &item.kind)
+            }
+        }) {
+            continue;
+        }
+        selected.push(item);
+    }
+    selected.sort_by_key(|i| std::cmp::Reverse(i.bytes));
+    selected
+}
+fn complementary_history(a: &str, b: &str) -> bool {
+    let pair = |older: &str, recent: &str| {
+        older
+            .strip_suffix("-older-14-days")
+            .zip(recent.strip_suffix("-last-14-days"))
+            .is_some_and(|(a, b)| {
+                a == b
+                    && [
+                        "codex-history",
+                        "codex-archived-history",
+                        "claude-history",
+                        "gemini-history",
+                        "opencode-history",
+                    ]
+                    .contains(&a)
+            })
+    };
+    pair(a, b) || pair(b, a)
 }
 fn ignored_paths(path: &Path, output: &[u8]) -> Option<Vec<PathBuf>> {
     let mut roots = Vec::new();

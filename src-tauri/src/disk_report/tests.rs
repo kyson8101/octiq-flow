@@ -676,3 +676,68 @@ fn encoded_project_names_inside_chat_history_remain_history() {
     assert_eq!(items[0].kind, "claude-history-older-14-days");
     assert_eq!(items[0].group, "review");
 }
+
+#[test]
+fn skipped_roots_are_capped_and_unreadable_entries_are_grouped() {
+    let home = TestDir::new("disk-skip-cap");
+    let mut s = scanner(&home, "linux");
+    for n in 0..1000 {
+        s.unreadable(&home.join(format!("unreadable-{n}")), "Permission denied");
+    }
+    assert_eq!(s.skipped.len(), 1);
+    assert!(s.skipped[0].reason.contains("1000 entries unreadable"));
+    assert!(s.skipped[0].reason.contains("Permission denied"));
+    for n in 0..700 {
+        s.skip(&home.join(format!("protected-{n}")), "Protected root");
+    }
+    s.skip(&home.join("protected-0"), "Protected root");
+    let rows = s.skipped_report();
+    assert_eq!(rows.len(), SKIP_LIMIT + 1);
+    assert!(rows.last().unwrap().reason.contains("201 more"));
+    assert_eq!(s.skip_index.len(), SKIP_LIMIT);
+    assert_eq!(s.unreadable.len(), 1);
+}
+
+#[test]
+fn treemap_items_are_disjoint_except_complementary_history_age_buckets() {
+    let home = TestDir::new("disk-overlap");
+    let prototype = report(&home, 1).items[0].clone();
+    let make = |relative: &str, kind: &str, bytes: u64| {
+        let mut i = prototype.clone();
+        i.path = display(&home.join(relative));
+        i.kind = kind.into();
+        i.key = format!("{kind}:{}", i.path);
+        i.bytes = bytes;
+        i.group = if kind.contains("history") || kind == "git-worktree" {
+            "review"
+        } else {
+            "clean"
+        }
+        .into();
+        i
+    };
+    let items = disjoint_items(vec![
+        make("repo/node_modules", "project-node_modules", THRESHOLD),
+        make("repo", "project-target", THRESHOLD),
+        make("repo", "git-worktree", 3 * THRESHOLD),
+        make("other/target", "project-target", 2 * THRESHOLD),
+        make("other/target/.next", "project-next", THRESHOLD),
+        make(
+            ".claude/projects",
+            "claude-history-older-14-days",
+            THRESHOLD,
+        ),
+        make(".claude/projects", "claude-history-last-14-days", THRESHOLD),
+    ]);
+    assert_eq!(items.len(), 4);
+    assert_eq!(items.iter().map(|i| i.bytes).sum::<u64>(), 7 * THRESHOLD);
+    assert_eq!(items.iter().filter(|i| i.path.ends_with("repo")).count(), 1);
+    assert!(items.iter().any(|i| i.kind == "git-worktree"));
+    for a in &items {
+        for b in &items {
+            if a.path != b.path {
+                assert!(!Path::new(&a.path).starts_with(&b.path));
+            }
+        }
+    }
+}

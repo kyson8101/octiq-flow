@@ -65,7 +65,10 @@ feature's own CSV/JSON. Home comes from `paths::home_dir()`; folder creation use
 Never follow symlinks or Windows reparse points/junctions/cloud placeholders.
 Skip special files, Photos libraries, OctiqFlow host state/profile, report
 history, job spools, Docker/container data and entries on another device than
-home. Errors become `skipped` entries without retries. `.git` contents are skipped
+home. Errors are never retried. Unreadable entries are counted under the nearest
+active candidate/project root, with one representative error. Deliberately
+excluded roots are deduplicated in `skipped`; it holds at most 500 roots plus
+one summary row reporting additional skipped/unreadable entries. `.git` contents are skipped
 and inspected only by Git. The host's in-memory ledger supplies managed task and
 mission allocations, including validation paths; scanner never opens the ledger.
 
@@ -124,7 +127,11 @@ files and all memories; these items are informational and cannot be selected.
 
 A named personal-work subtree suppresses any parent cache cleanup action, even
 when nested inside dependencies or build output. Temp entries containing such
-work are withheld entirely. Other parent items suppress overlapping child items.
+work are withheld entirely. Other parent items retain their full aggregate bytes and suppress all nested
+child items; bytes are not subtracted. Duplicate items at one path are
+suppressed, with work/worktree records taking priority. The only same-path
+exception is a tool history's complementary old/recent age buckets, whose
+file sets are disjoint. `totalBytes` sums exactly these final treemap items.
 Worktree inventory replaces its
 nested cache suggestions and suppresses containing cache cleanup actions, even
 when the worktree itself is below the reporting threshold. A partial cache measurement is downgraded to review.
