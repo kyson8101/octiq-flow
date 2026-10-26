@@ -741,3 +741,28 @@ fn treemap_items_are_disjoint_except_complementary_history_age_buckets() {
         }
     }
 }
+
+#[test]
+fn loading_a_legacy_report_caps_and_rewrites_only_latest_json() {
+    let home = TestDir::new("disk-legacy-skip-cap");
+    let mut r = report(&home, 1);
+    r.skipped = (0..700)
+        .map(|n| Skipped {
+            path: display(&home.join(format!("root-{n}"))),
+            reason: "Excluded root".into(),
+        })
+        .collect();
+    dir(&home.join("disk-report"));
+    let path = home.join("disk-report/latest.json");
+    fs::write(&path, serde_json::to_vec(&r).unwrap()).unwrap();
+    let loaded = history::load(&home).unwrap().unwrap();
+    assert_eq!(loaded.skipped.len(), SKIP_LIMIT + 1);
+    assert!(loaded.skipped.last().unwrap().reason.contains("200 more"));
+    let saved: Report = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved.skipped.len(), SKIP_LIMIT + 1);
+    assert!(!home.join("disk-report/sizes.csv").exists());
+    assert_eq!(
+        history::load(&home).unwrap().unwrap().skipped.len(),
+        SKIP_LIMIT + 1
+    );
+}

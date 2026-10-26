@@ -1315,6 +1315,32 @@ fn complementary_history(a: &str, b: &str) -> bool {
     };
     pair(a, b) || pair(b, a)
 }
+/// Bound reports written by an earlier version without rescanning any data.
+pub(super) fn cap_stored_skips(rows: &mut Vec<Skipped>) -> bool {
+    if rows.len() <= SKIP_LIMIT
+        || (rows.len() == SKIP_LIMIT + 1
+            && rows
+                .last()
+                .is_some_and(|r| r.path == "(additional skipped entries)"))
+    {
+        return false;
+    }
+    let omitted = rows.len() - SKIP_LIMIT;
+    rows.sort_by_key(|r| {
+        !(r.reason.contains("TCC")
+            || r.reason.contains("privacy")
+            || r.reason.contains("protected")
+            || r.reason.contains("Different device"))
+    });
+    rows.truncate(SKIP_LIMIT);
+    rows.push(Skipped {
+        path: "(additional skipped entries)".into(),
+        reason: format!(
+            "and {omitted} more skipped or unreadable entries; report capped at {SKIP_LIMIT} roots"
+        ),
+    });
+    true
+}
 fn ignored_paths(path: &Path, output: &[u8]) -> Option<Vec<PathBuf>> {
     let mut roots = Vec::new();
     for entry in output.split(|b| *b == 0).filter(|v| v.starts_with(b"!! ")) {

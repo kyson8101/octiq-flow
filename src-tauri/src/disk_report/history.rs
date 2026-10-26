@@ -59,9 +59,15 @@ fn read(home: &Path, name: &str) -> Result<Option<String>, String> {
     Ok(Some(text))
 }
 pub(super) fn load(home: &Path) -> Result<Option<Report>, String> {
-    read(home, "latest.json")?
-        .map(|s| serde_json::from_str(&s).map_err(|e| format!("Invalid disk report: {e}")))
-        .transpose()
+    let Some(text) = read(home, "latest.json")? else {
+        return Ok(None);
+    };
+    let mut report: Report =
+        serde_json::from_str(&text).map_err(|e| format!("Invalid disk report: {e}"))?;
+    if scan::cap_stored_skips(&mut report.skipped) {
+        write_latest(home, &report)?;
+    }
+    Ok(Some(report))
 }
 #[derive(Default)]
 pub(super) struct History {
@@ -126,7 +132,7 @@ fn csv(value: &str) -> String {
 pub(super) fn save(home: &Path, report: &mut Report) -> Result<(), String> {
     // Validate both destinations before touching either one. No temp file, rename or deletion.
     let csv_path = safe_file(home, "sizes.csv", true)?;
-    let json_path = safe_file(home, "latest.json", true)?;
+    let _json_path = safe_file(home, "latest.json", true)?;
     let mut options = OpenOptions::new();
     options.create(true).append(true);
     #[cfg(unix)]
@@ -151,6 +157,10 @@ pub(super) fn save(home: &Path, report: &mut Report) -> Result<(), String> {
     f.write_all(rows.as_bytes())
         .and_then(|_| f.sync_all())
         .map_err(|e| e.to_string())?;
+    write_latest(home, report)
+}
+fn write_latest(home: &Path, report: &Report) -> Result<(), String> {
+    let json_path = safe_file(home, "latest.json", true)?;
     let mut options = OpenOptions::new();
     options.create(true).write(true).truncate(true);
     #[cfg(unix)]

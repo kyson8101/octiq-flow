@@ -68,7 +68,9 @@ history, job spools, Docker/container data and entries on another device than
 home. Errors are never retried. Unreadable entries are counted under the nearest
 active candidate/project root, with one representative error. Deliberately
 excluded roots are deduplicated in `skipped`; it holds at most 500 roots plus
-one summary row reporting additional skipped/unreadable entries. `.git` contents are skipped
+one summary row reporting additional skipped/unreadable entries. An older
+oversized `latest.json` is capped and rewritten on load; this touches only the
+report file and does not append CSV rows or start a scan. `.git` contents are skipped
 and inspected only by Git. The host's in-memory ledger supplies managed task and
 mission allocations, including validation paths; scanner never opens the ledger.
 
