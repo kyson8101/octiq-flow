@@ -1523,15 +1523,27 @@ const MessageListBody = function MessageList({
   // is still settling. Null once the reader takes over, or once the hold
   // expires — past that a height change is the conversation growing.
   const resuming = useRef<{ at: ChatPlace; until: number } | null>(null);
+  const holdTimer = useRef(0);
+  const releasePlace = () => {
+    window.clearTimeout(holdTimer.current);
+    holdTimer.current = 0;
+    resuming.current = null;
+    if (scrollerRef.current) scrollerRef.current.style.removeProperty("overflow-anchor");
+  };
   const holdPlace = (at: ChatPlace) => {
-    resuming.current = { at, until: performance.now() + SETTLE_MS };
+    releasePlace();
+    const back = { at, until: performance.now() + SETTLE_MS };
+    resuming.current = back;
     // Only one anchor owns the view while restoring. Outside this hold the
     // browser can still anchor ordinary reading and momentum scrolling.
     if (scrollerRef.current) scrollerRef.current.style.overflowAnchor = "none";
-  };
-  const releasePlace = () => {
-    resuming.current = null;
-    if (scrollerRef.current) scrollerRef.current.style.removeProperty("overflow-anchor");
+    // Quiet transcripts still need to hand anchoring back to the browser at
+    // the deadline. Waiting for another resize would miss its first layout.
+    holdTimer.current = window.setTimeout(() => {
+      if (resuming.current !== back) return;
+      restorePlace(back.at);
+      releasePlace();
+    }, SETTLE_MS);
   };
   // A restore writes scrollTop and later receives its own scroll event. That
   // event is not another reader gesture, even if the click/flick that loaded
@@ -1738,6 +1750,7 @@ const MessageListBody = function MessageList({
     // runs after React has already put the new conversation's turns in, so the
     // scroller no longer holds an offset that means anything about the old one.
     flushPlace();
+    releasePlace();
     conv.current = conversationId;
     if (!el) return;
     // Whatever gesture opened this chat was aimed at the sidebar, not at the
@@ -1752,9 +1765,8 @@ const MessageListBody = function MessageList({
     if (!saved) {
       stick.current = true;
       setAway(false);
-      releasePlace();
       el.scrollTop = el.scrollHeight;
-      return;
+      return releasePlace;
     }
     // Left part-way up: put them back there, and do NOT follow the stream.
     // Someone who parked half-way through a conversation to read it did not
@@ -1769,6 +1781,9 @@ const MessageListBody = function MessageList({
     // from — and the button drew itself over the last message offering to take
     // the reader somewhere they already were.
     setAway(el.scrollHeight - el.scrollTop - el.clientHeight >= NEAR_BOTTOM);
+    // Layout cleanup runs before refs detach, including on unmount. A hold
+    // and its timer must never belong to the next conversation or a dead pane.
+    return releasePlace;
   }, [conversationId]);
 
   // Scrolling to the bottom ONCE is not enough, because the bottom moves
@@ -1800,8 +1815,10 @@ const MessageListBody = function MessageList({
       // so this converges rather than repeating a stale number.
       const back = resuming.current;
       if (back) {
-        if (performance.now() > back.until) releasePlace();
-        else restorePlace(back.at);
+        // Rendering can cross the deadline before the timer gets its task.
+        // This layout happened with browser anchoring off, so restore FIRST.
+        restorePlace(back.at);
+        if (performance.now() >= back.until) releasePlace();
       }
       // Whether there is a way back down is a question about the height, and
       // the height is what just changed. Without this a transcript that fitted
