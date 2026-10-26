@@ -114,6 +114,8 @@ import { useDrawerSwipe } from "./lib/swipe";
 import { useDockWidth, type Sizes } from "./lib/dockWidth";
 import { MessageList } from "./components/MessageList";
 import { Composer, type Attachment, type ReclaimedMessage } from "./components/Composer";
+import { attachmentPrompt } from "./lib/attachmentPrompt";
+import type { PastedText } from "./lib/longPaste";
 import { Drafts } from "./lib/drafts";
 import {
   accessFor,
@@ -1663,6 +1665,9 @@ export default function App() {
    *  cancellation, and a tab left open for a week should not remember every
    *  one. */
   const reclaimedIds = useRef<string[]>([]);
+  // Undo metadata belongs to this tab, never a transcript/checkpoint. Keep it
+  // apart from bubbles so their normal serialisation cannot persist the paste.
+  const pastedTurns = useRef(new Map<string, Map<string, PastedText>>());
 
   /** Hold one cancelled message's words for the box. */
   const reclaim = useCallback((id: string, turnId: string, message: Message | undefined) => {
@@ -1670,7 +1675,7 @@ export default function App() {
     // Nor was an answer to the agent's question: it is never the composer's.
     // Nor the turn that tells an agent a job it registered ended.
     if (!message || isWrapUpTurn(turnId) || isAnswerTurn(turnId) || isJobTurn(turnId) || isNoticeTurn(turnId) || reclaimedIds.current.includes(turnId)) return;
-    const words = reclaimedMessage(message);
+    const words = reclaimedMessage(message, pastedTurns.current.get(turnId));
     reclaimedIds.current = [...reclaimedIds.current.slice(-199), turnId];
     setReclaimed((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), words] }));
   }, []);
@@ -3715,7 +3720,6 @@ export default function App() {
       // so the agent opens it with its own Read tool, which is better than
       // pushing a whole file into the prompt sight unseen.
       const images = attachments.filter((a) => a.isImage).map((a) => a.path);
-      const files = attachments.filter((a) => !a.isImage).map((a) => a.path);
       const id = conversationId ?? crypto.randomUUID();
       // The front desk is told every file by path, pictures too: the paths
       // are how it hands them on to the agent it routes the person to.
@@ -3723,8 +3727,8 @@ export default function App() {
         || (!!conversationId && frontDeskChatIds.current.has(conversationId));
       if (deskChat) {
         text = frontDeskText(text, attachments);
-      } else if (files.length) {
-        text = `${text}\n\nFiles to look at:\n${files.map((f) => `- ${f}`).join("\n")}`.trim();
+      } else {
+        text = attachmentPrompt(text, attachments);
       }
       const typed = text;
       if (taskLead && deskChat) {
@@ -3825,6 +3829,11 @@ export default function App() {
       // shows what was sent with it. The object URLs are dropped: they are this
       // page's copy of the bytes, and a stored one points at nothing.
       const turnId = userTurnId();
+      const pasted = new Map(attachments.flatMap((a) => a.pasted ? [[a.path, a.pasted] as const] : []));
+      if (pasted.size) {
+        pastedTurns.current.set(turnId, pasted);
+        if (pastedTurns.current.size > 200) pastedTurns.current.delete(pastedTurns.current.keys().next().value!);
+      }
       // The plans on this chat's screen as the message leaves: the only
       // plans, at the only revisions, it can approve (lib/chatPlans).
       const seen = seenPlans(chatPlans(ledgerRef.current, keyFor(id)));
@@ -4287,7 +4296,7 @@ export default function App() {
     const state = chatsRef.current[conversationId];
     if (!state?.messages.some((m) => m.turnId === turnId && (m.queueLost || m.delivery === "unknown") && !m.echo && !m.takenUp)) return;
     const message = state.messages.find((m) => m.turnId === turnId);
-    if (message) setReclaimed((prev) => ({ ...prev, [conversationId]: [...(prev[conversationId] ?? []), reclaimedMessage(message)] }));
+    if (message) setReclaimed((prev) => ({ ...prev, [conversationId]: [...(prev[conversationId] ?? []), reclaimedMessage(message, pastedTurns.current.get(turnId))] }));
   }, [conversationId]);
 
   const dismissUnsent = useCallback((turnId: string) => {

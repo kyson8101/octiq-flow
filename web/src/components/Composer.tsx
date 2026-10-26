@@ -28,6 +28,7 @@ import {
   type WorkLocationProject,
 } from "./WorkLocation";
 import { pasteRefusal, readClipboard, reason } from "../lib/paste";
+import { pastedTextLabel, pastedTextLines, pastedTextName, shouldSaveAsFile, type PastedText } from "../lib/longPaste";
 import { formatQuote, onQuote } from "../lib/quote";
 import { Drafts, type Draft } from "../lib/drafts";
 import type { BackgroundTask } from "../lib/background";
@@ -257,7 +258,38 @@ export type Attachment = {
    *  bytes (a paste or an upload). Absent for a file picked on the machine —
    *  that one is fetched instead. Owned by the composer, which revokes it. */
   url?: string;
+  /** Original clipboard bytes for Insert as text; never persisted. */
+  pasted?: PastedText;
 };
+
+type PasteSaveResult = { attachment: Attachment } | { text: string; error: string };
+type PasteSave = { pending: number; error?: string; receive?: (pending: number, result?: PasteSaveResult) => void };
+// The parent-owned drafts outlive a composer hidden by a read-only chat. Its
+// in-flight saves must outlive that mount too, and reach the current owner.
+const pasteSaves = new WeakMap<Drafts<Attachment>, Map<string | undefined, PasteSave>>();
+function pasteSaveFor(store: Drafts<Attachment>, session?: string): PasteSave {
+  let chats = pasteSaves.get(store);
+  if (!chats) { chats = new Map(); pasteSaves.set(store, chats); }
+  let save = chats.get(session);
+  if (!save) { save = { pending: 0 }; chats.set(session, save); }
+  return save;
+}
+
+export function AttachmentChip({ attachment: a, onRemove, onInsert }: {
+  attachment: Attachment;
+  onRemove: () => void;
+  onInsert: () => void;
+}) {
+  const label = a.pasted ? pastedTextLabel(a.pasted.text) : a.name;
+  return (
+    <span className={`chip ${a.isImage ? "is-image" : ""} ${a.pasted ? "is-pasted" : ""}`} title={a.path}>
+      {a.isImage ? <Thumb attachment={a} /> : <PaperIcon />}
+      <span className="chip-name">{label}</span>
+      {a.pasted && <button className="chip-insert" type="button" onClick={onInsert}>Insert as text</button>}
+      <button className="chip-x" type="button" aria-label={`Remove ${label}`} onClick={onRemove}>✕</button>
+    </span>
+  );
+}
 
 export type ReclaimedMessage = { text: string; attachments: Attachment[] };
 
@@ -695,48 +727,35 @@ export function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 420)}px`;
   }, [text]);
 
-  /** Upload files from the browser's native picker or clipboard, then pass
-   *  their server paths through the existing attachment flow. */
+  /** Both clipboard text and ordinary files use exactly the same upload. */
+  const uploadFile = useCallback(async (file: File, requireConnection = false): Promise<Attachment> => {
+    if (file.size > 12 * 1024 * 1024) throw new Error(`${file.name}: file is larger than 12 MB`);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 8192) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    }
+    const extension = (file.type.split("/")[1] || "bin").replace("jpeg", "jpg");
+    const name = file.name || `pasted.${extension}`;
+    const isImage = IMAGE_EXT.test(name);
+    if (requireConnection && bridge.state !== "open") throw new Error("Connection is not open");
+    const path = await bridge.invoke<string>("save_attachment", {
+      dataBase64: btoa(binary), extension, filename: name,
+    });
+    return { path, name, isImage, url: isImage ? URL.createObjectURL(file) : undefined };
+  }, []);
+
   const attachFiles = useCallback(async (files: File[]) => {
     for (const file of files) {
-      if (file.size > 12 * 1024 * 1024) {
-        setAttachError(`${file.name}: file is larger than 12 MB`);
-        continue;
-      }
       try {
-        const buffer = await file.arrayBuffer();
-        // Chunked, because spreading a few million bytes into String.fromCharCode
-        // in one call overflows the argument stack.
-        let binary = "";
-        const bytes = new Uint8Array(buffer);
-        for (let i = 0; i < bytes.length; i += 8192) {
-          binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-        }
-        const extension = (file.type.split("/")[1] || "bin").replace("jpeg", "jpg");
-        const name = file.name || `pasted.${extension}`;
-        const isImage = IMAGE_EXT.test(name);
-        const path = await bridge.invoke<string>("save_attachment", {
-          dataBase64: btoa(binary),
-          extension,
-          filename: name,
-        });
+        const attachment = await uploadFile(file);
         setAttachError(null);
-        setAttached((prev) => [
-          ...prev,
-          {
-            path,
-            name,
-            isImage,
-            // The bytes are already here; showing them costs nothing and
-            // needs no trip back to the server.
-            url: isImage ? URL.createObjectURL(file) : undefined,
-          },
-        ]);
+        setAttached((prev) => [...prev, attachment]);
       } catch (err) {
-        setAttachError(String((err as Error).message ?? err));
+        setAttachError(reason(err));
       }
     }
-  }, []);
+  }, [uploadFile]);
 
   /** Put text in at the caret, the way a paste does.
    *
@@ -750,9 +769,46 @@ export function Composer({
       return;
     }
     area.focus({ preventScroll: true });
-    area.setRangeText(value, area.selectionStart, area.selectionEnd, "end");
-    setText(area.value);
+    const start = area.selectionStart;
+    const next = area.value.slice(0, start) + value + area.value.slice(area.selectionEnd);
+    area.setRangeText(value, start, area.selectionEnd, "end");
+    // Keep the original line endings in React state, even though textarea's
+    // DOM value normalises CRLF. Sending without an edit keeps the exact text.
+    setText(next);
+    setCaret(area.selectionStart);
   }, []);
+
+  const [savingPastes, setSavingPastes] = useState(0);
+  const pasteText = useCallback(async (value: string) => {
+    if (!shouldSaveAsFile(value)) { insertText(value); return; }
+    const owner = shownFor.current;
+    const store = drafts.current;
+    const save = pasteSaveFor(store, owner);
+    save.pending++;
+    save.receive?.(save.pending);
+    setAttachError(null);
+    try {
+      if (bridge.state !== "open") throw new Error("Connection is not open");
+      const file = new File([new TextEncoder().encode(value)], pastedTextName(new Date()), { type: "text/plain" });
+      const attachment = { ...await uploadFile(file, true), pasted: { text: value, lines: pastedTextLines(value) } };
+      if (save.receive) save.receive(save.pending, { attachment });
+      else {
+        const back = store.take(owner);
+        store.keep(owner, { ...back, attached: [...back.attached, attachment] });
+      }
+    } catch (err) {
+      const error = `Could not save the paste as a file (${reason(err)}); it was put in the message instead.`;
+      if (save.receive) save.receive(save.pending, { text: value, error });
+      else {
+        const back = store.take(owner);
+        store.keep(owner, { ...back, text: back.text + value });
+        save.error = error;
+      }
+    } finally {
+      save.pending--;
+      save.receive?.(save.pending);
+    }
+  }, [insertText, uploadFile]);
 
   /** Text highlighted in a file, on its way in at the caret.
    *
@@ -802,7 +858,10 @@ export function Composer({
       try {
         const { files, text } = await readClipboard(items);
         if (files.length) await attachFiles(files);
-        if (text) insertText(text);
+        if (text) {
+          if (files.length) insertText(text);
+          else await pasteText(text);
+        }
         if (!files.length && !text) setAttachError("There is nothing to paste.");
       } catch (err) {
         setAttachError(`Could not read what is on the clipboard (${reason(err)}).`);
@@ -813,12 +872,12 @@ export function Composer({
     // No `read()` at all — Firefox does not give pages one. Words only, then.
     try {
       const text = await navigator.clipboard.readText();
-      if (text) insertText(text);
+      if (text) await pasteText(text);
       else setAttachError("There is nothing to paste.");
     } catch (err) {
       refused(err);
     }
-  }, [attachFiles, insertText]);
+  }, [attachFiles, insertText, pasteText]);
 
   /** Reference files that already exist on the machine, by path. */
   const attachPaths = useCallback((paths: string[]) => {
@@ -923,11 +982,12 @@ export function Composer({
   //
   // So leaving a chat puts the box away under its id, and arriving takes that
   // chat's own words back out — an empty box for one never typed in.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (shownFor.current === session) return;
     drafts.current.keep(shownFor.current, box.current);
     shownFor.current = session;
     const back = drafts.current.take(session);
+    box.current = back;
     setText(back.text);
     setAttached(back.attached);
     setAttachError(null);
@@ -943,6 +1003,20 @@ export function Composer({
     // Only the chat. Everything this reads about the box is read through a ref
     // precisely so that typing does not re-run it.
   }, [session, forget]);
+
+  useLayoutEffect(() => {
+    const save = pasteSaveFor(drafts.current, session);
+    const receive = (pending: number, result?: PasteSaveResult) => {
+      setSavingPastes(pending);
+      if (!result) return;
+      if ("attachment" in result) setAttached((prev) => [...prev, result.attachment]);
+      else { insertText(result.text); setAttachError(result.error); }
+    };
+    save.receive = receive;
+    receive(save.pending);
+    if (save.error) { setAttachError(save.error); save.error = undefined; }
+    return () => { if (save.receive === receive) save.receive = undefined; };
+  }, [session, draftStore, insertText]);
 
   /** Words that were queued and never sent, put back where they were typed.
    *
@@ -998,7 +1072,7 @@ export function Composer({
   }
 
   function sendQuickResponse() {
-    if (disabled) return;
+    if (disabled || pasteSaveFor(drafts.current, shownFor.current).pending) return;
     const value = "👌 OK";
     onSend(value, []);
     rememberSent(value);
@@ -1006,7 +1080,7 @@ export function Composer({
 
   function send() {
     const value = text.trim();
-    if ((!value && attached.length === 0) || disabled) return;
+    if ((!value && attached.length === 0) || disabled || pasteSaveFor(drafts.current, shownFor.current).pending) return;
     onSend(value, attached);
     rememberSent(value);
     setText("");
@@ -1156,25 +1230,19 @@ export function Composer({
         />
       )}
       <div className="composer-box">
-        {(attached.length > 0 || attachError || cleared) && (
+        {(attached.length > 0 || attachError || cleared || savingPastes > 0) && (
           <div className="attach">
             {attached.map((a) => (
-              <span className={`chip ${a.isImage ? "is-image" : ""}`} key={a.path} title={a.path}>
-                {a.isImage ? <Thumb attachment={a} /> : <PaperIcon />}
-                <span className="chip-name">{a.name}</span>
-                <button
-                  className="chip-x"
-                  type="button"
-                  aria-label={`Remove ${a.name}`}
-                  onClick={() => {
-                    forget([a]);
-                    setAttached((prev) => prev.filter((x) => x.path !== a.path));
-                  }}
-                >
-                  ✕
-                </button>
-              </span>
+              <AttachmentChip key={a.path} attachment={a} onRemove={() => {
+                forget([a]);
+                setAttached((prev) => prev.filter((x) => x.path !== a.path));
+              }} onInsert={() => {
+                if (!a.pasted) return;
+                setAttached((prev) => prev.filter((x) => x.path !== a.path));
+                insertText(a.pasted.text);
+              }} />
             ))}
+            {savingPastes > 0 && <span className="attach-saving" role="status">Saving pasted text…</span>}
             {attachError && <span className="attach-error">{attachError}</span>}
             {cleared && (
               <span className="attach-undo">
@@ -1199,17 +1267,26 @@ export function Composer({
               // Input events are the reliable signal on a software keyboard;
               // it may never issue the printable keydown that desktop uses.
               if (recall >= 0) setRecall(-1);
-              setText(e.target.value);
+              const value = e.target.value;
+              // React can observe textarea's LF-normalised DOM value on the
+              // next focus event after a programmatic insert. That is not an
+              // edit to the original clipboard line endings.
+              setText((prev) => prev.replace(/\r\n|\r/g, "\n") === value ? prev : value);
               setCaret(e.target.selectionStart);
             }}
             onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
             onPaste={(e) => {
-              // Only intercept when the clipboard actually carries a file.
-              // Pasting text must stay ordinary pasting.
               const files = [...(e.clipboardData?.files ?? [])];
-              if (!files.length) return;
-              e.preventDefault();
-              void attachFiles(files);
+              if (files.length) {
+                e.preventDefault();
+                void attachFiles(files);
+                return;
+              }
+              const value = e.clipboardData.getData("text/plain");
+              if (shouldSaveAsFile(value)) {
+                e.preventDefault();
+                void pasteText(value);
+              }
             }}
             onKeyDown={(e) => {
               // While the command list is up it owns the arrows, Tab and Enter —
@@ -1569,7 +1646,7 @@ export function Composer({
               type="button"
               aria-label="Send 👌 OK"
               title="Send 👌 OK"
-              disabled={!!disabled}
+              disabled={!!disabled || savingPastes > 0}
               onClick={sendQuickResponse}
             >
               <span aria-hidden="true">👌</span>
@@ -1597,7 +1674,7 @@ export function Composer({
             className="send"
             type="button"
             title={busy ? "Send anyway" : "Send"}
-            disabled={!text.trim() || !!disabled}
+            disabled={(!text.trim() && !attached.length) || !!disabled || savingPastes > 0}
             onClick={send}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

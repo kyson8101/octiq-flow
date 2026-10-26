@@ -1,3 +1,4 @@
+import { attachmentPrompt } from "./attachmentPrompt";
 // The front desk on the new-chat screen (the host's `handover/route.rs`).
 //
 // With a front desk designated in Settings, every new conversation opens on
@@ -82,11 +83,9 @@ export function sharedProject(agents: readonly Pick<TeamAgent, "projectId">[]): 
  *  are how it hands them to the agent it routes to. */
 export function frontDeskText(
   text: string,
-  attachments: readonly { path: string; isImage?: boolean }[],
+  attachments: readonly { path: string; isImage?: boolean; pasted?: unknown }[],
 ): string {
-  if (!attachments.length) return text;
-  const lines = attachments.map((file) => `- ${file.path}${file.isImage ? " (image)" : ""}`);
-  return `${text}\n\nAttachments:\n${lines.join("\n")}`.trim();
+  return attachmentPrompt(text, attachments, true);
 }
 
 /** Where a front-desk conversation runs: home, with nothing prepared. It
