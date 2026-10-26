@@ -341,7 +341,7 @@ fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
     fs::write(primary.join(".gitignore"), "output/\n").unwrap();
     git(&primary, &["add", "."]);
     git(&primary, &["commit", "-m", "base"]);
-    let linked = home.join("linked");
+    let linked = primary.join("target/linked");
     git(
         &primary,
         &["worktree", "add", "-b", "task", &display(&linked)],
@@ -373,6 +373,21 @@ fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
     assert!(w.eligible);
     assert_eq!(w.ignored_bytes, THRESHOLD);
     assert_ne!(i.path, display(&primary));
+    assert_eq!(
+        items.len(),
+        1,
+        "Parent target must not retain its rm action"
+    );
+    let measured = s.sizes[&linked].bytes;
+    s.sizes.get_mut(&linked).unwrap().bytes = THRESHOLD - 1;
+    let mut smaller = s.items();
+    s.worktrees(&usage, &mut smaller, &mut |_, _, _, _| {})
+        .unwrap();
+    assert!(
+        smaller.is_empty(),
+        "A small worktree still protects the parent cache"
+    );
+    s.sizes.get_mut(&linked).unwrap().bytes = measured;
     s.managed.insert(linked.clone());
     let mut items = vec![];
     s.worktrees(&usage, &mut items, &mut |_, _, _, _| {})

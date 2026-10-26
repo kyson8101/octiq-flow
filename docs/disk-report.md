@@ -126,7 +126,8 @@ A named personal-work subtree suppresses any parent cache cleanup action, even
 when nested inside dependencies or build output. Temp entries containing such
 work are withheld entirely. Other parent items suppress overlapping child items.
 Worktree inventory replaces its
-nested cache suggestions. A partial cache measurement is downgraded to review.
+nested cache suggestions and suppresses containing cache cleanup actions, even
+when the worktree itself is below the reporting threshold. A partial cache measurement is downgraded to review.
 
 ## Git and process checks
 

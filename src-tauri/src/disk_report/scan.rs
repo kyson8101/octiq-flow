@@ -1002,6 +1002,11 @@ impl Scanner {
                     self.skip(&path, "Worktree outside safely scanned home paths");
                     continue;
                 }
+                // Even a small worktree must prevent an ancestor cache's rm action.
+                // A worktree can be removed only through Git, never through its parent.
+                items.retain(|item| {
+                    item.group == "work" || !path.starts_with(Path::new(&item.path))
+                });
                 let size = self.sizes[&path].clone();
                 if size.bytes < THRESHOLD {
                     continue;
