@@ -15,6 +15,7 @@ pub(super) struct Size {
     pub recent: u64,
     pub complete: bool,
     pub media_files: u64,
+    pub reparse: bool,
 }
 #[derive(Clone)]
 struct Candidate {
@@ -670,6 +671,7 @@ impl Scanner {
                 bytes: meta.len(),
                 newest: modified(&meta),
                 complete: true,
+                reparse: true,
                 ..Size::default()
             };
             if self.wanted_sizes.contains(path) {
@@ -834,6 +836,7 @@ impl Scanner {
                 size.media_files = size.media_files.saturating_add(child_size.media_files);
                 size.newest = size.newest.max(child_size.newest);
                 size.complete &= child_size.complete;
+                size.reparse |= child_size.reparse;
             }
             if grouped {
                 self.error_roots.pop();
@@ -1271,7 +1274,9 @@ impl Scanner {
                 .iter()
                 .any(|p| p.starts_with(&path) || path.starts_with(p));
             let ignored = self.ignored(&path);
-            let eligible = !personal
+            let unsafe_reparse = self.platform == "windows" && size.reparse;
+            let eligible = !unsafe_reparse
+                && !personal
                 && ignored.is_some()
                 && clean
                 && merged
@@ -1280,6 +1285,9 @@ impl Scanner {
                 && !managed
                 && size.complete;
             let mut reasons = Vec::new();
+            if unsafe_reparse {
+                reasons.push("Windows reparse point: Git worktree removal may delete files outside this checkout; cleanup action withheld");
+            }
             if personal {
                 reasons.push("Contains personal media work; label only");
             }
@@ -1309,6 +1317,8 @@ impl Scanner {
             if personal {
                 c.group = if managed { "review" } else { "work" }.into();
                 c.label = "Personal media worktree (label only)".into();
+                c.action = None;
+            } else if unsafe_reparse {
                 c.action = None;
             } else {
                 c.action = Some(Action::Worktree {

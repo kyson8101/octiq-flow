@@ -154,6 +154,10 @@ prompts disabled. No fetch, refresh-index write, maintenance or removal is run.
 3. Newest observed mtime is at least seven days old, with no incomplete walk.
 4. No observed cwd/open file lies in the worktree (component-wise prefix match).
 5. No host ledger allocation still records this path.
+6. On Windows, no reparse point occurs inside the checkout. Git 2.45.2.windows.1
+   was observed traversing a junction during `worktree remove`, deleting files in
+   its external target. These items remain review with `action: null` and an
+   explicit warning. Their metadata measurement is complete, not Partial.
 
 Every failing check is explained in `note`. Ledger-managed checkouts say
 `Managed by an OctiqFlow run: close it from the run panel`. Managed status always

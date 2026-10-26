@@ -495,6 +495,30 @@ fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
     );
     assert_eq!(w.ignored_bytes, THRESHOLD + THRESHOLD / 2 + link_bytes);
     assert_ne!(i.path, display(&primary));
+    // Windows Git 2.45.2 follows directory junctions during worktree removal.
+    // A fully measured link is not Partial, but this action must be withheld.
+    let mut windows = scanner(&home, "windows");
+    walk(&mut windows);
+    let mut windows_items = windows.items();
+    windows
+        .worktrees(&usage, &mut windows_items, &mut |_, _, _, _| {})
+        .unwrap();
+    let row = windows_items
+        .iter()
+        .find(|i| i.kind == "git-worktree")
+        .unwrap();
+    assert_eq!(row.group, "review");
+    assert!(!row.worktree.as_ref().unwrap().eligible);
+    assert!(row.action.is_none());
+    assert!(row
+        .note
+        .as_ref()
+        .unwrap()
+        .contains("Windows reparse point:"));
+    assert!(!row.note.as_ref().unwrap().contains("Partial scan:"));
+    let mut rejected = report(&home, 1);
+    rejected.items = vec![row.clone()];
+    assert!(select(&rejected, &rejected.scan_id, &[row.id.clone()]).is_err());
     assert_eq!(
         items.len(),
         1,
@@ -587,6 +611,8 @@ fn git_worktrees_require_every_check_and_preserve_managed_workspaces() {
         .unwrap();
     assert!(!items[0].worktree.as_ref().unwrap().merged);
     assert_eq!(items[0].group, "review");
+    #[cfg(windows)]
+    fs::remove_dir(&link).unwrap(); // Unlink the fixture junction before Git cleanup.
     git(&primary, &["worktree", "remove", &display(&linked)]);
     assert!(
         outside.join("sentinel").exists(),
