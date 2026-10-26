@@ -30,7 +30,7 @@ pub(super) fn generate(items: &[&Item], windows: bool, allow_rm: bool) -> String
     s.push_str(if windows {
         "if ((Read-Host 'Type exactly yes to continue') -cne 'yes') { exit 0 }\n"
     } else {
-        "read -r -p 'Type exactly yes to continue: ' answer\n[[ \"$answer\" == yes ]] || exit 0\n"
+        "IFS= read -r -p 'Type exactly yes to continue: ' answer\n[[ \"$answer\" == yes ]] || exit 0\n"
     });
     for item in items {
         s.push_str(&echo(&format!("{}: {}", item.label, item.effect)));

@@ -833,3 +833,30 @@ fn media_outputs_need_real_filename_evidence_or_a_project_marker() {
         .any(|i| i.path.ends_with("Exports") && !i.path.ends_with("Photo Exports")));
     assert!(items.iter().all(|i| i.action.is_none()));
 }
+
+#[cfg(unix)]
+#[test]
+fn bash_confirmation_requires_literal_yes_including_whitespace() {
+    use std::io::Write;
+    let home = TestDir::new("disk-exact-confirm");
+    let target = home.join("selected data");
+    file(&target.join("data"), 1, 1);
+    let mut r = report(&home, 1);
+    r.items[0].path = display(&target);
+    r.items[0].action = Some(Action::Rm {
+        path: display(&target),
+    });
+    let script_path = home.join("cleanup.sh");
+    fs::write(&script_path, script::generate(&[&r.items[0]], false, true)).unwrap();
+    for answer in [b" yes \n".as_slice(), b"YES\n", b"no\n", b"yes\n"] {
+        let mut child = Command::new("bash")
+            .arg(&script_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(answer).unwrap();
+        assert!(child.wait().unwrap().success());
+        assert_eq!(target.exists(), answer != b"yes\n");
+    }
+}
