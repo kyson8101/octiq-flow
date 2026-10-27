@@ -10,8 +10,9 @@ vi.mock("../lib/bridge", () => ({
 }));
 vi.mock("../lib/pathStore", () => ({ knownPath: () => undefined, askPaths: () => {}, subscribePaths: () => () => {} }));
 
-import sheet from "./InlineQuestions.css?raw";
-import source from "./QuestionMedia.tsx?raw";
+import sheetRaw from "./InlineQuestions.css?raw";
+import sourceRaw from "./QuestionMedia.tsx?raw";
+import slotRaw from "./MediaSlot.tsx?raw";
 import { hostFacts } from "../lib/__fixtures__/hostFacts";
 import { emptyChat, reduceChat, type Block, type Message } from "../lib/chat";
 import { readQuestionAnswered, type Question } from "../lib/question";
@@ -19,6 +20,11 @@ import { answeredItems } from "../lib/questionBlock";
 import { ChatQuestionsContext } from "./InlineQuestions";
 import { MessageList } from "./MessageList";
 import { FoldedMedia, MediaStrip } from "./QuestionMedia";
+
+import { lf } from "../lib/sourceText";
+const sheet = lf(sheetRaw);
+const source = lf(sourceRaw);
+const slotSource = lf(slotRaw);
 
 const ASK = "mcp__octiq__ask_user";
 const pending = hostFacts.questionMediaPending();
@@ -135,6 +141,26 @@ describe("media on the answered line", () => {
   });
 });
 
+describe("exactly one media item beside a question", () => {
+  it("puts the figure before a right column containing the heading, choices and Other", () => {
+    const html = chat([reply("m1", [call()])], [{ ...pending, media: pending.media!.slice(0, 1) }]);
+    const block = html.slice(html.indexOf('class="qa-block'));
+    expect(block).toContain('class="media-beside"');
+    expect(block).not.toContain('class="qa-media"');
+    expect(block.indexOf("<figure")).toBeLessThan(block.indexOf("media-beside-copy"));
+    expect(block.indexOf("media-beside-copy")).toBeLessThan(block.indexOf("qa-q-title"));
+    expect(block).toContain("Other…");
+    expect(block).toContain('class="qa-row-shot"');
+    expect(block).toMatch(/class="qa-submit" aria-disabled="false">Send answer</);
+    expect(block).not.toMatch(/autofocus/i);
+  });
+  it("leaves two or more media in the existing strip", () => {
+    const html = chat([reply("m1", [call()])], [pending]);
+    expect(html).not.toContain('class="media-beside"');
+    expect(html).toContain('class="qa-media"');
+  });
+});
+
 describe("the strip's sheet", () => {
   it("gives every box its size before anything arrives", () => {
     const rule = (selector: string) => sheet.match(new RegExp(`${selector.replace(/[.]/g, "\\.")} \\{([^}]*)\\}`))?.[1] ?? "";
@@ -153,6 +179,7 @@ describe("the strip's sheet", () => {
   it("fetches pictures as blobs and points players at /file, never the other way round", () => {
     expect(source).toMatch(/bridge\.fetchFile\(path\)/);
     expect(source).not.toMatch(/<img src=\{bridge/);
-    expect(source).toMatch(/preload="metadata"/g);
+    expect(source).toMatch(/useMediaSlot/);
+    expect(slotSource).toContain('el.preload = "metadata"');
   });
 });

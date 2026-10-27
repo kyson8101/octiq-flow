@@ -98,13 +98,13 @@ test("what used to be cut off now reaches a Claude chat", async () => {
   const said = await instructions();
   for (const kept of [
     /call read_conversation with that URL before any other action/,
-    /Use orchestration tools only when the person explicitly asks/,
-    /reads orchestration_snapshot as truth/,
+    /Use orchestration only for explicitly requested multi-agent work or DAGs/,
+    /trusts orchestration_snapshot/,
     /Fable and Astra coordinate and never run as workers/,
     /settles its exact attempt with orchestration_worker_report/,
     /orchestration_peer_ask/,
-    /orchestration_peer_request, which the person approves on the plan card/,
-    /Use task_status when a task has more than a couple of steps/,
+    /orchestration_peer_request for one bounded job, approved on the plan card before starting/,
+    /Use task_status for multi-step work and plan or active-step changes/,
     /Ask the person a decision question with ask_user, every question in one call/,
     /Permission for an action with side effects is asked in the chat instead, never on a card\.$/,
   ]) assert.match(said, kept);

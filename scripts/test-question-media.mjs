@@ -87,11 +87,19 @@ const call = (result) => ({
   args: { question: pending.question, media: [{ path: "/abs/home.png" }, { path: "/abs/take.mp4" }], options: [{ label: "Keep", image: "/abs/face.png" }, "Change"] },
 });
 
-function mock(scene) {
+function mock(scene, columns = false) {
   const stamp = 1792461219629;
-  const main = { id: "main", projectId: "octiq", title: "Home screen layout", customTitle: true, modelId: "claude:opus", access: "auto", sessionId: "session-main", cwd: repoRoot, createdAt: stamp - 600_000, updatedAt: stamp };
+  const main = { coordinatesRun: columns, id: "main", projectId: "octiq", title: "Home screen layout", customTitle: true, modelId: "claude:opus", access: "auto", sessionId: "session-main", cwd: repoRoot, createdAt: stamp - 600_000, updatedAt: stamp };
   const lead = { kind: "text", text: "Before I change the layout, one thing." };
-  const messages = scene === "ask"
+  const kind = scene.replace("beside-", "");
+  const item = kind === "video" ? take : kind === "audio" ? voice : kind === "failure" ? lost : home;
+  const mediaData = { path: item.path, title: "A file and what it means", text: "The preview belongs with these words. Review the file, then choose whether to keep this direction. The media box keeps its place while loading or if the file cannot be shown.", caption: item.caption || "An unavailable preview" };
+  const mediaReply = "```octiq-media\n" + JSON.stringify(mediaData) + "\n```";
+  const beside = scene.startsWith("beside-");
+  const snapshot = { runs: columns ? [{ id: "run-media", coordinatorChatKey: "chat:main", objective: "Review one file beside its explanation", workspaceId: "octiq", rootPath: repoRoot, status: "running", maxConcurrent: 1, createdAt: stamp - 1000, updatedAt: stamp, planApproval: { status: "approved", requestedAt: stamp - 1000, decidedAt: stamp } }] : [], tasks: [], attempts: [], gates: [], messages: [] };
+  const messages = scene === "stream" ? [] : beside
+    ? [{ id: "m1", role: "assistant", streaming: false, blocks: [{ kind: "text", text: mediaReply }, call()] }]
+    : scene === "ask"
     ? [{ id: "m1", role: "assistant", streaming: false, blocks: [lead, call()] }]
     : [
         { id: "m1", role: "assistant", streaming: false, blocks: [lead, call("Keep")] },
@@ -106,13 +114,13 @@ function mock(scene) {
       case "chat_index_list": return [main];
       case "chat_index_deleted": return [];
       case "chat_page": return { events: [], context: [], before: null };
-      case "question_pending": return scene === "ask" ? [question] : [];
+      case "question_pending": return beside ? [{ ...question, media: [item] }] : scene === "ask" ? [question] : [];
       case "chat_list": case "chat_activity": case "permission_pending": case "safety_block_pending":
       case "pr_repositories": case "codex_skills": case "access_request_pending":
         return [];
-      case "team_list": return [];
+      case "team_list": case "provider_fallback_choices": return [];
       case "chat_queue_state": return { live: false, queuedTurnIds: [] };
-      case "orchestration_snapshot": return { runs: [], tasks: [], attempts: [], gates: [], messages: [] };
+      case "orchestration_snapshot": return snapshot;
       case "memory_usage": return { totalMb: 0, procs: 0, rows: [] };
       case "usage_summary": return {};
       case "agent_installs": return [{ id: "claude", installed: true, path: "/mock/claude" }];
@@ -130,15 +138,16 @@ const server = await createServer({ root: webRoot, configFile: join(webRoot, "vi
 const errors = [];
 const report = { artifacts, theme, played, scenes: {} };
 
-async function open(browser, scene, { width, height, phone }) {
-  const { stored, resultFor } = mock(scene);
+async function open(browser, scene, { width, height, phone, columns = false }) {
+  const { stored, resultFor } = mock(scene, columns);
   const context = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce", ...(phone ? { hasTouch: true, isMobile: true } : {}) });
-  await context.addInitScript(({ chats, mode }) => {
-    localStorage.setItem("octiq.v2.gitColumn", "0");
+  await context.addInitScript(({ chats, mode, columns }) => {
+    localStorage.setItem("octiq.v2.gitColumn", columns ? "1" : "0");
+    localStorage.setItem("octiq.v2.tasksShut", "0");
     localStorage.setItem("octiq.theme", mode);
     localStorage.setItem("octiq.v2.theme", mode);
     localStorage.setItem("octiq.v2.conversations", JSON.stringify(chats));
-  }, { chats: stored, mode: theme });
+  }, { chats: stored, mode: theme, columns });
   await context.route("**/token", (route) => route.fulfill({ body: "mock-token" }));
   await context.route("**/auth", (route) => route.fulfill({ body: "ok" }));
   // `/file`, held until `release()`: what a picture arriving late does to the
@@ -151,9 +160,13 @@ async function open(browser, scene, { width, height, phone }) {
     if (!known) return route.fulfill({ status: 404, body: "no such file" });
     return route.fulfill({ status: 200, contentType: known.type, body: await readFile(known.file) });
   };
-  await context.route(/\/file\?/, (route) => (holding ? held.push(route) : serve(route)));
+  const requested = [];
+  await context.route(/\/file\?/, (route) => { requested.push(new URL(route.request().url()).searchParams.get("path")); return holding ? held.push(route) : serve(route); });
   const release = async () => { holding = false; await Promise.all(held.splice(0).map(serve)); };
+  const sockets = [];
+  const send = (event, payload) => sockets.forEach((socket) => socket.send(JSON.stringify({ t: "event", event, payload })));
   await context.routeWebSocket(/.*/, (socket) => {
+    sockets.push(socket);
     socket.onMessage((raw) => {
       const request = JSON.parse(String(raw));
       if (request.t !== "invoke") return;
@@ -165,7 +178,7 @@ async function open(browser, scene, { width, height, phone }) {
   page.on("pageerror", (error) => errors.push(error.stack ?? String(error)));
   page.on("console", (message) => { if (message.type() === "error" && /Error|Uncaught|Minified React/.test(message.text())) errors.push(message.text().slice(0, 600)); });
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/#/p/octiq-flow/c/main`, { waitUntil: "domcontentloaded", timeout: 180_000 });
-  return { context, page, release };
+  return { context, page, release, send, requested };
 }
 
 const box = (locator) => locator.evaluate((el) => { const r = el.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom, w: r.width, h: r.height }; });
@@ -193,6 +206,7 @@ const checked = (page) => page.evaluate(() => [...document.querySelectorAll(".qa
 
 async function askScene(browser, size) {
   const label = `ask ${size.name}`;
+  console.log(`Checking ${label}`);
   const { context, page, release } = await open(browser, "ask", size);
   const out = {};
   const block = page.locator(".qa-block").first();
@@ -286,6 +300,7 @@ async function askScene(browser, size) {
 
 async function answeredScene(browser, size) {
   const label = `answered ${size.name}`;
+  console.log(`Checking ${label}`);
   const { context, page, release } = await open(browser, "answered", size);
   await release();
   const out = {};
@@ -318,6 +333,101 @@ async function answeredScene(browser, size) {
   await context.close();
 }
 
+/** Both consumers of the shared layout, through the real App. */
+async function besideScene(browser, size, kind) {
+  const label = `beside ${kind} ${size.name}`;
+  console.log(`Checking ${label}`);
+  const { context, page, release } = await open(browser, `beside-${kind}`, size);
+  const reply = page.locator(".media-reply").first();
+  const question = page.locator(".qa-q").first();
+  await reply.waitFor();
+  await question.waitFor();
+  if (size.columns) {
+    const toggle = page.getByRole("button", { name: /^Show the task column/ });
+    if (await toggle.count()) await toggle.click();
+    await page.locator(".workflow-surfaces.is-split .workflow-run-surface").waitFor({ state: "visible" });
+    await page.locator(".gitp-panel").waitFor({ state: "visible" });
+  }
+  const measure = async (root) => root.evaluate((el) => {
+    const rect = (node) => { const r = node.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; };
+    return { block: rect(el), container: rect(el.querySelector(".media-beside")), file: rect(el.querySelector(".media-beside-file")), copy: rect(el.querySelector(".media-beside-copy")), box: rect(el.querySelector(".qa-media-box")) };
+  });
+  const before = { reply: await measure(reply), question: await measure(question), send: await box(page.locator(".qa-submit")) };
+  for (const [which, item] of Object.entries(before).filter(([name]) => name !== "send")) {
+    const stacked = item.container.w < 480;
+    assert.equal(stacked, size.phone || !!size.columns, `${label}: ${which} uses its own block width (${item.container.w})`);
+    assert.equal(Math.round(item.box.h), 144, `${label}: reserved height`);
+    assert.ok(stacked ? item.copy.y >= item.file.y + item.file.h : item.copy.x >= item.file.x + item.file.w, `${label}: ${which} geometry`);
+  }
+  await release();
+  for (const media of await page.locator(".media-beside .qa-media-box").all()) await media.scrollIntoViewIfNeeded();
+  if (kind === "image") await pictures(page, ".media-beside", 2);
+  if (kind === "failure") await page.locator(".media-beside .is-failed.qa-media-box").last().waitFor();
+  if (["video", "audio"].includes(kind)) {
+    await page.waitForFunction((kind) => [...document.querySelectorAll(`.media-beside ${kind}`)].length === 2 && [...document.querySelectorAll(`.media-beside ${kind}`)].every((el) => el.readyState >= 1), kind);
+    for (const player of await page.locator(`.media-beside ${kind}`).all()) assert.equal(await player.getAttribute("preload"), "metadata");
+    // Native controls play through nowPlaying; switching chats can hold them.
+    await page.locator(`.media-reply ${kind}`).evaluate((el) => el.play());
+    assert.equal(await page.locator(`.media-reply ${kind}`).evaluate((el) => el.paused), false);
+    await page.locator(`.media-reply ${kind}`).evaluate((el) => el.pause());
+  }
+  await page.waitForTimeout(200);
+  const after = { reply: await measure(reply), question: await measure(question), send: await box(page.locator(".qa-submit")) };
+  for (const name of ["reply", "question"]) assert.ok(Math.abs(after[name].block.h - before[name].block.h) < 1, `${label}: ${name} does not move on load/failure`);
+  const relative = (m) => m.send.t - m.question.block.y;
+  assert.ok(Math.abs(relative(after) - relative(before)) < 1, `${label}: Send does not move`);
+  assert.equal(await noSidewaysScroll(page), true);
+  assert.equal(await page.locator(".media-reply figure").count(), 1);
+  assert.equal(await page.locator(".qa-q figure").count(), 1);
+  assert.equal(await page.locator(".qa-q .qa-row-shot").count(), 1);
+  await reply.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: join(artifacts, `${theme}-beside-${kind}-${size.name}.png`) });
+  await question.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: join(artifacts, `${theme}-single-question-${kind}-${size.name}.png`) });
+  if (kind === "image") {
+    await page.locator(".media-reply .qa-media-box").click();
+    await page.locator('.viewer[role="dialog"]').waitFor();
+    await page.keyboard.press("Escape");
+    await page.locator(".viewer").waitFor({ state: "detached" });
+    const checkedBefore = await checked(page);
+    await page.locator(".qa-q .qa-media-box").click();
+    await page.locator('.viewer[role="dialog"]').waitFor();
+    await page.keyboard.press("Escape");
+    assert.deepEqual(await checked(page), checkedBefore, `${label}: viewing never answers`);
+  }
+  report.scenes[label] = { before, after };
+  await context.close();
+}
+
+async function mediaStreamScene(browser, size) {
+  console.log(`Checking media stream ${size.name}`);
+  const { context, page, send, requested, release } = await open(browser, "stream", size);
+  await page.locator(".composer").waitFor();
+  let seq = 0;
+  const emit = (event) => send("chat-event", { key: "chat:main", seq: ++seq, event: { type: "stream_event", session_id: "session-main", event } });
+  emit({ type: "message_start", message: { id: "msg-media-stream", type: "message", role: "assistant", content: [], model: "claude-opus" } });
+  emit({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+  const body = JSON.stringify({ path: home.path, title: "Streaming a preview", text: "These words reserve their space before the media arrives. ".repeat(8), caption: "The preview" });
+  const delta = (text) => emit({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } });
+  const head = "```octiq-media\n";
+  delta(head + body.slice(0, body.indexOf('"text"') + 40));
+  await page.locator(".media-pending").waitFor();
+  assert.equal(await page.locator(".media-pending").innerText(), "Preparing media…");
+  assert.equal(requested.length, 0, "pending ghost never fetches");
+  delta(body.slice(body.indexOf('"text"') + 40));
+  await page.waitForFunction(() => document.querySelector(".media-ghost .qa-media-caption")?.textContent === "The preview");
+  const before = await box(page.locator(".media-pending"));
+  delta("\n```");
+  await page.locator(".media-pending").waitFor({ state: "detached" });
+  const after = await box(page.locator(".media-reply"));
+  assert.ok(Math.abs(before.h - after.h) < 1, `stream ${size.name}: fence close keeps its reserved height (${before.h} / ${after.h})`);
+  await release();
+  await pictures(page, ".media-reply", 1);
+  await page.screenshot({ path: join(artifacts, `${theme}-media-stream-${size.name}.png`) });
+  report.scenes[`media stream ${size.name}`] = { before, after };
+  await context.close();
+}
+
 let browser;
 try {
   await server.listen();
@@ -325,7 +435,12 @@ try {
   for (const size of SIZES) {
     await askScene(browser, size);
     await answeredScene(browser, size);
+    for (const kind of ["image", "video", "audio", "failure"]) await besideScene(browser, size, kind);
+    await mediaStreamScene(browser, size);
   }
+  const columns = { name: "three-columns", width: 1280, height: 1000, phone: false, columns: true };
+  await besideScene(browser, columns, "image");
+  await mediaStreamScene(browser, columns);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, mockedBackend: true, ...report }, null, 1));
 } catch (error) {

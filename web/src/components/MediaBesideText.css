@@ -1,0 +1,53 @@
+/* Shared by a reply block and a single-media question. */
+.media-beside {
+  container-type: inline-size;
+  min-width: 0;
+}
+
+.media-beside-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 208px) minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.media-beside-file,
+.media-beside-copy { min-width: 0; }
+.qa-q .media-beside-copy { display: flex; flex-direction: column; gap: 6px; }
+
+.media-beside .media-beside-file .qa-media-item { width: 100%; }
+.media-beside .media-beside-file .qa-media-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 144px;
+  aspect-ratio: auto;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+}
+.media-beside .media-beside-file .qa-media-box.is-failed { border-color: transparent; background: none; }
+.media-beside-file .media-slot { display: contents; }
+.media-beside-file .qa-media-box audio { max-width: 100%; }
+
+.media-reply {
+  min-width: 0;
+  margin: 0 0 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+}
+.media-reply .media-reply-title,
+.media-reply .media-reply-text { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.media-reply .media-reply-title { margin-bottom: 6px; font-weight: 650; color: var(--fg-0); }
+.media-reply .media-reply-text { color: var(--fg-1); }
+
+.media-pending { position: relative; }
+.media-ghost { visibility: hidden; }
+.media-wait { position: absolute; top: 14px; left: 14px; color: var(--fg-3); font-size: 12px; }
+
+@container (width < 480px) {
+  .media-beside-grid { grid-template-columns: minmax(0, 1fr); }
+  .media-beside-file { width: min(100%, 288px); }
+}

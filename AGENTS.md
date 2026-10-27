@@ -736,8 +736,9 @@ the `user-question` events, `question_answer_batch`, `question_cancel`,
   go with the chat at purge, never at the trash or `/clear`.
 - **The page draws that media where the question is** (`lib/questionMedia`,
   `components/QuestionMedia`). Every reader is tolerant: an entry that does
-  not read is dropped and the question still draws. Under the heading, a
-  strip: a picture in a fixed 168 by 112 box that opens the shared viewer
+  not read is dropped and the question still draws. Exactly one item sits
+  beside the question (`MediaBesideText`), stacking when narrow; with two
+  or more, under the heading a strip: a picture in a fixed 168 by 112 box that opens the shared viewer
   (Escape shuts it), a video in a 16:9 box and a sound in a 40px one, both
   the browser's own players (`preload="metadata"`, from `/file`), each with
   its caption and name in words. An option's picture is a 64px square
@@ -930,6 +931,36 @@ the `user-question` events, `question_answer_batch`, `question_cancel`,
   `pendingActions.heldCards`, `lib/runWaits` and `lib/chatWait` go on
   reading it as a held card from the page's one list; the block carries the
   same `data-pending-keys` the card did. Do not add a second reader.
+
+### A reply can hold media beside its explanation
+
+A fenced code block whose info string is `octiq-media` draws ONE local
+image, video or audio file beside text (`lib/mediaBlock`,
+`components/MediaBesideText`). Its body is JSON,
+`{"path":"/abs/file.png","title":"...","text":"...","caption":"..."}`:
+`path` is an absolute local path, `text` is required, title and caption
+optional. Limits: title 80 characters, text 1,200, caption 120. The file
+extension determines its kind; an optional `kind` must match. Arrays,
+duplicate keys, extra fields, unknown kinds and over-limit values stay
+ordinary code. Nothing is repaired, truncated or set as HTML.
+
+- **Only a closed, parsed and validated block is drawn.** While streaming,
+  one quiet line sits over unseen layout holding the words written so far;
+  no file is fetched there, and closing the fence keeps the reserved height.
+- **The block width decides the layout**, with a container query: media left
+  and text right at 480px, media above text below that, including beside a
+  run panel and a side column. Each media box reserves its size before load
+  and on failure (`Could not be shown`). Files load only near the scroller;
+  pictures open the shared viewer, native players use metadata preload and
+  `nowPlaying`. The card uses neutral border/background tokens, no shadow.
+- **Questions with exactly one media item use the same layout.** Two or
+  more keep the strip (the host still allows four); option images, answer
+  guards and the answered line's folded view keep their existing behaviour.
+- **Agents get one identical ASCII paragraph** (`MEDIA_PROMPT` in Rust,
+  `MEDIA_INSTRUCTIONS` in the MCP server), wherever the diagram paragraph
+  goes. Rust, MCP and web tests keep it in sync, under the MCP 4,096 limit.
+  Use it only to show a file next to what it means, never by default, and
+  at most a few per reply.
 
 ### A reply can hold a card diagram
 

@@ -32,6 +32,8 @@ import { answerTurnOf, isAnswerTurn, lateAnswerTo, lateAnswers, placeAnswered, p
 import { setRevealer } from "../lib/questionSight";
 import { CardDiagram, DiagramPending } from "./CardDiagram";
 import { DIAGRAM_LANG, diagramBlock, parseDiagram } from "../lib/cardDiagram";
+import { MEDIA_LANG, mediaBlock, parseMediaBlock } from "../lib/mediaBlock";
+import { MediaPending, MediaReply } from "./MediaBesideText";
 import { LiveArrivals, useLiveEntry } from "./Arrive";
 import { useLiveAppend } from "../lib/useArrival";
 import { useRunningCalls } from "./Background";
@@ -102,6 +104,10 @@ function CodeBlock({ children, node }: {
   if (closed && lang === DIAGRAM_LANG && typeof child?.props?.children === "string") {
     const diagram = parseDiagram(child.props.children);
     if (diagram) return <CardDiagram diagram={diagram} />;
+  }
+  if (closed && lang === MEDIA_LANG && typeof child?.props?.children === "string") {
+    const media = parseMediaBlock(child.props.children);
+    if (media) return <MediaReply media={media} />;
   }
 
   return (
@@ -279,6 +285,10 @@ const MarkdownBlock = memo(function MarkdownBlock({
   const drawn = diagramBlock(text, writing);
   if (drawn?.kind === "diagram") return <CardDiagram diagram={drawn.diagram} />;
   if (drawn) return <DiagramPending rows={drawn.rows} />;
+
+  const media = mediaBlock(text, writing);
+  if (media?.kind === "media") return <MediaReply media={media.media} />;
+  if (media) return <MediaPending media={media.media} />;
 
   const whole = closeFence(text);
   return (
