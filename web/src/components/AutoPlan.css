@@ -1,4 +1,4 @@
-.auto-plan-setting { margin: 14px 0; padding: 12px 0; border-block: 1px solid var(--border); }
+.auto-plan-setting { margin: 14px 0; padding: 12px 0; border-block: 1px solid var(--border); white-space: normal; }
 .auto-plan-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--fg-1); text-align: left; cursor: pointer; }
 .auto-plan-switch[aria-disabled="true"] { opacity: .5; cursor: default; }
 .auto-plan-track { display: flex; align-items: center; flex: 0 0 32px; height: 20px; padding: 3px; border: 1px solid var(--fg-3); border-radius: 12px; background: var(--bg-2); box-sizing: border-box; }
@@ -6,7 +6,10 @@
 .auto-plan-switch[aria-checked="true"] .auto-plan-track { background: var(--fg-2); }
 .auto-plan-switch[aria-checked="true"] .auto-plan-track > span { margin-left: auto; background: var(--bg-0); }
 .auto-plan-switch:focus-visible, .auto-plan-future input:focus-visible { outline: 2px solid var(--fg-2); outline-offset: 3px; }
-.auto-plan-setting p, .auto-plan-held, .auto-plan-error { margin: 6px 0; color: var(--fg-2); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.auto-plan-setting p, .auto-plan-error, .auto-plan-full-note { margin: 6px 0; color: var(--fg-2); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.auto-plan-held { margin: 10px 0; padding: 10px 12px; border-left: 3px solid var(--decide); background: var(--decide-tint); color: var(--fg-1); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.auto-plan-held p { margin: 0; white-space: pre-wrap; }
+.auto-plan-held-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 12px; }
 .auto-plan-future { display: flex; align-items: center; gap: 8px; min-height: 44px; color: var(--fg-2); font-size: 12px; cursor: pointer; }
 :root .plan-card .auto-plan-future input, .auto-plan-future input { appearance: none; flex: 0 0 16px; width: 16px; height: 16px; margin: 0; border: 1px solid var(--fg-3); border-radius: 3px; background: var(--bg-0); color: var(--fg-1); }
 :root .plan-card .auto-plan-future input:checked, .auto-plan-future input:checked { background: var(--fg-2); border-color: var(--fg-2); }

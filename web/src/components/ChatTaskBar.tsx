@@ -191,8 +191,10 @@ export function ChatTaskBar({
       context={context}
       action={action}
       autoPlan={context?.canLead ? <AutoPlanSwitch enabled={autoPlan.setting?.enabled ?? false} busy={autoPlan.busy}
+        includeFull={autoPlan.setting?.includeFull ?? false}
         ready={connected && !!autoPlan.setting} error={autoPlan.error}
-        onChange={() => { void setAutoPlan(`chat:${chatId}`, !autoPlan.setting?.enabled).catch(() => {}); }} /> : undefined}
+        onChange={() => { void setAutoPlan(`chat:${chatId}`, !autoPlan.setting?.enabled).catch(() => {}); }}
+        onFullChange={() => { void setAutoPlan(`chat:${chatId}`, true, "details", !autoPlan.setting?.includeFull).catch(() => {}); }} /> : undefined}
     />
   );
 }

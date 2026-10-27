@@ -62,6 +62,9 @@ export const bridge = {
  invoke: async (command, args) => {
   window.__calls.push({command, args});
   if (command === "chat_task") return {chatId: "lead"};
+  // approveOnce refreshes the shared feed even though this isolated scene
+  // owns its plan list. Return the real snapshot shape for that refresh.
+  if (command === "orchestration_snapshot") return {runs: [], tasks: [], attempts: [], gates: [], messages: []};
   if (command === "orchestration_auto_plan_get") {
    if (location.search.includes("reads")) return new Promise((resolve,reject) => window.__gets.push({resolve,reject}));
    return {chatKey: args.chatKey, enabled};
@@ -79,7 +82,7 @@ export const bridge = {
  }
 };`;
 const server = await createServer({ root: webRoot, configFile: join(webRoot, "vite.config.ts"),
- server: {host:"127.0.0.1", port:0}, plugins:[{name:"auto-plan-scratch", enforce:"pre",
+ server: {host:"127.0.0.1", port:0, strictPort:false}, plugins:[{name:"auto-plan-scratch", enforce:"pre",
  resolveId(id, importer) { if(id === "/__auto-plan.tsx") return id; if(id.endsWith("/lib/bridge") || id.endsWith("/lib/bridge.ts") || (id === "./bridge" && importer?.includes("/src/lib/"))) return "\0scratch-auto-bridge"; },
  load(id) { if(id === "/__auto-plan.tsx") return fixture; if(id === "\0scratch-auto-bridge") return bridge; },
  configureServer(vite) { vite.middlewares.use(async(req,res,next) => {
@@ -228,8 +231,8 @@ try {
   await page.evaluate(()=>{window.__gets[8].resolve({chatKey:"chat:press",enabled:false}); window.__gets[9].resolve({chatKey:"chat:press",enabled:false});});
   await expectSetting("chat:press",false);
   await go("held");
-  await page.getByText("Not auto-approved: 1 task runs at Full access",{exact:true}).waitFor();
-  assert.equal(await page.getByRole("checkbox").count(),0);
+  await page.getByText(/Waits for you: 1 task runs at Full access/).waitFor();
+  assert.equal(await page.getByRole("checkbox",{name:"Also auto-approve Full access tasks in this chat"}).count(),1);
   assert.equal(await page.getByText("Plan auto-approved · revision 8 · 3 tasks",{exact:true}).count(),1);
   assert.equal(await page.getByText("A complete task title",{exact:true}).count(),0);
   await page.getByRole("button",{name:"Show the task titles",exact:true}).click();

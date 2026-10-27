@@ -2,9 +2,9 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { bridge } from "./bridge";
 import { once, useInFlight } from "./inFlight";
-import type { OrchestrationRun } from "./orchestration";
+import type { OrchestrationRun, OrchestrationTask } from "./orchestration";
 
-export type AutoPlanSetting = { chatKey: string; enabled: boolean; enabledAt?: number };
+export type AutoPlanSetting = { chatKey: string; enabled: boolean; enabledAt?: number; includeFull: boolean; includeFullAt?: number };
 type Reading = { setting?: AutoPlanSetting; error?: string; saveError?: string };
 const readings = new Map<string, Reading>();
 // A failed read carries no new setting. Only a successful read, event or
@@ -20,11 +20,11 @@ const publish = (key: string, reading: Reading) => {
 };
 const words = (error: unknown) => String((error as Error)?.message ?? error);
 
-export async function setAutoPlan(chatKey: string, enabled: boolean, source: "details" | "card" = "details") {
+export async function setAutoPlan(chatKey: string, enabled: boolean, source: "details" | "card" = "details", includeFull?: boolean) {
   return once(autoPlanFlight(chatKey), async () => {
     advance(chatKey);
     try {
-      const setting = await bridge.invoke<AutoPlanSetting>("orchestration_auto_plan_set", { chatKey, enabled });
+      const setting = await bridge.invoke<AutoPlanSetting>("orchestration_auto_plan_set", { chatKey, enabled, ...(includeFull === undefined ? {} : { includeFull }) });
       advance(chatKey);
       publish(chatKey, { setting });
     } catch (error) {
@@ -66,17 +66,20 @@ export function useAutoPlan(chatKey: string | null, connected = true) {
   return { ...reading, busy };
 }
 
-export function autoPlanHeld(run: Pick<OrchestrationRun, "autoPlan">): string | null {
+export function autoPlanHeld(run: Pick<OrchestrationRun, "autoPlan">, tasks: OrchestrationTask[] = []): string | null {
   const held = run.autoPlan?.held;
   if (!held) return null;
-  if (held.reason === "peerRequest") return "Not auto-approved: it holds a peer request";
+  if (held.reason === "peerRequest") return "Waits for you: a peer request is always approved by you.";
   const n = held.taskIds.length;
-  return `Not auto-approved: ${n} task${n === 1 ? " runs" : "s run"} at Full access`;
+  const names = held.taskIds.map((id) => tasks.find((task) => task.id === id))
+    .filter((task): task is OrchestrationTask => !!task)
+    .map((task) => `${task.assignee?.name ?? "Unassigned"}: ${task.title}`);
+  return `Waits for you: ${n} task${n === 1 ? " runs" : "s run"} at Full access${names.length ? ` (${names.join("; ")})` : ""}. Auto-approve covers Auto or lower unless you turn on Full access tasks.`;
 }
 
 /** Approval is final even if saving future consent fails. */
-export async function approveWithAutoPlan(approve: () => Promise<boolean>, chatKey: string, enabled: boolean) {
+export async function approveWithAutoPlan(approve: () => Promise<boolean>, chatKey: string, enabled: boolean, includeFull?: boolean) {
   const sent = await approve();
-  if (sent && enabled) await setAutoPlan(chatKey, true, "card");
+  if (sent && enabled) await setAutoPlan(chatKey, true, "card", includeFull);
   return sent;
 }
