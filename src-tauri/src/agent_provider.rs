@@ -1293,7 +1293,7 @@ fn antigravity_rules(role: AntigravityRole) -> String {
             let access =
                 antigravity_access_prompt(access, matches!(role, AntigravityRole::Worker(_)));
             format!(
-                "# OctiqFlow\n\n{ANTIGRAVITY_HOST_PROMPT}\n\n{access}\n\n{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{DIAGRAM_PROMPT}\n\n{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{worker}"
+                "# OctiqFlow\n\n{ANTIGRAVITY_HOST_PROMPT}\n\n{access}\n\n{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{DIAGRAM_PROMPT}\n\n{MEDIA_PROMPT}\n\n{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{worker}"
             )
             .trim_end()
             .to_string()
@@ -1782,7 +1782,7 @@ pub(crate) fn codex_developer_instructions(
     // `codex exec` fallback takes them as a command-line argument, and gets
     // none of it: Windows stops a command line at 32,767 characters.
     let diagram = match (native_questions, orchestration_worker) {
-        (true, _) => format!("{DIAGRAM_PROMPT}\n\n"),
+        (true, _) => format!("{DIAGRAM_PROMPT}\n\n{MEDIA_PROMPT}\n\n"),
         (false, _) => String::new(),
     };
     let mut prompt = format!(
@@ -1847,6 +1847,9 @@ const FEEDBACK_PROMPT: &str = "When you observe a bug or hiccup in OctiqFlow its
 /// MCP server, and `codex exec` takes its instructions as an argument, so
 /// neither is told.
 pub(crate) const DIAGRAM_PROMPT: &str = r#"A reply can hold one card diagram: a fenced code block with the info string octiq-diagram whose body is JSON {"rows":[[{"title":"...","note":"...","icon":"...","plain":true}]]}. Rows run top to bottom with an arrow between them, the nodes of a row sit side by side, and plain draws a node with no frame (a conclusion); only title is required. Limits: 8 rows, 4 nodes a row, title 60 characters, note 120. Icons: moon, coffee, screen, user, users, server, database, file, folder, code, terminal, branch, check, cross, alert, clock, lock, key, globe, cloud, bolt, search, message, box. Draw one only when a relation or a flow is clearer as a picture than as a sentence, never by default, and at most one per reply."#;
+
+/// One media file beside its explanation, identical to the MCP paragraph.
+pub(crate) const MEDIA_PROMPT: &str = r#"A reply can hold an octiq-media block: a fenced code block with the info string octiq-media whose body is JSON {"path":"/abs/file.png","title":"...","text":"...","caption":"..."}. One local absolute path to an image, video or audio file; text is required, title and caption optional. Limits: title 80 characters, text 1200, caption 120. Media sits beside the words and stacks when narrow. Use it only to show a file next to what it means, never by default, and at most a few per reply."#;
 
 const CHAT_TITLE_PROMPT: &str ="When the work in this chat becomes clear, use `set_chat_title` if available to give it a concise, specific title in the person's language. Update it when the focus meaningfully changes, not for each step or progress update. This tool affects only the current chat and preserves titles chosen by the person; if it reports a user-chosen title, leave it in place.";
 
@@ -3123,6 +3126,41 @@ pub(crate) mod tests {
         assert!(DIAGRAM_PROMPT.is_ascii());
         // One line, and nothing a POSIX or a JavaScript quote has to escape.
         assert!(!DIAGRAM_PROMPT.contains(['\n', '\'', '\\']));
+    }
+
+    #[test]
+    fn every_chat_agent_is_told_the_media_block_in_the_same_words() {
+        // The MCP server's instructions hold the paragraph word for word.
+        // That is where Claude reads it, over stdio.
+        assert!(ASK_MCP.contains(MEDIA_PROMPT));
+        // No command line carries it: not Claude's appended prompt, and not
+        // the instructions `codex exec` takes as an argument.
+        for kind in [AgentKind::Claude, AgentKind::Codex, AgentKind::Pi] {
+            let line = command(kind, Some(Path::new("/tmp/octiq-ask.json")));
+            assert!(!line.contains("octiq-media"), "{line}");
+        }
+        let said = |app_server: bool| {
+            codex_developer_instructions(
+                Some("model-x"),
+                Some("high"),
+                Some(Access::Auto),
+                None,
+                app_server,
+                false,
+            )
+        };
+        // Codex's app-server takes its instructions as a message on stdin.
+        assert!(said(true).contains(MEDIA_PROMPT));
+        assert!(!said(false).contains("octiq-media"));
+        assert!(antigravity_rules(AntigravityRole::Chat(Access::Auto)).contains(MEDIA_PROMPT));
+        assert!(antigravity_rules(AntigravityRole::Worker(Access::Auto)).contains(MEDIA_PROMPT));
+        assert!(!antigravity_rules(AntigravityRole::FrontDesk).contains("octiq-media"));
+        assert!(!FRONT_DESK_PROMPT.contains("octiq-media"));
+        // Short all the same: every chat reads it at every launch.
+        assert!(MEDIA_PROMPT.chars().count() <= 560);
+        assert!(MEDIA_PROMPT.is_ascii());
+        // One line, and nothing a POSIX or a JavaScript quote has to escape.
+        assert!(!MEDIA_PROMPT.contains(['\n', '\'', '\\']));
     }
 
     #[test]

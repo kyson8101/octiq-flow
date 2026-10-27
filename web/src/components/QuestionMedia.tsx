@@ -1,5 +1,6 @@
 // What an `ask_user` question shows: the host's snapshots of local images,
-// video and sound under the question, and a picture on an option
+// video and sound beside the question when there is one, in a strip when
+// there are several, and a picture on an option
 // (`lib/questionMedia`, docs/question-delivery.md, Media).
 //
 // Three rules, the question block's own:
@@ -18,12 +19,14 @@
 // shuts it). Nothing here answers a question: a picture inside an option's
 // row is part of the row, and its enlarge control sits beside the row,
 // never inside the label, so it selects nothing.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { bridge } from "../lib/bridge";
 import { bytesLabel, mediaCount, type Media, type MediaKind, type Shown } from "../lib/questionMedia";
 import { FoldBody, FoldToggle, useFold } from "./CardFold";
 import { useOpenFile } from "./OpenFileContext";
 import { useNear } from "./ProseMedia";
+import { useHeldMedia, useMediaChat, useMediaReply, useMediaSlot } from "./MediaSlot";
+import { nowPlaying } from "../lib/nowPlaying";
 
 /** A picture's bytes as a blob URL, once it is near; `failed` when they
  *  will not come. */
@@ -50,15 +53,22 @@ function useShot(path: string, near: boolean): { url: string | null; failed: boo
 /** The name and size a control's words give a file. */
 const described = (media: Media) => `${media.name}${media.bytes ? ` · ${bytesLabel(media.bytes)}` : ""}`;
 
-/** One file under a question: its box, then its words. */
-function MediaFigure({ media }: { media: Shown }) {
+/** One file, shared with media replies: its reserved box, then its words. */
+export function MediaFigure({ media, reserveOnly = false }: { media: Shown; reserveOnly?: boolean }) {
   const [holder, near] = useNear<HTMLElement>();
   const open = useOpenFile();
-  const shot = useShot(media.path, near && media.kind === "image");
+  const shot = useShot(media.path, !reserveOnly && near && media.kind === "image");
+  const chat = useMediaChat();
+  const reply = useMediaReply();
+  const held = useHeldMedia(chat, media.path, reply);
+  const kept = useRef(false);
+  if (held) kept.current = true;
   const [broken, setBroken] = useState(false);
   const failed = broken || shot.failed;
   let box: ReactNode;
-  if (failed) {
+  if (reserveOnly) {
+    box = <span className={`qa-media-box is-${media.kind}`} />;
+  } else if (failed) {
     box = (
       <span className={`qa-media-box is-${media.kind} is-failed`}>
         <KindIcon kind={media.kind} />Could not be shown
@@ -73,12 +83,9 @@ function MediaFigure({ media }: { media: Shown }) {
     );
   } else {
     // Pointed at `/file`, as a reply's player is, so it streams and seeks.
-    const src = near ? bridge.fileUrl(media.path) : undefined;
     box = (
       <span className={`qa-media-box is-${media.kind}`}>
-        {src && (media.kind === "video"
-          ? <video src={src} controls playsInline preload="metadata" aria-label={media.name} onError={() => setBroken(true)} />
-          : <audio src={src} controls preload="metadata" aria-label={media.name} onError={() => setBroken(true)} />)}
+        {(near || kept.current) && <FigurePlayer media={media} onError={() => setBroken(true)} />}
       </span>
     );
   }
@@ -92,6 +99,22 @@ function MediaFigure({ media }: { media: Shown }) {
       </figcaption>
     </figure>
   );
+}
+
+/** Browser controls, preload="metadata", and the same nowPlaying ownership
+ * as ProsePlayer: a playing file can leave the chat and come back. */
+function FigurePlayer({ media, onError }: { media: Shown; onError: () => void }) {
+  const chat = useMediaChat();
+  const reply = useMediaReply();
+  const failed = useRef(onError);
+  failed.current = onError;
+  const slot = useMediaSlot<HTMLMediaElement>({ chat, reply, path: media.path, kind: media.kind as "video" | "audio", name: media.name }, bridge.fileUrl(media.path), (el) => {
+    const error = () => failed.current();
+    el.addEventListener("error", error);
+    if (nowPlaying.errorOf(el)) error();
+    return () => el.removeEventListener("error", error);
+  });
+  return <span className="media-slot" ref={slot} />;
 }
 
 /** A question's media, in the order asked. Nothing when there is none. */

@@ -51,6 +51,8 @@ import {
 } from "../lib/submitQuestionAnswers";
 import { useLiveEntry } from "./Arrive";
 import { FoldedMedia, MediaStrip, PictureRow } from "./QuestionMedia";
+import { MediaBesideText } from "./MediaBesideText";
+import { MediaFigure } from "./QuestionMedia";
 import "./InlineQuestions.css";
 
 /** What an older host is sent for a question dismissed without an answer; a
@@ -218,10 +220,10 @@ function QuestionForm({ batch, questions, onDone, onSent }: {
             onChange={(event) => { const text = event.target.value; change(question, (p) => ({ ...p, text })); }}
           />
         );
-        return (
-          <div className="qa-q" key={question.id}>
+        const media = mediaList(question.media);
+        const copy = <>
             <p className="qa-q-title" id={titleId}>{question.question}</p>
-            <MediaStrip media={mediaList(question.media)} />
+            {media.length !== 1 && <MediaStrip media={media} />}
             {options.length === 0 ? typed : (
               <div className="qa-rows" role={many ? "group" : "radiogroup"} aria-labelledby={titleId}>
                 {options.map((choice, at) => {
@@ -273,6 +275,10 @@ function QuestionForm({ batch, questions, onDone, onSent }: {
                 {pick.other && <div className="qa-other">{typed}</div>}
               </div>
             )}
+          </>;
+        return (
+          <div className="qa-q" key={question.id}>
+            {media.length === 1 ? <MediaBesideText media={<MediaFigure key={media[0].id} media={media[0]} />}>{copy}</MediaBesideText> : copy}
           </div>
         );
       })}
