@@ -14,8 +14,9 @@ export function MediaBesideText({ media, children }: { media: ReactElement; chil
 
 export function MediaReply({ media, reserveOnly = false }: { media: MediaBlockData; reserveOnly?: boolean }) {
   const titleId = useId();
+  const name = baseName(media.path.replaceAll("\\", "/"));
   return <section className="media-reply" aria-labelledby={media.title ? titleId : undefined} aria-label={media.title ? undefined : "Media and description"}>
-    <MediaBesideText media={<MediaFigure key={media.path} reserveOnly={reserveOnly} media={{ ...media, id: media.path, name: baseName(media.path), mime: "", bytes: 0 }} />}>
+    <MediaBesideText media={<MediaFigure key={media.path} reserveOnly={reserveOnly} media={{ ...media, id: media.path, name, mime: "", bytes: 0 }} />}>
       {media.title && <p className="media-reply-title" id={titleId}>{media.title}</p>}
       <p className="media-reply-text">{media.text}</p>
     </MediaBesideText>

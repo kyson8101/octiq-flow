@@ -32,6 +32,7 @@
 //
 //   OCTIQ_THEME=light|dark|fun|manga|guofeng|xp|cyberpunk   the appearance mode (dark)
 //   OCTIQ_EVIDENCE_DIR=<dir>   where the screenshots go
+//   OCTIQ_MEDIA_STREAM_ONLY=1   just the fence-close geometry regression
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile } from "node:fs/promises";
@@ -47,6 +48,7 @@ const moduleUrl = (spec) => (isAbsolute(spec) || spec.startsWith(".") ? pathToFi
 const { createServer } = await import(moduleUrl(require.resolve("vite")));
 const { chromium } = await import(moduleUrl(process.env.PLAYWRIGHT_MODULE || "playwright"));
 const theme = process.env.OCTIQ_THEME || "dark";
+const streamOnly = process.env.OCTIQ_MEDIA_STREAM_ONLY === "1";
 const artifacts = process.env.OCTIQ_EVIDENCE_DIR || await mkdtemp(join(tmpdir(), "octiq-question-media-"));
 await mkdir(artifacts, { recursive: true });
 
@@ -136,6 +138,7 @@ function mock(scene, columns = false) {
 
 const server = await createServer({ root: webRoot, configFile: join(webRoot, "vite.config.ts"), server: { host: "127.0.0.1", port: 0, strictPort: false, fs: { strict: false } } });
 const errors = [];
+const streamFailures = [];
 const report = { artifacts, theme, played, scenes: {} };
 
 async function open(browser, scene, { width, height, phone, columns = false }) {
@@ -399,8 +402,9 @@ async function besideScene(browser, size, kind) {
   await context.close();
 }
 
-async function mediaStreamScene(browser, size) {
-  console.log(`Checking media stream ${size.name}`);
+async function mediaStreamScene(browser, size, lastChild) {
+  const label = `media stream ${size.name} ${lastChild ? "last" : "followed"}`;
+  console.log(`Checking ${label}`);
   const { context, page, send, requested, release } = await open(browser, "stream", size);
   await page.locator(".composer").waitFor();
   let seq = 0;
@@ -416,15 +420,57 @@ async function mediaStreamScene(browser, size) {
   assert.equal(requested.length, 0, "pending ghost never fetches");
   delta(body.slice(body.indexOf('"text"') + 40));
   await page.waitForFunction(() => document.querySelector(".media-ghost .qa-media-caption")?.textContent === "The preview");
-  const before = await box(page.locator(".media-pending"));
+  // An unfinished fence is necessarily the last parsed Markdown block. Add
+  // ordinary DOM probes to exercise both sibling positions under the real
+  // App's CSS, without closing the fence early or changing React's content.
+  // Place and measure the same probes in one browser task in both states:
+  // React may insert the final card after an unmanaged sibling.
+  const measure = () => page.locator(".media-pending, .prose > .media-reply").evaluate((el, lastChild) => {
+    const prose = el.closest(".prose");
+    if (!lastChild) {
+      const tail = prose.querySelector("[data-media-stream-tail]") ?? document.createElement("p");
+      tail.dataset.mediaStreamTail = "";
+      tail.textContent = "Words below the media block.";
+      prose.append(tail);
+    }
+    const below = prose.parentElement.querySelector("[data-media-stream-below]") ?? document.createElement("div");
+    below.dataset.mediaStreamBelow = "";
+    below.textContent = "Transcript content below the prose.";
+    prose.after(below);
+    const body = el.closest(".msg-body");
+    const top = body.getBoundingClientRect().top;
+    // Relative transcript positions exclude viewport scrolling/reader anchoring.
+    const position = (node) => node ? node.getBoundingClientRect().top - top : null;
+    return {
+      cardHeight: el.getBoundingClientRect().height,
+      proseHeight: prose.getBoundingClientRect().height,
+      bodyHeight: body.getBoundingClientRect().height,
+      below: position(body.querySelector("[data-media-stream-below]")),
+      tail: position(prose.querySelector("[data-media-stream-tail]")),
+      lastChild: el === prose.lastElementChild,
+    };
+  }, lastChild);
+  const before = await measure();
   delta("\n```");
   await page.locator(".media-pending").waitFor({ state: "detached" });
-  const after = await box(page.locator(".media-reply"));
-  assert.ok(Math.abs(before.h - after.h) < 1, `stream ${size.name}: fence close keeps its reserved height (${before.h} / ${after.h})`);
+  await page.waitForFunction(() => document.querySelector(".prose > .media-reply") && !document.querySelector(".prose.is-typing"));
+  const after = await measure();
+  console.log(`STREAM_GEOMETRY ${JSON.stringify({ theme, label, before, after })}`);
+  report.scenes[label] = { before, after };
+  assert.equal(before.lastChild, lastChild, `${label}: pending sibling position`);
+  assert.equal(after.lastChild, lastChild, `${label}: final sibling position`);
+  assert.notEqual(before.below, null, `${label}: content below prose exists`);
+  assert.notEqual(after.below, null, `${label}: final content below prose exists`);
+  if (!lastChild) {
+    assert.notEqual(before.tail, null, `${label}: following prose exists`);
+    assert.notEqual(after.tail, null, `${label}: final following prose exists`);
+  }
+  for (const key of ["cardHeight", "proseHeight", "bodyHeight", "below", ...(!lastChild ? ["tail"] : [])]) {
+    if (Math.abs(before[key] - after[key]) >= 1) streamFailures.push(`${label}: ${key} moved (${before[key]} / ${after[key]})`);
+  }
   await release();
   await pictures(page, ".media-reply", 1);
-  await page.screenshot({ path: join(artifacts, `${theme}-media-stream-${size.name}.png`) });
-  report.scenes[`media stream ${size.name}`] = { before, after };
+  await page.screenshot({ path: join(artifacts, `${theme}-media-stream-${size.name}-${lastChild ? "last" : "followed"}.png`) });
   await context.close();
 }
 
@@ -433,14 +479,17 @@ try {
   await server.listen();
   browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) });
   for (const size of SIZES) {
-    await askScene(browser, size);
-    await answeredScene(browser, size);
-    for (const kind of ["image", "video", "audio", "failure"]) await besideScene(browser, size, kind);
-    await mediaStreamScene(browser, size);
+    if (!streamOnly) {
+      await askScene(browser, size);
+      await answeredScene(browser, size);
+      for (const kind of ["image", "video", "audio", "failure"]) await besideScene(browser, size, kind);
+    }
+    for (const lastChild of [true, false]) await mediaStreamScene(browser, size, lastChild);
   }
   const columns = { name: "three-columns", width: 1280, height: 1000, phone: false, columns: true };
-  await besideScene(browser, columns, "image");
-  await mediaStreamScene(browser, columns);
+  if (!streamOnly) await besideScene(browser, columns, "image");
+  for (const lastChild of [true, false]) await mediaStreamScene(browser, columns, lastChild);
+  assert.deepEqual(streamFailures, [], "closing the fence preserves occupied transcript space and content below it");
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, mockedBackend: true, ...report }, null, 1));
 } catch (error) {

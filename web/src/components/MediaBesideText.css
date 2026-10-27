@@ -43,8 +43,11 @@
 .media-reply .media-reply-title { margin-bottom: 6px; font-weight: 650; color: var(--fg-0); }
 .media-reply .media-reply-text { color: var(--fg-1); }
 
-.media-pending { position: relative; }
+.media-pending { position: relative; margin: 0 0 10px; }
 .media-ghost { visibility: hidden; }
+/* Keep spacing on the outer block so prose's last-child rule treats the
+   pending block and the finished card alike. */
+.media-ghost > .media-reply { margin: 0; }
 .media-wait { position: absolute; top: 14px; left: 14px; color: var(--fg-3); font-size: 12px; }
 
 @container (width < 480px) {

@@ -947,6 +947,7 @@ ordinary code. Nothing is repaired, truncated or set as HTML.
 - **Only a closed, parsed and validated block is drawn.** While streaming,
   one quiet line sits over unseen layout holding the words written so far;
   no file is fetched there, and closing the fence keeps the reserved height.
+  Check the space it takes in the transcript and where content below lands, not just its own height.
 - **The block width decides the layout**, with a container query: media left
   and text right at 480px, media above text below that, including beside a
   run panel and a side column. Each media box reserves its size before load

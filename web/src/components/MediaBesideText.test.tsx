@@ -34,6 +34,12 @@ describe("a media reply", () => {
     expect(html).toContain(`qa-media-box is-${name.endsWith("mp4") ? "video" : "audio"}`);
     expect(html).not.toMatch(/<(video|audio)/);
   });
+  it.each(["/art/file.png", "C:\\art\\file.png", "\\\\server\\art\\file.png"])("names %s by its filename in the caption and viewer control", (path) => {
+    const html = render(fenced(JSON.stringify({ ...data, path })));
+    expect(html).toContain('<span class="qa-media-name">file.png</span>');
+    expect(html).toContain('aria-label="See file.png full size"');
+    expect(html).toContain('title="file.png: see it full size"');
+  });
   it("draws strings as text, never HTML or markdown", () => {
     const html = render(fenced(JSON.stringify({ ...data, title: "<script>bad()</script>", text: "<img onerror=bad()> **words**", caption: "<b>caption</b>" })));
     expect(html).toContain("&lt;script&gt;bad()&lt;/script&gt;");
