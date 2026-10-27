@@ -233,6 +233,10 @@ export function createOrchestrationFeed() {
     });
     const offState = bridge.onState((connection) => connection === "open" && void ask(true));
     const offDecision = bridge.on("safety-block-expired", () => void ask(false));
+    // Standing scope changes also change the host's derived held reasons,
+    // including when the person changed it in another tab. Never infer those
+    // facts from the setting on the page.
+    const offAutoPlan = bridge.on("orchestration-auto-plan", () => void ask(true));
     const onVisible = () => {
       if (hidden()) return;
       if (unseen) notify(true);
@@ -247,6 +251,7 @@ export function createOrchestrationFeed() {
       offReport();
       offState();
       offDecision();
+      offAutoPlan();
       if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
     };
   };

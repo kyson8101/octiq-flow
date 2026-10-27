@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+const { invoke, refresh } = vi.hoisted(() => ({ invoke: vi.fn(), refresh: vi.fn(async () => {}) }));
 vi.mock("./bridge", () => ({ bridge: { invoke, on: () => () => {} } }));
-import { approveWithAutoPlan, autoPlanHeld, setAutoPlan } from "./autoPlan";
+vi.mock("./orchestrationFeed", () => ({ orchestrationFeed: { refresh } }));
+import { approveWithAutoPlan, autoPlanHeld, AUTO_PLAN_REFRESH_MS, setAutoPlan } from "./autoPlan";
 import { IN_FLIGHT, inFlight } from "./inFlight";
 import { AutoPlanSwitch } from "../components/AutoPlanSwitch";
 import { PlanReview } from "../components/PlanReview";
@@ -39,12 +40,13 @@ describe("standing plan consent", () => {
     const peer = hostFacts.autoPlanFullPeerRequest();
     expect(peer.runs[0].autoPlan?.includeFull).toBe(true);
     const html = renderToStaticMarkup(<PlanReview run={peer.runs[0]} tasks={peer.tasks} surface="chat" drafting={false} onRequestChanges={() => {}} />);
-    expect(html).toContain("Waits for you: a peer request is always approved by you.");
+    expect(html).toContain("Waits for you: 1 peer request (Unassigned: Implement). Peer requests are always approved by you.");
     expect(html).not.toContain("Also auto-approve");
     expect(html).not.toContain('type="checkbox"');
   });
-  it("folds a long held list whole through the plan's one disclosure", () => {
+  it.each(["access", "peerRequest"] as const)("folds a long %s held list whole through the plan's one disclosure", (reason) => {
     const ledger = hostFacts.autoPlanHeldAccess();
+    ledger.runs[0].autoPlan!.held!.reason = reason;
     // Changed for this test: two held tasks with long, distinct titles.
     const first = ledger.tasks[0];
     first.title = "First complete title " + "detail ".repeat(40);
@@ -53,7 +55,7 @@ describe("standing plan consent", () => {
     ledger.runs[0].autoPlan!.held!.taskIds.push("second");
     const draw = (startOpen: boolean) => renderToStaticMarkup(<PlanReview run={ledger.runs[0]} tasks={ledger.tasks} surface="chat" folds startOpen={startOpen} drafting={false} onRequestChanges={() => {}} />);
     const shut = draw(false);
-    expect(shut).toContain("Waits for you: 2 tasks run at Full access.");
+    expect(shut).toContain(reason === "access" ? "Waits for you: 2 tasks run at Full access." : "Waits for you: 2 peer requests. Peer requests are always approved by you.");
     expect(shut).toMatch(/Held tasks · [\d,]+ characters/);
     expect(shut).not.toContain("First complete title");
     expect(shut).not.toContain("Second complete title");
@@ -90,6 +92,38 @@ describe("standing plan consent", () => {
     answer({ chatKey: "chat:one", enabled: true, includeFull: false });
     await first;
     expect(inFlight("auto-plan:chat:one")).toBe(false);
+  });
+  it.each([true, false])("keeps Full=%s controls busy until the host ledger has been refreshed", async (includeFull) => {
+    let read!: () => void;
+    refresh.mockImplementationOnce(() => new Promise<void>((resolve) => { read = resolve; }));
+    invoke.mockResolvedValueOnce({ chatKey: "chat:sync", enabled: true, includeFull });
+    const saved = setAutoPlan("chat:sync", true, "details", includeFull);
+    await vi.waitFor(() => expect(read).toBeTypeOf("function"));
+    expect(inFlight("auto-plan:chat:sync")).toBe(true);
+    expect(await setAutoPlan("chat:sync", true, "card", !includeFull)).toBe(IN_FLIGHT);
+    read();
+    await saved;
+    expect(inFlight("auto-plan:chat:sync")).toBe(false);
+  });
+  it("does not call a saved setting a failed save when the ledger refresh fails", async () => {
+    invoke.mockResolvedValueOnce({ chatKey: "chat:read-failed", enabled: true, includeFull: true });
+    refresh.mockRejectedValueOnce(new Error("Ledger unavailable"));
+    await expect(setAutoPlan("chat:read-failed", true, "card", true)).resolves.toBeUndefined();
+    expect(inFlight("auto-plan:chat:read-failed")).toBe(false);
+  });
+  it("releases controls when the host saved the setting but the snapshot never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      invoke.mockResolvedValueOnce({ chatKey: "chat:silent", enabled: true, includeFull: true });
+      refresh.mockImplementationOnce(() => new Promise(() => {}));
+      const saved = setAutoPlan("chat:silent", true, "details", true);
+      await vi.advanceTimersByTimeAsync(AUTO_PLAN_REFRESH_MS - 1);
+      expect(inFlight("auto-plan:chat:silent")).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      await saved;
+      expect(inFlight("auto-plan:chat:silent")).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
   });
   it("approves before enabling, and keeps approval when enabling fails", async () => {
     const calls: string[] = [];

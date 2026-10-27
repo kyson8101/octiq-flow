@@ -112,6 +112,40 @@ describe("orchestration feed", () => {
     await vi.advanceTimersByTimeAsync(0);
     off();
   });
+  it.each([true, false])("rereads host held reasons when another tab sets Full=%s", async (includeFull) => {
+    const snapshot = (full: boolean): OrchestrationSnapshot => ({
+      ...ledger(),
+      runs: [{ id: "r1", coordinatorChatKey: "chat:main", autoPlan: {
+        enabled: true, includeFull: full,
+        ...(!full ? { held: { reason: "access", taskIds: ["t1"] } } : {}),
+      } }],
+    } as OrchestrationSnapshot);
+    const feed = createOrchestrationFeed();
+    const off = feed.subscribe(() => {});
+    mock.reads[0].resolve(snapshot(!includeFull));
+    await vi.advanceTimersByTimeAsync(0);
+    const old = feed.getState().snapshot!.runs[0].autoPlan;
+    emit("orchestration-auto-plan", { chatKey: "chat:main", enabled: true, includeFull });
+    expect(mock.reads).toHaveLength(2); // no gap after a scope change
+    expect(feed.getState().snapshot!.runs[0].autoPlan).toBe(old); // never derive held on the page
+    mock.reads[1].resolve(snapshot(includeFull));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(feed.getState().snapshot!.runs[0].autoPlan).toEqual(snapshot(includeFull).runs[0].autoPlan);
+    off();
+    expect(mock.handlers.has("orchestration-auto-plan")).toBe(false);
+  });
+  it("rereads after an older snapshot when a scope event arrives during it", async () => {
+    const feed = createOrchestrationFeed();
+    const off = feed.subscribe(() => {});
+    emit("orchestration-auto-plan", { chatKey: "chat:main", enabled: true, includeFull: false });
+    expect(mock.reads).toHaveLength(1);
+    mock.reads[0].resolve(ledger());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mock.reads).toHaveLength(2);
+    mock.reads[1].resolve(ledger());
+    await vi.advanceTimersByTimeAsync(0);
+    off();
+  });
   it("only takes an execution the event actually carries", () => {
     expect(executionUpdate({ runId: "r1", change: "task_created" })).toBeNull();
     expect(executionUpdate({ runId: "r1", change: "worker_execution" })).toBeNull();

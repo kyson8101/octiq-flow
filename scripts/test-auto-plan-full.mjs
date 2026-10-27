@@ -20,24 +20,26 @@ const report = { artifacts, checks: [] };
 const errors = [];
 let browser;
 async function scene(width, kind = "access") {
-  const snapshot = structuredClone(facts[kind === "peer" ? "full_peer_request" : "held_access"]);
+  const peer = kind.includes("peer");
+  const snapshot = structuredClone(facts[peer ? "full_peer_request" : "held_access"]);
   const run = snapshot.runs[0];
   run.coordinatorChatKey = "chat:main";
   run.workspaceId = "qa";
   // Display-only changes: readable titles/assignees rather than scratch paths.
   for (const task of snapshot.tasks) task.assignee = { id: "video", name: "STAR VIDEO" };
-  if (kind === "long") {
-    const first = snapshot.tasks[0];
+  if (kind.startsWith("long")) {
+    const first = snapshot.tasks.find(task => run.autoPlan.held.taskIds.includes(task.id));
     first.title = "Prepare the complete Full access shot list with all character and camera details";
     for (let i = 1; i < 9; i++) snapshot.tasks.push({ ...first, id: `task-long-${i}`, title: `Verify every frame and transition for sequence ${i}`, assignee: { id: "qa", name: "STAR QA" } });
-    run.autoPlan.held.taskIds = snapshot.tasks.map(task => task.id);
+    run.autoPlan.held.taskIds = [first.id, ...snapshot.tasks.filter(task => task.id.startsWith("task-long-")).map(task => task.id)];
   }
   const now = Date.now();
   const chat = { id: "main", projectId: "qa", title: "Full access plan approval", customTitle: true,
     modelId: "claude:opus", access: "full", sessionId: "qa-main", cwd: "/test", coordinatesRun: true,
     createdAt: now - 10000, updatedAt: now - 1000 };
-  const state = { setting: { chatKey: "chat:main", enabled: true, includeFull: kind === "peer", enabledAt: 1 },
-    calls: [], sockets: new Set(), holdSave: false, failSave: false, refuseApproval: false, release: null };
+  const state = { setting: { chatKey: "chat:main", enabled: true, includeFull: peer, enabledAt: 1 },
+    calls: [], sockets: new Set(), holdSave: false, failSave: false, refuseApproval: false, release: null,
+    suppressScopeEvent: false, holdSnapshot: false, snapshotWaiters: [] };
   const emit = (event, payload) => { for (const socket of state.sockets) socket.send(JSON.stringify({ t: "event", event, payload })); };
   state.emit = emit;
   state.snapshot = snapshot;
@@ -51,14 +53,21 @@ async function scene(width, kind = "access") {
         { seq: 2, event: { type: "assistant", message: { id: "qa-answer", role: "assistant", content: [{ type: "text", text: "The Full access tasks are ready for review." }] } } },
       ], context: [], before: null };
       case "chat_queue_state": return { live: false, queuedTurnIds: [] };
-      case "orchestration_snapshot": return snapshot;
+      case "orchestration_snapshot":
+        if (state.holdSnapshot) await new Promise(resolve => { state.snapshotWaiters.push(resolve); });
+        return snapshot;
       case "orchestration_auto_plan_get": return state.setting;
       case "orchestration_auto_plan_set": {
         if (state.holdSave) await new Promise(resolve => { state.release = resolve; });
         if (state.failSave) throw new Error("Could not save Full access consent");
         state.setting = { chatKey: args.chatKey, enabled: args.enabled,
           includeFull: args.enabled && (args.includeFull ?? state.setting.includeFull), enabledAt: 1 };
-        emit("orchestration-auto-plan", state.setting);
+        // Mock the host's derived snapshot as well as its setting response.
+        // No orchestration-changed is sent: scope alone must trigger the read.
+        run.autoPlan = state.setting.enabled ? { enabled: true, includeFull: state.setting.includeFull,
+          ...(run.planApproval.status === "pending" && (peer || !state.setting.includeFull)
+            ? { held: { reason: peer ? "peerRequest" : "access", taskIds: snapshot.tasks.filter(task => peer ? task.peerRequest : true).map(task => task.id) } } : {}) } : undefined;
+        if (!state.suppressScopeEvent) emit("orchestration-auto-plan", state.setting);
         return state.setting;
       }
       case "orchestration_plan_approve":
@@ -111,6 +120,14 @@ const setCalls = state => state.calls.filter(call => call.cmd === "orchestration
 const approveCalls = state => state.calls.filter(call => call.cmd === "orchestration_plan_approve");
 const fullName = "Also auto-approve Full access tasks in this chat";
 const switchName = "Include Full access tasks";
+async function scopeScreenshot(page, width, name) {
+  await page.screenshot({ path: join(artifacts, `${name}-${width}.png`) });
+  // Details can cover the card at both widths. Capture its host-derived line
+  // and tick unobscured too, then return to the setting for the next action.
+  await page.locator(".chat-task-close").click();
+  await page.screenshot({ path: join(artifacts, `${name}-card-${width}.png`) });
+  await page.getByRole("button", { name: "Task details", exact: true }).click();
+}
 try {
   await server.listen();
   browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) });
@@ -142,6 +159,7 @@ try {
     assert.equal(setCalls(state).length, 0);
     console.log(`${width}: Details controls`);
     state.holdSave = true;
+    state.suppressScopeEvent = true; // successful setter must refresh even without an event
     await fullSwitch.focus(); await page.keyboard.press("Enter");
     await page.waitForFunction(() => [...document.querySelectorAll('[role="switch"]')].every(el => el.getAttribute("aria-disabled") === "true"));
     assert.equal(await fullSwitch.evaluate(el => document.activeElement === el && !el.disabled), true);
@@ -151,10 +169,61 @@ try {
     await page.waitForFunction(() => [...document.querySelectorAll('[role="switch"]')].every(el => el.getAttribute("aria-checked") === "true"));
     assert.deepEqual(setCalls(state)[0].args, { chatKey: "chat:main", enabled: true, includeFull: true });
     assert.equal(await fullSwitch.evaluate(el => document.activeElement === el), true);
+    await held.waitFor({ state: "detached" });
+    assert.equal(await page.getByRole("checkbox", { name: fullName, exact: true }).count(), 0);
+    await scopeScreenshot(page, width, "full-on");
     // Successful event changes all hook consumers; narrowing sends explicit false.
+    state.suppressScopeEvent = false;
     await fullSwitch.press("Enter");
     await page.waitForFunction(() => [...document.querySelectorAll('[role="switch"]')].some(el => el.textContent.includes("Include Full") && el.getAttribute("aria-checked") === "false"));
     assert.equal(setCalls(state).at(-1).args.includeFull, false);
+    await held.waitFor();
+    const fullTick = page.getByRole("checkbox", { name: fullName, exact: true });
+    await fullTick.waitFor();
+    assert.equal(await fullTick.isChecked(), false);
+    await scopeScreenshot(page, width, "full-off");
+    // A second real App tab changes scope. Hold the host read to check that
+    // stale held text cannot leave a contradictory consent tick actionable.
+    const other = await context.newPage();
+    other.on("pageerror", error => errors.push(error.stack ?? error.message));
+    await other.goto(page.url(), { waitUntil: "domcontentloaded" });
+    await other.locator(".plan-review").first().waitFor({ state: "attached" });
+    const otherMain = other.getByRole("button", { name: /Main agent chat/ });
+    if (await otherMain.isVisible()) await otherMain.click();
+    await other.locator('.chat-plans .plan-review[data-folds="true"]').waitFor();
+    await other.getByRole("button", { name: "Task details", exact: true }).click();
+    const otherSwitch = other.getByRole("switch", { name: switchName, exact: true });
+    await fullTick.press("Space");
+    state.holdSnapshot = true;
+    await otherSwitch.press("Enter");
+    await fullTick.waitFor({ state: "detached" });
+    assert.equal(await fullSwitch.getAttribute("aria-checked"), "true");
+    await page.waitForFunction(() => !document.querySelector('.auto-plan-future input'));
+    state.holdSnapshot = false;
+    for (const release of state.snapshotWaiters.splice(0)) release();
+    await held.waitFor({ state: "detached" });
+    await scopeScreenshot(page, width, "other-tab-on");
+    await other.waitForFunction(() => [...document.querySelectorAll('[role="switch"]')].every(el => el.getAttribute("aria-disabled") === "false"));
+    await otherSwitch.press("Enter");
+    await held.waitFor(); await fullTick.waitFor();
+    assert.equal(await fullSwitch.getAttribute("aria-checked"), "false");
+    assert.equal(await fullTick.isChecked(), false);
+    await scopeScreenshot(page, width, "other-tab-off");
+    await other.close();
+    // The socket may stay open without ever answering a snapshot. The saved
+    // setting still shows, and its controls must be usable after the bound.
+    state.holdSnapshot = true;
+    await fullSwitch.press("Enter");
+    await page.waitForFunction(() => [...document.querySelectorAll('[role="switch"]')].every(el => el.getAttribute("aria-checked") === "true" && el.getAttribute("aria-disabled") === "true"));
+    await page.waitForFunction(() => [...document.querySelectorAll('[role="switch"]')].every(el => el.getAttribute("aria-disabled") === "false"));
+    assert.equal(await page.getByRole("checkbox", { name: fullName, exact: true }).count(), 0);
+    assert.equal(state.setting.includeFull, true);
+    state.holdSnapshot = false;
+    for (const release of state.snapshotWaiters.splice(0)) release();
+    await held.waitFor({ state: "detached" });
+    await fullSwitch.press("Enter");
+    await held.waitFor(); await fullTick.waitFor();
+    assert.equal(await fullTick.isChecked(), false);
     state.failSave = true; await fullSwitch.press("Enter");
     await page.getByRole("alert").filter({ hasText: "Could not save Full access consent" }).waitFor();
     assert.equal(await fullSwitch.getAttribute("aria-checked"), "false");
@@ -187,9 +256,12 @@ try {
     assert.equal(await checkbox.isChecked(), false);
     await checkbox.press("Space");
     state.setting = { ...state.setting, includeFull: true };
+    state.snapshot.runs[0].autoPlan = { enabled: true, includeFull: true };
     state.emit("orchestration-auto-plan", state.setting);
     await checkbox.waitFor({ state: "detached" });
     state.setting = { ...state.setting, includeFull: false };
+    state.snapshot.runs[0].autoPlan = { enabled: true, includeFull: false,
+      held: { reason: "access", taskIds: state.snapshot.tasks.map(task => task.id) } };
     state.emit("orchestration-auto-plan", state.setting);
     await checkbox.waitFor(); assert.equal(await checkbox.isChecked(), false);
     await checkbox.press("Space");
@@ -231,12 +303,27 @@ try {
     await context.close();
 
     ({ context, page } = await scene(width, "peer"));
-    await page.locator(".chat-plans").getByText("Waits for you: a peer request is always approved by you.", { exact: true }).waitFor();
+    await page.locator(".chat-plans").getByText("Waits for you: 1 peer request (STAR VIDEO: Implement). Peer requests are always approved by you.", { exact: true }).waitFor();
     assert.equal(await page.getByRole("checkbox", { name: fullName }).count(), 0);
     await page.screenshot({ path: join(artifacts, `peer-${width}.png`) });
     await context.close();
+    ({ context, page } = await scene(width, "long-peer"));
+    await page.locator(".chat-plans").getByText(/Held tasks ·/).waitFor();
+    assert.equal(await page.locator(".chat-plans .plan-review .card-fold-toggle").count(), 1);
+    assert.match(await page.locator(".chat-plans .auto-plan-held").innerText(), /Waits for you: 9 peer requests\. Peer requests are always approved by you\./);
+    assert.doesNotMatch(await page.locator(".chat-plans .auto-plan-held").innerText(), /Prepare the complete/);
+    await page.screenshot({ path: join(artifacts, `peer-folded-${width}.png`) });
+    await page.locator(".chat-plans .plan-review .card-fold-toggle").click();
+    await page.locator(".chat-plans .auto-plan-held .card-fold-in").waitFor();
+    assert.match(await page.locator(".chat-plans .auto-plan-held").innerText(), /STAR QA: Verify every frame and transition for sequence 8/);
+    assert.equal(await page.getByRole("checkbox", { name: fullName }).count(), 0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: join(artifacts, `peer-open-${width}.png`) });
+    await context.close();
     report.checks.push({ width, heldNames: true, oneWholeFold: true, scopeSwitch: true, foreignPressGuards: true,
-      heldKeys: true, busyAndFocus: true, scopeEvent: true, offClearsScope: true, approvalFirst: true,
+      heldKeys: true, busyAndFocus: true, scopeEvent: true, setterRefreshWithoutEvent: true, fullOnHeldClears: true,
+      fullOffHeldReturns: true, otherTabOnAndOff: true, staleTickCannotSubmit: true, silentSnapshotReleasesControls: true,
+      peerNamesAndFold: true, offClearsScope: true, approvalFirst: true,
       saveErrorAfterCardRemoved: true, refusedApprovalNeverSaves: true, cardScopeSaved: true, revisionAndScopeReset: true, peersManual: true, noOverflow: true, detailsWraps: true });
   }
   assert.deepEqual(errors, []);
