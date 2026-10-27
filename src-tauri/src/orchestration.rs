@@ -239,6 +239,9 @@ pub struct PlanConsent {
     pub at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled_at: Option<i64>,
+    /// Whether standing consent also covered Full access tasks at decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_full: Option<bool>,
     /// The person's own message, by its turn id and words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
@@ -2047,6 +2050,7 @@ impl OrchestrationStore {
             let consent = PlanConsent {
                 via: ConsentVia::Button,
                 enabled_at: None,
+                include_full: None,
                 revision: 0,
                 at: now_ms(),
                 turn_id: None,
@@ -2101,6 +2105,7 @@ impl OrchestrationStore {
             let consent = PlanConsent {
                 via: ConsentVia::Button,
                 enabled_at: None,
+                include_full: None,
                 revision: 0,
                 at: now_ms(),
                 turn_id: None,
@@ -2273,6 +2278,7 @@ impl OrchestrationStore {
             let consent = PlanConsent {
                 via: ConsentVia::Conversation,
                 enabled_at: None,
+                include_full: None,
                 revision,
                 at: now_ms(),
                 turn_id: Some(turn.turn_id.clone()),
@@ -5273,6 +5279,18 @@ fn decide_plan_in(
     let now = now_ms();
     match decision {
         PlanDecision::Approve(mut consent, choices) => {
+            if consent.via == ConsentVia::Standing {
+                let saved = data.auto_plan_chats.get(actor_chat_key).ok_or(
+                    "Automatic plan approval is off; this plan needs the person's approval.",
+                )?;
+                if auto_plan::held(data, run).is_some() {
+                    return Err("This plan still needs the person's approval for Full access tasks or a peer request.".into());
+                }
+                // Read consent from the ledger being committed, never from a
+                // prior snapshot or the caller's claimed scope.
+                consent.enabled_at = Some(saved.enabled_at);
+                consent.include_full = Some(saved.full_enabled_at.is_some());
+            }
             workspaces::apply_choices(data, run_id, &waiting, &choices)?;
             consent.revision = plan_revision;
             consent.at = now;

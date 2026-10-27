@@ -9,18 +9,18 @@
       "attempts": 0,
       "body": "Plan revision 3 was auto-approved under this chat's setting; the host dispatches it.",
       "coalesced": 0,
-      "createdAt": 1792822060845,
+      "createdAt": 1793109959153,
       "fromChatKey": "host",
-      "id": "octiq-notification-ebddaf966b9f487295e8b3a53208c7a4",
+      "id": "octiq-notification-f875d779bb574a9fa97f5f711dff6eb3",
       "kind": "plan_auto_approved",
       "lastError": null,
-      "nextAttemptAt": 1792822060845,
-      "runId": "run_68153f8e781545ae8c80138fc1441899",
+      "nextAttemptAt": 1793109959153,
+      "runId": "run_082d6ec53ceb4b00ac96f9e3f4217790",
       "sequence": 1,
-      "source": "plan-auto-approved:run_68153f8e781545ae8c80138fc1441899:3",
+      "source": "plan-auto-approved:run_082d6ec53ceb4b00ac96f9e3f4217790:3",
       "state": "pending",
       "targetChatKey": "chat:master",
-      "updatedAt": 1792822060845
+      "updatedAt": 1793109959153
     }
   ],
   "peerAsks": [],
@@ -28,30 +28,32 @@
   "runs": [
     {
       "autoPlan": {
-        "enabled": true
+        "enabled": true,
+        "includeFull": false
       },
       "coordinatorChatKey": "chat:master",
-      "createdAt": 1792822060684,
-      "id": "run_68153f8e781545ae8c80138fc1441899",
+      "createdAt": 1793109958866,
+      "id": "run_082d6ec53ceb4b00ac96f9e3f4217790",
       "maxConcurrent": 2,
       "objective": "Ship the feature",
       "planApproval": {
         "consent": {
-          "at": 1792822060816,
-          "enabledAt": 1792822060815,
+          "at": 1793109959094,
+          "enabledAt": 1793109959093,
+          "includeFull": false,
           "revision": 3,
           "via": "standing"
         },
-        "decidedAt": 1792822060816,
-        "requestedAt": 1792822060684,
-        "revisedAt": 1792822060815,
+        "decidedAt": 1793109959094,
+        "requestedAt": 1793109958866,
+        "revisedAt": 1793109959093,
         "revision": 3,
-        "scope": "2e7052ede385ea848abef93990bd2eead90313473cd8ec66be634dabc70bf85e",
+        "scope": "b8d9fedcbaa8711f5c985ea34b9909b6fc6f7e4cf4e00e301f65c60294042be4",
         "status": "approved"
       },
-      "rootPath": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-8bf6d69dc1844a74a2f3e751ea66c69b/repo",
+      "rootPath": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-f84a7d82b3a5445fba6ae26d8a98afdd/repo",
       "status": "running",
-      "updatedAt": 1792822060816,
+      "updatedAt": 1793109959094,
       "workerDefaults": {
         "access": "auto",
         "agent": "claude",
@@ -67,7 +69,7 @@
   "tasks": [
     {
       "approved": {
-        "at": 1792822060816,
+        "at": 1793109959094,
         "baseBranch": "main",
         "by": "plan",
         "worker": {
@@ -79,19 +81,19 @@
         },
         "workspaceMode": "worktree"
       },
-      "approvedAt": 1792822060816,
-      "createdAt": 1792822060814,
+      "approvedAt": 1793109959094,
+      "createdAt": 1793109959092,
       "dependsOn": [],
       "heldByPlan": false,
-      "id": "task_cc59bff5dcbe4dffbf980ba4b919fea8",
+      "id": "task_64da6924b9de4e1e9f1b0633fdf63394",
       "retriesUsed": 0,
       "retryLimit": 2,
-      "runId": "run_68153f8e781545ae8c80138fc1441899",
+      "runId": "run_082d6ec53ceb4b00ac96f9e3f4217790",
       "size": "medium",
       "spec": "Make the requested change",
       "status": "ready",
       "title": "Implement",
-      "updatedAt": 1792822060814,
+      "updatedAt": 1793109959092,
       "workspaceChoice": {
         "advised": "worktree",
         "chosen": "worktree",
@@ -104,18 +106,18 @@
         "newBranch": true,
         "plan": {
           "baseBranch": "main",
-          "baseSha": "8e5615148d1b133e48dfabbd67c4701a9cd2f43c",
-          "branch": "feature/octiq-cc59bff5dcbe4dffbf980ba4b919fea8",
-          "checkoutRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-8bf6d69dc1844a74a2f3e751ea66c69b/.worktrees/repo/feature/octiq-cc59bff5dcbe4dffbf980ba4b919fea8",
-          "cwd": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-8bf6d69dc1844a74a2f3e751ea66c69b/.worktrees/repo/feature/octiq-cc59bff5dcbe4dffbf980ba4b919fea8/",
+          "baseSha": "a812a985b6bd9ebd3074f38f6a4ffdc522568c5f",
+          "branch": "feature/octiq-64da6924b9de4e1e9f1b0633fdf63394",
+          "checkoutRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-f84a7d82b3a5445fba6ae26d8a98afdd/.worktrees/repo/feature/octiq-64da6924b9de4e1e9f1b0633fdf63394",
+          "cwd": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-f84a7d82b3a5445fba6ae26d8a98afdd/.worktrees/repo/feature/octiq-64da6924b9de4e1e9f1b0633fdf63394/",
           "initialStatus": "",
           "isRepo": true,
           "managed": true,
           "mode": "worktree",
-          "repositoryRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-8bf6d69dc1844a74a2f3e751ea66c69b/repo",
+          "repositoryRoot": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-f84a7d82b3a5445fba6ae26d8a98afdd/repo",
           "warnings": []
         },
-        "proposedAt": 1792822060684
+        "proposedAt": 1793109958866
       }
     }
   ]

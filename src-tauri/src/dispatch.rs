@@ -2008,15 +2008,23 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "orchestration_auto_plan_set" => {
             let chat: String = arg(&args, "chatKey")?;
             let enabled: bool = arg(&args, "enabled")?;
-            if enabled {
+            let include_full: Option<bool> = arg(&args, "includeFull")?;
+            let eligibility = if enabled {
                 require_auto_plan_chat(
                     &svc.orchestrations,
                     &svc.chats,
                     &crate::team::default_path(),
                     &chat,
-                )?;
-            }
-            to_value(svc.orchestrations.auto_plan_set(&chat, enabled))
+                )
+            } else {
+                Ok(())
+            };
+            to_value(svc.orchestrations.auto_plan_set_checked(
+                &chat,
+                enabled,
+                include_full,
+                eligibility,
+            ))
         }
         // Browser-only: the person approves an agents-mode lead's plan. Not in
         // the agent hook's whitelist, so no agent can approve its own plan.
@@ -2936,6 +2944,8 @@ mod tests {
         assert_eq!(on["chatKey"], chat.key);
         assert_eq!(on["enabled"], true);
         assert!(on["enabledAt"].is_i64());
+        assert_eq!(on["includeFull"], false);
+        assert!(on.get("includeFullAt").is_none());
         assert_eq!(
             dispatch(
                 &svc,
@@ -2945,13 +2955,28 @@ mod tests {
             .unwrap(),
             on
         );
+        let full = dispatch(
+            &svc,
+            "orchestration_auto_plan_set",
+            json!({"chatKey":chat.key,"enabled":true,"includeFull":true}),
+        )
+        .unwrap();
+        assert_eq!(full["includeFull"], true);
+        assert!(full["includeFullAt"].is_i64());
+        assert_eq!(
+            call(true),
+            full,
+            "omitting includeFull retains its scope and timestamp"
+        );
         let off = call(false);
         assert_eq!(off["enabled"], false);
+        assert_eq!(off["includeFull"], false);
         assert!(off.get("enabledAt").is_none());
+        assert!(off.get("includeFullAt").is_none());
         assert!(dispatch(
             &svc,
             "orchestration_auto_plan_set",
-            json!({"chatKey":"chat:not-listed-auto-plan","enabled":true})
+            json!({"chatKey":"chat:not-listed-auto-plan","enabled":true,"includeFull":true})
         )
         .is_err());
         // Revocation needs no launch or active index membership.
@@ -2961,6 +2986,68 @@ mod tests {
             json!({"chatKey":"chat:not-listed-auto-plan","enabled":false})
         )
         .is_ok());
+        assert!(dispatch(
+            &svc,
+            "orchestration_auto_plan_set",
+            json!({"chatKey":chat.key,"enabled":false,"includeFull":true})
+        )
+        .unwrap_err()
+        .contains("Enable automatic"));
+        let worker = dispatch(
+            &svc,
+            "orchestration_auto_plan_set",
+            json!({"chatKey":"chat:orch-worker","enabled":true,"includeFull":true}),
+        )
+        .unwrap_err();
+        assert!(worker.contains("worker"));
+    }
+
+    #[test]
+    fn auto_plan_full_revocation_through_the_socket_acts_when_the_profile_index_is_away() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _profile = crate::profile::started_in(&home.dir);
+        let svc = Services::at_profile();
+        let chat = ListedChat::new();
+        let set = |enabled, include_full: Option<bool>| {
+            dispatch(
+                &svc,
+                "orchestration_auto_plan_set",
+                json!({
+                    "chatKey":chat.key, "enabled":enabled, "includeFull":include_full,
+                }),
+            )
+        };
+        assert_eq!(set(true, Some(true)).unwrap()["includeFull"], true);
+        home.unplug();
+        let (answer, unsaved) = crate::unsaved::told(|| set(true, Some(false)));
+        let answer = answer.unwrap();
+        assert_eq!(answer["enabled"], true);
+        assert_eq!(answer["includeFull"], false);
+        assert!(answer.get("includeFullAt").is_none());
+        assert_eq!(unsaved.len(), 1);
+        assert!(unsaved[0].what.contains("Full access"));
+        assert!(svc.orchestrations.owes());
+        assert!(
+            set(true, Some(true)).is_err(),
+            "widening still needs the index and its record"
+        );
+        assert!(
+            !svc.orchestrations
+                .auto_plan_get(&chat.key)
+                .unwrap()
+                .include_full
+        );
+        assert_eq!(set(false, None).unwrap()["enabled"], false);
+        assert!(
+            set(true, Some(false)).is_err(),
+            "an absent consent cannot use the revocation exception to enable"
+        );
+        assert!(!svc.orchestrations.auto_plan_get(&chat.key).unwrap().enabled);
+        home.plug_back();
+        assert!(svc.orchestrations.settle_owed().unwrap());
+        let restarted =
+            OrchestrationStore::load(crate::profile::profile_dir().join("orchestrations.json"));
+        assert!(!restarted.auto_plan_get(&chat.key).unwrap().enabled);
     }
 
     #[test]

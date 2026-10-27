@@ -203,17 +203,22 @@ otherwise unchanged; never reconstruct these snapshots by hand.
 ## Per-chat automatic plan approval
 
 Recorded from `orchestration/auto_plan.rs`'s host test
-`auto_plan_covers_all_access_levels_and_records_each_revision_once`. These are
+`auto_plan_covers_all_access_levels_and_records_each_revision_once` and
+`auto_plan_holds_the_whole_waiting_set_for_full_access_or_peer_requests`. These are
 complete `orchestration_snapshot { runId }` answers, not reconstructed page data.
 
 | File | Moment |
 | --- | --- |
-| `auto_plan_approved.json` | Auto workers approved on standing consent: `planApproval.consent.via: "standing"`, `enabledAt`, and derived `autoPlan.enabled: true` |
-| `auto_plan_held_access.json` | A Full worker holds the whole pending revision: `autoPlan.held.reason: "access"` and the held task ids |
+| `auto_plan_approved.json` | Auto workers approved on standing consent: `planApproval.consent.via: "standing"`, `enabledAt`, and derived `autoPlan.enabled: true`, `includeFull: false` |
+| `auto_plan_held_access.json` | A Full worker holds the whole pending revision while `autoPlan.includeFull: false`: `autoPlan.held.reason: "access"` and the held task ids |
+| `auto_plan_full_included.json` | The person opted in: a Full worker is approved under standing consent, `autoPlan.includeFull: true`, no `held`, and `planApproval.consent.includeFull: true` |
+| `auto_plan_full_peer_request.json` | Full is included but a peer request still holds the revision for the person: `autoPlan.held.reason: "peerRequest"` |
 
 ```bash
 OCTIQ_RECORD_FACTS=1 cargo test --manifest-path src-tauri/Cargo.toml --lib -- \
-  auto_plan_covers_all_access_levels_and_records_each_revision_once --nocapture --test-threads=1
+  auto_plan_covers_all_access_levels_and_records_each_revision_once \
+  auto_plan_holds_the_whole_waiting_set_for_full_access_or_peer_requests \
+  --nocapture --test-threads=1
 ```
 
 Write each printed `FACT <name> {…}` JSON to its matching file, indented by two

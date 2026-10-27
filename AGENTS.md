@@ -2908,12 +2908,21 @@ The main chat coordinates while a
 worker owns the write lease; it must not also edit that checkout.
 
 **Per-chat automatic plan approval is the person's standing consent.** Only
-the browser socket exposes `orchestration_auto_plan_get/set { chatKey, enabled? }`;
+the browser socket exposes `orchestration_auto_plan_get { chatKey }` and
+`orchestration_auto_plan_set { chatKey, enabled, includeFull? }`;
 neither command has a hook action or MCP tool. The Details switch and plan-card
 tick box share the ledger's `auto_plan_chats` setting, retained until switched
 off. Enabling needs its record first (Conventions C); disabling acts at once
-and owes a failed save. Workers, front desks, room seats and unlisted chats
-cannot enable it. A clean full stop of the chat's own writer, including a host
+and owes a failed save. Full access stays excluded by default; only the person
+can opt this chat in with `includeFull: true`. Omitting it retains the current
+scope; disabling clears both settings. Including Full needs its record first;
+excluding it acts immediately and owes a failed save, even if the profile/index
+is away. Only existing consent can use that revocation exception; an enable
+still needs its normal eligibility checks. Get, set and the
+`orchestration-auto-plan` event return `{ chatKey, enabled, enabledAt?,
+includeFull, includeFullAt? }`; the opt-in time is stored as optional
+`auto_plan_chats.full_enabled_at`. Workers, front desks, room seats and
+unlisted chats cannot enable it. A clean full stop of the chat's own writer, including a host
 notification turn, captures its launch id, per-chat `stop_epoch`, turn sequence
 and refusal latch under the existing writer session lock, then releases every
 chat lock. Approval takes only the ledger; ordinary sends, starts and queued
@@ -2978,15 +2987,20 @@ table spans its ledger persist I/O. Worker archive/dispatch, ended-worker
 Stop/recovery, mission cleanup and workspace lifecycle checks take chat locks
 only after ledger snapshots/mutations have returned. Auto approval approves
 the whole pending revision through `decide_plan_in` only when every waiting
-task's effective worker access is at most Auto and none is a peer request.
+task's effective worker access is at most Auto (or this chat has opted in to
+include Full) and none is a peer request. Peer requests always need the person.
+The Full opt-in is read again under the ledger at the approval commit point,
+so switching it off vetoes a Full approval that has not committed.
 Stop, interrupt, failure, refusal or a replaced/ended process approves nothing.
-`ConsentVia::Standing` keeps `enabledAt`; a durable ledger outbox records
+`ConsentVia::Standing` keeps `enabledAt` and `includeFull`; a durable ledger
+outbox records
 `octiq_plan_auto_approved` in the transcript and the normal host notification
 tells the lead whether automatic dispatch is paused (the coordinator starts
 the workers) or the host dispatches through the normal gates. Snapshot-only
-`run.autoPlan` explains
-an access or peer-request hold. This uses no provider plan mode and changes
-none of the task, permission, safety or reserve gates.
+`run.autoPlan` reports `includeFull` and explains an access or peer-request
+hold. With Full included, no `access` hold is produced; `peerRequest` still
+holds. This uses no provider plan mode and changes none of the task,
+permission, safety or reserve gates.
 
 **An approval fixes what a task runs as, and a time stamp or a parent id is
 not that approval.** `approved_at` says a task was approved. `Task::approved`

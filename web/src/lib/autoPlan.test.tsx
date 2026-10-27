@@ -15,7 +15,7 @@ describe("standing plan consent", () => {
     const [plan] = chatPlans(ledger, ledger.runs[0].coordinatorChatKey);
     expect(plan.run.planApproval?.consent).toMatchObject({ via: "standing", enabledAt: expect.any(Number) });
     expect(approvalLabel(plan)).toBe("Plan auto-approved · revision 3");
-    expect(plan.run.autoPlan).toEqual({ enabled: true });
+    expect(plan.run.autoPlan).toEqual({ enabled: true, includeFull: false });
   });
   it("draws the actual host's Full hold and hides future consent when already on", () => {
     const ledger = hostFacts.autoPlanHeldAccess();
