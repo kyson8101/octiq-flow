@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aggregateDiskMap, diskTreemap, layoutDiskMap } from "./diskTreemap";
+import { aggregateDiskMap, diskTreemap, layoutDiskMap, type DiskMapTile } from "./diskTreemap";
 import { crowdedDiskReport, realShapedDiskReport } from "./diskReport.fixture";
 
 describe("diskTreemap", () => {
@@ -73,6 +73,63 @@ describe("disk map overview", () => {
 describe("readable pixel layout", () => {
   const floor = () => ({ width: 140, height: 70 });
   const entries = (weights: number[]) => aggregateDiskMap(weights.map((bytes, i) => ({ ...crowdedDiskReport().items[0], id: String(i), label: `Category ${i}`, kind: String(i), bytes })), new Set(["2"]), 0);
+  const assertPrefix = (original: DiskMapTile[], width: number, height: number, minimum: (entry: DiskMapTile) => { width: number; height: number } = floor) => {
+    const result = layoutDiskMap(original, width, height, minimum);
+    const visible = result.regions.flatMap(region => region.tiles);
+    for (const group of ["clean", "review", "work"] as const) {
+      const sorted = original.filter(entry => entry.group === group && entry.id !== JSON.stringify([group, null]))
+        .sort((a, b) => b.bytes - a.bytes || a.id.localeCompare(b.id));
+      const standalone = sorted.filter(entry => visible.some(tile => tile.id === entry.id));
+      const folded = sorted.slice(standalone.length);
+      expect(standalone.map(entry => entry.id)).toEqual(sorted.slice(0, standalone.length).map(entry => entry.id));
+      if (standalone.length && folded.length) {
+        expect(Math.min(...standalone.map(entry => entry.bytes))).toBeGreaterThanOrEqual(Math.max(...folded.map(entry => entry.bytes)));
+      }
+    }
+    visible.forEach(tile => {
+      expect(tile.width).toBeGreaterThanOrEqual(minimum(tile).width);
+      expect(tile.height).toBeGreaterThanOrEqual(minimum(tile).height);
+    });
+    const all = [...visible, ...result.summaries];
+    expect(all.reduce((sum, tile) => sum + tile.bytes, 0)).toBe(original.reduce((sum, tile) => sum + tile.bytes, 0));
+    expect(all.reduce((sum, tile) => sum + tile.selectedCount, 0)).toBe(original.reduce((sum, tile) => sum + tile.selectedCount, 0));
+    expect(all.flatMap(tile => tile.items.map(item => item.id)).sort()).toEqual(original.flatMap(tile => tile.items.map(item => item.id)).sort());
+    expect(new Set(all.map(tile => tile.id)).size).toBe(all.length);
+    return result;
+  };
+  it.each([
+    // Captured dark-theme font floor: two-/three-digit GB size + tick line.
+    { weights: [98, 93, 75, 72, 71, 54, 49, 29, 27, 20, 14], width: 328, height: 360.8,
+      minimum: (entry: DiskMapTile) => ({ width: 100 + 8 * String(entry.bytes).length + 8 * (String(entry.items.length).length - 1), height: 70 }) },
+    { weights: [97, 93, 91, 77, 64, 60, 54, 11], width: 388, height: 434, minimum: floor },
+  ])("keeps a largest-first prefix for the fold-order regression at $width × $height", ({ weights, width, height, minimum }) => {
+    assertPrefix(entries(weights), width, height, minimum);
+  });
+  it("keeps readable largest-first prefixes across random weights, regions, floors and groups", () => {
+    let seed = 0x261d2099;
+    const random = (max: number) => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed % max;
+    };
+    for (let sample = 0; sample < 500; sample++) {
+      const original = entries(Array.from({ length: 1 + random(50) }, () => 1 + random(100)));
+      original.forEach(entry => {
+        entry.group = (["clean", "review", "work"] as const)[random(3)];
+        entry.id = JSON.stringify([entry.group, entry.items[0].kind]);
+        entry.items = entry.items.map(item => ({ ...item, group: entry.group }));
+      });
+      // Reverse input order to also check the deterministic ID tie-break.
+      original.reverse();
+      const width = random(1000), height = random(900);
+      const minWidth = 80 + random(140), minHeight = 40 + random(80);
+      const minimum = (entry: DiskMapTile) => ({ width: minWidth + String(entry.items.length).length * 5, height: minHeight });
+      const result = assertPrefix(original, width, height, minimum);
+      const reversed = layoutDiskMap([...original].reverse(), width, height, minimum);
+      const geometry = (layout: typeof result) => layout.regions.map(region => ({ box: region.box, tiles: region.tiles.map(({ items: _, ...tile }) => tile) }));
+      expect(geometry(reversed)).toEqual(geometry(result));
+      expect(reversed.summaries.map(tile => [tile.id, tile.items.map(item => item.id).sort()])).toEqual(result.summaries.map(tile => [tile.id, tile.items.map(item => item.id).sort()]));
+    }
+  }, 20_000);
   it("requires both dimensions at the exact pixel floor, including padding", () => {
     const original = entries([1]);
     expect(layoutDiskMap(original, 140, 70, floor).regions).toHaveLength(1);

@@ -134,16 +134,27 @@ export function layoutDiskMap(overview: readonly DiskMapTile[], width: number, h
       }
       const otherId = JSON.stringify([group.group, null]);
       const other = entries.find(entry => entry.id === otherId);
-      const folding = new Set(failed.filter(entry => entry !== other));
-      if (!folding.size && other) {
+      if (other && failed.every(entry => entry === other)) {
         // Even combined, the tail can be a sliver. Keep it readable next to
         // the map instead of sacrificing the useful large-category overview.
         summaries.push(other);
         entries = entries.filter(entry => entry !== other);
       } else {
-        if (other) folding.add(other);
-        entries = [...entries.filter(entry => !folding.has(entry)), combineMapTiles([...folding], "Other", otherId)].sort(mapOrder);
-        if (entries.length === 1) entries = [group];
+        // Squarify can give a large item a narrower box than a small sibling.
+        // Fold only the smallest standalone item, then try the prefix again;
+        // folding the failed boxes themselves would skip over smaller items.
+        const smallest = entries.filter(entry => entry !== other).at(-1)!;
+        entries = entries.filter(entry => entry !== smallest && entry !== other);
+        const summaryIndex = summaries.findIndex(entry => entry.id === otherId);
+        if (summaryIndex >= 0) {
+          // A later group reflow may need another fold. Keep the removed tail
+          // in its summary rather than restoring it or duplicating its ID.
+          summaries[summaryIndex] = combineMapTiles([smallest, summaries[summaryIndex]], "Other", otherId);
+        } else {
+          entries.push(combineMapTiles(other ? [smallest, other] : [smallest], "Other", otherId));
+          entries.sort(mapOrder);
+        }
+        if (entries.length === 1) entries = [combineMapTiles(entries, group.label, group.id)];
       }
       members.set(group.id, entries);
     }
