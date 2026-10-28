@@ -1,7 +1,7 @@
-import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { bridge } from "../lib/bridge";
-import { diskBytes, diskDate, diskGroupLabel, diskSection, diskSelectable, diskSelection, toggleDiskSection, type DiskGroup, type DiskItem, type DiskProgress, type DiskReport } from "../lib/diskReport";
-import { diskTreemap, type Tile } from "../lib/diskTreemap";
+import { diskBytes, diskDate, diskGroupLabel, diskSection, diskSelectable, diskSelection, toggleDiskSection, type DiskItem, type DiskProgress, type DiskReport } from "../lib/diskReport";
+import { aggregateDiskMap, layoutDiskMap, type DiskMapTile, type Tile } from "../lib/diskTreemap";
 import { useDiskReport } from "../lib/useDiskReport";
 import { FoldBody, FoldLine, useFold } from "./CardFold";
 import { WorkspaceHeader } from "./WorkspaceHeader";
@@ -36,8 +36,11 @@ export function DiskReportPage({ report, running = null, error, pending = false,
   const selected = selection.scanId === report?.scanId ? selection.ids : EMPTY_SELECTION;
   const summary = diskSelection(items, selected, allowRm);
   const tick = (ids: ReadonlySet<string>) => { if (report) setSelection({ scanId: report.scanId, ids }); };
-  const focusItem = (id: string) => {
-    const row = rows.current.get(id);
+  const [found, setFound] = useState<{ scanId: string; ids: ReadonlySet<string>; label: string } | null>(null);
+  const foundRows = found?.scanId === report?.scanId ? found : null;
+  const focusItem = (tile: DiskMapTile) => {
+    setFound({ scanId: report!.scanId, ids: new Set(tile.items.map(item => item.id)), label: tile.label });
+    const row = rows.current.get(tile.items[0].id);
     row?.scrollIntoView({ block: "center", behavior: "instant" });
     row?.focus({ preventScroll: true });
   };
@@ -80,9 +83,10 @@ export function DiskReportPage({ report, running = null, error, pending = false,
         <p className="disk-threshold">Items ≥ {diskBytes(report.thresholdBytes)} · Size history: <code>~/disk-report/sizes.csv</code>{report.previousScanAt ? ` · Compared with ${diskDate(report.previousScanAt)}` : " · First recorded scan"}</p>
         <div className="disk-layout">
           <div className="disk-map-column"><DiskMap items={items} selected={selected} onFocus={focusItem} />
-            <p className="disk-map-help">Area represents size. Choose a cleanup tile to find its row. Your work is labelled only.</p>
+            <p className="disk-map-help">Area represents size. Choose a cleanup tile to highlight its rows. Your work is labelled only.</p>
           </div>
           <div className="disk-list-column">
+            {foundRows && <div className="disk-found" role="status">{foundRows.label} · {foundRows.ids.size} {foundRows.ids.size === 1 ? "row" : "rows"} highlighted <button type="button" onClick={() => setFound(null)}>Clear highlight</button></div>}
             {(["clean", "review"] as const).map(group => {
               const section = diskSection(items, group);
               const selectable = section.filter(diskSelectable);
@@ -91,7 +95,7 @@ export function DiskReportPage({ report, running = null, error, pending = false,
                   <label className="disk-tick-all"><input type="checkbox" checked={selectable.length > 0 && selectable.every(item => selected.has(item.id))} disabled={!selectable.length} onChange={() => tick(toggleDiskSection(selected, section))} />Select all<span className="sr-only"> {diskGroupLabel[group]}</span></label>
                 </div>
                 {!section.length && <p className="disk-message">No items in this section.</p>}
-                {section.map(item => <DiskRow key={`${report.scanId}:${item.id}`} item={item} previousScanAt={report.previousScanAt} checked={selected.has(item.id)} onTick={() => {
+                {section.map(item => <DiskRow key={`${report.scanId}:${item.id}`} item={item} highlighted={foundRows?.ids.has(item.id)} previousScanAt={report.previousScanAt} checked={selected.has(item.id)} onTick={() => {
                   if (!diskSelectable(item)) return;
                   const next = new Set(selected); if (next.has(item.id)) next.delete(item.id); else next.add(item.id); tick(next);
                 }} rowRef={el => { if (el) rows.current.set(item.id, el); else rows.current.delete(item.id); }} />)}
@@ -119,45 +123,120 @@ function rectangle(tile: Tile, width: number, height: number): CSSProperties {
   return { left: `${tile.x / width * 100}%`, top: `${tile.y / height * 100}%`, width: `${tile.width / width * 100}%`, height: `${tile.height / height * 100}%` };
 }
 
-function DiskMap({ items, selected, onFocus }: { items: DiskItem[]; selected: ReadonlySet<string>; onFocus: (id: string) => void }) {
+export function DiskMap({ items, selected, onFocus }: { items: DiskItem[]; selected: ReadonlySet<string>; onFocus: (tile: DiskMapTile) => void }) {
   const container = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(480);
+  const [width, setWidth] = useState(0);
   const [inspected, setInspected] = useState<string | null>(null);
-  useEffect(() => {
-    if (!container.current) return;
+  const [floor, probes] = useDiskTileFloor();
+  useLayoutEffect(() => {
+    const node = container.current;
+    if (!node) return;
+    // Resolve the initial width before paint, together with the font floor.
+    // Waiting for ResizeObserver would first paint the zero-width summaries.
+    setWidth(node.getBoundingClientRect().width);
     const observer = new ResizeObserver(entries => { const size = entries[0]?.contentRect.width; if (size > 0) setWidth(size); });
-    observer.observe(container.current);
+    observer.observe(node);
     return () => observer.disconnect();
   }, []);
   const height = Math.max(340, Math.min(520, width * 1.1));
-  const groups = useMemo(() => (["clean", "review", "work"] as DiskGroup[]).map(group => ({ id: group, bytes: items.filter(item => item.group === group).reduce((sum, item) => sum + item.bytes, 0) })), [items]);
-  const regions = diskTreemap(groups, width, height);
-  const inspecting = items.find(item => item.id === inspected);
+  const overview = useMemo(() => aggregateDiskMap(items, selected), [items, selected]);
+  const groups = useMemo(() => (["clean", "review", "work"] as const).map(group => ({ id: group, bytes: overview.filter(tile => tile.group === group).reduce((sum, tile) => sum + tile.bytes, 0) })), [overview]);
+  const layout = useMemo(() => floor ? layoutDiskMap(overview, width, height, floor) : { regions: [], summaries: overview }, [overview, width, height, floor]);
+  const entries = [...layout.regions.flatMap(region => region.tiles), ...layout.summaries];
+  const inspecting = entries.find(tile => tile.id === inspected);
+  const renderEntry = (entry: DiskMapTile, style?: CSSProperties) => {
+    const description = mapTileDescription(entry);
+    const summary = !style;
+    const content = summary ? <><span className="disk-tile-label">{entry.label}{entry.label === "Other" ? ` in ${diskGroupLabel[entry.group]}` : ""} · {entry.items.length} {entry.items.length === 1 ? "item" : "items"}</span><span className="disk-tile-size">{mapTileSize(entry)}</span></>
+      : <DiskTileLabel entry={entry} />;
+    const title = `${description}\n${entry.items.length === 1 ? entry.items[0].path : `${entry.items.length} items in ${diskGroupLabel[entry.group]}`}`;
+    const inspect = {
+      // Scrolling to a keyboard-focused tile can move another tile under
+      // a stationary pointer. Keep the inspector on the focused tile.
+      onMouseEnter: () => { if (!container.current?.parentElement?.contains(document.activeElement)) setInspected(entry.id); },
+      onFocus: () => setInspected(entry.id),
+    };
+    const className = `${summary ? "disk-map-summary" : "disk-tile"} disk-${entry.group}${entry.group === "work" ? " is-work" : ""}${entry.selectedCount ? " is-selected" : ""}`;
+    return entry.group === "work" ? <div className={className} key={entry.id} style={style} title={title} aria-label={`${description}. Your work is labelled only.`} tabIndex={0} {...inspect}>{content}</div>
+      : <button type="button" className={className} key={entry.id} style={style} title={title} aria-label={`${description}. Find in ${diskGroupLabel[entry.group]}`} onClick={() => onFocus(entry)} {...inspect}>{content}</button>;
+  };
   return <section className="disk-map-panel" aria-label="Disk size treemap"><h2>Where the space goes</h2>
-    <div className="disk-map-legend">{groups.map(group => <span className={`disk-${group.id}`} key={group.id}><i aria-hidden="true" />{diskGroupLabel[group.id]}</span>)}</div>
-    <div className="disk-map" ref={container} style={{ height }}>
-      {!regions.length && <p className="disk-message">No large development leftovers found.</p>}
-      {regions.map(region => {
-        const group = region.id as DiskGroup;
-        const tiles = diskTreemap(diskSection(items, group), region.width, region.height);
-        const byId = new Map(items.map(item => [item.id, item]));
-        return <div className={`disk-map-region disk-${group}`} key={group} style={rectangle(region, width, height)} aria-label={diskGroupLabel[group]}>
-          {tiles.map(tile => {
-            const item = byId.get(tile.id)!;
-            const content = <><span className="disk-tile-label">{selected.has(item.id) && <span aria-hidden="true">✓ </span>}{item.label}</span>{group !== "work" && <span className="disk-tile-size">{diskBytes(item.bytes)}</span>}</>;
-            const style = rectangle(tile, region.width, region.height), title = `${item.label}\n${item.path}\n${diskBytes(item.bytes)}`;
-            const inspect = { onMouseEnter: () => setInspected(item.id), onFocus: () => setInspected(item.id) };
-            return group === "work" ? <div className="disk-tile is-work" key={item.id} style={style} title={title} tabIndex={0} {...inspect}>{content}</div>
-              : <button type="button" className={`disk-tile${selected.has(item.id) ? " is-selected" : ""}`} key={item.id} style={style} title={title} aria-label={`${item.label}, ${diskBytes(item.bytes)}${selected.has(item.id) ? ", selected" : ""}. Find in ${diskGroupLabel[group]}`} onClick={() => onFocus(item.id)} {...inspect}>{content}</button>;
-          })}
-        </div>;
-      })}
+    <div className="disk-map-legend">{groups.map(group => <span className={`disk-${group.id}`} key={group.id}><i aria-hidden="true" />{diskGroupLabel[group.id]} · {diskBytes(group.bytes)}</span>)}</div>
+    {probes}
+    <div className="disk-map" ref={container} style={{ height: layout.regions.length ? height : 0 }}>
+      {layout.regions.map(({ box: region, tiles }) => <div className={`disk-map-region disk-${tiles[0].group}`} key={region.id} style={rectangle(region, width, height)} aria-label={diskGroupLabel[tiles[0].group]}>
+        {tiles.map(tile => renderEntry(tile, rectangle(tile, region.width, region.height)))}
+      </div>)}
     </div>
-    <div className="disk-map-inspector" aria-live="polite">{inspecting ? <><strong>{inspecting.label} · {diskBytes(inspecting.bytes)}</strong><code>{inspecting.path}</code></> : "Hover or focus a tile to see its full path and size."}</div>
+    {!overview.length && <p className="disk-message">No large development leftovers found.</p>}
+    {!!layout.summaries.length && <div className="disk-map-summaries" aria-label="Groups summarized outside the map">
+      {floor && <p className="disk-message">Small items are summarized here. Map area represents only the items shown above.</p>}
+      {layout.summaries.map(entry => renderEntry(entry))}
+    </div>}
+    {entries.some(tile => tile.selectedCount > 0) && <p className="disk-map-ticked" aria-live="polite">{entries.filter(tile => tile.selectedCount > 0).map(tile => `${tile.label} · ${tile.selectedCount} ticked`).join("; ")}</p>}
+    <div className="disk-map-inspector" aria-live="polite">{inspecting ? <><strong>{mapTileDescription(inspecting)}</strong><code>{inspecting.items.length === 1 ? inspecting.items[0].path : `${inspecting.items.length} items in ${diskGroupLabel[inspecting.group]}${inspecting.group === "work" ? " · Your work is labelled only." : " · Choose to highlight their rows."}`}</code></> : "Hover or focus a tile to see its full name, count and size."}</div>
   </section>;
 }
 
-function DiskRow({ item, checked, onTick, previousScanAt, rowRef }: { item: DiskItem; checked: boolean; onTick: () => void; previousScanAt: number | null; rowRef: (el: HTMLElement | null) => void }) {
+function mapTileDescription(tile: DiskMapTile) {
+  return `${tile.label}, ${tile.items.length} ${tile.items.length === 1 ? "item" : "items"}, ${diskBytes(tile.bytes)}${tile.selectedCount ? `, ${tile.selectedCount} ticked` : ""}`;
+}
+
+function mapTileSize(entry: DiskMapTile) {
+  return `${diskBytes(entry.bytes)}${entry.selectedCount ? ` · ${entry.selectedCount} ticked` : ""}`;
+}
+
+/** Measure fonts once, outside the tiles. Layout only reads these metrics:
+ * observer callbacks cannot change the probe's dimensions or chase tile sizes. */
+function useDiskTileFloor() {
+  const label = useRef<HTMLSpanElement>(null), size = useRef<HTMLSpanElement>(null);
+  const [floor, setFloor] = useState<((entry: DiskMapTile) => { width: number; height: number }) | null>(null);
+  useLayoutEffect(() => {
+    const name = label.current, amount = size.current;
+    if (!name || !amount) return;
+    let alive = true, previous = "";
+    const measure = () => {
+      if (!alive) return;
+      const labelStyle = getComputedStyle(name), sizeStyle = getComputedStyle(amount);
+      const labelBox = name.getBoundingClientRect(), sizeBox = amount.getBoundingClientRect();
+      const fingerprint = [labelStyle.font, sizeStyle.font, labelStyle.letterSpacing, sizeStyle.letterSpacing, labelBox.width, labelBox.height, sizeBox.width, sizeBox.height].join("|");
+      if (fingerprint === previous) return;
+      previous = fingerprint;
+      const context = document.createElement("canvas").getContext("2d");
+      if (!context) return; // Flow summaries stay readable if font measurement is unavailable.
+      const textWidth = (text: string, style: { font: string; letterSpacing: string }) => {
+        context.font = style.font;
+        return context.measureText(text).width + (parseFloat(style.letterSpacing) || 0) * text.length;
+      };
+      // Snapshot metrics; CSSStyleDeclaration is live across theme changes.
+      const fontLabel = { font: labelStyle.font, letterSpacing: labelStyle.letterSpacing };
+      const fontSize = { font: sizeStyle.font, letterSpacing: sizeStyle.letterSpacing };
+      const digitWidth = Math.max(..."0123456789".split("").map(digit => textWidth(digit, fontSize)));
+      setFloor(() => (entry: DiskMapTile) => {
+        const selectable = entry.items.filter(diskSelectable).length;
+        const sizeWidth = textWidth(diskBytes(entry.bytes), fontSize) + (selectable ? textWidth(" ·  ticked", fontSize) + String(selectable).length * digitWidth : 0);
+        const labelWidth = textWidth(`${entry.label.split(/\s+/)[0].slice(0, 10)}…`, fontLabel);
+        // Two 2px borders + two 10px insets, plus 2px for browser rounding.
+        return { width: Math.ceil(Math.max(sizeWidth, labelWidth)) + 26, height: Math.ceil(labelBox.height + sizeBox.height) + 6 + 26 };
+      });
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(name); observer.observe(amount);
+    measure();
+    void document.fonts.ready.then(measure);
+    return () => { alive = false; observer.disconnect(); };
+  }, []);
+  return [floor, <span className="disk-map-probes" aria-hidden="true" key="font-probes"><span className="disk-tile-label" ref={label}>Overview…</span><span className="disk-tile-size" ref={size}>888.8 GB · 888 ticked</span></span>] as const;
+}
+
+function DiskTileLabel({ entry }: { entry: DiskMapTile }) {
+  return <span className="disk-tile-content" data-fit="full" aria-hidden="true">
+    <span className="disk-tile-label disk-tile-visible-label">{entry.label}{entry.items.length > 1 ? ` · ${entry.items.length} items` : ""}</span>
+    <span className="disk-tile-size disk-tile-visible-size">{mapTileSize(entry)}</span>
+  </span>;
+}
+
+function DiskRow({ item, checked, highlighted, onTick, previousScanAt, rowRef }: { item: DiskItem; checked: boolean; highlighted?: boolean; onTick: () => void; previousScanAt: number | null; rowRef: (el: HTMLElement | null) => void }) {
   const fold = useFold(item.id);
   const reasonId = useId();
   const selectable = diskSelectable(item);
@@ -167,7 +246,7 @@ function DiskRow({ item, checked, onTick, previousScanAt, rowRef }: { item: Disk
     { label: "Working tree clean", pass: wt.clean }, { label: "Merged to mainline", pass: wt.merged },
     { label: "Not a mainline worktree", pass: wt.mainline === undefined ? undefined : !wt.mainline }, { label: "Not in use", pass: wt.inUse === undefined ? undefined : !wt.inUse },
   ] : [];
-  return <article ref={rowRef} tabIndex={-1} className={`disk-item${checked ? " is-selected" : ""}`} aria-label={item.label}>
+  return <article ref={rowRef} tabIndex={-1} className={`disk-item${checked ? " is-selected" : ""}${highlighted ? " is-found" : ""}`} aria-label={item.label}>
     <div className="disk-item-heading"><label><input type="checkbox" checked={selectable && checked} aria-disabled={!selectable || undefined} aria-describedby={!selectable || item.notRecommended ? reasonId : undefined} onChange={() => { if (selectable) onTick(); }} /><strong>{item.label}</strong></label><strong className="disk-item-size">{diskBytes(item.bytes)}</strong></div>
     <code className="disk-path" title={item.path}>{item.path}</code>
     {(!selectable || item.notRecommended) && <p id={reasonId} className="disk-not-recommended">{item.notRecommended ? "Not recommended to delete" : "No safe cleanup command for this item"}</p>}

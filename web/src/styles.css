@@ -2584,10 +2584,13 @@ body {
 }
 
 .prose-file-action-menu {
+  /* Without the Popover API, keep the original inline containing block. */
   position: absolute;
-  z-index: 12;
-  top: 100%;
+  z-index: 100;
+  inset: auto;
+  top: 0;
   left: 0;
+  margin: 0;
   display: flex;
   flex-direction: column;
   min-width: max-content;
@@ -2599,20 +2602,34 @@ body {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transform: translateY(-3px);
-  transition:
-    opacity 120ms ease,
-    transform 120ms ease,
-    visibility 0s linear 120ms;
+  transform: translateY(3px);
+  transition: none;
 }
 
-.prose-file-actions:hover .prose-file-action-menu,
+/* Only a successful native popover escapes the transcript's clip and stacking
+   context. Both placements choose a path edge clear of nearby players. */
+.prose-file-action-menu[popover] {
+  position: fixed;
+}
+
+/* Intent gates the whole popover, rather than transitioning inherited
+   visibility: the two buttons become visible and interactive together. */
+.prose-file-actions[data-menu-open] .prose-file-action-menu,
 .prose-file-actions:focus-within .prose-file-action-menu {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
   transform: translateY(0);
-  transition-delay: 0s;
+  transition:
+    opacity 120ms ease-out,
+    transform 120ms ease-out;
+}
+
+.prose-file-actions[data-menu-dismissed] .prose-file-action-menu {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: none;
 }
 
 .prose-file-action {

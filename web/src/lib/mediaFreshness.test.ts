@@ -1,9 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
-import { keepMediaFresh } from "./mediaFreshness";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { keepMediaFresh, MEDIA_FRESHNESS_WAIT_MS } from "./mediaFreshness";
 
 vi.mock("./bridge", () => ({ bridge: { invoke: vi.fn() } }));
 
-function fixture() {
+function fixture(initial: string | null = "red") {
   const listeners = new Map<string, Array<() => void>>();
   const emit = (type: string) => listeners.get(type)?.forEach(fn => fn());
   const el = {
@@ -14,11 +14,12 @@ function fixture() {
     pause: vi.fn(() => { if (!el.paused) { el.paused = true; queueMicrotask(() => emit("pause")); } }),
   };
   const nativePlay = el.play;
-  const read = vi.fn<() => Promise<string | null>>().mockResolvedValue("red");
+  const read = vi.fn<() => Promise<string | null>>().mockResolvedValue(initial);
   keepMediaFresh(el as unknown as HTMLMediaElement, "/cut.mp4", "/file?path=cut", read);
   return { el, read, nativePlay };
 }
 const settled = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("playback freshness on the same element", () => {
   it("replays an overwritten file from zero, but resumes an unchanged file without reload", async () => {
@@ -44,13 +45,13 @@ describe("playback freshness on the same element", () => {
     expect(el.src).toContain("revision=blue");
   });
 
-  it("gates native controls too, including replay after ended", async () => {
+  it("checks native controls too without stopping the press, including replay after ended", async () => {
     const { el, read, nativePlay } = fixture();
     await settled();
     el.ended = true;
     read.mockResolvedValue("blue");
     await nativePlay();
-    expect(el.paused).toBe(true);
+    expect(el.paused).toBe(false);
     await settled();
     expect(el.paused).toBe(false);
     expect(el.src).toContain("revision=blue");
@@ -78,5 +79,167 @@ describe("playback freshness on the same element", () => {
     await el.play();
     expect(el.paused).toBe(false);
     expect(el.load).not.toHaveBeenCalled();
+  });
+
+  it("does not mistake an unavailable initial revision for a changed file", async () => {
+    const { el, read } = fixture(null);
+    await settled();
+    el.currentTime = 5;
+    read.mockResolvedValue("red");
+    await el.play();
+    expect(el.load).not.toHaveBeenCalled();
+    expect(el.currentTime).toBe(5);
+    el.pause();
+    read.mockResolvedValue("blue");
+    await el.play();
+    expect(el.load).toHaveBeenCalledTimes(1);
+    expect(el.currentTime).toBe(0);
+  });
+
+  it.each([false, true])("bounds a slow lookup and coalesces repeated %s native plays without losing position", async native => {
+    vi.useFakeTimers();
+    const { el, read, nativePlay } = fixture();
+    await settled();
+    el.currentTime = 42;
+    let answer!: (value: string) => void;
+    read.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+    const press = native ? nativePlay : () => el.play();
+    const first = press();
+    await settled();
+    expect(el.paused).toBe(false);
+    await vi.advanceTimersByTimeAsync(30);
+    const again = press();
+    await settled();
+    expect(read).toHaveBeenCalledTimes(2); // initial revision + one shared lookup
+    await vi.advanceTimersByTimeAsync(MEDIA_FRESHNESS_WAIT_MS);
+    await Promise.all([first, again]);
+    expect(el.paused).toBe(false);
+    expect(el.currentTime).toBe(42);
+    expect(el.load).not.toHaveBeenCalled();
+    expect(nativePlay).toHaveBeenCalledTimes(native ? 2 : 1);
+    // A response after the bound cannot restart/reset an active player.
+    answer("blue");
+    await settled();
+    expect(el.currentTime).toBe(42);
+    expect(el.src).toContain("revision=red");
+    expect(el.load).not.toHaveBeenCalled();
+    el.pause();
+    // Every host lookup stays slow. The confirmed late answer alone must
+    // supply the next press; an immediate second stat would mask this bug.
+    read.mockReturnValue(new Promise(() => {}));
+    const next = press();
+    await settled();
+    expect(el.load).toHaveBeenCalledTimes(1);
+    expect(el.currentTime).toBe(0);
+    expect(el.src).toContain("revision=blue");
+    expect(el.paused).toBe(false);
+    await vi.advanceTimersByTimeAsync(MEDIA_FRESHNESS_WAIT_MS);
+    await next;
+  });
+
+  it("does not overlap lookups even across timeout, pause and a new play", async () => {
+    vi.useFakeTimers();
+    const { el, read } = fixture();
+    await settled();
+    el.currentTime = 17;
+    let answer!: (value: string) => void;
+    read.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+    const first = el.play();
+    await vi.advanceTimersByTimeAsync(MEDIA_FRESHNESS_WAIT_MS);
+    await first;
+    el.pause();
+    const second = el.play();
+    await vi.advanceTimersByTimeAsync(MEDIA_FRESHNESS_WAIT_MS);
+    await second;
+    expect(el.paused).toBe(false);
+    expect(read).toHaveBeenCalledTimes(2);
+    answer("red");
+    await settled();
+    expect(el.load).not.toHaveBeenCalled();
+    expect(el.currentTime).toBe(17);
+  });
+
+  it("does not reload on an overdue answer that runs before the delayed timer", async () => {
+    vi.useFakeTimers();
+    const { el, read } = fixture();
+    await settled();
+    el.currentTime = 21;
+    let answer!: (value: string) => void;
+    read.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    const pending = el.play();
+    await settled();
+    clock.mockReturnValue(MEDIA_FRESHNESS_WAIT_MS + 1);
+    answer("blue");
+    await pending;
+    expect(el.paused).toBe(false);
+    expect(el.currentTime).toBe(21);
+    expect(el.load).not.toHaveBeenCalled();
+  });
+
+  it("does not reload or restart a native play that the person then pauses", async () => {
+    const { el, read, nativePlay } = fixture();
+    await settled();
+    let answer!: (value: string) => void;
+    read.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+    await nativePlay();
+    await settled();
+    el.pause();
+    answer("blue");
+    await settled();
+    expect(el.paused).toBe(true);
+    expect(el.load).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed play when there is no replacement revision", async () => {
+    const { el, nativePlay } = fixture();
+    await settled();
+    nativePlay.mockRejectedValueOnce(new Error("play refused"));
+    await expect(el.play()).rejects.toThrow("play refused");
+  });
+
+  it.each(["pause", "release"])("propagates a play rejection after %s cancels its pending lookup", async action => {
+    const { el, read, nativePlay } = fixture();
+    await settled();
+    const error = new DOMException("play refused", "NotAllowedError");
+    nativePlay.mockRejectedValueOnce(error);
+    let answer!: (value: string) => void;
+    read.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+    const pending = el.play();
+    const rejected = expect(pending).rejects.toBe(error);
+    await settled();
+    el.pause();
+    if (action === "release") { el.isConnected = false; el.src = ""; }
+    answer("blue");
+    await rejected;
+    expect(nativePlay).toHaveBeenCalledTimes(1);
+    expect(el.load).not.toHaveBeenCalled();
+    expect(el.paused).toBe(true);
+  });
+
+  it.each(["NotAllowedError", "AbortError"])("does not cover a %s that happened before a replacement reload", async name => {
+    const { el, read, nativePlay } = fixture();
+    await settled();
+    const error = new DOMException("first play failed", name);
+    nativePlay.mockRejectedValueOnce(error);
+    read.mockResolvedValue("blue");
+    await expect(el.play()).rejects.toBe(error);
+  });
+
+  it("lets a verified reload replace the first play promise it aborted", async () => {
+    const { el, read, nativePlay } = fixture();
+    await settled();
+    read.mockResolvedValue("blue");
+    let abort!: (error: unknown) => void;
+    nativePlay.mockImplementationOnce(() => {
+      el.paused = false;
+      return new Promise<void>((_resolve, reject) => { abort = reject; });
+    });
+    el.load.mockImplementationOnce(() => abort(new DOMException("old play aborted by reload", "AbortError")));
+    await el.play();
+    expect(el.paused).toBe(false);
+    expect(el.src).toContain("revision=blue");
+    expect(el.load).toHaveBeenCalledTimes(1);
+    expect(nativePlay).toHaveBeenCalledTimes(2);
   });
 });

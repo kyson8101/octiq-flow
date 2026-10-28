@@ -7,17 +7,20 @@ import { join, resolve, isAbsolute } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 
-const webRoot = resolve(fileURLToPath(new URL("../web", import.meta.url)));
+const webRoot = resolve(process.env.OCTIQ_WEB_ROOT || fileURLToPath(new URL("../web", import.meta.url)));
 const require = createRequire(join(webRoot, "package.json"));
 const { createServer } = await import(pathToFileURL(require.resolve("vite")).href);
 const pw = process.env.PLAYWRIGHT_MODULE || "playwright";
 const { chromium } = await import(isAbsolute(pw) ? pathToFileURL(pw).href : pw);
 const evidence = process.env.OCTIQ_EVIDENCE_DIR || await mkdtemp(join(tmpdir(), "octiq-disk-"));
 await mkdir(evidence, { recursive: true });
-const fixture = JSON.parse(await readFile(join(webRoot, "src/lib/__fixtures__/disk-report.json"), "utf8"));
+let fixture = JSON.parse(await readFile(join(webRoot, "src/lib/__fixtures__/disk-report.json"), "utf8"));
 const root = "/fixture/octiq-flow";
 const errors = [], screenshots = [], calls = [];
 const server = await createServer({ root: webRoot, configFile: join(webRoot, "vite.config.ts"), server: { host: "127.0.0.1", port: 0, strictPort: false } });
+const crowded = process.env.OCTIQ_DISK_CROWDED === "1" || process.env.REVIEW_REAL === "1";
+if (crowded) fixture = (await server.ssrLoadModule("/src/lib/diskReport.fixture.ts")).crowdedDiskReport();
+if (process.env.REVIEW_REAL === "1") fixture = (await server.ssrLoadModule("/src/lib/diskReport.fixture.ts")).realShapedDiskReport();
 let browser;
 
 function resultFor(cmd) {
@@ -38,10 +41,63 @@ function resultFor(cmd) {
     default: return null;
   }
 }
+async function startDiskPaintCheck(page) {
+  await page.evaluate(() => {
+    window.diskPaint = { first: null, last: null, failures: [], frames: 0 };
+    const sample = () => {
+      if (window.diskPaintStopped) return;
+      const panel = document.querySelector('.disk-map-panel');
+      if (panel?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) {
+        const origin = panel.getBoundingClientRect();
+        const nodes = [...panel.querySelectorAll('.disk-tile, .disk-map-summary')];
+        if (nodes.length) {
+          const geometry = nodes.map(node => {
+            const box = node.getBoundingClientRect();
+            const content = node.querySelector('.disk-tile-content') ?? node;
+            const inner = content.getBoundingClientRect();
+            const lines = [...node.querySelectorAll('.disk-tile-label, .disk-tile-size')];
+            if (inner.height <= 0 || lines.some(line => {
+              const rect = line.getBoundingClientRect();
+              return !line.textContent.trim() || getComputedStyle(line).display === 'none' || rect.height <= 0
+                || rect.top < inner.top - 0.5 || rect.bottom > inner.bottom + 0.5
+                || (line.classList.contains('disk-tile-size') && line.scrollWidth > line.clientWidth + 0.5);
+            })) window.diskPaint.failures.push({ name: node.getAttribute('aria-label'), box: box.toJSON(), inner: inner.toJSON() });
+            return [node.getAttribute('aria-label'), ...[box.x - origin.x, box.y - origin.y, box.width, box.height].map(n => Math.round(n))];
+          });
+          const frame = { fonts: document.fonts.status, geometry, panelHeight: Math.round(origin.height) };
+          window.diskPaint.first ??= frame;
+          window.diskPaint.last = frame;
+          window.diskPaint.frames++;
+        }
+      }
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+}
+async function finishDiskPaintCheck(page, theme, width) {
+  // Observe every frame from opening, including the font-loading window. The
+  // font promise ends observation; it never delays the first-paint assertions.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const paint = await page.evaluate(() => { window.diskPaintStopped = true; return window.diskPaint; });
+  await writeFile(join(evidence, `${theme}-${width}-first-paint.json`), JSON.stringify(paint, null, 2));
+  assert.ok(paint.first, 'The overview must have a visible first paint');
+  assert.deepEqual(paint.failures, [], 'Every painted tile must have readable text, without a settle');
+  assert.deepEqual(paint.first.geometry, paint.last.geometry, 'Font arrival must not rearrange the overview');
+  assert.equal(paint.first.panelHeight, paint.last.panelHeight, 'The overview reserves its final height before paint');
+}
 async function open(theme, width) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce", acceptDownloads: true });
   await context.addInitScript(mode => {
     localStorage.clear();
+    const nativeRect = Element.prototype.getBoundingClientRect;
+    window.diskRectReads = 0; window.diskObserverCallbacks = 0;
+    Element.prototype.getBoundingClientRect = function (...args) {
+      if (this.closest('.disk-map-probes')) window.diskRectReads++;
+      return nativeRect.apply(this, args);
+    };
+    const NativeObserver = window.ResizeObserver;
+    window.ResizeObserver = class extends NativeObserver { constructor(cb) { super((entries, obs) => { window.diskObserverCallbacks++; cb(entries, obs); }); } };
     localStorage.setItem("octiq.theme", mode);
     localStorage.setItem("octiq.web.token", "fixture");
     localStorage.setItem("octiq.v2.gitColumn", "0");
@@ -79,11 +135,13 @@ async function open(theme, width) {
   await page.locator(".sidebar:visible, .topbar-nav:visible").first().waitFor();
   const diskLink = page.getByRole("button", { name: "Disk", exact: true });
   if (!await diskLink.isVisible()) await page.getByRole("button", { name: /Show chats|Show sidebar/i }).first().click();
+  await startDiskPaintCheck(page);
   await diskLink.click();
   await page.getByRole("region", { name: "Disk report", exact: true }).waitFor();
   await page.getByText("Development leftovers", { exact: true }).waitFor();
-  await page.getByRole("article", { name: "pnpm store", exact: true }).waitFor();
+  await page.getByRole("article", { name: crowded ? "Linked Git worktree" : "pnpm store", exact: true }).first().waitFor();
   await page.evaluate(() => document.fonts.ready);
+  await finishDiskPaintCheck(page, theme, width);
   return { page, context, localCalls, setUnavailable: () => { unavailable = true; },
     finish: () => { const scanId = running.scanId; currentReport = { ...currentReport, scanId, scannedAt: Date.now() }; running = null; sendEvent("disk-scan-done", { scanId, ok: true }); },
     progress: () => { running = { ...running, phase: "git", entries: 1234, bytes: 450000000 }; sendEvent("disk-scan-progress", running); },
@@ -96,6 +154,93 @@ async function noOverflow(page) {
   const wide = await page.locator(".disk-page").evaluate(el => el.scrollWidth > el.clientWidth + 1 || document.documentElement.scrollWidth > innerWidth);
   assert.equal(wide, false, "Disk page must not overflow horizontally");
 }
+async function checkCrowded(page, theme, width) {
+  assert.equal(fixture.items.length, process.env.REVIEW_REAL === "1" ? 153 : 150);
+  await page.waitForFunction(() => [...document.querySelectorAll('.disk-tile-content')].some(el => el.dataset.fit === 'full'));
+  assert.ok(await page.locator(".disk-tile").count() < 12, "Crowded reports remain a small readable overview");
+  await noOverflow(page);
+  await assertWholeLines(page);
+  await screenshot(page, `${theme}-${width}-crowded-disk.png`);
+  const mapPath = join(evidence, `${theme}-${width}-crowded-treemap.png`);
+  await page.locator(".disk-map-panel").screenshot({ path: mapPath }); screenshots.push(mapPath);
+  const aggregate = page.getByRole("button", { name: /Linked Git worktrees, 70 items,/ });
+  await aggregate.focus(); await aggregate.press("Enter");
+  assert.equal(await page.locator(".disk-item.is-found").count(), 70);
+  assert.equal(await page.locator(".disk-item.is-found").first().evaluate(el => el === document.activeElement), true);
+  await page.locator(".disk-item.is-found").first().getByRole("checkbox").check();
+  assert.match(await aggregate.getAttribute("aria-label"), /1 ticked/);
+  await aggregate.focus();
+  await page.locator(".disk-tile.is-work").hover(); // keyboard focus owns the inspector across incidental hover
+  await page.locator(".disk-map-inspector").filter({ hasText: "1 ticked" }).waitFor();
+  await page.waitForFunction(() => [...document.querySelectorAll('.disk-tile.is-selected .disk-tile-visible-size')].some(el => el.textContent.includes('1 ticked')));
+  await assertWholeLines(page);
+  const other = page.getByRole("button", { name: /^Other, \d+ items,.*Find in Review first/ });
+  const otherCount = Number((await other.getAttribute('aria-label')).match(/Other, (\d+) items/)[1]);
+  await other.click();
+  assert.equal(await page.locator(".disk-item.is-found").count(), otherCount);
+  await page.locator(".disk-item.is-found").first().getByRole("checkbox").check();
+  assert.match(await other.getAttribute('aria-label'), /1 ticked/);
+  await other.focus();
+  await workHover(page); // summary focus also owns the inspector
+  await page.locator(".disk-map-inspector").filter({ hasText: `Other, ${otherCount} items` }).waitFor();
+  await page.getByRole("button", { name: "Clear highlight" }).click();
+  assert.equal(await page.locator(".disk-item.is-found").count(), 0);
+  await page.locator(".disk-map-ticked").filter({ hasText: "Other · 1 ticked" }).waitFor();
+  assert.equal(await page.locator(".disk-tile.is-work button, button.disk-tile.is-work").count(), 0);
+  const work = page.locator(".disk-tile.is-work"); await work.focus();
+  assert.match(await work.getAttribute("aria-label"), /38 items.*Your work is labelled only/);
+  assert.equal(await page.locator(".disk-page input:checked").count(), 2);
+  await page.locator(".disk-map-panel").scrollIntoViewIfNeeded();
+  const selectedPath = join(evidence, `${theme}-${width}-crowded-ticked.png`);
+  await page.locator(".disk-map-panel").screenshot({ path: selectedPath }); screenshots.push(selectedPath);
+  await noOverflow(page);
+  // Inspector changes must not measure text or cause a ResizeObserver loop.
+  const before = await page.evaluate(() => ({ reads: window.diskRectReads, callbacks: window.diskObserverCallbacks }));
+  for (let i = 0; i < 3; i++) { await aggregate.focus(); await work.focus(); }
+  await page.waitForTimeout(300);
+  const after = await page.evaluate(() => ({ reads: window.diskRectReads, callbacks: window.diskObserverCallbacks }));
+  await page.waitForTimeout(300);
+  const idle = await page.evaluate(() => ({ reads: window.diskRectReads, callbacks: window.diskObserverCallbacks }));
+  assert.deepEqual(after, before, "Inspector focus does not measure or relayout tiles");
+  assert.deepEqual(idle, after, "Measurements settle when idle");
+  const geometry = () => page.locator('.disk-tile').evaluateAll(nodes => nodes.map(node => {
+    const box = node.getBoundingClientRect(); return [box.width, box.height];
+  }));
+  const beforeSelection = await geometry();
+  await page.getByRole('checkbox', { name: 'Select all Review first' }).check();
+  await assertWholeLines(page);
+  assert.deepEqual(await geometry(), beforeSelection, "Tick counts do not change map membership or geometry");
+  const safeSummary = page.getByRole('button', { name: /^Safe to clean, \d+ items,/ });
+  if (await safeSummary.count()) {
+    const safeCount = Number((await safeSummary.getAttribute('aria-label')).match(/, (\d+) items/)[1]);
+    await safeSummary.click();
+    assert.equal(await page.locator('.disk-item.is-found').count(), safeCount);
+    assert.equal(await page.locator('.disk-item.is-found').first().evaluate(el => el === document.activeElement), true);
+  }
+  const metrics = await page.locator('.disk-tile, .disk-map-summary').evaluateAll(nodes => nodes.map(el => ({ description: el.getAttribute('aria-label'), width: el.getBoundingClientRect().width, height: el.getBoundingClientRect().height, text: el.textContent })));
+  await writeFile(join(evidence, `${theme}-${width}-metrics.json`), JSON.stringify({ metrics, before, after, idle }, null, 2));
+}
+async function workHover(page) { await page.locator(".disk-tile.is-work").hover(); }
+async function assertWholeLines(page) {
+  const failures = await page.locator(".disk-tile-content").evaluateAll(nodes => nodes.flatMap(node => {
+    const box = node.getBoundingClientRect();
+    const size = node.querySelector('.disk-tile-visible-size');
+    if (!size || getComputedStyle(size).display === 'none' || !size.textContent.trim()) return [{ fit: node.dataset.fit, error: 'Every visible tile must show its size line' }];
+    return [...node.querySelectorAll('.disk-tile-visible-label, .disk-tile-visible-size')].flatMap(line => {
+      if (getComputedStyle(line).display === 'none') return [];
+      const rect = line.getBoundingClientRect();
+      const heightOk = rect.top >= box.top - 0.5 && rect.bottom <= box.bottom + 0.5;
+      const sizeOk = !line.classList.contains('disk-tile-visible-size') || line.scrollWidth <= line.clientWidth + 0.5;
+      return heightOk && sizeOk ? [] : [{ text: line.textContent, fit: node.dataset.fit, box: box.toJSON(), line: rect.toJSON() }];
+    });
+  }));
+  assert.deepEqual(failures, [], "Every visible tile must show a whole size line without clipped glyphs");
+  const blankSummaries = await page.locator('.disk-map-summary').evaluateAll(nodes => nodes.filter(node => {
+    const size = node.querySelector('.disk-tile-size');
+    return !size?.textContent.trim() || getComputedStyle(size).display === 'none' || size.scrollWidth > size.clientWidth + 0.5;
+  }).map(node => node.outerHTML));
+  assert.deepEqual(blankSummaries, [], "Summary fallbacks must also show their size");
+}
 try {
   await server.listen();
   browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) });
@@ -104,6 +249,11 @@ try {
     for (const width of [1280, 390]) {
       const app = await open(theme, width), { page } = app;
       console.log(`Checking ${theme} ${width}`);
+      if (crowded) {
+        await checkCrowded(page, theme, width);
+        await app.context.close();
+        continue;
+      }
       assert.equal(await page.locator(".disk-page input:checked").count(), 0);
       assert.equal(app.localCalls.filter(call => call.cmd === "disk_scan_start").length, 0, "Opening the page must never start a scan");
       const recent = page.getByRole("article", { name: "Recent chat history", exact: true }).getByRole("checkbox");
@@ -117,14 +267,15 @@ try {
       await page.locator(".disk-body").evaluate(el => { el.scrollTop = 0; });
       await page.evaluate(() => window.scrollTo(0, 0));
       await noOverflow(page);
+      await assertWholeLines(page);
       await screenshot(page, `${theme}-${width}-disk.png`);
       const mapPath = join(evidence, `${theme}-${width}-treemap.png`);
       await page.locator(".disk-map-panel").screenshot({ path: mapPath }); screenshots.push(mapPath);
       const pnpm = page.getByRole("article", { name: "pnpm store", exact: true });
-      await page.getByRole("button", { name: /pnpm store, 2.4 GB/ }).click();
+      await page.getByRole("button", { name: /(?:Cache|Safe to clean), 2 items, 3.2 GB/ }).click();
       assert.equal(await pnpm.evaluate(el => el === document.activeElement), true);
       await pnpm.getByRole("checkbox").check();
-      assert.equal(await page.locator(".disk-tile.is-selected").count(), 1);
+      assert.equal(await page.locator(".disk-tile.is-selected, .disk-map-summary.is-selected").count(), 1);
       await pnpm.getByRole("button", { name: "Show details for pnpm store" }).click();
       await pnpm.locator(".disk-full-path").waitFor({ state: "visible" });
       await page.getByRole("checkbox", { name: "Select all Safe to clean" }).check();
