@@ -27,6 +27,7 @@ stdin, and the shell/agent reads them as if typed. PTY output streams back as
 ## Commands
 
 Run everything from the repo root. **Rust + Node + pnpm are required.**
+Changes to the local build profile or artifact path must also update README's build → launcher instructions.
 
 **Building on Windows also needs OpenSSL.** `src-tauri/Cargo.toml` asks for
 `openssl` with the `vendored` feature, which builds OpenSSL from source and
