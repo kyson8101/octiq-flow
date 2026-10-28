@@ -124,11 +124,17 @@ describe("playback freshness on the same element", () => {
     expect(el.src).toContain("revision=red");
     expect(el.load).not.toHaveBeenCalled();
     el.pause();
-    read.mockResolvedValue("blue");
-    await el.play();
+    // Every host lookup stays slow. The confirmed late answer alone must
+    // supply the next press; an immediate second stat would mask this bug.
+    read.mockReturnValue(new Promise(() => {}));
+    const next = press();
+    await settled();
     expect(el.load).toHaveBeenCalledTimes(1);
     expect(el.currentTime).toBe(0);
     expect(el.src).toContain("revision=blue");
+    expect(el.paused).toBe(false);
+    await vi.advanceTimersByTimeAsync(MEDIA_FRESHNESS_WAIT_MS);
+    await next;
   });
 
   it("does not overlap lookups even across timeout, pause and a new play", async () => {
@@ -192,11 +198,44 @@ describe("playback freshness on the same element", () => {
     await expect(el.play()).rejects.toThrow("play refused");
   });
 
+  it.each(["pause", "release"])("propagates a play rejection after %s cancels its pending lookup", async action => {
+    const { el, read, nativePlay } = fixture();
+    await settled();
+    const error = new DOMException("play refused", "NotAllowedError");
+    nativePlay.mockRejectedValueOnce(error);
+    let answer!: (value: string) => void;
+    read.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+    const pending = el.play();
+    const rejected = expect(pending).rejects.toBe(error);
+    await settled();
+    el.pause();
+    if (action === "release") { el.isConnected = false; el.src = ""; }
+    answer("blue");
+    await rejected;
+    expect(nativePlay).toHaveBeenCalledTimes(1);
+    expect(el.load).not.toHaveBeenCalled();
+    expect(el.paused).toBe(true);
+  });
+
+  it.each(["NotAllowedError", "AbortError"])("does not cover a %s that happened before a replacement reload", async name => {
+    const { el, read, nativePlay } = fixture();
+    await settled();
+    const error = new DOMException("first play failed", name);
+    nativePlay.mockRejectedValueOnce(error);
+    read.mockResolvedValue("blue");
+    await expect(el.play()).rejects.toBe(error);
+  });
+
   it("lets a verified reload replace the first play promise it aborted", async () => {
     const { el, read, nativePlay } = fixture();
     await settled();
     read.mockResolvedValue("blue");
-    nativePlay.mockRejectedValueOnce(new Error("old play aborted by reload"));
+    let abort!: (error: unknown) => void;
+    nativePlay.mockImplementationOnce(() => {
+      el.paused = false;
+      return new Promise<void>((_resolve, reject) => { abort = reject; });
+    });
+    el.load.mockImplementationOnce(() => abort(new DOMException("old play aborted by reload", "AbortError")));
     await el.play();
     expect(el.paused).toBe(false);
     expect(el.src).toContain("revision=blue");

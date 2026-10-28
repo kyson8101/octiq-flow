@@ -113,7 +113,7 @@ function mock(duplicate = false) {
   return { stored, resultFor };
 }
 
-const server = await createServer({ root: webRoot, configFile: join(webRoot, "vite.config.ts"), server: { host: "127.0.0.1", port: 0, strictPort: false, fs: { strict: false } } });
+const server = await createServer({ root: webRoot, cacheDir: join(scratch, "vite-cache"), configFile: join(webRoot, "vite.config.ts"), server: { host: "127.0.0.1", port: 0, strictPort: false, fs: { strict: false } } });
 const errors = [];
 const report = { artifacts, engine, themes, results: [] };
 
@@ -467,6 +467,9 @@ async function resumeScene(browser, theme, size, kind, repeated = false, takeove
       await page.locator('.msgs').first().hover();
       await page.mouse.wheel(0, -1800);
       await page.waitForTimeout(100);
+      // The scroller's centre can be a file path. Leave its hover menu before
+      // locating native controls, so Copy path cannot intercept the press.
+      await page.mouse.move(1, 1);
     } else {
       // No wheel/touch/key takeover: the player itself must protect a press
       // from follow-tail, including before pointerdown reaches its controls.
@@ -534,9 +537,60 @@ async function resumeScene(browser, theme, size, kind, repeated = false, takeove
     // A late changed answer must not swap the source under active playback.
     await page.waitForTimeout(2000);
     assert.equal(await page.evaluate(() => window.resumeLoads), 0);
+    let pendingReplay;
+    if (repeated) {
+      // The host stays slow. Its late confirmed revision must survive for
+      // the next native Play, without a fast second lookup masking the bug.
+      await page.evaluate(() => window.resumePlayer.pause());
+      await press();
+      await page.waitForFunction(() => window.resumeLoads === 1 && !window.resumePlayer.paused && window.resumePlayer.currentTime > 0);
+      pendingReplay = await page.evaluate(() => ({ loads: window.resumeLoads, time: window.resumePlayer.currentTime, src: window.resumePlayer.src }));
+      assert(pendingReplay.time < 2, 'late confirmed replacement starts from zero on the next press');
+    }
     await page.screenshot({ path: join(artifacts, `${engine}-resume-${kind}-${repeated ? 'repeated' : 'single'}-${size.name}.png`) });
-    return { scene: `stream-resume-${kind}${repeated ? '-repeated' : ''}-${takeover}`, size: size.name, ...resumed, lookups, interaction, observedAfterMs: Date.now() - started };
+    return { scene: `stream-resume-${kind}${repeated ? '-repeated' : ''}-${takeover}`, size: size.name, ...resumed, lookups, interaction, pendingReplay, observedAfterMs: Date.now() - started };
   } finally { clearInterval(timer); await context.close(); }
+}
+
+/** A pass over native controls holds only while hovered, without changing
+ * the reader's existing follow decision. No focus or pointerdown is used. */
+async function hoverScene(browser, theme, size) {
+  const { context, page, send } = await open(browser, theme, size);
+  try {
+    const player = page.locator('.prose-media.is-audio audio').first();
+    await player.waitFor();
+    await page.mouse.move(1, 1);
+    await page.locator('.composer textarea').first().fill('Hover pass-through');
+    await page.locator('.composer').getByRole('button', { name: 'Send', exact: true }).click();
+    let seq = 0;
+    const stream = event => send({ key: 'chat:chat-a', seq: ++seq, event: { type: 'stream_event', event } });
+    stream({ type: 'message_start', message: { id: 'hover-stream', type: 'message', role: 'assistant', content: [], model: 'claude-opus' } });
+    stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+    const grow = () => stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '\n\nMore notes below the controls.' } });
+    await page.waitForTimeout(100);
+    await player.scrollIntoViewIfNeeded();
+    await player.hover();
+    const before = await player.boundingBox();
+    for (let i = 0; i < 12; i++) { grow(); await page.waitForTimeout(45); }
+    const after = await player.boundingBox();
+    assert(Math.abs(after.y - before.y) < 1, 'hover keeps controls under the pointer');
+    await page.mouse.move(1, 1);
+    const gap = () => page.locator('.msgs').first().evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight);
+    await page.waitForFunction(() => { const el = document.querySelector('.msgs'); return el.scrollHeight - el.scrollTop - el.clientHeight < 3; });
+    for (let i = 0; i < 5; i++) { grow(); await page.waitForTimeout(45); }
+    // Socket delivery and ResizeObserver run after the last send. Wait for
+    // that final rendered growth before measuring the restored follow state.
+    await page.waitForFunction(() => {
+      const el = document.querySelector('.msgs');
+      return el.textContent.split('More notes below the controls.').length === 18
+        && el.scrollHeight - el.scrollTop - el.clientHeight < 3;
+    });
+    assert(await gap() < 3, 'pointer leave restores follow for subsequent stream growth');
+    const anchor = await page.locator('.msgs').first().evaluate(el => getComputedStyle(el).overflowAnchor);
+    assert.equal(anchor, 'auto', 'temporary hover returns browser anchoring');
+    await page.screenshot({ path: join(artifacts, `${engine}-hover-leave-${size.name}.png`) });
+    return { scene: 'hover-pass-through', size: size.name, drift: after.y - before.y, gap: await gap(), anchor };
+  } finally { await context.close(); }
 }
 
 /** Actual App wiring, rather than just the store's public methods. */
@@ -614,6 +668,8 @@ try {
     : await playwright.chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || "chrome", args: ["--autoplay-policy=no-user-gesture-required"] });
   for (const [index, theme] of themes.entries()) {
     for (const size of SIZES) {
+      report.results.push(await hoverScene(browser, theme, size));
+      if (process.env.OCTIQ_MEDIA_HOVER_ONLY) continue;
       if (size.name === '1280') for (const kind of ['video', 'audio']) for (const takeover of ['hover', 'focus']) report.results.push(await resumeScene(browser, theme, size, kind, false, takeover));
       if (process.env.OCTIQ_MEDIA_INTERACTION_ONLY) continue;
       for (const kind of ['video', 'audio']) for (const repeated of [false, true]) report.results.push(await resumeScene(browser, theme, size, kind, repeated));

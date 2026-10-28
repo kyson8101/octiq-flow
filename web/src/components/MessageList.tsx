@@ -1534,10 +1534,14 @@ const MessageListBody = function MessageList({
   // expires — past that a height change is the conversation growing.
   const resuming = useRef<{ at: ChatPlace; until: number } | null>(null);
   const holdTimer = useRef(0);
+  // Hover protects controls only until pointer leave. Explicit reading input
+  // still changes stick permanently through mark().
+  const hoveredMedia = useRef<{ player: Element; at: ChatPlace } | null>(null);
   const releasePlace = () => {
     window.clearTimeout(holdTimer.current);
     holdTimer.current = 0;
     resuming.current = null;
+    hoveredMedia.current = null;
     if (scrollerRef.current) scrollerRef.current.style.removeProperty("overflow-anchor");
   };
   const holdPlace = (at: ChatPlace) => {
@@ -1603,7 +1607,7 @@ const MessageListBody = function MessageList({
   const savePlace = () => {
     const el = scrollerRef.current;
     const id = conv.current;
-    if (!el || !id || glide.current || resuming.current) return;
+    if (!el || !id || glide.current || resuming.current || hoveredMedia.current) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM;
     if (!atBottom && stick.current) return;
     pending.current = { id, at: atBottom ? null : placeFrom(el.scrollTop, anchorsIn(el)) };
@@ -1691,7 +1695,7 @@ const MessageListBody = function MessageList({
       if (event?.target instanceof Element && event.target.closest("video, audio")) {
         // Native controls do not scroll, so waiting for onScroll to clear
         // stick lets the next streaming resize move them under the press.
-        // Pointing at or focusing a player is reading this place too. Reuse
+        // Focusing or pressing a player is explicit reading intent. Reuse
         // the restore anchor while layout settles; Jump resumes following.
         stick.current = false;
         holdPlace(placeFrom(el.scrollTop, anchorsIn(el)));
@@ -1700,6 +1704,23 @@ const MessageListBody = function MessageList({
     };
     const mediaIntent = (event: Event) => {
       if (event.target instanceof Element && event.target.closest("video, audio")) mark(event);
+    };
+    const mediaHover = (event: PointerEvent) => {
+      const player = event.target instanceof Element ? event.target.closest("video, audio") : null;
+      if (!player || player.contains(event.relatedTarget as Node | null)) return;
+      if (event.type === "pointerover") {
+        if (!stick.current) return;
+        stopGlide();
+        releasePlace();
+        hoveredMedia.current = { player, at: placeFrom(el.scrollTop, anchorsIn(el)) };
+        el.style.overflowAnchor = "none";
+      } else if (hoveredMedia.current?.player === player) {
+        releasePlace();
+        if (stick.current) {
+          el.scrollTop = el.scrollHeight;
+          setAway(false);
+        }
+      }
     };
     const onScroll = () => {
       const corrected = correctedTop.current;
@@ -1742,7 +1763,8 @@ const MessageListBody = function MessageList({
     el.addEventListener("touchmove", mark, { passive: true });
     el.addEventListener("pointerdown", mark, { passive: true });
     el.addEventListener("keydown", mark);
-    el.addEventListener("pointerover", mediaIntent, { passive: true });
+    el.addEventListener("pointerover", mediaHover, { passive: true });
+    el.addEventListener("pointerout", mediaHover, { passive: true });
     el.addEventListener("focusin", mediaIntent);
     return () => {
       window.clearTimeout(until);
@@ -1757,7 +1779,8 @@ const MessageListBody = function MessageList({
       el.removeEventListener("touchmove", mark);
       el.removeEventListener("pointerdown", mark);
       el.removeEventListener("keydown", mark);
-      el.removeEventListener("pointerover", mediaIntent);
+      el.removeEventListener("pointerover", mediaHover);
+      el.removeEventListener("pointerout", mediaHover);
       el.removeEventListener("focusin", mediaIntent);
     };
   }, []);
@@ -1828,6 +1851,11 @@ const MessageListBody = function MessageList({
       // Not while a glide is running: it is already following the bottom, one
       // eased step per frame, and a pin written in the same frame would erase
       // the step and land the reader at the end before the travel had begun.
+      const hover = hoveredMedia.current;
+      if (hover) {
+        restorePlace(hover.at);
+        return;
+      }
       if (stick.current && !glide.current) {
         el.scrollTop = el.scrollHeight;
         return;
