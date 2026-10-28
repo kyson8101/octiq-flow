@@ -743,12 +743,19 @@ describe("the pending badge in the chat list", () => {
 });
 
 
-describe("automatic plan consent is a setting and a recorded fact", () => {
+describe("automatic plan consent separates settings from a held decision", () => {
   const sheet = rules(autoPlanCss, "AutoPlan.css");
-  it("names its setting and record parts and uses no accent or decision fill", () => {
+  it("keeps settings neutral and gives only the held decision its decision colour", () => {
     const parts = new Set(sheet.flatMap((rule) => [...rule.selector.matchAll(/\.auto-plan-([a-z-]+)/g)].map((m) => m[1])));
-    expect([...parts].sort()).toEqual(["approved", "error", "future", "held", "setting", "switch", "titles", "track"]);
-    for (const rule of sheet) expect(rule.body, rule.selector).not.toMatch(/--(accent|composer-accent|composer-ink|decide|warn)\b/);
+    expect([...parts].sort()).toEqual(["approved", "error", "full-note", "future", "held", "held-label", "setting", "switch", "titles", "track"]);
+    for (const rule of sheet) {
+      expect(rule.body, rule.selector).not.toMatch(/--(accent|composer-accent|composer-ink|warn)\b/);
+      if (rule.selector !== ".auto-plan-held") expect(rule.body, rule.selector).not.toMatch(/--decide\b/);
+    }
+    const held = sheet.find((rule) => rule.selector === ".auto-plan-held")!;
+    expect(held.body).toContain("var(--decide)");
+    expect(held.body).toContain("var(--decide-tint)");
+    expect(held.body).toContain("var(--fg-1)");
     expect(sheet.some((rule) => /appearance:\s*none/.test(rule.body))).toBe(true);
   });
 });

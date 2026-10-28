@@ -1201,12 +1201,24 @@ states that it is a decision record, not an instruction to make another plan.
 The person can enable **automatic plan approval** in the chat's Details panel
 or with the plan card's tick box. Both use the browser-only commands
 `orchestration_auto_plan_get { chatKey }` and
-`orchestration_auto_plan_set { chatKey, enabled }`, returning
-`{ chatKey, enabled, enabledAt? }`. No agent hook or MCP tool exposes them.
+`orchestration_auto_plan_set { chatKey, enabled, includeFull? }`, returning
+`{ chatKey, enabled, enabledAt?, includeFull, includeFullAt? }`. No agent hook
+or MCP tool exposes them.
 The setting is kept in the profile's orchestration ledger until switched off;
 it is not a one-turn choice. Workers, front desks, room seats and chats outside
 the active chat index cannot enable it. An enable whose record cannot be saved
-is refused; disable acts immediately and retries an owed save.
+is refused; disable acts immediately and retries an owed save. Full access is
+excluded by default. The person can explicitly include Full for this chat;
+this widening must be saved first. `includeFull` omitted keeps its current
+value and opt-in time. `enabled: false` clears both settings, even if it echoes
+an existing Full flag. Including Full requires automatic approval to be on
+or enabled in the same request; otherwise it is refused in words. Switching
+only Full off acts
+immediately, reports `unsaved` on a failed save, and owes the write. This
+revocation of existing consent also works when the profile/index is away;
+a missing consent still requires the normal enable checks. The ledger
+stores the extra consent as optional `auto_plan_chats.full_enabled_at`; older
+settings without it do not include Full.
 
 At a clean end of the lead's own turn (including a host notification turn),
 the host captures its launch identity, Stop epoch, turn sequence and refusal
@@ -1253,25 +1265,31 @@ correlation arrives. Attribution controls only auto-plan evidence: it never
 changes which elicitation card is shown, its answer, cancellation or diagnostic.
 Only a new real write resets this refusal ownership.
 The host auto-approves only a whole pending, nonempty revision whose every
-waiting task's effective worker access is at most Auto and no task is a peer
-request. A Full task holds the whole revision for the person's card. A failed
-or refused turn or intentionally ended process never approves. Other task,
+waiting task's effective worker access is at most Auto, or this chat explicitly
+includes Full, and no task is a peer request. Without the extra opt-in a Full
+task holds the whole revision for the person's card. Peer requests always
+need the person, even with Full included. The host re-reads the opt-in under
+the ledger at commit, so switching it off vetoes an uncommitted Full approval.
+A failed or refused turn or intentionally ended process never approves. Other task,
 permission and safety gates remain in force.
 
 Approval still uses the normal transition and approved task shape, with no
 workspace choices (the host's workspace advice applies). Its consent says
-`via: "standing"` and retains the setting's `enabledAt`. Every decision records
-`octiq_plan_auto_approved { runId, revision, taskIds, taskTitles, at, enabledAt }`
+`via: "standing"` and retains the setting's `enabledAt` and `includeFull`.
+Every decision records
+`octiq_plan_auto_approved { runId, revision, taskIds, taskTitles, at, enabledAt, includeFull }`
 in the coordinator's transcript and queues a host notification saying the
 revision was auto-approved and the host dispatches it. A durable outbox retries
 the transcript write after a crash or temporary profile outage.
 
-The `orchestration-auto-plan` bus event carries `{ chatKey, enabled, enabledAt? }`.
+The `orchestration-auto-plan` bus event carries the same shape as get/set:
+`{ chatKey, enabled, enabledAt?, includeFull, includeFullAt? }`.
 The snapshot's derived `run.autoPlan` is present only while the setting is on:
-`{ enabled: true, held?: { reason: "access" | "peerRequest", taskIds } }`.
+`{ enabled: true, includeFull, held?: { reason: "access" | "peerRequest", taskIds } }`.
 `held` appears only for a pending revision; peer requests take precedence when
-both reasons apply. Neither provider plan mode nor a provider mode transition
-is involved. All other plan, task, permission and safety gates still apply.
+both reasons apply. When `includeFull` is true there is no `access` hold;
+`peerRequest` still holds. The card and Details controls explain this scope.
+Neither provider plan mode nor a provider mode transition is involved. All other plan, task, permission and safety gates still apply.
 
 ### Approving by chat
 

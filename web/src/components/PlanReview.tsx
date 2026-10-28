@@ -22,7 +22,7 @@ import { planHoldsEveryStart } from "../lib/taskHold";
 import {
   awaitingApproval, nextPlanChanges, planDestination, planNumbers, planOwner, planStages, planTasks, stageSummary, type PlanChanges, type PlanStage,
 } from "../lib/planReview";
-import { planFoldId, planLabel, sizeLabel } from "../lib/cardFold";
+import { isShort, SHORT_TEXT, planFoldId, planLabel, sizeLabel } from "../lib/cardFold";
 import { FoldBody, FoldToggle, useFold } from "./CardFold";
 import { planHandle } from "../lib/chatPlans";
 import { approveOnce, useApproving } from "../lib/planApproving";
@@ -80,8 +80,21 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
 }) {
   const autoPlan = useAutoPlan(surface === "chat" && !approved ? run.coordinatorChatKey : null);
   const [future, setFuture] = useState(false);
+  const [full, setFull] = useState(false);
   const autoEnabled = autoPlan.setting?.enabled ?? !!run.autoPlan?.enabled;
-  const heldLine = autoPlanHeld(run);
+  const includeFull = autoPlan.setting?.includeFull ?? !!run.autoPlan?.includeFull;
+  const consentKey = JSON.stringify([run.id, run.coordinatorChatKey, run.planApproval?.revision, autoEnabled, includeFull]);
+  const [consentFor, setConsentFor] = useState(consentKey);
+  // A new revision or a changed standing setting needs a fresh tick. A
+  // previously hidden choice must not widen consent after it was revoked.
+  if (consentFor !== consentKey) {
+    setConsentFor(consentKey);
+    setFuture(false);
+    setFull(false);
+  }
+  const offerFull = autoEnabled && !includeFull && run.autoPlan?.held?.reason === "access";
+  const heldLine = autoPlanHeld(run, allTasks);
+  const heldLong = !!heldLine && !isShort(heldLine, SHORT_TEXT);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
   const [rejecting, setRejecting] = useState(false);
@@ -133,7 +146,10 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   const folded = folds && !approved && !empty;
   // The fold is this revision's. A plan the lead changed is a new thing to
   // approve, and arrives folded whatever the last one was left at.
-  const fold = useFold(planFoldId(run.id, revision), { parts: stages.length + 1, startOpen });
+  const heldPart = folded ? stages.length + (chatHint ? 1 : 0) : 0;
+  const fold = useFold(planFoldId(run.id, revision), {
+    parts: folded ? heldPart + (heldLong ? 1 : 0) : 1, startOpen,
+  });
   const metaId = useId();
   // What this card has shown, and since when (see lib/planShown).
   const shownRef = useRef<PlanShown | null>(null);
@@ -159,7 +175,8 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
           { surface, ...cardView(shownRef.current ?? shown, Date.now()) }, workspaceChoices), readLedger);
         if (sent) onApproved?.();
         return sent;
-      }, run.coordinatorChatKey, surface === "chat" && future && !autoEnabled);
+      }, run.coordinatorChatKey, surface === "chat" && ((!autoEnabled && future) || (offerFull && full)),
+      offerFull && full ? true : undefined);
     } catch (reason) {
       setError(String((reason as Error).message ?? reason));
     } finally {
@@ -232,7 +249,16 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
         </div>
       </header>
 
-      {!approved && heldLine && <p className="auto-plan-held">{heldLine}</p>}
+      {!approved && heldLine && <div className="auto-plan-held" role="status">
+        <p>{heldLong ? autoPlanHeld(run) : heldLine}</p>
+        {heldLong && <>
+          <div className="auto-plan-held-label">
+            <span>Held tasks · {sizeLabel(heldLine)}</span>
+            {!folded && <FoldToggle fold={fold} what="held tasks" />}
+          </div>
+          <FoldBody fold={fold} part={heldPart}><p>{heldLine}</p></FoldBody>
+        </>}
+      </div>}
 
       {!approved && (changes.added.length > 0 || changes.withdrawn.length > 0) && (
         <div className="plan-review-changes" role="status">
@@ -307,7 +333,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
                 />
                 <button className="plan-review-quiet" type="button" disabled={!note.trim()} onClick={requestChanges}>Request changes</button>
               </div>}
-              {surface === "chat" && !autoEnabled && <label className="auto-plan-future"
+              {surface === "chat" && (!autoEnabled || offerFull) && <label className="auto-plan-future"
                 onClickCapture={(event) => {
                   if (busy || autoPlan.busy || repeatsAnother(event)) {
                     event.preventDefault();
@@ -316,10 +342,13 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
                   }
                   notePress(event);
                 }}>
-                <input type="checkbox" checked={future} disabled={busy || autoPlan.busy}
-                  onKeyDown={dropHeld} onChange={(event) => { if (!busy && !autoPlan.busy) setFuture(event.target.checked); }} />
-                <span>Auto-approve this chat's future plans</span>
+                <input type="checkbox" checked={offerFull ? full : future} disabled={busy || autoPlan.busy}
+                  onKeyDown={dropHeld} onChange={(event) => {
+                    if (!busy && !autoPlan.busy) (offerFull ? setFull : setFuture)(event.target.checked);
+                  }} />
+                <span>{offerFull ? "Also auto-approve Full access tasks in this chat" : "Auto-approve this chat's future plans"}</span>
               </label>}
+              {surface === "chat" && offerFull && <p className="auto-plan-full-note">Full access workers run with no permission checks; plans with them are approved without you. Peer requests still wait for you.</p>}
               {rejecting && <PlanRejectConfirmation reason={reason} busy={busy} disabled={holding}
                 rejecting={busyAction === "reject"} onReason={setReason} onConfirm={() => void reject()}
                 onCancel={() => { setRejecting(false); setReason(""); }} />}

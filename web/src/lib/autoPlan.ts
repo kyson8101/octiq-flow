@@ -2,9 +2,10 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { bridge } from "./bridge";
 import { once, useInFlight } from "./inFlight";
-import type { OrchestrationRun } from "./orchestration";
+import type { OrchestrationRun, OrchestrationTask } from "./orchestration";
+import { orchestrationFeed } from "./orchestrationFeed";
 
-export type AutoPlanSetting = { chatKey: string; enabled: boolean; enabledAt?: number };
+export type AutoPlanSetting = { chatKey: string; enabled: boolean; enabledAt?: number; includeFull: boolean; includeFullAt?: number };
 type Reading = { setting?: AutoPlanSetting; error?: string; saveError?: string };
 const readings = new Map<string, Reading>();
 // A failed read carries no new setting. Only a successful read, event or
@@ -19,12 +20,13 @@ const publish = (key: string, reading: Reading) => {
   for (const listener of listeners) listener();
 };
 const words = (error: unknown) => String((error as Error)?.message ?? error);
+export const AUTO_PLAN_REFRESH_MS = 10_000;
 
-export async function setAutoPlan(chatKey: string, enabled: boolean, source: "details" | "card" = "details") {
+export async function setAutoPlan(chatKey: string, enabled: boolean, source: "details" | "card" = "details", includeFull?: boolean) {
   return once(autoPlanFlight(chatKey), async () => {
     advance(chatKey);
     try {
-      const setting = await bridge.invoke<AutoPlanSetting>("orchestration_auto_plan_set", { chatKey, enabled });
+      const setting = await bridge.invoke<AutoPlanSetting>("orchestration_auto_plan_set", { chatKey, enabled, ...(includeFull === undefined ? {} : { includeFull }) });
       advance(chatKey);
       publish(chatKey, { setting });
     } catch (error) {
@@ -32,6 +34,18 @@ export async function setAutoPlan(chatKey: string, enabled: boolean, source: "de
       publish(chatKey, { ...readings.get(chatKey), error: words(error), ...(source === "card" ? { saveError: words(error) } : {}) });
       throw error;
     }
+    // The setting is saved, but held reasons are derived by the host. Keep
+    // these controls busy until its new ledger lands, for at most 10 s: an
+    // open socket's read may never answer. Keep the saved setting; a late
+    // or failed ledger read must not claim that saving the setting failed.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        orchestrationFeed.refresh(),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, AUTO_PLAN_REFRESH_MS); }),
+      ]);
+    } catch { /* The feed reports its read error. */ }
+    finally { clearTimeout(timer); }
   });
 }
 
@@ -66,17 +80,21 @@ export function useAutoPlan(chatKey: string | null, connected = true) {
   return { ...reading, busy };
 }
 
-export function autoPlanHeld(run: Pick<OrchestrationRun, "autoPlan">): string | null {
+export function autoPlanHeld(run: Pick<OrchestrationRun, "autoPlan">, tasks: OrchestrationTask[] = []): string | null {
   const held = run.autoPlan?.held;
   if (!held) return null;
-  if (held.reason === "peerRequest") return "Not auto-approved: it holds a peer request";
   const n = held.taskIds.length;
-  return `Not auto-approved: ${n} task${n === 1 ? " runs" : "s run"} at Full access`;
+  const names = held.taskIds.map((id) => tasks.find((task) => task.id === id))
+    .filter((task): task is OrchestrationTask => !!task)
+    .map((task) => `${task.assignee?.name ?? "Unassigned"}: ${task.title}`);
+  const named = names.length ? ` (${names.join("; ")})` : "";
+  if (held.reason === "peerRequest") return `Waits for you: ${n} peer request${n === 1 ? "" : "s"}${named}. Peer requests are always approved by you.`;
+  return `Waits for you: ${n} task${n === 1 ? " runs" : "s run"} at Full access${named}. Auto-approve covers Auto or lower unless you turn on Full access tasks.`;
 }
 
 /** Approval is final even if saving future consent fails. */
-export async function approveWithAutoPlan(approve: () => Promise<boolean>, chatKey: string, enabled: boolean) {
+export async function approveWithAutoPlan(approve: () => Promise<boolean>, chatKey: string, enabled: boolean, includeFull?: boolean) {
   const sent = await approve();
-  if (sent && enabled) await setAutoPlan(chatKey, true, "card");
+  if (sent && enabled) await setAutoPlan(chatKey, true, "card", includeFull);
   return sent;
 }

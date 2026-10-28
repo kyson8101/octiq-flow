@@ -15783,7 +15783,7 @@ mod auto_plan_tests {
                     None,
                 )
                 .unwrap();
-            store.auto_plan_set(&key, true).unwrap();
+            store.auto_plan_set(&key, true, None).unwrap();
             let session = claude_session(true);
             session.lock().unwrap().agent = agent;
             hold(&manager, &key, session.clone());
@@ -15997,7 +15997,7 @@ mod auto_plan_tests {
                 "off" => {
                     lead.manager
                         .orchestrations
-                        .auto_plan_set(&lead.key, false)
+                        .auto_plan_set(&lead.key, false, None)
                         .unwrap();
                 }
                 "new-turn" => {

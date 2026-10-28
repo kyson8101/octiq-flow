@@ -9,6 +9,8 @@
 import type { OrchestrationSnapshot, OrchestrationTask } from "../orchestration";
 import type { Question, QuestionAnswered } from "../question";
 import autoPlanApproved from "./host/auto_plan_approved.json?raw";
+import autoPlanFullIncluded from "./host/auto_plan_full_included.json?raw";
+import autoPlanFullPeerRequest from "./host/auto_plan_full_peer_request.json?raw";
 import autoPlanHeldAccess from "./host/auto_plan_held_access.json?raw";
 import cardOnGateBlocked from "./host/card_on_gate_blocked.json?raw";
 import cardPending from "./host/card_pending.json?raw";
@@ -57,6 +59,8 @@ export type HostChatEntry = { id: string; projectId: string; title: string; crea
 export const hostFacts = {
   autoPlanApproved: ledger(autoPlanApproved),
   autoPlanHeldAccess: ledger(autoPlanHeldAccess),
+  autoPlanFullIncluded: ledger(autoPlanFullIncluded),
+  autoPlanFullPeerRequest: ledger(autoPlanFullPeerRequest),
   workspaceChoicePending: ledger(workspaceChoicePending),
   workspaceChoiceApproved: ledger(workspaceChoiceApproved),
   workspaceChoiceOnlyCheckout: ledger(workspaceChoiceOnlyCheckout),

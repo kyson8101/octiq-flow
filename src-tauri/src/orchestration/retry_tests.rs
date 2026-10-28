@@ -1249,11 +1249,14 @@ fn the_ledger_on_file_holds_nothing_a_read_derives() {
     lead.start(&retried.id).unwrap();
     lead.store.require_plan_approval(&lead.run.id).unwrap();
 
-    lead.store.auto_plan_set(&lead.key, true).unwrap();
+    lead.store
+        .auto_plan_set(&lead.key, true, Some(true))
+        .unwrap();
 
     // The read says every one of them.
     let said = serde_json::to_value(lead.snapshot()).unwrap();
     assert_eq!(said["runs"][0]["autoPlan"]["enabled"], true);
+    assert_eq!(said["runs"][0]["autoPlan"]["includeFull"], true);
     let tasks = said["tasks"].as_array().unwrap();
     assert_eq!(tasks.len(), 3);
     assert!(tasks.iter().all(|task| task["retryLimit"] == json!(2)));
