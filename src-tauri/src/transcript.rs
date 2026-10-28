@@ -785,7 +785,8 @@ pub fn page(key: &str, before: Option<u64>) -> Result<Page, String> {
 ///
 /// A line's position is its `seq`, so a page read from the end still has to
 /// know how many lines come before it. Finding the newlines is a memchr over
-/// the bytes; only host prompt envelopes need parsing to identify their echoes.
+/// the bytes; only host prompt envelopes and candidates for the first prompt
+/// need parsing to identify their echoes and the startup prefix.
 /// Parsing every line as JSON to the same end made opening a 100 MB chat take
 /// seconds.
 struct LineIndex {
@@ -801,6 +802,9 @@ struct LineIndex {
     /// The earliest host envelope for each UUID. Replays can be classified
     /// without parsing the intervening startup output or older replies.
     host_prompts: HashMap<String, u64>,
+    /// Context before this first host prompt belongs to its turn, even when
+    /// that prefix alone exceeds the page budget.
+    first_prompt: Option<u64>,
 }
 
 const CONTEXT_NEEDLES: [&[u8]; 2] = [br#""type":"thread.started""#, br#""subtype":"init""#];
@@ -810,12 +814,14 @@ impl LineIndex {
     fn scan(file: &File, limit: u64) -> std::io::Result<Self> {
         let needles = CONTEXT_NEEDLES.map(memchr::memmem::Finder::new);
         let host_prompt = memchr::memmem::Finder::new(br#""octiq_user_turn""#);
+        let user = memchr::memmem::Finder::new(br#""type":"user""#);
         let mut reader = BufReader::with_capacity(1 << 20, file);
         let mut index = LineIndex {
             starts: Vec::new(),
             end: 0,
             context: [Vec::new(), Vec::new()],
             host_prompts: HashMap::new(),
+            first_prompt: None,
         };
         let mut line = Vec::new();
         while (index.starts.len() as u64) < limit {
@@ -825,13 +831,19 @@ impl LineIndex {
                 break;
             }
             index.starts.push(index.end);
-            if host_prompt.find(&line).is_some() {
+            if host_prompt.find(&line).is_some()
+                || (index.first_prompt.is_none() && user.find(&line).is_some())
+            {
                 if let Ok(event) = serde_json::from_slice::<Value>(&line) {
+                    let seq = index.starts.len() as u64;
                     if let Some(id) = host_prompt_id(&event) {
-                        index
-                            .host_prompts
-                            .entry(id.to_string())
-                            .or_insert(index.starts.len() as u64);
+                        index.host_prompts.entry(id.to_string()).or_insert(seq);
+                    }
+                    if index.first_prompt.is_none()
+                        && host_event(&event)
+                        && page_prompt(&event, seq, &index.host_prompts)
+                    {
+                        index.first_prompt = Some(seq);
                     }
                 }
             }
@@ -920,7 +932,8 @@ impl Window {
 /// the event before it says the host was idle — so a prompt waits in
 /// `pending` until the nearest earlier `result` (a split) or reply start (not
 /// one) is reached. Older replies are never parsed; the line index reads only
-/// host prompt envelopes, plus the newest context event of each kind.
+/// host prompt envelopes, candidates for the first prompt, and the newest
+/// context event of each kind.
 fn page_with_budget(
     key: &str,
     before: Option<u64>,
@@ -962,7 +975,11 @@ fn page_with_budget(
         };
         let at = seen.len();
         let host = host_event(&event);
-        let prompt = host && page_prompt(&event, seq, &index.host_prompts);
+        // The first prompt owns all startup context before it. Only later
+        // prompts can split off a page; the first turn reaches record start.
+        let prompt = host
+            && Some(seq) != index.first_prompt
+            && page_prompt(&event, seq, &index.host_prompts);
         let busy = if host { host_busy(&event) } else { None };
         sums.push(sums[at] + bytes);
         seen.push(Recorded { seq, event });
@@ -1030,9 +1047,12 @@ fn page_with_budget(
         }
     }
     context.sort_by_key(|record| record.seq);
-    let before = events
-        .first()
-        .and_then(|record| (record.seq > 1).then_some(record.seq));
+    let before = events.first().and_then(|record| {
+        index
+            .first_prompt
+            .is_some_and(|first| first < record.seq)
+            .then_some(record.seq)
+    });
     Ok(Page {
         events,
         context,
@@ -1065,6 +1085,8 @@ fn page_forward(
     let mut chunks: VecDeque<(Vec<Recorded>, usize)> = VecDeque::from([(vec![], 0)]);
     let mut bytes = 0;
     let mut busy = false;
+    let mut prompted = false;
+    let mut has_earlier = false;
     let mut host_prompts = HashMap::new();
     let mut context: HashMap<String, Recorded> = HashMap::new();
     let mut lines = Vec::new();
@@ -1077,13 +1099,11 @@ fn page_forward(
             continue;
         };
         let host = event["parent_tool_use_id"].is_null() && event["octiq_speaker"].is_null();
-        if host
-            && !busy
-            && page_prompt(&event, seq, &host_prompts)
-            && !chunks.back().unwrap().0.is_empty()
-        {
+        let prompt = host && page_prompt(&event, seq, &host_prompts);
+        if prompt && !busy && prompted && !chunks.back().unwrap().0.is_empty() {
             chunks.push_back((vec![], 0));
         }
+        prompted |= prompt;
         if let Some(id) = host_prompt_id(&event) {
             host_prompts.entry(id.to_string()).or_insert(seq);
         }
@@ -1100,6 +1120,7 @@ fn page_forward(
         chunk.1 += line.len();
         chunk.0.push(Recorded { seq, event });
         while chunks.len() > 1 && (bytes > budget || chunks.len() > turns) {
+            has_earlier = true;
             let (dropped, size) = chunks.pop_front().unwrap();
             bytes -= size;
             for record in dropped {
@@ -1119,7 +1140,7 @@ fn page_forward(
     context.sort_by_key(|record| record.seq);
     let before = events
         .first()
-        .and_then(|record| (record.seq > 1).then_some(record.seq));
+        .and_then(|record| has_earlier.then_some(record.seq));
     Ok(Page {
         events,
         context,
@@ -1256,6 +1277,22 @@ mod tests {
         format!("test-{name}-{}", uuid::Uuid::new_v4().simple())
     }
 
+    fn assert_page_has_drawable_turn(page: &Page) {
+        let host_prompts = page
+            .events
+            .iter()
+            .filter_map(|record| {
+                host_prompt_id(&record.event).map(|id| (id.to_string(), record.seq))
+            })
+            .collect();
+        assert!(
+            page.events.iter().any(|record| {
+                host_event(&record.event) && page_prompt(&record.event, record.seq, &host_prompts)
+            }),
+            "a page must contain a drawable turn, not only context: {page:?}"
+        );
+    }
+
     #[test]
     fn pages_walk_backwards_without_gaps_or_duplicates() {
         let key = unique_key("pages");
@@ -1275,6 +1312,11 @@ mod tests {
             append(&key, &json!({"type":"result"}));
         }
         let latest = page_with_budget(&key, None, usize::MAX, 3).unwrap();
+        assert_page_has_drawable_turn(&latest);
+        assert_eq!(
+            serde_json::to_value(&latest).unwrap(),
+            serde_json::to_value(page_forward(&key, None, usize::MAX, 3).unwrap()).unwrap()
+        );
         assert_eq!(latest.events.len(), 9);
         assert_eq!(latest.context[0].event["session_id"], "session");
         let mut sequences: Vec<u64> = latest.events.iter().map(|e| e.seq).collect();
@@ -1286,12 +1328,91 @@ mod tests {
         );
         while let Some(before) = cursor {
             let older = page_with_budget(&key, Some(before), usize::MAX, 3).unwrap();
+            assert_page_has_drawable_turn(&older);
+            let expected = page_forward(&key, Some(before), usize::MAX, 3).unwrap();
+            assert_eq!(
+                serde_json::to_value(&older).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
             assert!(older.before.is_none_or(|next| next < before));
             sequences.extend(older.events.iter().map(|e| e.seq));
             cursor = older.before;
         }
         sequences.sort_unstable();
         assert_eq!(sequences, (1..=37).collect::<Vec<_>>());
+        forget(&key);
+    }
+
+    #[test]
+    fn startup_context_joins_the_first_drawable_turn_even_over_budget() {
+        let key = unique_key("page-startup-context");
+        for event in [
+            json!({"type":"system", "subtype":"init", "session_id":"session"}),
+            json!({"type":"thread.started", "thread_id":"thread"}),
+            json!({"type":"system", "subtype":"hook_response", "output":"x".repeat(300 * 1024)}),
+            // User-shaped context is not an earlier host prompt.
+            json!({"type":"user", "message":{"content":[{"type":"tool_result","content":"hook"}]}}),
+            json!({"type":"user", "parent_tool_use_id":"p", "message":{"content":"subagent"}}),
+            json!({"type":"user", "octiq_speaker":{"id":"a"}, "message":{"content":"seat"}}),
+            json!({"type":"user", "octiq_append_to":"u", "message":{"content":"appended"}}),
+        ] {
+            append(&key, &event);
+        }
+        for n in 0..4 {
+            append(
+                &key,
+                &json!({"type":"user", "isReplay":true,
+                    "octiq_user_turn_id":format!("queued-{n}"),
+                    "message":{"content":[{"type":"image", "source":{"data":"image"}}]}}),
+            );
+            append(&key, &json!({"type":"assistant"}));
+            append(&key, &json!({"type":"result"}));
+        }
+        for (budget, turns) in [(1, 1), (256 * 1024, 3), (256 * 1024, 4), (usize::MAX, 3)] {
+            let mut cursor = None;
+            let mut sequences = Vec::new();
+            loop {
+                let page = page_with_budget(&key, cursor, budget, turns).unwrap();
+                let expected = page_forward(&key, cursor, budget, turns).unwrap();
+                assert_page_has_drawable_turn(&page);
+                assert_eq!(
+                    serde_json::to_value(&page).unwrap(),
+                    serde_json::to_value(&expected).unwrap()
+                );
+                sequences.extend(page.events.iter().map(|record| record.seq));
+                cursor = page.before;
+                if cursor.is_none() {
+                    assert_eq!(page.events.first().unwrap().seq, 1);
+                    assert_eq!(page.events.len(), 10, "the prefix and exactly one turn");
+                    assert!(page.context.is_empty());
+                    break;
+                }
+            }
+            sequences.sort_unstable();
+            assert_eq!(sequences, (1..=19).collect::<Vec<_>>());
+        }
+        forget(&key);
+    }
+
+    #[test]
+    fn a_torn_prefix_does_not_offer_an_empty_earlier_page() {
+        let key = unique_key("page-torn-prefix");
+        fs::write(
+            path_for(&key).unwrap(),
+            "{\"torn\":\n{\"type\":\"user\",\"message\":{\"content\":\"prompt\"}}\n{\"type\":\"result\"}\n",
+        )
+        .unwrap();
+        for page in [
+            page_with_budget(&key, None, 1, 1).unwrap(),
+            page_forward(&key, None, 1, 1).unwrap(),
+        ] {
+            assert_page_has_drawable_turn(&page);
+            assert_eq!(page.before, None);
+            assert_eq!(
+                page.events.iter().map(|r| r.seq).collect::<Vec<_>>(),
+                [2, 3]
+            );
+        }
         forget(&key);
     }
 
