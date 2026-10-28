@@ -70,7 +70,11 @@ test("vault calls route to the native host with process identity and bounded sch
   t.after(() => { delete process.env.OCTIQ_HOOK_PORT; });
   const write = args => call(root, "chat:current", "tools/call", { name: "vault_write", arguments: args });
   const args = { path: "project/progress.md", content: "共享 memory", mode: "append", expectedRevision: "old", requestId: "one" };
-  const saved = await write({ ...args, chatKey: "chat:other", root: "/etc", writable: true, actor: "browser" });
+  const injected = await write({ ...args, chatKey: "chat:other", root: "/etc", writable: true, actor: "browser" });
+  assert.equal(injected.isError, true);
+  assert.match(injected.content[0].text, /Unknown field\(s\): chatKey, root, writable, actor\./);
+  assert.equal(requests.length, 0);
+  const saved = await write(args);
   assert.equal(saved.isError, undefined);
   assert.deepEqual(JSON.parse(saved.content[0].text), response.result);
   assert.deepEqual(requests[0], { url: "/hook/vault", body: { chatKey: "chat:current", action: "write", args } });
@@ -111,8 +115,20 @@ test("an agent's memory append names only its words, and the host alone says whe
 
   const append = args => call(root, "chat:current", "tools/call", { name: "vault_agent_memory_append", arguments: args });
   const args = { text: "Use the receipt.", date: "2026-09-28", requestId: "r1" };
-  // Who the agent is, and which chat it is in, never cross the hook as arguments.
-  const saved = await append({ ...args, chatKey: "chat:other", agent: "Potato Juice", path: "../x.md" });
+  // Wrong field names fail locally, even when the provider ignores the schema.
+  for (const [invalid, message] of [
+    [{ content: args.text, date: args.date, requestId: args.requestId }, "Unknown field(s): content. Missing required field(s): text. vault_agent_memory_append takes: text, date, requestId."],
+    [{ date: args.date, requestId: args.requestId }, "Missing required field(s): text. vault_agent_memory_append takes: text, date, requestId."],
+    [{ text: args.text }, "Missing required field(s): requestId. vault_agent_memory_append takes: text, date, requestId."],
+    [{ ...args, chatKey: "chat:other", agent: "Potato Juice", path: "../x.md" }, "Unknown field(s): chatKey, agent, path. vault_agent_memory_append takes: text, date, requestId."],
+  ]) {
+    const rejected = await append(invalid);
+    assert.equal(rejected.isError, true);
+    assert.equal(rejected._meta["octiq/outcome"].reasonClass, "validation");
+    assert.equal(rejected.content[0].text, message);
+    assert.equal(requests.length, 0, "invalid fields must not reach the hook");
+  }
+  const saved = await append(args);
   assert.equal(saved.isError, undefined);
   assert.deepEqual(requests[0], { url: "/hook/vault", body: { chatKey: "chat:current", action: "agent_memory_append", args } });
   // A refusal reaches the agent as an error, once: nothing retries it.
@@ -126,7 +142,7 @@ test("an agent's memory append names only its words, and the host alone says whe
   // the model supplied.
   status = 200; response = { result: { status: "saved", text: "saved" } };
   const lessons = await call(root, "chat:current", "tools/call", {
-    name: "vault_agent_memory_lessons", arguments: { lessons: "- Use worktrees.", waitSeconds: 1, agent: "Other" },
+    name: "vault_agent_memory_lessons", arguments: { lessons: "- Use worktrees." },
   });
   assert.equal(lessons.isError, undefined);
   assert.deepEqual(requests[2], {

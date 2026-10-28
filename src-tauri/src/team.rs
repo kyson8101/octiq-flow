@@ -2414,7 +2414,7 @@ fn append_entry(
 ) -> Result<MemoryWrite, String> {
     use crate::memory_vault::Earlier;
     if text.is_empty() {
-        return Err("Write what is worth remembering.".into());
+        return Err("Pass the entry as `text` (1–4000 characters); nothing was written.".into());
     }
     if text.chars().count() > 4000 {
         return Err("Keep a memory entry under 4000 characters; record the essence.".into());
@@ -4031,6 +4031,24 @@ mod tests {
                 .unwrap_err()
                 .contains("does not report to you")
         );
+    }
+
+    #[test]
+    fn an_empty_memory_entry_names_the_text_field_before_touching_the_vault() {
+        let base = crate::test_dir::TestDir::new("empty-memory");
+        let profile = base.join("profile");
+        let vault = crate::memory_vault::Vault::at(profile.clone());
+        let path = temp();
+        let nova = save(&path, draft("Nova", None)).unwrap();
+        for text in ["", " \n\t"] {
+            let append = memory_append(&vault, "chat:lead", &nova, text, None, "empty");
+            assert_eq!(
+                append.result(&nova).unwrap_err(),
+                "Pass the entry as `text` (1–4000 characters); nothing was written."
+            );
+            assert!(append.note.is_none());
+            assert!(!profile.exists(), "validation must not write to the vault");
+        }
     }
 
     #[test]
