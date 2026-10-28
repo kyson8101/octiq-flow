@@ -108,8 +108,8 @@ platform SDK — the server is plain Rust and the client is a static bundle.
 
 ```bash
 pnpm --dir web build                                       # the client → web/dist
-cd src-tauri && cargo build --release --bin octiq-server    # the backend
-./target/release/octiq-server                              # run it
+cd src-tauri && cargo build --profile release-local --bin octiq-server   # the backend
+./target/release-local/octiq-server                        # run it
 ```
 
 Then open the URL it prints. The client is served at the root and needs the
@@ -144,7 +144,7 @@ Two things bite here, and both report themselves as something else:
 pnpm --dir web install
 pnpm --dir web build
 $env:OPENSSL_NO_VENDOR = "1"
-cargo build --release --bin octiq-server --manifest-path src-tauri\Cargo.toml
+cargo build --profile release-local --bin octiq-server --manifest-path src-tauri\Cargo.toml
 ```
 
 `scripts\start-octiqflow.ps1` then starts the server and opens the browser for

@@ -103,11 +103,13 @@ restart. The old server keeps running, which is the right outcome.
 
 ```bash
 pnpm --dir web build                                    # tsc -b && vite build
-cd src-tauri && cargo build --release --bin octiq-server
+cd src-tauri && cargo build --profile release-local --bin octiq-server
 ```
 
-The client build is quick. The server is a release build with LTO, so give it a
-minute or two on a cold tree; run it in the background and wait.
+The local server uses thin LTO and parallel codegen, producing
+`src-tauri/target/release-local/octiq-server` (with the default target directory).
+Run the long build under `octiq-job --detach --label "Build local server" --`
+and wait for its exit status. npm/CI keeps full LTO via `--release`.
 
 If either fails (non-zero exit, `error[...]`), **stop** and show the relevant
 tail. Nothing has been swapped yet, so the running server is untouched.

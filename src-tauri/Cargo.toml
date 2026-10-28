@@ -58,8 +58,8 @@ libc = "0.2"
 # Profile ownership uses native process handles, not Unix/MSYS process IDs.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
-# The server ships as one stripped binary, so the only things that matter here
-# are size and speed — not incremental rebuild time (card 20).
+# npm/CI ships a full-LTO stripped binary. Keep this profile tuned for shipped
+# size and speed; local service builds use release-local below.
 [profile.release]
 # Cross-crate inlining and dead-code elimination across the whole dependency
 # graph. This is where most of the size win comes from, and it is why
@@ -83,6 +83,12 @@ strip = "symbols"
 #     loop, and there is no benchmark here to prove it does not regress, so the
 #     default (3) stands. Revisit with a measurement, not a guess.
 
+# Local deploys trade whole-program optimization for faster rebuilds. Inherit
+# release stripping and optimization; npm/CI continues to use --release.
+[profile.release-local]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time"] }

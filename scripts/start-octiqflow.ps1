@@ -48,7 +48,7 @@ function Stop-WithMessage {
 }
 
 $repo = Split-Path -Parent $PSScriptRoot
-$exe  = Join-Path $repo 'src-tauri\target\release\octiq-server.exe'
+$exe  = Join-Path $repo 'src-tauri\target\release-local\octiq-server.exe'
 
 # Both halves or neither. web/dist is read off disk at runtime (web.rs
 # v2_root), so a missing client is a blank page rather than a startup error --
@@ -59,7 +59,7 @@ if (-not (Test-Path -LiteralPath $exe)) {
         '',
         "Build both halves from $repo :",
         '  pnpm --dir web build',
-        '  cargo build --release --bin octiq-server --manifest-path src-tauri\Cargo.toml'
+        '  cargo build --profile release-local --bin octiq-server --manifest-path src-tauri\Cargo.toml'
     )
 }
 if (-not (Test-Path -LiteralPath (Join-Path $repo 'web\dist\index.html'))) {

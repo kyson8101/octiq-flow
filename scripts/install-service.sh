@@ -30,13 +30,15 @@ fi
 BIND="${1:-127.0.0.1}"
 PORT="${OCTIQ_WEB_PORT:-1421}"
 
-BUILT="${REPO}/src-tauri/target/release/octiq-server"
-# The installed binary is copied out of target/, so an existing release file
+BUILT="${REPO}/src-tauri/target/release-local/octiq-server"
+# Pin the target directory even when CARGO_TARGET_DIR is inherited. Never copy
+# an old binary after Cargo successfully builds somewhere else.
+# The installed binary is copied out of target/, so an existing local file
 # says nothing about whether it reflects this checkout. Always rebuild before
 # replacing a service; otherwise a frontend/source edit can look deployed while
 # launchd quietly keeps running yesterday's server.
 echo "Building the server…"
-(cd "${REPO}/src-tauri" && cargo build --release --bin octiq-server)
+(cd "${REPO}/src-tauri" && cargo build --profile release-local --bin octiq-server --target-dir "${REPO}/src-tauri/target")
 
 # The browser bundle is served directly from web/dist. Building it as part of
 # installation keeps a frontend edit and backend restart from deploying a
