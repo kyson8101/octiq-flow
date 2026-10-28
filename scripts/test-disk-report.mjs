@@ -41,6 +41,51 @@ function resultFor(cmd) {
     default: return null;
   }
 }
+async function startDiskPaintCheck(page) {
+  await page.evaluate(() => {
+    window.diskPaint = { first: null, last: null, failures: [], frames: 0 };
+    const sample = () => {
+      if (window.diskPaintStopped) return;
+      const panel = document.querySelector('.disk-map-panel');
+      if (panel?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) {
+        const origin = panel.getBoundingClientRect();
+        const nodes = [...panel.querySelectorAll('.disk-tile, .disk-map-summary')];
+        if (nodes.length) {
+          const geometry = nodes.map(node => {
+            const box = node.getBoundingClientRect();
+            const content = node.querySelector('.disk-tile-content') ?? node;
+            const inner = content.getBoundingClientRect();
+            const lines = [...node.querySelectorAll('.disk-tile-label, .disk-tile-size')];
+            if (inner.height <= 0 || lines.some(line => {
+              const rect = line.getBoundingClientRect();
+              return !line.textContent.trim() || getComputedStyle(line).display === 'none' || rect.height <= 0
+                || rect.top < inner.top - 0.5 || rect.bottom > inner.bottom + 0.5
+                || (line.classList.contains('disk-tile-size') && line.scrollWidth > line.clientWidth + 0.5);
+            })) window.diskPaint.failures.push({ name: node.getAttribute('aria-label'), box: box.toJSON(), inner: inner.toJSON() });
+            return [node.getAttribute('aria-label'), ...[box.x - origin.x, box.y - origin.y, box.width, box.height].map(n => Math.round(n))];
+          });
+          const frame = { fonts: document.fonts.status, geometry, panelHeight: Math.round(origin.height) };
+          window.diskPaint.first ??= frame;
+          window.diskPaint.last = frame;
+          window.diskPaint.frames++;
+        }
+      }
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+}
+async function finishDiskPaintCheck(page, theme, width) {
+  // Observe every frame from opening, including the font-loading window. The
+  // font promise ends observation; it never delays the first-paint assertions.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const paint = await page.evaluate(() => { window.diskPaintStopped = true; return window.diskPaint; });
+  await writeFile(join(evidence, `${theme}-${width}-first-paint.json`), JSON.stringify(paint, null, 2));
+  assert.ok(paint.first, 'The overview must have a visible first paint');
+  assert.deepEqual(paint.failures, [], 'Every painted tile must have readable text, without a settle');
+  assert.deepEqual(paint.first.geometry, paint.last.geometry, 'Font arrival must not rearrange the overview');
+  assert.equal(paint.first.panelHeight, paint.last.panelHeight, 'The overview reserves its final height before paint');
+}
 async function open(theme, width) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce", acceptDownloads: true });
   await context.addInitScript(mode => {
@@ -90,11 +135,13 @@ async function open(theme, width) {
   await page.locator(".sidebar:visible, .topbar-nav:visible").first().waitFor();
   const diskLink = page.getByRole("button", { name: "Disk", exact: true });
   if (!await diskLink.isVisible()) await page.getByRole("button", { name: /Show chats|Show sidebar/i }).first().click();
+  await startDiskPaintCheck(page);
   await diskLink.click();
   await page.getByRole("region", { name: "Disk report", exact: true }).waitFor();
   await page.getByText("Development leftovers", { exact: true }).waitFor();
   await page.getByRole("article", { name: crowded ? "Linked Git worktree" : "pnpm store", exact: true }).first().waitFor();
   await page.evaluate(() => document.fonts.ready);
+  await finishDiskPaintCheck(page, theme, width);
   return { page, context, localCalls, setUnavailable: () => { unavailable = true; },
     finish: () => { const scanId = running.scanId; currentReport = { ...currentReport, scanId, scannedAt: Date.now() }; running = null; sendEvent("disk-scan-done", { scanId, ok: true }); },
     progress: () => { running = { ...running, phase: "git", entries: 1234, bytes: 450000000 }; sendEvent("disk-scan-progress", running); },

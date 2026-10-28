@@ -128,10 +128,14 @@ export function DiskMap({ items, selected, onFocus }: { items: DiskItem[]; selec
   const [width, setWidth] = useState(0);
   const [inspected, setInspected] = useState<string | null>(null);
   const [floor, probes] = useDiskTileFloor();
-  useEffect(() => {
-    if (!container.current) return;
+  useLayoutEffect(() => {
+    const node = container.current;
+    if (!node) return;
+    // Resolve the initial width before paint, together with the font floor.
+    // Waiting for ResizeObserver would first paint the zero-width summaries.
+    setWidth(node.getBoundingClientRect().width);
     const observer = new ResizeObserver(entries => { const size = entries[0]?.contentRect.width; if (size > 0) setWidth(size); });
-    observer.observe(container.current);
+    observer.observe(node);
     return () => observer.disconnect();
   }, []);
   const height = Math.max(340, Math.min(520, width * 1.1));

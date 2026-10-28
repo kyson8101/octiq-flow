@@ -25,7 +25,11 @@
 .disk-map-legend i { width: 8px; height: 8px; border-radius: 2px; background: var(--disk-state); }
 .disk-map { position: relative; width: 100%; }
 .disk-map-region { position: absolute; }
+/* The global reduced-motion duration also enables implicit `all` transitions.
+   Geometry must be final on the first paint, including a map growing from 0. */
+.disk-map, .disk-map-region { transition-property: none; }
 .disk-tile { position: absolute; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 6px; padding: 0; min-width: 0; min-height: 0; overflow: hidden; border: 2px solid var(--bg-1); border-radius: 5px; background: color-mix(in srgb, var(--disk-state) 17%, var(--bg-1)); box-shadow: inset 3px 0 var(--disk-state); color: var(--fg-0); text-align: left; font-size: 13px; cursor: pointer; }
+.disk-tile, .disk-map-summary { transition-property: background-color, border-color, box-shadow, color; }
 .disk-tile.is-work { cursor: default; }
 .disk-tile-content { position: absolute; inset: 10px; display: flex; flex-direction: column; justify-content: center; gap: 6px; min-width: 0; }
 .disk-tile-label { display: block; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; line-height: 20px; }
