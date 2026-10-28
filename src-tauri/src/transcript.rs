@@ -743,8 +743,19 @@ pub struct Page {
 
 /// Start pages at an idle host's next prompt, never halfway through a streamed
 /// message or at a queued prompt inside the reply it is waiting behind.
-fn page_prompt(event: &Value) -> bool {
+fn page_prompt(event: &Value, seq: u64, host_prompts: &HashMap<String, u64>) -> bool {
     if event["type"] != "user" || event.get("octiq_append_to").is_some() {
+        return false;
+    }
+    // Claude echoes an ordinary host prompt after its startup output. That
+    // echo belongs to the turn already started by the host's envelope. Queued
+    // Claude prompts have no earlier envelope: their echo still starts a turn.
+    if event["isReplay"] == true
+        && event["octiq_user_turn_id"]
+            .as_str()
+            .and_then(|id| host_prompts.get(id))
+            .is_some_and(|&host_seq| host_seq < seq)
+    {
         return false;
     }
     let content = &event["message"]["content"];
@@ -757,18 +768,26 @@ fn page_prompt(event: &Value) -> bool {
         })
 }
 
+fn host_prompt_id(event: &Value) -> Option<&str> {
+    (host_event(event) && event["type"] == "user" && event["octiq_user_turn"] == true)
+        .then(|| event["uuid"].as_str())
+        .flatten()
+        .filter(|id| !id.is_empty())
+}
+
 /// Keep a few recent complete turns, targeting 256 KiB. One indivisible turn
 /// may exceed that budget. Older bytes stay on disk until explicitly requested.
 pub fn page(key: &str, before: Option<u64>) -> Result<Page, String> {
     page_with_budget(key, before, 256 * 1024, 3)
 }
 
-/// Where each line of a record starts, found without reading what it says.
+/// Where each line of a record starts, found without parsing older replies.
 ///
 /// A line's position is its `seq`, so a page read from the end still has to
 /// know how many lines come before it. Finding the newlines is a memchr over
-/// the bytes; parsing every line as JSON to the same end is what made opening
-/// a 100 MB chat take seconds.
+/// the bytes; only host prompt envelopes need parsing to identify their echoes.
+/// Parsing every line as JSON to the same end made opening a 100 MB chat take
+/// seconds.
 struct LineIndex {
     /// Byte offset of each line; `starts[i]` is the line with `seq = i + 1`.
     starts: Vec<u64>,
@@ -779,6 +798,9 @@ struct LineIndex {
     /// Records are written compactly by `serde_json`, and inside a string the
     /// quotes would be escaped, so these spellings are the events themselves.
     context: [Vec<u64>; 2],
+    /// The earliest host envelope for each UUID. Replays can be classified
+    /// without parsing the intervening startup output or older replies.
+    host_prompts: HashMap<String, u64>,
 }
 
 const CONTEXT_NEEDLES: [&[u8]; 2] = [br#""type":"thread.started""#, br#""subtype":"init""#];
@@ -787,11 +809,13 @@ impl LineIndex {
     /// Index at most `limit` lines of `file`.
     fn scan(file: &File, limit: u64) -> std::io::Result<Self> {
         let needles = CONTEXT_NEEDLES.map(memchr::memmem::Finder::new);
+        let host_prompt = memchr::memmem::Finder::new(br#""octiq_user_turn""#);
         let mut reader = BufReader::with_capacity(1 << 20, file);
         let mut index = LineIndex {
             starts: Vec::new(),
             end: 0,
             context: [Vec::new(), Vec::new()],
+            host_prompts: HashMap::new(),
         };
         let mut line = Vec::new();
         while (index.starts.len() as u64) < limit {
@@ -801,6 +825,16 @@ impl LineIndex {
                 break;
             }
             index.starts.push(index.end);
+            if host_prompt.find(&line).is_some() {
+                if let Ok(event) = serde_json::from_slice::<Value>(&line) {
+                    if let Some(id) = host_prompt_id(&event) {
+                        index
+                            .host_prompts
+                            .entry(id.to_string())
+                            .or_insert(index.starts.len() as u64);
+                    }
+                }
+            }
             for (needle, seqs) in needles.iter().zip(&mut index.context) {
                 if needle.find(&line).is_some() {
                     seqs.push(index.starts.len() as u64);
@@ -885,8 +919,8 @@ impl Window {
 /// last turn however large. Walking backwards, a prompt is a split only once
 /// the event before it says the host was idle — so a prompt waits in
 /// `pending` until the nearest earlier `result` (a split) or reply start (not
-/// one) is reached. Everything older than the page is never parsed, apart
-/// from the newest context event of each kind.
+/// one) is reached. Older replies are never parsed; the line index reads only
+/// host prompt envelopes, plus the newest context event of each kind.
 fn page_with_budget(
     key: &str,
     before: Option<u64>,
@@ -928,7 +962,7 @@ fn page_with_budget(
         };
         let at = seen.len();
         let host = host_event(&event);
-        let prompt = host && page_prompt(&event);
+        let prompt = host && page_prompt(&event, seq, &index.host_prompts);
         let busy = if host { host_busy(&event) } else { None };
         sums.push(sums[at] + bytes);
         seen.push(Recorded { seq, event });
@@ -1031,6 +1065,7 @@ fn page_forward(
     let mut chunks: VecDeque<(Vec<Recorded>, usize)> = VecDeque::from([(vec![], 0)]);
     let mut bytes = 0;
     let mut busy = false;
+    let mut host_prompts = HashMap::new();
     let mut context: HashMap<String, Recorded> = HashMap::new();
     let mut lines = Vec::new();
     for_each_line(file, |seq, line| lines.push((seq, line.to_vec())));
@@ -1042,8 +1077,15 @@ fn page_forward(
             continue;
         };
         let host = event["parent_tool_use_id"].is_null() && event["octiq_speaker"].is_null();
-        if host && !busy && page_prompt(&event) && !chunks.back().unwrap().0.is_empty() {
+        if host
+            && !busy
+            && page_prompt(&event, seq, &host_prompts)
+            && !chunks.back().unwrap().0.is_empty()
+        {
             chunks.push_back((vec![], 0));
+        }
+        if let Some(id) = host_prompt_id(&event) {
+            host_prompts.entry(id.to_string()).or_insert(seq);
         }
         if host {
             match event["type"].as_str().unwrap_or_default() {
@@ -1270,7 +1312,7 @@ mod tests {
             let path = path_for(&key).unwrap();
             let mut text = String::new();
             for _ in 0..roll(60) {
-                let event = match roll(16) {
+                let event = match roll(20) {
                     0 => {
                         json!({"type":"system","subtype":"init","session_id":format!("s{}", roll(9))})
                     }
@@ -1294,6 +1336,12 @@ mod tests {
                     14 => {
                         json!({"type":"user","octiq_speaker":{"id":"a"},"message":{"content":"seat"}})
                     }
+                    15 => json!({"type":"user", "uuid":format!("user-{}", roll(4)),
+                        "octiq_user_turn":true, "message":{"content":"host"}}),
+                    16 | 17 => json!({"type":"user", "isReplay":true,
+                        "octiq_user_turn_id":format!("user-{}", roll(4)), "message":{"content":"echo"}}),
+                    18 => json!({"type":"user", "uuid":"user-0", "octiq_user_turn":true,
+                        "parent_tool_use_id":"p", "message":{"content":"subagent"}}),
                     _ => {
                         text.push_str("{\"torn\": \n");
                         continue;
@@ -1355,7 +1403,7 @@ mod tests {
                 let started = std::time::Instant::now();
                 let expected = page_forward(&key, cursor, 256 * 1024, 3).unwrap();
                 let slow = started.elapsed();
-                eprintln!("{file} before {cursor:?}: {fast:?} from the end, {slow:?} from the front, {} events", found.events.len());
+                eprintln!("{file} before {cursor:?}: {fast:?} from the end, {slow:?} from the front, {} events, next before {:?}", found.events.len(), found.before);
                 let seqs = |p: &Page| {
                     p.events
                         .iter()
@@ -1372,6 +1420,82 @@ mod tests {
             }
             forget(&key);
         }
+    }
+
+    #[test]
+    fn startup_replay_stays_with_its_host_prompt_despite_the_byte_budget() {
+        let key = unique_key("page-startup-replay");
+        append(
+            &key,
+            &json!({"type":"user", "uuid":"user-first", "octiq_user_turn":true,
+                "message":{"content":"first prompt"}}),
+        );
+        // SessionStart hooks, slash-command lists and init can occupy most of
+        // the byte budget before Claude echoes the prompt back.
+        for _ in 0..2 {
+            append(
+                &key,
+                &json!({"type":"system", "subtype":"hook_response", "output":"x".repeat(105 * 1024)}),
+            );
+        }
+        append(&key, &json!({"type":"system", "subtype":"init"}));
+        append(
+            &key,
+            &json!({"type":"user", "isReplay":true, "octiq_user_turn_id":"user-first",
+                "message":{"content":[{"type":"image", "source":{"data":"a".repeat(60 * 1024)}}]}}),
+        );
+        append(
+            &key,
+            &json!({"type":"stream_event", "event":{"type":"message_start"}}),
+        );
+        for _ in 0..20 {
+            append(
+                &key,
+                &json!({"type":"stream_event", "event":{"type":"content_block_delta", "text":"x".repeat(4096)}}),
+            );
+        }
+        for page in [
+            page(&key, None).unwrap(),
+            page_forward(&key, None, 256 * 1024, 3).unwrap(),
+        ] {
+            assert_eq!(page.before, None);
+            assert_eq!(page.events.first().unwrap().seq, 1);
+            assert_eq!(page.events.len(), 26);
+        }
+        forget(&key);
+    }
+
+    #[test]
+    fn replay_without_an_earlier_host_prompt_starts_its_queued_turn() {
+        let key = unique_key("page-queued-replay");
+        append(
+            &key,
+            &json!({"type":"user", "uuid":"user-first", "octiq_user_turn":true,
+                "message":{"content":"first"}}),
+        );
+        append(&key, &json!({"type":"assistant"}));
+        append(&key, &json!({"type":"result"}));
+        append(
+            &key,
+            &json!({"type":"user", "isReplay":true, "octiq_user_turn_id":"user-queued",
+                "message":{"content":"queued"}}),
+        );
+        append(&key, &json!({"type":"assistant"}));
+        // Even if this UUID appears later, it was not before the replay.
+        append(
+            &key,
+            &json!({"type":"user", "uuid":"user-queued", "octiq_user_turn":true,
+                "message":{"content":"later"}}),
+        );
+        for page in [
+            page_with_budget(&key, None, 1, 1).unwrap(),
+            page_forward(&key, None, 1, 1).unwrap(),
+        ] {
+            assert_eq!(page.before, Some(4));
+            assert_eq!(page.events.first().unwrap().seq, 4);
+            assert_eq!(page.events.len(), 3);
+        }
+        forget(&key);
     }
 
     #[test]
