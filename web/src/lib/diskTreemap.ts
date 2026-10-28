@@ -1,4 +1,4 @@
-import { diskSelectable, type DiskGroup, type DiskItem } from "./diskReport";
+import { diskGroupLabel, diskSelectable, type DiskGroup, type DiskItem } from "./diskReport";
 
 export type Weighted = { id: string; bytes: number };
 export type Tile = { id: string; x: number; y: number; width: number; height: number };
@@ -75,11 +75,81 @@ export function aggregateDiskMap(items: readonly DiskItem[], selected: ReadonlyS
   return result;
 }
 
-export type DiskLabelFit = "full" | "size" | "none";
 type Extent = { width: number; height: number };
-/** Inputs are DOM measurements in CSS pixels, including real font line boxes.
- * The label is a single ellipsized line; never expose a partial vertical line. */
-export function diskLabelFit(available: Extent, label: Extent, size: Extent, gap: number): DiskLabelFit {
-  if (available.width < size.width || available.height < size.height) return "none";
-  return available.width >= label.width && available.height >= label.height + size.height + gap ? "full" : "size";
+
+export type DiskMapLayout = {
+  regions: { box: Tile; tiles: (DiskMapTile & Tile)[] }[];
+  summaries: DiskMapTile[];
+};
+
+const mapOrder = (a: DiskMapTile, b: DiskMapTile) => b.bytes - a.bytes || a.id.localeCompare(b.id);
+function combineMapTiles(entries: readonly DiskMapTile[], label: string, id: string): DiskMapTile {
+  return { id, label, group: entries[0].group,
+    bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0),
+    selectedCount: entries.reduce((sum, entry) => sum + entry.selectedCount, 0),
+    items: entries.flatMap(entry => [...entry.items]).sort((a, b) => b.bytes - a.bytes),
+  };
+}
+
+/** Pixel-based overview, independent of selection. The caller supplies a font-
+ * measured floor including padding/borders and space for the maximum tick count.
+ * Each pass folds or removes entries, so the loop is bounded by the input count.
+ * There is no DOM/layout feedback loop. Tiny groups move to flow-layout summaries,
+ * and the remaining map is laid out again rather than leaving empty slivers. */
+export function layoutDiskMap(overview: readonly DiskMapTile[], width: number, height: number, floor: (entry: DiskMapTile) => Extent): DiskMapLayout {
+  const groups = (["clean", "review", "work"] as const).flatMap(group => {
+    const entries = overview.filter(entry => entry.group === group);
+    return entries.length ? [combineMapTiles(entries, diskGroupLabel[group], JSON.stringify([group]))] : [];
+  });
+  const fits = (box: Extent, entry: DiskMapTile) => {
+    const min = floor(entry);
+    return box.width >= min.width && box.height >= min.height;
+  };
+  const summaries: DiskMapTile[] = [];
+  const members = new Map(groups.map(group => [group.id, overview.filter(entry => entry.group === group.group).sort(mapOrder)]));
+  let visible = groups;
+  // Each pass removes a group/Other or folds at least one sibling. No pass
+  // restores a removed member, so there are at most O(N) layout passes.
+  for (;;) {
+    const boxes = diskTreemap(visible, width, height);
+    const regions: DiskMapLayout["regions"] = [];
+    let changed = false;
+    for (const group of visible) {
+      const box = boxes.find(box => box.id === group.id);
+      if (!box || !fits(box, group)) {
+        summaries.push(group); members.delete(group.id); changed = true;
+        continue;
+      }
+      let entries = members.get(group.id)!;
+      const tiles = diskTreemap(entries, box.width, box.height);
+      const failed = entries.filter(entry => !fits(tiles.find(tile => tile.id === entry.id)!, entry));
+      if (!failed.length) {
+        regions.push({ box, tiles: tiles.map(tile => ({ ...entries.find(entry => entry.id === tile.id)!, ...tile })) });
+        continue;
+      }
+      changed = true;
+      if (entries.length === 1) {
+        members.set(group.id, [group]);
+        continue;
+      }
+      const otherId = JSON.stringify([group.group, null]);
+      const other = entries.find(entry => entry.id === otherId);
+      const folding = new Set(failed.filter(entry => entry !== other));
+      if (!folding.size && other) {
+        // Even combined, the tail can be a sliver. Keep it readable next to
+        // the map instead of sacrificing the useful large-category overview.
+        summaries.push(other);
+        entries = entries.filter(entry => entry !== other);
+      } else {
+        if (other) folding.add(other);
+        entries = [...entries.filter(entry => !folding.has(entry)), combineMapTiles([...folding], "Other", otherId)].sort(mapOrder);
+        if (entries.length === 1) entries = [group];
+      }
+      members.set(group.id, entries);
+    }
+    if (!changed) return { regions, summaries };
+    // Recompute both levels after summary removal: all displayed areas remain
+    // proportional to bytes, and no empty region is left behind.
+    visible = visible.filter(group => members.has(group.id)).map(group => combineMapTiles(members.get(group.id)!, group.label, group.id));
+  }
 }

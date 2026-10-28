@@ -44,17 +44,17 @@ describe("disk map aggregates", () => {
     expect(html).toMatch(/Other, 17 items,[^"<>]+1 ticked. Find in Review first/);
     expect(html).toContain("Media exports, 38 items,");
     expect(html).toContain("Your work is labelled only.");
-    expect(html.match(/class="disk-tile-content"/g)).toHaveLength(8);
-    expect(html.match(/<button type="button" class="disk-tile/g)).toHaveLength(7);
+    expect(html.match(/class="disk-map-summary/g)).toHaveLength(8);
+    expect(html.match(/<button type="button" class="disk-map-summary/g)).toHaveLength(7);
     expect(html).not.toContain("Find in Your work");
     expect(html).toContain("Other · 1 ticked");
-    expect(html).toContain('data-fit="none"'); // hidden until real layout is measured
+    expect(html).not.toContain('data-fit="none"'); // readable flow summaries until fonts are measured
   });
   it("ellipsizes a whole single label line and never clamps vertical fragments", () => {
     const css = lf(diskCss);
     expect(css).toMatch(/\.disk-tile-label \{[^}]*white-space: nowrap;[^}]*text-overflow: ellipsis/);
     expect(css).not.toContain("-webkit-line-clamp");
-    expect(css).toContain('[data-fit="none"]');
-    expect(css).toContain('[data-fit="size"]');
+    expect(css).not.toContain('[data-fit="none"]');
+    expect(css).toContain(".disk-map-summary .disk-tile-size");
   });
 });

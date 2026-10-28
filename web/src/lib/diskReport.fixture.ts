@@ -17,3 +17,16 @@ export function crowdedDiskReport(): DiskReport {
   return { scanId: "crowded-fixture", scannedAt: 1792972800000, platform: "macos", home: "/Users/demo", thresholdBytes: 1e8,
     totalBytes: items.reduce((sum, item) => sum + item.bytes, 0), items, skipped: [], previousScanAt: null };
 }
+
+/** DEV BACKUP's distribution that exposed pixel-small Safe/Other tiles. */
+export function realShapedDiskReport(): DiskReport {
+  const report = crowdedDiskReport();
+  const extra = (id: string, group: DiskGroup, kind: string, label: string, gb: number, action: DiskItem["action"]): DiskItem => ({
+    ...report.items[0], id, key: id, group, kind, label, bytes: gb * 1e9, path: `/Users/demo/${id}`, action,
+  });
+  report.items.push(extra("target", "clean", "project-target", "Project target", 76, { type: "rm", path: "/Users/demo/target" }),
+    extra("sdk", "review", "toolchains", "Android SDK", 49.9, null),
+    extra("docker", "review", "docker", "Docker storage", 39, { type: "docker", command: "docker system prune" }));
+  report.totalBytes = report.items.reduce((sum, item) => sum + item.bytes, 0);
+  return report;
+}

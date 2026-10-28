@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { aggregateDiskMap, diskLabelFit, diskTreemap } from "./diskTreemap";
-import { crowdedDiskReport } from "./diskReport.fixture";
+import { aggregateDiskMap, diskTreemap, layoutDiskMap } from "./diskTreemap";
+import { crowdedDiskReport, realShapedDiskReport } from "./diskReport.fixture";
 
 describe("diskTreemap", () => {
   it("handles zero and one item", () => {
@@ -70,21 +70,67 @@ describe("disk map overview", () => {
   });
 });
 
-describe("disk tile label fit from actual DOM extents", () => {
-  const label = { width: 90, height: 20 }, size = { width: 60, height: 18 };
-  it("requires two whole line boxes and their gap for a label", () => {
-    expect(diskLabelFit({ width: 90, height: 44 }, label, size, 6)).toBe("full");
-    expect(diskLabelFit({ width: 90, height: 43.9 }, label, size, 6)).toBe("size");
-    expect(diskLabelFit({ width: 89.9, height: 100 }, label, size, 6)).toBe("size");
+describe("readable pixel layout", () => {
+  const floor = () => ({ width: 140, height: 70 });
+  const entries = (weights: number[]) => aggregateDiskMap(weights.map((bytes, i) => ({ ...crowdedDiskReport().items[0], id: String(i), label: `Category ${i}`, kind: String(i), bytes })), new Set(["2"]), 0);
+  it("requires both dimensions at the exact pixel floor, including padding", () => {
+    const original = entries([1]);
+    expect(layoutDiskMap(original, 140, 70, floor).regions).toHaveLength(1);
+    for (const [width, height] of [[139.9, 70], [140, 69.9], [0, 70]]) {
+      const result = layoutDiskMap(original, width, height, floor);
+      expect(result.regions).toEqual([]);
+      expect(result.summaries[0].bytes).toBe(1);
+    }
   });
-  it("hides even the size if either dimension cannot contain it", () => {
-    expect(diskLabelFit({ width: 60, height: 18 }, label, size, 6)).toBe("size");
-    expect(diskLabelFit({ width: 59.9, height: 100 }, label, size, 6)).toBe("none");
-    expect(diskLabelFit({ width: 200, height: 17.9 }, label, size, 6)).toBe("none");
-    expect(diskLabelFit({ width: 0, height: 0 }, label, size, 6)).toBe("none");
+  it("folds unreadable siblings and re-lays out until the pixel floor is met", () => {
+    const original = entries([50, 50 / 3, 50 / 3, 50 / 3]);
+    const result = layoutDiskMap(original, 300, 300, () => ({ width: 140, height: 110 }));
+    const visible = result.regions.flatMap(region => region.tiles);
+    expect(visible.map(entry => entry.label)).toEqual(["Category 0", "Other"]);
+    expect(visible.find(entry => entry.label === "Other")?.items.map(item => item.id).sort()).toEqual(["1", "2", "3"]);
+    expect(visible.find(entry => entry.label === "Other")?.selectedCount).toBe(1);
+    expect(layoutDiskMap(original, 300, 300, () => ({ width: 140, height: 110 }))).toEqual(result);
+    visible.forEach(tile => { expect(tile.width).toBeGreaterThanOrEqual(140); expect(tile.height).toBeGreaterThanOrEqual(70); });
   });
-  it("uses measured font changes and ticked count widths, without assumed glyph sizes", () => {
-    expect(diskLabelFit({ width: 150, height: 44 }, label, { width: 170, height: 18 }, 6)).toBe("none");
-    expect(diskLabelFit({ width: 150, height: 44 }, { width: 90, height: 28 }, size, 6)).toBe("size");
+  it("summarizes an unreadable Other without a blank tile, keeping large categories", () => {
+    const result = layoutDiskMap(entries([99, 0.5, 0.5]), 300, 200, floor);
+    expect(result.regions[0].tiles).toHaveLength(1);
+    expect(result.regions[0].tiles[0].label).toBe("Category 0");
+    expect(result.regions[0].tiles[0].width).toBe(300);
+    expect(result.summaries[0].label).toBe("Other");
+    expect(result.summaries[0].items.map(item => item.id)).toEqual(["1", "2"]);
+    expect(result.summaries[0].selectedCount).toBe(1);
+  });
+  it("uses one region tile when individual category labels cannot fit", () => {
+    const result = layoutDiskMap(entries([1, 1]), 150, 80, floor);
+    expect(result.summaries).toEqual([]);
+    expect(result.regions[0].tiles).toHaveLength(1);
+    expect(result.regions[0].tiles[0].label).toBe("Review first");
+    expect(result.regions[0].tiles[0].items).toHaveLength(2);
+  });
+  it("moves a whole tiny group to a focusable summary and gives its area back", () => {
+    const original = entries([999, 1]);
+    original[1] = { ...original[1], group: "clean", items: original[1].items.map(item => ({ ...item, group: "clean" })) };
+    const result = layoutDiskMap(original, 300, 200, floor);
+    expect(result.summaries[0].label).toBe("Safe to clean");
+    expect(result.summaries[0].items[0].id).toBe("1");
+    expect(result.regions[0].box.width * result.regions[0].box.height).toBe(300 * 200);
+    expect(layoutDiskMap(original, 20, 20, floor).regions).toEqual([]);
+  });
+  it.each([crowdedDiskReport, realShapedDiskReport])("preserves all sums, counts, IDs and selection at both map widths", fixture => {
+    const report = fixture(), before = JSON.stringify(report);
+    for (const width of [300, 430]) {
+      const original = aggregateDiskMap(report.items, new Set(report.items.map(item => item.id)));
+      const result = layoutDiskMap(original, width, 340, floor);
+      const visible = result.regions.flatMap(region => region.tiles);
+      const all = [...visible, ...result.summaries];
+      expect(all.reduce((sum, tile) => sum + tile.bytes, 0)).toBe(report.totalBytes);
+      expect(all.reduce((sum, tile) => sum + tile.selectedCount, 0)).toBe(original.reduce((sum, tile) => sum + tile.selectedCount, 0));
+      expect(all.flatMap(tile => tile.items.map(item => item.id)).sort()).toEqual(report.items.map(item => item.id).sort());
+      visible.forEach(tile => { expect(tile.width).toBeGreaterThanOrEqual(140); expect(tile.height).toBeGreaterThanOrEqual(70); });
+      const unselected = layoutDiskMap(aggregateDiskMap(report.items, new Set()), width, 340, floor);
+      expect(visible.map(({ selectedCount: _, ...tile }) => tile)).toEqual(unselected.regions.flatMap(region => region.tiles).map(({ selectedCount: _, ...tile }) => tile));
+    }
+    expect(JSON.stringify(report)).toBe(before);
   });
 });
