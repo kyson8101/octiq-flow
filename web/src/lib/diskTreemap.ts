@@ -1,3 +1,5 @@
+import { diskSelectable, type DiskGroup, type DiskItem } from "./diskReport";
+
 export type Weighted = { id: string; bytes: number };
 export type Tile = { id: string; x: number; y: number; width: number; height: number };
 
@@ -35,4 +37,49 @@ export function diskTreemap(items: readonly Weighted[], width: number, height: n
     else { y += thickness; h = Math.max(0, height - y); }
   }
   return tiles;
+}
+
+export type DiskMapTile = Weighted & {
+  group: DiskGroup; label: string; items: readonly DiskItem[]; selectedCount: number;
+};
+
+/** Overview only: list rows and cleanup selection always keep their original IDs.
+ * Collapse kinds first, then the long tail below 1.5% of this group. Selection
+ * never changes geometry or membership, and remains counted even inside Other. */
+export function aggregateDiskMap(items: readonly DiskItem[], selected: ReadonlySet<string>, minShare = 0.015): DiskMapTile[] {
+  const result: DiskMapTile[] = [];
+  for (const group of ["clean", "review", "work"] as const) {
+    const kinds = new Map<string, DiskItem[]>();
+    for (const item of items) {
+      if (item.group !== group || !(item.bytes > 0 && Number.isFinite(item.bytes))) continue;
+      const bucket = kinds.get(item.kind) ?? [];
+      bucket.push(item); kinds.set(item.kind, bucket);
+    }
+    const makeTile = (id: string, label: string, members: DiskItem[]): DiskMapTile => ({
+      id, group, label, items: [...members].sort((a, b) => b.bytes - a.bytes),
+      bytes: members.reduce((sum, item) => sum + item.bytes, 0),
+      selectedCount: members.filter(item => diskSelectable(item) && selected.has(item.id)).length,
+    });
+    const buckets = [...kinds].map(([kind, members]) => {
+      const label = members.length === 1 ? members[0].label : kind === "git-worktree" ? "Linked Git worktrees"
+        : members.every(item => item.label === members[0].label) ? members[0].label
+        : (kind.replace(/[-_]/g, " ") || "Folders").replace(/^./, c => c.toUpperCase());
+      return makeTile(JSON.stringify([group, kind]), label, members);
+    });
+    const total = buckets.reduce((sum, bucket) => sum + bucket.bytes, 0);
+    const small = buckets.filter(bucket => bucket.bytes / total < minShare);
+    const kept = buckets.filter(bucket => bucket.bytes / total >= minShare);
+    if (small.length) kept.push(makeTile(JSON.stringify([group, null]), "Other", small.flatMap(bucket => [...bucket.items])));
+    result.push(...kept.sort((a, b) => b.bytes - a.bytes || a.id.localeCompare(b.id)));
+  }
+  return result;
+}
+
+export type DiskLabelFit = "full" | "size" | "none";
+type Extent = { width: number; height: number };
+/** Inputs are DOM measurements in CSS pixels, including real font line boxes.
+ * The label is a single ellipsized line; never expose a partial vertical line. */
+export function diskLabelFit(available: Extent, label: Extent, size: Extent, gap: number): DiskLabelFit {
+  if (available.width < size.width || available.height < size.height) return "none";
+  return available.width >= label.width && available.height >= label.height + size.height + gap ? "full" : "size";
 }

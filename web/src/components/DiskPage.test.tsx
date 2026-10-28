@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: vi.fn(), on: vi.fn() } }));
-import { DiskReportPage } from "./DiskPage";
+import { DiskMap, DiskReportPage } from "./DiskPage";
 import fixture from "../lib/__fixtures__/disk-report.json";
 import { readDiskReport } from "../lib/diskReport";
+import { crowdedDiskReport } from "../lib/diskReport.fixture";
+import diskCss from "./DiskPage.css?raw";
+import { lf } from "../lib/sourceText";
 
 const render = (over: Partial<Parameters<typeof DiskReportPage>[0]> = {}) => renderToStaticMarkup(<DiskReportPage report={readDiskReport(fixture)} onClose={() => {}} onScan={() => {}} {...over} />);
 describe("Disk report page", () => {
@@ -29,5 +32,29 @@ describe("Disk report page", () => {
     expect(html).toContain("Git worktrees · 1,234 entries · 450 MB counted");
     expect(html).toContain("powershell -File");
     expect(html).toContain("Wait for the scan to finish");
+  });
+});
+
+
+describe("disk map aggregates", () => {
+  it("keeps aggregate buttons descriptive and Work non-actionable", () => {
+    const html = renderToStaticMarkup(<DiskMap items={crowdedDiskReport().items} selected={new Set(["worktree-2", "archive-1"])} onFocus={() => {}} />);
+    expect(html).toContain("Linked Git worktrees, 70 items,");
+    expect(html).toMatch(/Linked Git worktrees, 70 items,[^"<>]+1 ticked. Find in Review first/);
+    expect(html).toMatch(/Other, 17 items,[^"<>]+1 ticked. Find in Review first/);
+    expect(html).toContain("Media exports, 38 items,");
+    expect(html).toContain("Your work is labelled only.");
+    expect(html.match(/class="disk-tile-content"/g)).toHaveLength(8);
+    expect(html.match(/<button type="button" class="disk-tile/g)).toHaveLength(7);
+    expect(html).not.toContain("Find in Your work");
+    expect(html).toContain("Other · 1 ticked");
+    expect(html).toContain('data-fit="none"'); // hidden until real layout is measured
+  });
+  it("ellipsizes a whole single label line and never clamps vertical fragments", () => {
+    const css = lf(diskCss);
+    expect(css).toMatch(/\.disk-tile-label \{[^}]*white-space: nowrap;[^}]*text-overflow: ellipsis/);
+    expect(css).not.toContain("-webkit-line-clamp");
+    expect(css).toContain('[data-fit="none"]');
+    expect(css).toContain('[data-fit="size"]');
   });
 });
