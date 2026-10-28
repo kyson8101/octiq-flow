@@ -32,6 +32,7 @@
 //   PLAYWRIGHT_CHANNEL=chrome                              a Chromium channel (chrome)
 //   OCTIQ_EVIDENCE_DIR=<dir>                               where the screenshots go (.shots/media-pip)
 //   OCTIQ_MEDIA_SIZES=1280,390                             optional width subset
+//   OCTIQ_MEDIA_PATH_MENU_ONLY=1                          path → native Play and intentional file actions
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
@@ -57,19 +58,22 @@ const SIZES = [{ name: "1280", width: 1280, height: 900, phone: false }, { name:
 /* ---- The files ------------------------------------------------------------- */
 
 const scratch = await mkdtemp(join(tmpdir(), "octiq-media-pip-"));
-const clipSeconds = Number(process.env.OCTIQ_MEDIA_CLIP_SECONDS || (process.env.OCTIQ_MEDIA_RESUME_ONLY ? 30 : 240));
+const clipSeconds = Number(process.env.OCTIQ_MEDIA_CLIP_SECONDS || (process.env.OCTIQ_MEDIA_PATH_MENU_ONLY ? 4 : process.env.OCTIQ_MEDIA_RESUME_ONLY ? 30 : 240));
 execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", `testsrc=size=480x270:rate=15:duration=${clipSeconds}`, "-f", "lavfi", "-i", `sine=frequency=330:duration=${clipSeconds}`,
   "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-movflags", "+faststart", join(scratch, "take.mp4")]);
 execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", `sine=frequency=440:duration=${clipSeconds}`, "-c:a", "aac", join(scratch, "voice.m4a")]);
 
 const VIDEO = join(repoRoot, "out/launch-take.mp4");
 const AUDIO = join(repoRoot, "out/voice-note.m4a");
+const NOTE = join(repoRoot, "out/notes.txt");
+await writeFile(join(scratch, 'notes.txt'), 'Notes for the review.');
 const FILES = new Map([
   [VIDEO, { file: join(scratch, "take.mp4"), type: "video/mp4" }],
   [AUDIO, { file: join(scratch, "voice.m4a"), type: "audio/mp4" }],
+  [NOTE, { file: join(scratch, 'notes.txt'), type: 'text/plain' }],
 ]);
 
-function mock(duplicate = false) {
+function mock(duplicate = false, text) {
   const stamp = 1792461219629;
   const chat = (id, title, at, text) => ({
     id, projectId: "octiq", title, customTitle: true, modelId: "claude:opus", access: "auto", sessionId: `session-${id}`, cwd: repoRoot,
@@ -77,6 +81,7 @@ function mock(duplicate = false) {
     messages: [{ id: `${id}-m1`, role: "assistant", streaming: false, blocks: [{ kind: "text", text }] }],
   });
   const a = chat("chat-a", "Launch video review", stamp, `The cut is ready: \`${VIDEO}\`\n\nAnd the voice-over on its own: \`${AUDIO}\``);
+  if (text) a.messages[0].blocks[0].text = text;
   const b = chat("chat-b", "Release notes", stamp - 60_000, "The release notes are drafted. Nothing to play here.");
   if (duplicate) a.messages.push(
     {id: 'a-user', role: 'user', streaming: false, blocks: [{kind: 'text', text: 'Review the same cut again.'}]},
@@ -113,12 +118,12 @@ function mock(duplicate = false) {
   return { stored, resultFor };
 }
 
-const server = await createServer({ root: webRoot, cacheDir: join(scratch, "vite-cache"), configFile: join(webRoot, "vite.config.ts"), server: { host: "127.0.0.1", port: 0, strictPort: false, fs: { strict: false } } });
+const server = await createServer({ root: webRoot, cacheDir: join(webRoot, "node_modules/.vite-media-pip"), configFile: join(webRoot, "vite.config.ts"), server: { host: "127.0.0.1", port: 0, strictPort: false, fs: { strict: false } } });
 const errors = [];
 const report = { artifacts, engine, themes, results: [] };
 
-async function open(browser, theme, { width, height, phone }, { noPip = false, duplicate = false } = {}) {
-  const { stored, resultFor } = mock(duplicate);
+async function open(browser, theme, { width, height, phone }, { noPip = false, duplicate = false, text } = {}) {
+  const { stored, resultFor } = mock(duplicate, text);
   const sockets = [], calls = [];
   let revisionDelay = 0, revision = 1;
   const context = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce", ...(phone ? { hasTouch: true, isMobile: engine !== "webkit" ? true : undefined } : {}) });
@@ -659,6 +664,256 @@ async function lifecycleScene(browser, theme, size, scene) {
   return {scene, size: size.name, theme};
 }
 
+/** Pass through the path to the native control, including after its menu has
+ * opened. Deliberately no off-page pointer move, focus or scripted play here. */
+async function pathMenuPlayScene(browser, theme, size, kind, rest, above = false) {
+  // Exercise hover at phone width too; touch's always-visible actions have a
+  // separate scene below. The App still uses its real responsive layout.
+  const { context, page } = await open(browser, theme, { ...size, phone: false }, { text: above ? `The cut is ready: \`${kind === 'audio' ? AUDIO : VIDEO}\`\n\n\`${NOTE}\`` : undefined });
+  try {
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await startInline(page, kind);
+    const player = page.locator('[data-mark=first]');
+    await player.evaluate(el => { el.pause(); el.currentTime = 0; });
+    await player.scrollIntoViewIfNeeded();
+    const path = page.locator('.prose-file-actions').filter({ hasText: above ? 'notes.txt' : kind === 'audio' ? 'voice-note' : 'launch-take' }).first();
+    await path.scrollIntoViewIfNeeded();
+    const line = await path.locator('.prose-path').evaluate(el => {
+      const r = [...el.getClientRects()].at(-1);
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    });
+    const b = await player.boundingBox();
+    const point = {
+      x: b.x + (engine === 'webkit' ? kind === 'video' ? b.width / 2 : b.width < 400 ? 22 : 50 : 24),
+      y: b.y + (engine === 'webkit' && kind === 'video' ? b.height / 2 : kind === 'video' ? b.height - 50 : b.height / 2),
+    };
+    const x = Math.max(line.x + 3, Math.min(point.x, line.x + line.width - 3));
+    await page.mouse.move(x, above ? line.y + line.height + 12 : line.y - 12);
+    await page.mouse.move(x, line.y + line.height / 2);
+    await page.waitForTimeout(rest);
+    const started = Date.now();
+    // A short, continuous route at human pointer speed, rather than a single
+    // protocol jump whose duration varies from a few ms to a busy frame.
+    for (let step = 1; step <= 3; step++) {
+      await page.waitForTimeout(40);
+      await page.mouse.move(x + (point.x - x) * step / 3,
+        line.y + line.height / 2 + (point.y - line.y - line.height / 2) * step / 3);
+    }
+    const travelMs = Date.now() - started;
+    const target = await page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      return { tag: el?.tagName, menu: !!el?.closest('.prose-file-action-menu') };
+    }, point);
+    assert.equal(target.menu, false, 'the first press reaches the native control');
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForFunction(() => {
+      const el = document.querySelector('[data-mark=first]');
+      return !el.paused && el.currentTime > 0.05;
+    });
+    const playback = await player.evaluate(el => ({ paused: el.paused, time: el.currentTime }));
+    await page.screenshot({ path: join(artifacts, `${engine}-path-play-${kind}-${size.name}-rest${rest}-${above ? 'above' : 'below'}.png`) });
+    return { scene: 'path-play', size: size.name, kind, rest, above, travelMs, target, ...playback };
+  } finally { await context.close(); }
+}
+
+/** Both named actions remain reachable from the path, by pointer and keyboard;
+ * touch retains its compact inline actions and the path's primary action. */
+async function menuReady(menu) {
+  await menu.getByRole('button').first().waitFor({ state: 'visible' });
+  // A top-layer box can be measurable before its descendants have painted.
+  // Assert geometry/hit testing on a rendered frame, as the person sees it.
+  await menu.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+async function pathMenuActionsScene(browser, theme, size, kind, touch = false, motion = 'reduce') {
+  const { context, page } = await open(browser, theme, { ...size, phone: touch });
+  try {
+    await page.emulateMedia({ reducedMotion: motion === 'normal' ? 'no-preference' : 'reduce' });
+    await page.evaluate(() => {
+      window.copiedPaths = [];
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.copiedPaths.push(text); } } });
+    });
+    const path = page.locator('.prose-file-actions').filter({ hasText: kind === 'audio' ? 'voice-note' : 'launch-take' }).first();
+    const button = path.locator('.prose-path');
+    const menu = path.locator('.prose-file-action-menu');
+    await button.waitFor();
+    await button.scrollIntoViewIfNeeded();
+    const visible = () => menu.evaluate(el => getComputedStyle(el).visibility === 'visible');
+    if (touch) {
+      assert(await visible(), 'touch actions are always visible');
+      assert.equal(await menu.evaluate(el => getComputedStyle(el).position), 'static');
+      await menu.getByRole('button', { name: /^Copy path:/ }).tap();
+    } else {
+      // Record actual hover-to-visible time in the browser, including reduced
+      // motion: intent delay remains, only the small fade is reduced.
+      await path.evaluate(el => {
+        window.menuHoverMs = null;
+        el.addEventListener('pointerenter', () => {
+          const start = performance.now();
+          const check = () => {
+            if (getComputedStyle(el.querySelector('.prose-file-action-menu')).visibility === 'visible') window.menuHoverMs = performance.now() - start;
+            else requestAnimationFrame(check);
+          };
+          requestAnimationFrame(check);
+        }, { once: true });
+      });
+      await button.hover();
+      await menu.waitFor({ state: 'visible' });
+      await menuReady(menu);
+      await page.waitForFunction(() => window.menuHoverMs !== null);
+      assert(await page.evaluate(() => window.menuHoverMs >= 140), 'passing hover does not instantly open the menu');
+      const r = await menu.boundingBox();
+      // Enter the menu by the touching edge, rather than crossing the gap of
+      // some other layout. It must stay open while travelling into its body.
+      await page.mouse.move(r.x + r.width / 2, r.y + r.height - 2, { steps: 6 });
+      await page.mouse.move(r.x + r.width / 2, r.y + 15, { steps: 4 });
+      assert(await visible(), 'path → menu keeps it open');
+      await page.screenshot({ path: join(artifacts, `${engine}-path-hover-${kind}-${size.name}-${motion}.png`) });
+      const player = await page.locator(`.prose-media.is-${kind}`).first().boundingBox();
+      await page.mouse.move(player.x + player.width - 5, player.y + player.height / 2);
+      await menu.waitFor({ state: 'hidden' });
+      await page.waitForTimeout(250);
+      assert.equal(await visible(), false, 'leave closes and cancels pending hover');
+      await button.hover();
+      await menuReady(menu);
+      await menu.getByRole('button', { name: /^Copy path:/ }).click();
+    }
+    assert.equal(await page.evaluate(() => window.copiedPaths.length), 1, 'Copy path works');
+    await menu.getByRole('button', { name: /^Open in OctiqFlow:/ })[touch ? 'tap' : 'click']();
+    await page.locator('.fpanel.is-open').waitFor();
+    if (touch) {
+      await page.locator('.fpanel.is-open').getByRole('button', { name: 'Close', exact: true }).click();
+      await page.locator('.fpanel').waitFor({ state: 'detached' });
+      await button.tap();
+      await page.locator('.fpanel.is-open').waitFor();
+    }
+    await page.screenshot({ path: join(artifacts, `${engine}-path-actions-${kind}-${size.name}-${touch ? 'touch' : 'hover-keyboard'}-${motion}.png`) });
+    return { scene: 'path-actions', size: size.name, kind, touch, motion, copied: await page.evaluate(() => window.copiedPaths.length), hoverMs: await page.evaluate(() => window.menuHoverMs ?? null) };
+  } finally { await context.close(); }
+}
+
+/** Keyboard starts in its own real App context, independent of FilePanel's
+ * phone reader/inert state and the pointer action's native focus restoration. */
+async function pathMenuKeyboardScene(browser, theme, size, kind, motion) {
+  const { context, page } = await open(browser, theme, { ...size, phone: false });
+  try {
+    await page.emulateMedia({ reducedMotion: motion === 'normal' ? 'no-preference' : 'reduce' });
+    await page.bringToFront();
+    await page.evaluate(() => {
+      window.copiedPaths = [];
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.copiedPaths.push(text); } } });
+    });
+    const path = page.locator('.prose-file-actions').filter({ hasText: kind === 'audio' ? 'voice-note' : 'launch-take' }).first();
+    const button = path.locator('.prose-path');
+    const menu = path.locator('.prose-file-action-menu');
+    await button.waitFor();
+    await button.scrollIntoViewIfNeeded();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+    await button.focus();
+    assert(await button.evaluate(el => document.activeElement === el), 'keyboard focus reaches the path');
+    await menuReady(menu);
+    // macOS WebKit's default Tab skips buttons; Option-Tab visits them.
+    const nextFocus = engine === 'webkit' ? 'Alt+Tab' : 'Tab';
+    await page.keyboard.press(nextFocus);
+    assert.match(await page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? ''), /^Copy path:/);
+    await page.screenshot({ path: join(artifacts, `${engine}-path-keyboard-${kind}-${size.name}-${motion}.png`) });
+    await page.keyboard.press('Enter');
+    assert.equal(await page.evaluate(() => window.copiedPaths.length), 1);
+    await page.keyboard.press(nextFocus);
+    assert.match(await page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? ''), /^Open in OctiqFlow:/);
+    await page.keyboard.press('Enter');
+    await page.locator('.fpanel.is-open').waitFor();
+    return { scene: 'path-keyboard', size: size.name, kind, motion, copied: 1, opened: true };
+  } finally { await context.close(); }
+}
+
+/** The menu escapes the scroller's first line and top bar. Exercise the first
+ * line of a reply separately from a scrolled mid-reply path. */
+async function pathMenuEdgeScene(browser, theme, size, scrolled) {
+  const filler = Array.from({ length: 24 }, (_, i) => `Review paragraph ${i}.`).join('\n\n');
+  const { context, page } = await open(browser, theme, { ...size, phone: false }, { text: `${scrolled ? filler + '\n\n' : ''}\`${NOTE}\`\n\n${filler}` });
+  try {
+    await page.evaluate(() => {
+      window.copiedPaths = [];
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.copiedPaths.push(text); } } });
+    });
+    const path = page.locator('.prose-file-actions').filter({ hasText: 'notes.txt' }).first();
+    const button = path.locator('.prose-path');
+    const menu = path.locator('.prose-file-action-menu');
+    await button.waitFor();
+    if (scrolled) await button.evaluate(el => el.scrollIntoView({ block: 'start' }));
+    else await page.locator('.msgs').evaluate(el => { el.scrollTop = 0; });
+    const line = await button.evaluate(el => { const r = el.getClientRects()[0]; return { x: r.x, y: r.y, width: r.width, height: r.height }; });
+    await page.mouse.move(line.x + Math.min(25, line.width / 2), line.y + line.height / 2);
+    await menu.waitFor({ state: 'visible' });
+    await menuReady(menu);
+    const facts = await menu.evaluate(el => {
+      const r = el.getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: innerHeight, width: innerWidth,
+        popover: el.matches(':popover-open'), pointer: getComputedStyle(el).pointerEvents,
+        buttons: [...el.querySelectorAll('button')].map(b => { const r = b.getBoundingClientRect(); const target = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return { hit: target === b || b.contains(target), target: target?.outerHTML.slice(0, 150), x: r.x + r.width / 2, y: r.y + r.height / 2 }; }) };
+    });
+    assert(facts.top >= 0 && facts.bottom <= facts.height && facts.left >= 0 && facts.right <= facts.width, JSON.stringify(facts));
+    await page.screenshot({ path: join(artifacts, `${engine}-path-edge-${size.name}-${scrolled ? 'scroller' : 'reply'}.png`) });
+    assert(facts.buttons.every(b => b.hit), `both full menu actions are above clipping/other bars: ${JSON.stringify(facts)}`);
+    // Travel upwards from the first line into its adjacent menu.
+    const r = await menu.boundingBox();
+    await page.mouse.move(Math.max(r.x + 5, Math.min(line.x + 25, r.x + r.width - 5)), r.y + r.height - 2, { steps: 4 });
+    await menu.getByRole('button', { name: /^Copy path:/ }).click();
+    assert.equal(await page.evaluate(() => window.copiedPaths.length), 1);
+    // Keep keyboard focus in the menu while scrolling, so a pointer leave
+    // cannot mask a detached floating-menu bug.
+    await page.locator('.msgs').evaluate(el => { el.scrollTop += 25; });
+    await page.waitForFunction(() => {
+      const el = document.querySelector('.prose-file-actions');
+      const menu = el.querySelector('.prose-file-action-menu');
+      const r = menu.getBoundingClientRect();
+      return getComputedStyle(menu).visibility === 'hidden' || [...el.querySelector('.prose-path').getClientRects()]
+        .some(p => Math.min(Math.abs(r.bottom - p.top), Math.abs(r.top - p.bottom), Math.abs(r.left - p.right), Math.abs(r.right - p.left)) < 1);
+    }, null, { timeout: 2000 });
+    const afterScroll = await path.evaluate(el => {
+      const menu = el.querySelector('.prose-file-action-menu');
+      const r = menu.getBoundingClientRect();
+      const lines = [...el.querySelector('.prose-path').getClientRects()];
+      return { visible: getComputedStyle(menu).visibility === 'visible', top:r.top,bottom:r.bottom,lines:lines.map(p=>({top:p.top,bottom:p.bottom})), attached: lines.some(p => Math.min(Math.abs(r.bottom - p.top), Math.abs(r.top - p.bottom), Math.abs(r.left - p.right), Math.abs(r.right - p.left)) < 1) };
+    });
+    assert(!afterScroll.visible || afterScroll.attached, `a scrolling menu stays attached or closes: ${JSON.stringify(afterScroll)}`);
+    return { scene: 'path-edge', size: size.name, scrolled, facts, afterScroll };
+  } finally { await context.close(); }
+}
+
+async function pathMenuStreamScene(browser, theme, size) {
+  const { context, page, send } = await open(browser, theme, { ...size, phone: false });
+  try {
+    await page.locator('.composer textarea').first().fill('Continue the review.');
+    await page.locator('.composer').getByRole('button', { name: 'Send', exact: true }).click();
+    let seq = 0;
+    const stream = event => send({ key: 'chat:chat-a', seq: ++seq, event: { type: 'stream_event', event } });
+    stream({ type: 'message_start', message: { id: 'menu-stream', type: 'message', role: 'assistant', content: [], model: 'claude-opus' } });
+    stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+    stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `\`${NOTE}\`\n\nWorking.` } });
+    const path = page.locator('.prose-file-actions').filter({ hasText: 'notes.txt' }).last();
+    await path.locator('.prose-path').waitFor();
+    await path.locator('.prose-path').hover();
+    await path.locator('.prose-file-action-menu').waitFor({ state: 'visible' });
+    await menuReady(path.locator('.prose-file-action-menu'));
+    const before = await path.boundingBox();
+    stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '\n\nMore review notes.'.repeat(18) } });
+    await page.waitForTimeout(500);
+    const result = await path.evaluate(el => {
+      const menu = el.querySelector('.prose-file-action-menu');
+      const r = menu.getBoundingClientRect();
+      const lines = [...el.querySelector('.prose-path').getClientRects()];
+      return { visible: getComputedStyle(menu).visibility === 'visible', pathTop: el.getBoundingClientRect().top, menuTop: r.top, menuBottom: r.bottom,
+        attached: lines.some(p => Math.min(Math.abs(r.bottom - p.top), Math.abs(r.top - p.bottom), Math.abs(r.left - p.right), Math.abs(r.right - p.left)) < 1) };
+    });
+    await page.screenshot({ path: join(artifacts, `${engine}-path-stream-${size.name}.png`) });
+    assert(!result.visible || result.attached, `streaming never leaves a floating menu: ${JSON.stringify(result)}`);
+    return { scene: 'path-stream', size: size.name, before: before.y, ...result };
+  } finally { await context.close(); }
+}
+
 const deadline = setTimeout(() => { console.error("media-pip: timed out"); process.exit(1); }, 20 * 60_000);
 let browser;
 try {
@@ -668,6 +923,19 @@ try {
     : await playwright.chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || "chrome", args: ["--autoplay-policy=no-user-gesture-required"] });
   for (const [index, theme] of themes.entries()) {
     for (const size of SIZES) {
+      if (process.env.OCTIQ_MEDIA_PATH_MENU_ONLY) {
+        report.results.push(await pathMenuStreamScene(browser, theme, size));
+        for (const scrolled of [false, true]) report.results.push(await pathMenuEdgeScene(browser, theme, size, scrolled));
+        for (const kind of ['audio', 'video']) {
+          for (const above of [false, true]) for (const rest of [0, 150, 350]) report.results.push(await pathMenuPlayScene(browser, theme, size, kind, rest, above));
+          for (const motion of ['reduce', 'normal']) {
+            report.results.push(await pathMenuActionsScene(browser, theme, size, kind, false, motion));
+            report.results.push(await pathMenuKeyboardScene(browser, theme, size, kind, motion));
+          }
+          if (size.phone) report.results.push(await pathMenuActionsScene(browser, theme, size, kind, true));
+        }
+        continue;
+      }
       report.results.push(await hoverScene(browser, theme, size));
       if (process.env.OCTIQ_MEDIA_HOVER_ONLY) continue;
       if (size.name === '1280') for (const kind of ['video', 'audio']) for (const takeover of ['hover', 'focus']) report.results.push(await resumeScene(browser, theme, size, kind, false, takeover));
