@@ -2716,6 +2716,15 @@ async function handle(msg) {
         }
         try {
           const supplied = msg.params.arguments || {};
+          const fields = Object.keys(tool.inputSchema.properties);
+          const unknown = Object.keys(supplied).filter((key) => !Object.hasOwn(tool.inputSchema.properties, key));
+          const missing = (tool.inputSchema.required || []).filter((key) => !Object.hasOwn(supplied, key));
+          if (unknown.length || missing.length) {
+            const errors = [];
+            if (unknown.length) errors.push(`Unknown field(s): ${unknown.join(", ")}.`);
+            if (missing.length) errors.push(`Missing required field(s): ${missing.join(", ")}.`);
+            return reply(msg.id, { isError: true, outcome: hostOutcome("validation"), content: [{ type: "text", text: `${errors.join(" ")} ${tool.name} takes: ${fields.join(", ")}.` }] });
+          }
           // Only documented fields cross the hook. Identity and vault settings
           // come from the host, not from model-supplied tool arguments.
           const args = Object.fromEntries(Object.keys(tool.inputSchema.properties)
