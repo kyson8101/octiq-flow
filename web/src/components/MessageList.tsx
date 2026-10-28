@@ -1688,6 +1688,18 @@ const MessageListBody = function MessageList({
       // Long enough to cover the scroll events one flick produces, short
       // enough that it cannot be mistaken for the next thing that happens.
       until = window.setTimeout(() => (gesture.current = false), 400);
+      if (event?.target instanceof Element && event.target.closest("video, audio")) {
+        // Native controls do not scroll, so waiting for onScroll to clear
+        // stick lets the next streaming resize move them under the press.
+        // Pointing at or focusing a player is reading this place too. Reuse
+        // the restore anchor while layout settles; Jump resumes following.
+        stick.current = false;
+        holdPlace(placeFrom(el.scrollTop, anchorsIn(el)));
+        setAway(el.scrollHeight - el.scrollTop - el.clientHeight >= NEAR_BOTTOM);
+      }
+    };
+    const mediaIntent = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest("video, audio")) mark(event);
     };
     const onScroll = () => {
       const corrected = correctedTop.current;
@@ -1730,6 +1742,8 @@ const MessageListBody = function MessageList({
     el.addEventListener("touchmove", mark, { passive: true });
     el.addEventListener("pointerdown", mark, { passive: true });
     el.addEventListener("keydown", mark);
+    el.addEventListener("pointerover", mediaIntent, { passive: true });
+    el.addEventListener("focusin", mediaIntent);
     return () => {
       window.clearTimeout(until);
       stopGlide();
@@ -1743,6 +1757,8 @@ const MessageListBody = function MessageList({
       el.removeEventListener("touchmove", mark);
       el.removeEventListener("pointerdown", mark);
       el.removeEventListener("keydown", mark);
+      el.removeEventListener("pointerover", mediaIntent);
+      el.removeEventListener("focusin", mediaIntent);
     };
   }, []);
 

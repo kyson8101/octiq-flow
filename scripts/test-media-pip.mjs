@@ -31,9 +31,10 @@
 //   OCTIQ_BROWSER=chromium|webkit                          the engine (chromium)
 //   PLAYWRIGHT_CHANNEL=chrome                              a Chromium channel (chrome)
 //   OCTIQ_EVIDENCE_DIR=<dir>                               where the screenshots go (.shots/media-pip)
+//   OCTIQ_MEDIA_SIZES=1280,390                             optional width subset
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -50,14 +51,16 @@ const themes = (process.env.OCTIQ_THEMES || process.env.OCTIQ_THEME || "dark").s
 const artifacts = resolve(process.env.OCTIQ_EVIDENCE_DIR || join(repoRoot, ".shots/media-pip"));
 await mkdir(artifacts, { recursive: true });
 
-const SIZES = [{ name: "1280", width: 1280, height: 900, phone: false }, { name: "390", width: 390, height: 844, phone: true }];
+const SIZES = [{ name: "1280", width: 1280, height: 900, phone: false }, { name: "390", width: 390, height: 844, phone: true }]
+  .filter(size => !process.env.OCTIQ_MEDIA_SIZES || process.env.OCTIQ_MEDIA_SIZES.split(',').includes(size.name));
 
 /* ---- The files ------------------------------------------------------------- */
 
 const scratch = await mkdtemp(join(tmpdir(), "octiq-media-pip-"));
-execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "testsrc=size=480x270:rate=15:duration=240", "-f", "lavfi", "-i", "sine=frequency=330:duration=240",
+const clipSeconds = Number(process.env.OCTIQ_MEDIA_CLIP_SECONDS || (process.env.OCTIQ_MEDIA_RESUME_ONLY ? 30 : 240));
+execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", `testsrc=size=480x270:rate=15:duration=${clipSeconds}`, "-f", "lavfi", "-i", `sine=frequency=330:duration=${clipSeconds}`,
   "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-movflags", "+faststart", join(scratch, "take.mp4")]);
-execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=240", "-c:a", "aac", join(scratch, "voice.m4a")]);
+execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", `sine=frequency=440:duration=${clipSeconds}`, "-c:a", "aac", join(scratch, "voice.m4a")]);
 
 const VIDEO = join(repoRoot, "out/launch-take.mp4");
 const AUDIO = join(repoRoot, "out/voice-note.m4a");
@@ -88,6 +91,7 @@ function mock(duplicate = false) {
       case "chat_index_deleted": return [];
       case "chat_page": return { events: [], context: [], before: null };
       case "resolve_paths": return (request.args?.paths ?? []).map((path) => (FILES.has(path) ? path : null));
+      case "stat_paths": return (request.args?.paths ?? []).map(() => 1);
       case "chat_list": case "chat_activity": case "permission_pending": case "safety_block_pending": case "question_pending":
       case "pr_repositories": case "codex_skills": case "access_request_pending": case "team_list":
       case "provider_fallback_choices":
@@ -115,6 +119,8 @@ const report = { artifacts, engine, themes, results: [] };
 
 async function open(browser, theme, { width, height, phone }, { noPip = false, duplicate = false } = {}) {
   const { stored, resultFor } = mock(duplicate);
+  const sockets = [], calls = [];
+  let revisionDelay = 0, revision = 1;
   const context = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce", ...(phone ? { hasTouch: true, isMobile: engine !== "webkit" ? true : undefined } : {}) });
   await context.addInitScript(({ chats, mode, off }) => {
     localStorage.setItem("octiq.v2.gitColumn", "0");
@@ -123,6 +129,13 @@ async function open(browser, theme, { width, height, phone }, { noPip = false, d
     localStorage.setItem("octiq.v2.conversations", JSON.stringify(chats));
     // What Firefox, and a page that turns it off, look like.
     if (off) Object.defineProperty(Document.prototype, "pictureInPictureEnabled", { get: () => false, configurable: true });
+    window.mediaPlayErrors = [];
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function (...args) {
+      const result = play.apply(this, args);
+      void result.catch(error => window.mediaPlayErrors.push({ name: error.name, message: error.message }));
+      return result;
+    };
   }, { chats: stored, mode: theme, off: noPip });
   await context.route("**/token", (route) => route.fulfill({ body: "mock-token" }));
   await context.route("**/auth", (route) => route.fulfill({ body: "ok" }));
@@ -142,10 +155,15 @@ async function open(browser, theme, { width, height, phone }, { noPip = false, d
     });
   });
   await context.routeWebSocket(/.*/, (socket) => {
+    sockets.push(socket);
     socket.onMessage((raw) => {
       const request = JSON.parse(String(raw));
       if (request.t !== "invoke") return;
-      socket.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: resultFor(request) }));
+      calls.push(request);
+      const result = request.cmd === "stat_paths" ? (request.args?.paths ?? []).map(() => revision) : resultFor(request);
+      const reply = () => socket.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result }));
+      if (request.cmd === "stat_paths" && revisionDelay) setTimeout(reply, revisionDelay);
+      else reply();
     });
   });
   const page = await context.newPage();
@@ -154,7 +172,10 @@ async function open(browser, theme, { width, height, phone }, { noPip = false, d
   page.on("console", (message) => { if (message.type() === "error" && /Error|Uncaught|Minified React/.test(message.text())) errors.push(message.text().slice(0, 600)); });
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/#/p/octiq-flow/c/chat-a`, { waitUntil: "domcontentloaded", timeout: 180_000 });
   await page.locator(".msgs").first().waitFor({ timeout: 180_000 });
-  return { context, page };
+  return { context, page, calls,
+    slowRevision: (ms, value = revision) => { revisionDelay = ms; revision = value; },
+    send: (event) => sockets.forEach(socket => socket.send(JSON.stringify({ t: "event", event: "chat-event", payload: event }))),
+  };
 }
 
 /** Open a chat as a person would: its row in the list. */
@@ -404,6 +425,120 @@ async function pausedScene(browser, theme, size) {
   return { scene: "paused", size: size.name, theme };
 }
 
+/** Resume the earlier reply while a new turn streams. One browser-native
+ * Play press must work before the deliberately slow host stat can answer.
+ * Identity/holder observations distinguish freshness gating from remounts. */
+async function resumeScene(browser, theme, size, kind, repeated = false, takeover = 'wheel') {
+  console.log(`resume ${engine} ${kind} ${size.name} ${takeover} ${repeated ? 'repeated' : 'single'}: opening App`);
+  const { context, page, calls, slowRevision, send } = await open(browser, theme, size);
+  let timer;
+  try {
+    await startInline(page, kind);
+    console.log('resume: initial playback ready');
+    await page.evaluate(() => {
+      const el = document.querySelector('[data-mark=first]');
+      el.pause(); el.currentTime = 12;
+      window.resumePlayer = el; window.resumeHolder = el.parentElement;
+      window.resumePlays = 0; window.resumeAt = null; window.resumeMs = null;
+      window.resumeAllowedImmediately = null; window.resumePauses = 0;
+      el.addEventListener('play', () => { window.resumePlays++; window.resumeAt ??= performance.now(); window.resumeAllowedImmediately ??= !el.paused; });
+      el.addEventListener('pause', () => { if (window.resumeAt !== null) window.resumePauses++; });
+      el.addEventListener('playing', () => { if (!el.paused && window.resumeAt !== null) window.resumeMs ??= performance.now() - window.resumeAt; });
+      window.resumeLoads = 0; el.addEventListener('loadstart', () => window.resumeLoads++);
+    });
+    const input = page.locator('.composer textarea').first();
+    await input.fill('Continue the review while I listen.');
+    await page.locator('.composer').getByRole('button', { name: 'Send', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.msgs')?.textContent.includes('Continue the review while I listen.'));
+    assert(calls.some(call => ['chat_start', 'chat_send'].includes(call.cmd)), 'a real composer send reached the socket');
+    let seq = 0;
+    const stream = (event) => send({ key: 'chat:chat-a', seq: ++seq, event: { type: 'stream_event', event } });
+    stream({ type: 'message_start', message: { id: 'reply-stream', type: 'message', role: 'assistant', content: [], model: 'claude-opus' } });
+    stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+    stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Still reviewing.' } });
+    const delta = () => stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ' .' } });
+    timer = setInterval(delta, 50);
+    await page.locator('.msgs').getByText('Still reviewing.', { exact: false }).first().waitFor();
+    console.log('resume: sending/deltas ready');
+    const player = page.locator(`[data-mark=first]`);
+    let interaction;
+    if (takeover === 'wheel') {
+      // Take over transcript scrolling as a reader does.
+      await page.locator('.msgs').first().hover();
+      await page.mouse.wheel(0, -1800);
+      await page.waitForTimeout(100);
+    } else {
+      // No wheel/touch/key takeover: the player itself must protect a press
+      // from follow-tail, including before pointerdown reaches its controls.
+      clearInterval(timer);
+    }
+    await player.scrollIntoViewIfNeeded();
+    if (takeover !== 'wheel') {
+      if (takeover === 'hover') await player.hover();
+      else await player.focus();
+      const before = await player.boundingBox();
+      timer = setInterval(() => stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '\n\nMore review notes.' } }), 50);
+      await page.waitForTimeout(450);
+      const after = await player.boundingBox();
+      interaction = { takeover, before: before.y, after: after.y };
+      report.lastInteraction = interaction;
+      await page.screenshot({ path: join(artifacts, `${engine}-${kind}-${takeover}-hold-${size.name}.png`) });
+      assert(Math.abs(after.y - before.y) < 1, `${takeover} keeps the player's controls in place: ${JSON.stringify(interaction)}`);
+    }
+    slowRevision(1800, repeated ? 2 : 1);
+    const statsBefore = calls.filter(call => call.cmd === 'stat_paths').length;
+    // A native control press: Chrome's control bar, WebKit's video overlay
+    // or audio control. No page script calls play() on this path.
+    const press = async () => {
+      const b = await player.boundingBox();
+      await page.mouse.click(b.x + (engine === 'webkit' ? kind === 'video' ? b.width / 2 : b.width < 400 ? 22 : 50 : 24),
+        b.y + (engine === 'webkit' && kind === 'video' ? b.height / 2 : kind === 'video' ? b.height - 50 : b.height / 2));
+    };
+    const started = Date.now();
+    if (repeated) await page.evaluate(() => {
+      // Two native play intents in the browser, 30ms apart. A second
+      // Playwright round trip could arrive after the first has resumed and
+      // would then press Pause instead, which is a different user action.
+      window.resumePlayer.addEventListener('play', () => setTimeout(() => {
+        void HTMLMediaElement.prototype.play.call(window.resumePlayer).catch(() => {});
+      }, 30), { once: true });
+    });
+    await press();
+    await page.waitForFunction(() => window.resumeAt !== null, null, { timeout: 2000 }).catch(() => {});
+    await page.waitForFunction(() => window.resumeMs !== null, null, { timeout: 900 }).catch(() => {});
+    // WebKit can acknowledge Play before its seeked audio clock ticks.
+    await page.waitForFunction(() => window.resumePlayer.currentTime > 12.05, null, { timeout: 1500 }).catch(() => {});
+    const resumed = await page.evaluate(() => ({
+      same: document.querySelector('[data-mark=first]') === window.resumePlayer,
+      sameHolder: window.resumePlayer.parentElement === window.resumeHolder,
+      paused: window.resumePlayer.paused, time: window.resumePlayer.currentTime,
+      loads: window.resumeLoads,
+      plays: window.resumePlays,
+      resumeMs: window.resumeMs,
+      allowedImmediately: window.resumeAllowedImmediately,
+      pauses: window.resumePauses,
+      sincePlayMs: window.resumeAt === null ? null : performance.now() - window.resumeAt,
+      playErrors: window.mediaPlayErrors,
+    }));
+    const lookups = calls.filter(call => call.cmd === 'stat_paths').length - statsBefore;
+    report.lastResume = { ...resumed, lookups };
+    await page.screenshot({ path: join(artifacts, `${engine}-resume-press-${kind}-${size.name}.png`) });
+    assert.equal(resumed.same, true, 'send/deltas preserve the player');
+    assert.equal(resumed.sameHolder, true, 'send/deltas preserve the holder');
+    assert.equal(resumed.paused, false, `one press resumes before stat answers: ${JSON.stringify({ ...resumed, lookups })}`);
+    assert(resumed.time > 12, 'resume keeps and advances the position');
+    assert.equal(resumed.allowedImmediately, true, 'freshness never pauses a native press');
+    assert.equal(resumed.pauses, 0, 'a slow unchanged check never interrupts playback');
+    assert.equal(resumed.loads, 0, 'unchanged revision never reloads');
+    assert.equal(lookups, 1, 'repeated presses share one lookup');
+    // A late changed answer must not swap the source under active playback.
+    await page.waitForTimeout(2000);
+    assert.equal(await page.evaluate(() => window.resumeLoads), 0);
+    await page.screenshot({ path: join(artifacts, `${engine}-resume-${kind}-${repeated ? 'repeated' : 'single'}-${size.name}.png`) });
+    return { scene: `stream-resume-${kind}${repeated ? '-repeated' : ''}-${takeover}`, size: size.name, ...resumed, lookups, interaction, observedAfterMs: Date.now() - started };
+  } finally { clearInterval(timer); await context.close(); }
+}
+
 /** Actual App wiring, rather than just the store's public methods. */
 async function lifecycleScene(browser, theme, size, scene) {
   const { context, page } = await open(browser, theme, size, { noPip: true, duplicate: scene === "duplicate" });
@@ -479,6 +614,10 @@ try {
     : await playwright.chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || "chrome", args: ["--autoplay-policy=no-user-gesture-required"] });
   for (const [index, theme] of themes.entries()) {
     for (const size of SIZES) {
+      if (size.name === '1280') for (const kind of ['video', 'audio']) for (const takeover of ['hover', 'focus']) report.results.push(await resumeScene(browser, theme, size, kind, false, takeover));
+      if (process.env.OCTIQ_MEDIA_INTERACTION_ONLY) continue;
+      for (const kind of ['video', 'audio']) for (const repeated of [false, true]) report.results.push(await resumeScene(browser, theme, size, kind, repeated));
+      if (process.env.OCTIQ_MEDIA_RESUME_ONLY) continue;
       const full = index === 0;
       if (!process.env.OCTIQ_MEDIA_REGRESSION_ONLY) {
         report.results.push(await pipScene(browser, theme, size, true));
@@ -504,4 +643,6 @@ try {
   clearTimeout(deadline);
   await browser?.close();
   await server.close();
+  await writeFile(join(artifacts, `${engine}-report.json`), JSON.stringify({ ...report, errors }, null, 2));
+  await rm(scratch, { recursive: true, force: true });
 }
