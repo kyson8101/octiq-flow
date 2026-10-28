@@ -35,7 +35,7 @@ INSTALLED="${OCTIQ_DIR}/bin/octiq-server"
 TRIGGER="${OCTIQ_DIR}/restart.request"
 PLIST="${HOME_DIR}/Library/LaunchAgents/${SERVER_LABEL}.plist"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILT="${REPO}/src-tauri/target/release/octiq-server"
+BUILT="${REPO}/src-tauri/target/release-local/octiq-server"
 DIST="${REPO}/web/dist"
 UID_NUM="$(id -u)"
 
@@ -122,7 +122,7 @@ if [[ -n "${SERVER_PID}" && "${SERVER_PID}" != "0" ]]; then
   fi
 fi
 if [[ -n "${BUILT_MTIME}" && -n "${INSTALLED_MTIME}" && ${BUILT_MTIME} -gt ${INSTALLED_MTIME} ]]; then
-  note warn "installed build" "target/release/octiq-server is newer than the installed copy — built but never shipped ($(human_age "$(age_of "${BUILT}")"))"
+  note warn "installed build" "target/release-local/octiq-server is newer than the installed copy — built but never shipped ($(human_age "$(age_of "${BUILT}")"))"
 elif [[ -z "${INSTALLED_MTIME}" ]]; then
   note warn "installed build" "no binary at ${INSTALLED}"
 else

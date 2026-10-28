@@ -57,9 +57,13 @@ packages from the Cargo version during publication.
 
 ```bash
 pnpm --dir web build                          # the client → web/dist
-cd src-tauri && cargo build --release --bin octiq-server   # the backend
+cd src-tauri && cargo build --profile release-local --bin octiq-server   # the backend
 touch ~/.octiqflow/restart.request            # restart the backend (see below)
 ```
+
+Local service builds use thin LTO and parallel codegen and produce
+`src-tauri/target/release-local/octiq-server` (`.exe` on Windows). npm/CI
+release binaries still use `cargo build --release` with full LTO.
 
 The restart above is a touched file, not a script, and that is deliberate —
 see the bullet below. The two installers are run **once**, from a real terminal,

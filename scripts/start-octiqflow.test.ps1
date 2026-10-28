@@ -18,7 +18,7 @@ function Invoke-LauncherCase {
     $configPath = Join-Path (Join-Path $expectedHome '.octiqflow') 'config.json'
     $profileBase = Join-Path ([System.IO.Path]::GetTempPath()) 'octiq-launcher-test-profiles'
     $webPath = Join-Path (Join-Path $profileBase 'test-profile') 'web.json'
-    $exePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'src-tauri/target/release/octiq-server.exe'
+    $exePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'src-tauri/target/release-local/octiq-server.exe'
     $caseState = @{
         ExpectedConfigPath = $configPath
         WebExists = -not $Fresh
