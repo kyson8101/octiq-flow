@@ -2584,9 +2584,8 @@ body {
 }
 
 .prose-file-action-menu {
-  /* Placed against the path's edge, on a side clear of nearby players. Fixed
-     keeps the first visible line's menu outside the transcript clip. */
-  position: fixed;
+  /* Without the Popover API, keep the original inline containing block. */
+  position: absolute;
   z-index: 100;
   inset: auto;
   top: 0;
@@ -2605,6 +2604,12 @@ body {
   pointer-events: none;
   transform: translateY(3px);
   transition: none;
+}
+
+/* Only a successful native popover escapes the transcript's clip and stacking
+   context. Both placements choose a path edge clear of nearby players. */
+.prose-file-action-menu[popover] {
+  position: fixed;
 }
 
 /* Intent gates the whole popover, rather than transitioning inherited

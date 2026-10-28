@@ -6,6 +6,8 @@
 // for sharing, and "Open in OctiqFlow" uses the app's usual file viewer.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { copyText } from "../lib/clipboard";
+import { hideFileActionPopover, showFileActionPopover } from "../lib/fileActionPopover";
+import { focusAt, keepsEscape } from "../lib/placeTip";
 import { useOpenFile } from "./OpenFileContext";
 import { CopyIcon, TickIcon } from "./CopyBit";
 
@@ -54,8 +56,7 @@ export function ConversationFileActions({
     // popover escapes both that context and the transcript's overflow without
     // breaking the DOM ancestry used by hover and focus-within. Touch never
     // gets this attribute and keeps its always-visible inline actions.
-    popup.setAttribute('popover', 'manual');
-    popup.showPopover();
+    const topLayer = showFileActionPopover(popup);
     const position = () => {
       const lines = [...anchor.querySelector('button')!.getClientRects()];
       if (hoverY.current !== null) {
@@ -80,14 +81,21 @@ export function ConversationFileActions({
         { left, top: path.bottom },
         { left: path.right, top: Math.max(8, Math.min(path.top, innerHeight - height - 8)) },
         { left: path.left - width, top: Math.max(8, Math.min(path.top, innerHeight - height - 8)) },
-      ].filter(p => p.left >= 0 && p.left + width <= innerWidth && p.top >= 0 && p.top + height <= innerHeight);
+      ].filter(p => p.left >= 0 && p.left + width <= innerWidth && p.top >= 0 && p.top + height <= innerHeight
+        // The in-flow fallback cannot escape the transcript's clipping box.
+        && (topLayer || !scroller || (p.left >= scroller.left && p.left + width <= scroller.right
+          && p.top >= scroller.top && p.top + height <= scroller.bottom)));
       const media = [...document.querySelectorAll('video, audio')].map(el => el.getBoundingClientRect());
       const overlap = (p: { left: number; top: number }) => media.reduce((sum, r) => sum
         + Math.max(0, Math.min(p.left + width, r.right) - Math.max(p.left, r.left))
         * Math.max(0, Math.min(p.top + height, r.bottom) - Math.max(p.top, r.top)), 0);
-      const best = candidates.reduce((best, p) => overlap(p) < overlap(best) ? p : best, candidates[0] ?? { left, top: 0 });
-      popup.style.left = `${best.left}px`;
-      popup.style.top = `${best.top}px`;
+      const fallback = { left, top: !topLayer && scroller ? Math.max(scroller.top, Math.min(path.bottom, scroller.bottom - height)) : 0 };
+      const best = candidates.reduce((best, p) => overlap(p) < overlap(best) ? p : best, candidates[0] ?? fallback);
+      // The fallback stays in the path's original inline containing block.
+      // Use its first fragment's origin when translating viewport placement.
+      const origin = topLayer ? { left: 0, top: 0 } : anchor.getClientRects()[0];
+      popup.style.left = `${best.left - origin.left}px`;
+      popup.style.top = `${best.top - origin.top}px`;
     };
     position();
     // Keep it attached during scrolling and streaming; a path outside its
@@ -101,10 +109,30 @@ export function ConversationFileActions({
       window.removeEventListener('resize', position);
       observer.disconnect();
       closing.current = true;
-      popup.hidePopover();
-      popup.removeAttribute('popover');
+      hideFileActionPopover(popup);
+      popup.style.removeProperty('left');
+      popup.style.removeProperty('top');
       closing.current = false;
     };
+  }, [engaged]);
+
+  useEffect(() => {
+    if (!engaged || !matchMedia('(hover: hover)').matches) return;
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      const ours = keepsEscape(true, focusAt<Node>(document.activeElement, root.current, document.body));
+      if (ours) {
+        event.preventDefault();
+        event.stopPropagation();
+        // Focus restoration must not immediately ask for the menu again.
+        closing.current = true;
+        root.current?.querySelector('button')?.focus({ preventScroll: true });
+        closing.current = false;
+      }
+      setDismissed(true);
+    };
+    document.addEventListener('keydown', key, true);
+    return () => document.removeEventListener('keydown', key, true);
   }, [engaged]);
 
   const copy = async () => {
@@ -114,7 +142,7 @@ export function ConversationFileActions({
   };
 
   const openPath = () => {
-    if (menu.current?.matches(':popover-open')) setDismissed(true);
+    if (engaged && matchMedia('(hover: hover)').matches) setDismissed(true);
     open(path);
   };
 

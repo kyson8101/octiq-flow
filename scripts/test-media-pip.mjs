@@ -33,6 +33,7 @@
 //   OCTIQ_EVIDENCE_DIR=<dir>                               where the screenshots go (.shots/media-pip)
 //   OCTIQ_MEDIA_SIZES=1280,390                             optional width subset
 //   OCTIQ_MEDIA_PATH_MENU_ONLY=1                          path → native Play and intentional file actions
+//   OCTIQ_MEDIA_PATH_COMPAT_ONLY=1                        missing/throwing Popover API and Escape
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
@@ -122,11 +123,21 @@ const server = await createServer({ root: webRoot, cacheDir: join(webRoot, "node
 const errors = [];
 const report = { artifacts, engine, themes, results: [] };
 
-async function open(browser, theme, { width, height, phone }, { noPip = false, duplicate = false, text } = {}) {
+async function open(browser, theme, { width, height, phone }, { noPip = false, duplicate = false, text, popoverFailure } = {}) {
   const { stored, resultFor } = mock(duplicate, text);
   const sockets = [], calls = [];
   let revisionDelay = 0, revision = 1;
   const context = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce", ...(phone ? { hasTouch: true, isMobile: engine !== "webkit" ? true : undefined } : {}) });
+  if (popoverFailure) await context.addInitScript(mode => {
+    if (mode === 'missing') {
+      delete HTMLElement.prototype.showPopover;
+      delete HTMLElement.prototype.hidePopover;
+    } else {
+      HTMLElement.prototype[mode === 'show-throws' ? 'showPopover' : 'hidePopover'] = function () {
+        throw new DOMException('Review probe', 'InvalidStateError');
+      };
+    }
+  }, popoverFailure);
   await context.addInitScript(({ chats, mode, off }) => {
     localStorage.setItem("octiq.v2.gitColumn", "0");
     localStorage.setItem("octiq.theme", mode);
@@ -914,6 +925,63 @@ async function pathMenuStreamScene(browser, theme, size) {
   } finally { await context.close(); }
 }
 
+/** Compatibility probes run before App load; the real Copy/Open controls and
+ * document Escape listener are exercised in both native and fallback modes. */
+async function pathMenuCompatibilityScene(browser, theme, size, mode, entry) {
+  const { context, page } = await open(browser, theme, { ...size, phone: false }, {
+    text: `The cut is ready: \`${NOTE}\``, popoverFailure: mode === 'native' ? undefined : mode,
+  });
+  try {
+    const path = page.locator('.prose-file-actions').first();
+    const button = path.locator('.prose-path');
+    const menu = path.locator('.prose-file-action-menu');
+    await button.waitFor();
+    await button.scrollIntoViewIfNeeded();
+    await page.evaluate(() => {
+      window.copiedPaths = [];
+      window.otherEscapes = 0;
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') window.otherEscapes++;
+      });
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+        writeText: async text => window.copiedPaths.push(text),
+      } });
+    });
+    if (entry === 'hover') {
+      await page.locator('.composer textarea').evaluate(el => el.blur());
+      await button.hover();
+    } else await button.focus();
+    await menuReady(menu);
+    assert.equal(await menu.evaluate(el => getComputedStyle(el).position),
+      mode === 'missing' || mode === 'show-throws' ? 'absolute' : 'fixed');
+    if (entry === 'keyboard') await menu.getByRole('button', { name: /^Copy path:/ }).focus();
+    await page.keyboard.press('Escape');
+    await menu.waitFor({ state: 'hidden' });
+    assert(await button.evaluate(el => document.activeElement === el), 'Escape returns focus to the path');
+    assert.equal(await menu.getAttribute('popover'), null, 'Escape releases the top layer');
+    assert.equal(await page.evaluate(() => window.otherEscapes), 0, 'Escape is consumed by this menu');
+    await page.waitForTimeout(250);
+    assert.equal(await menu.isVisible(), false, 'stationary pointer/focus does not reopen it');
+
+    // Re-enter by hover, then focus: neither path may throw or unmount App.
+    await page.mouse.move(1, 1);
+    await button.evaluate(el => el.blur());
+    await button.hover();
+    await menuReady(menu);
+    await button.focus();
+    await menu.getByRole('button', { name: /^Copy path:/ }).click();
+    assert.equal(await page.evaluate(() => window.copiedPaths.length), 1);
+    await menu.getByRole('button', { name: /^Open in OctiqFlow:/ }).click();
+    await page.locator('.fpanel.is-open').waitFor();
+    await menu.waitFor({ state: 'hidden' });
+    await page.locator('.fpanel.is-open').getByRole('button', { name: 'Close', exact: true }).click();
+    await page.locator('.fpanel').waitFor({ state: 'detached' });
+    assert.equal(await page.locator('.msgs').count(), 1);
+    assert((await page.locator('body').innerText()).length > 0);
+    return { scene: 'path-compat', size: size.name, mode, entry, copied: 1, mounted: true, escapeClosed: true };
+  } finally { await context.close(); }
+}
+
 const deadline = setTimeout(() => { console.error("media-pip: timed out"); process.exit(1); }, 20 * 60_000);
 let browser;
 try {
@@ -923,6 +991,12 @@ try {
     : await playwright.chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || "chrome", args: ["--autoplay-policy=no-user-gesture-required"] });
   for (const [index, theme] of themes.entries()) {
     for (const size of SIZES) {
+      if (process.env.OCTIQ_MEDIA_PATH_COMPAT_ONLY) {
+        for (const mode of ['native', 'missing', 'show-throws', 'hide-throws']) {
+          for (const entry of ['hover', 'keyboard']) report.results.push(await pathMenuCompatibilityScene(browser, theme, size, mode, entry));
+        }
+        continue;
+      }
       if (process.env.OCTIQ_MEDIA_PATH_MENU_ONLY) {
         report.results.push(await pathMenuStreamScene(browser, theme, size));
         for (const scrolled of [false, true]) report.results.push(await pathMenuEdgeScene(browser, theme, size, scrolled));
