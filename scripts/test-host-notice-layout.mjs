@@ -1,25 +1,37 @@
+// Run: node scripts/test-host-notice-layout.mjs (OCTIQ_WEB_ROOT, PLAYWRIGHT_MODULE, OCTIQ_EVIDENCE_DIR optional).
 import { createRequire } from 'node:module';
-import { writeFile, mkdir, unlink } from 'node:fs/promises';
+import { writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import assert from 'node:assert/strict';
-// Scratch browser regression: PLAYWRIGHT_MODULE selects an installed Playwright.
-// Run from the repo root; outputs live outside the checkout.
-const root = process.cwd();
-const require = createRequire(root + '/web/package.json');
-const {createServer} = await import(require.resolve('vite'));
-const {chromium} = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
-const evidence=process.env.OCTIQ_EVIDENCE_DIR || '/tmp/octiq-host-notice-layout';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
+const webRoot = resolve(process.env.OCTIQ_WEB_ROOT || fileURLToPath(new URL("../web", import.meta.url)));
+const require = createRequire(join(webRoot, "package.json"));
+const moduleUrl = (spec) => isAbsolute(spec) || spec.startsWith(".") ? pathToFileURL(resolve(spec)).href : spec;
+const {createServer} = await import(moduleUrl(require.resolve('vite')));
+const {chromium} = await import(moduleUrl(process.env.PLAYWRIGHT_MODULE || 'playwright'));
+const evidence = process.env.OCTIQ_EVIDENCE_DIR ? resolve(process.env.OCTIQ_EVIDENCE_DIR) : await mkdtemp(join(tmpdir(), "octiq-host-notice-layout-"));
 await mkdir(evidence,{recursive:true});
-const entry=root+'/web/.host-notice-qa.tsx';
+// *.local is ignored by Git, including while a failed assertion unwinds.
+const scratch = join(webRoot, `.host-notice-qa-${randomUUID()}.local`);
+const entry = join(scratch, 'entry.tsx');
+const entryUrl = '/' + relative(webRoot, entry).split(sep).join('/');
+const source = (...parts) => JSON.stringify('/' + relative(webRoot, join(webRoot, 'src', ...parts)).split(sep).join('/'));
+let server;
+let browser;
+try {
+await mkdir(scratch);
 await writeFile(entry, `import React from 'react';
 import {createRoot} from 'react-dom/client';
-import {HostNotice} from './src/components/HostNotice';
-import {AgentRosterContext, ChatPersonaContext} from './src/lib/agentRoster';
-import {personaFor} from './src/lib/agentPersona';
+import {HostNotice} from ${source('components', 'HostNotice')};
+import {AgentRosterContext, ChatPersonaContext} from ${source('lib', 'agentRoster')};
+import {personaFor} from ${source('lib', 'agentPersona')};
 import {useContext} from 'react';
-import {applyTheme} from './src/lib/themeStore';
-import './src/design-system.css';
-import './src/styles.css';
-import './src/manga.css';import './src/guofeng.css';import './src/xp.css';import './src/cyberpunk.css';
+import {applyTheme} from ${source('lib', 'themeStore')};
+import ${source('design-system.css')};
+import ${source('styles.css')};
+import ${source('manga.css')};import ${source('guofeng.css')};import ${source('xp.css')};import ${source('cyberpunk.css')};
 import 'lxgw-wenkai-screen-webfont/lxgwwenkaiscreen.css';import '@fontsource-variable/inter';
 import '@fontsource/dela-gothic-one';import '@fontsource/ma-shan-zheng';import '@fontsource/orbitron/700.css';
 const face=(colour, eyes, mouth)=>'data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" rx="16" fill="'+colour+'"/><rect x="5" y="7" width="22" height="20" rx="7" fill="#d7e9ef"/><path d="'+eyes+' '+mouth+'" stroke="#264352" stroke-width="2" fill="none" stroke-linecap="round"/></svg>');
@@ -38,9 +50,7 @@ window.__theme=applyTheme;
 const notices=['status','reply','report','failure','escalation','capacity','question','instruction','unknown'].map((kind,i)=>({id:'notice-'+kind,kind,from:'chat:'+roster[i%3].id,subject:'Long subject should shrink before ordinary agent names: tsc/build pass；full test retry 正常推进',body:'Agent prose stays behind disclosure.\\n第二段原文。',text:'Original host envelope'}));
 createRoot(document.getElementById('root')).render(<AgentRosterContext.Provider value={roster}><ChatPersonaContext.Provider value={names}><Scene/></ChatPersonaContext.Provider></AgentRosterContext.Provider>);
 `);
-const server=await createServer({root:root+'/web',server:{host:'127.0.0.1',port:0},plugins:[{name:'qa-html',configureServer(s){s.middlewares.use('/__qa',async(req,res)=>{res.setHeader('Content-Type','text/html');res.end(await s.transformIndexHtml('/__qa','<html><head></head><body><div id="root"></div><script type="module" src="/.host-notice-qa.tsx"></script></body></html>'));});}}]});
-let browser;
-try {
+server=await createServer({root:webRoot,configFile:join(webRoot,'vite.config.ts'),server:{host:'127.0.0.1',port:0,strictPort:false},plugins:[{name:'qa-html',configureServer(s){s.middlewares.use('/__qa',async(req,res)=>{res.setHeader('Content-Type','text/html');res.end(await s.transformIndexHtml('/__qa','<html><head></head><body><div id="root"></div><script type="module" src="'+entryUrl+'"></script></body></html>'));});}}]});
  await server.listen();
  const url='http://127.0.0.1:'+server.httpServer.address().port+'/__qa';
  browser=await chromium.launch({headless:true,channel:'chrome'});
@@ -70,7 +80,7 @@ try {
    const toggles=page.getByRole('button',{name:'OCTIQ DEV BACKUP to OCTIQ HEAD, status: Long subject should shrink before ordinary agent names: tsc/build pass；full test retry 正常推进',exact:true});
    await toggles.focus();
    assert.equal(await toggles.evaluate(n=>getComputedStyle(n).outlineStyle),'solid');
-   await page.screenshot({path:evidence+'/'+theme+'-'+width+'.png',fullPage:true});
+   await page.screenshot({path:join(evidence,`${theme}-${width}.png`),fullPage:true});
    await toggles.click();
    await page.getByText('Agent prose stays behind disclosure.').waitFor();
    await page.getByRole('button',{name:'Host text',exact:true}).click();
@@ -87,7 +97,13 @@ try {
  const phone=await touch.newPage();await phone.goto(url+'?theme=dark');await phone.waitForSelector('.host-notice-toggle');
  assert.ok(await phone.locator('.host-notice-toggle').first().evaluate(n=>n.getBoundingClientRect().height>=44));
  assert.deepEqual(errors,[]);
- await writeFile(evidence+'/geometry.json',JSON.stringify(results,null,2));
+ await writeFile(join(evidence,'geometry.json'),JSON.stringify(results,null,2));
  console.log(JSON.stringify({evidence,screenshots:14,scenes:results.length,errors}));
-} finally {await browser?.close();await server.close();await unlink(entry).catch(()=>{});}
+} finally {
+ try { await browser?.close(); }
+ finally {
+  try { await server?.close(); }
+  finally { await rm(scratch,{recursive:true,force:true}); }
+ }
+}
 process.exit(0);
