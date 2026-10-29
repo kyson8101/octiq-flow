@@ -598,12 +598,20 @@ describe("Cyberpunk keeps colour's meaning under its neon", () => {
 /* ---- A run: what waits on the person, and what is only a problem ------- */
 
 describe("a run's own surfaces", () => {
+  // Match the entire selector list; a prefixed unrelated selector must remain
+  // subject to the neutral-ink guard, even when it shares a kind-icon rule.
+  const withoutKindAlerts = (css: string) => css.replace(/([^{}]+)\{([^{}]*)\}/g, (rule, selector: string) => {
+    const list = selector.replace(/\/\*[\s\S]*?\*\//g, "").trim();
+    return /^(?:\.host-notice-kind-failure|\.host-notice-kind-escalation,\s*\.host-notice-kind-capacity)$/.test(list) ? "" : rule;
+  });
   it("keeps host notification bookkeeping neutral, including its focus cue", () => {
     expect(hostNoticeCss).not.toMatch(/var\(--(?:accent|decide)/);
-    const withoutKindAlerts = hostNoticeCss
-      .replace(/\.host-notice-kind-failure\s*\{[^}]*\}/g, "")
-      .replace(/\.host-notice-kind-escalation,\s*\.host-notice-kind-capacity\s*\{[^}]*\}/g, "");
-    expect(withoutKindAlerts).not.toMatch(/var\(--(?:warn|danger)/);
+    expect(withoutKindAlerts(hostNoticeCss)).not.toMatch(/var\(--(?:warn|danger)/);
+  });
+  it.each(["failure", "escalation"])("rejects an unrelated selector prepended to the %s kind rule", (kind) => {
+    const mutated = hostNoticeCss.replace(`.host-notice-kind-${kind}`, `.x, .host-notice-kind-${kind}`);
+    expect(mutated).not.toBe(hostNoticeCss);
+    expect(withoutKindAlerts(mutated)).toMatch(/var\(--(?:warn|danger)/);
   });
   const run = [
     ...rules(runPanelCss, "OrchestrationPanel.css"),

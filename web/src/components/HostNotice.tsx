@@ -67,13 +67,13 @@ export function HostNotice({ notices, coordinator, nameOf, reply }: {
       return <NoticeRow key={notice.id} notice={notice} label={`${sender} to ${coordinator}, ${notice.kind}: ${notice.subject}`}
         header={<>
           <NoticeFace persona={persona} />
-          <span className="host-notice-sender">{sender}</span>
+          <span className="host-notice-sender" title={sender}>{sender}</span>
           <svg className="host-notice-arrow" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 8h10m-4-4 4 4-4 4" /></svg>
-          <span className="host-notice-coordinator">{coordinator}</span>
+          <span className="host-notice-coordinator" title={coordinator}>{coordinator}</span>
           <NoticeKind kind={notice.kind} />
           <span className="host-notice-subject">{notice.subject}</span>
         </>} />;
     })}
-    {reply && <div className="host-notice-reply"><NoticeFace persona={coordinatorPersona} /><span className="host-notice-sender">{coordinator}</span><span className="host-notice-reply-text">{reply}</span></div>}
+    {reply && <div className="host-notice-reply"><NoticeFace persona={coordinatorPersona} /><span className="host-notice-sender" title={coordinator}>{coordinator}</span><span className="host-notice-reply-text">{reply}</span></div>}
   </div>;
 }

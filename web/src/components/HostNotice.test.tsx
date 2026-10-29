@@ -25,7 +25,7 @@ it("draws one shut button per notice and the whole short reply without a disclos
   expect(html).not.toContain("&gt;&gt;&gt;");
   expect(html).toContain('class="host-notice-arrow"');
   expect(html).toContain("OCTIQ BE to OCTIQ HEAD, status: 方向已修正，验证进行中");
-  expect(html).toContain('class="host-notice-sender">OCTIQ HEAD</span>');
+  expect(html).toContain('class="host-notice-sender" title="OCTIQ HEAD">OCTIQ HEAD</span>');
   expect(html).toContain('class="host-notice-reply-text">检查已完成，等待其余结果。</span>');
   expect(html).toContain('class="host-notice-reply"');
   for (const absent of ["msg-user", "message-bubble", "message-delivery", "msg-copy", "data-map-turn="]) expect(html).not.toContain(absent);
