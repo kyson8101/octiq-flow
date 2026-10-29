@@ -2,6 +2,7 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/octiq-prune-test.XXXXXX")"
+scratch="$(cd "$scratch" && pwd -P)"
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/bin"
 # Isolate tests from real builds on the person's machine.
@@ -134,6 +135,52 @@ FAKE_WORKTREE="$scratch/.worktrees/octiq-flow/feature/one" "$REPO/scripts/prune-
 for tree in one two; do
   gone "$scratch/.worktrees/octiq-flow/feature/$tree/src-tauri/target/debug/deps/octiq-aaa.d"
 done
+# Reproduced ancestor escapes must log SKIPPED and preserve external stale
+# artifacts under BOTH dry-run and real scratch pruning.
+external="$scratch/outside/src-tauri/target"
+mkdir -p "$external/debug/deps"
+echo sentinel > "$external/debug/deps/octiq-abc.d"
+old "$external/debug/deps/octiq-abc.d"
+ln -s "$external" "$scratch/target-link"
+mkdir -p "$scratch/ancestor-repo"
+ln -s "$scratch/outside/src-tauri" "$scratch/ancestor-repo/src-tauri"
+ln -s "$scratch/outside" "$scratch/.worktrees/octiq-flow/feature/redirect"
+assert_skipped() {
+  local label="$1"; shift
+  "$REPO/scripts/prune-target.sh" "$@" > "$scratch/escape.log"
+  rg -q 'SKIPPED' "$scratch/escape.log" || fail "$label did not report SKIPPED"
+  exists "$external/debug/deps/octiq-abc.d"
+  [[ "$(cat "$external/debug/deps/octiq-abc.d")" == sentinel ]] || fail "$label changed sentinel"
+}
+for mode in dry real; do
+  flags=()
+  [[ "$mode" == real ]] || flags+=(--dry-run)
+  assert_skipped "trailing slash $mode" ${flags[@]+"${flags[@]}"} "$scratch/target-link/"
+  assert_skipped "src-tauri ancestor $mode" ${flags[@]+"${flags[@]}"} "$scratch/ancestor-repo/src-tauri/target"
+  FAKE_WORKTREE="$scratch/.worktrees/octiq-flow/feature/one" \
+    assert_skipped "sibling symlink $mode" ${flags[@]+"${flags[@]}"} --worktrees
+  FAKE_WORKTREE="$scratch/.worktrees/octiq-flow/feature/redirect" \
+    assert_skipped "listed symlink $mode" ${flags[@]+"${flags[@]}"} --worktrees
+  # Profile and each cache container must also refuse redirects, including
+  # metadata containers that previously were silently ignored.
+  for area in debug debug/deps debug/incremental debug/.fingerprint debug/build; do
+    guarded="$scratch/guarded-target"
+    rm -rf "$guarded"
+    mkdir -p "$guarded/debug/deps"
+    echo local > "$guarded/debug/deps/octiq-abc.d"
+    old "$guarded/debug/deps/octiq-abc.d"
+    if [[ "$area" == debug ]]; then
+      rm -rf "$guarded/debug"
+      ln -s "$external/debug" "$guarded/debug"
+    else
+      rm -rf "$guarded/$area"
+      ln -s "$external/debug/deps" "$guarded/$area"
+    fi
+    assert_skipped "$area symlink $mode" ${flags[@]+"${flags[@]}"} "$guarded"
+    exists "$guarded/debug/deps/octiq-abc.d"
+  done
+done
+echo 'PASS: trailing-slash target, src-tauri ancestor, sibling/listed worktree and profile/cache symlinks SKIPPED in dry-run and real scratch prune; external sentinels preserved.'
 # Validate generated launchd config in an isolated HOME with launchctl stubbed.
 cat > "$scratch/bin/launchctl" <<'STUB'
 #!/usr/bin/env bash
