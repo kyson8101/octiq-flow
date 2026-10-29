@@ -6,8 +6,15 @@
   border: 0; background: transparent; text-align: left; cursor: pointer;
   color: var(--fg-2); font: inherit; font-size: 12px; line-height: 1.5;
 }
-.host-notice-label { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.host-notice-arrow { color: var(--fg-3); }
+.host-notice-label { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; }
+.host-notice-sender { color: var(--fg-1); font-weight: 500; }
+.host-notice-sender, .host-notice-coordinator { flex: 0 0 auto; max-width: 30%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.host-notice-coordinator { color: var(--fg-2); }
+.host-notice-subject { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-1); }
+.host-notice-arrow, .host-notice-face { flex: 0 0 auto; color: var(--fg-3); }
+.host-notice-kind { flex: 0 0 auto; color: var(--fg-3); }
+.host-notice-kind-failure { color: var(--danger); }
+.host-notice-kind-escalation, .host-notice-kind-capacity { color: var(--warn); }
 .host-notice-toggle .card-fold-chevron { flex: 0 0 auto; margin-right: 4px; }
 .host-notice-toggle:focus-visible { outline: 2px solid var(--fg-2); outline-offset: 2px; border-radius: var(--r-sm); }
 .host-notice-toggle[aria-expanded="true"] .card-fold-chevron { transform: translateY(2px) rotate(-135deg); }
@@ -16,7 +23,10 @@
 @media (pointer: coarse) { .host-notice-toggle { min-height: 44px; } }
 
 /* The entire reply is already visible; it is neither a button nor clipped. */
-.host-notice-reply { padding: 5px 0; color: var(--fg-2); font-size: 12px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+.host-notice-reply { display: flex; align-items: baseline; gap: 6px; padding: 5px 0; color: var(--fg-2); font-size: 12px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+.host-notice-reply > .agent-avatar, .host-notice-reply > .host-notice-face { align-self: flex-start; margin-top: 1px; }
+.host-notice-reply > .host-notice-sender { flex: 0 0 auto; max-width: 40%; }
+.host-notice-reply-text { min-width: 0; }
 .host-notice-raw-toggle { display: flex; align-items: center; gap: 8px; padding: 4px 0; border: 0; background: transparent; color: var(--fg-3); font: inherit; font-size: 11px; cursor: pointer; }
 .host-notice-raw-toggle .card-fold-chevron { width: 5px; height: 5px; }
 .host-notice-raw-toggle[aria-expanded="true"] .card-fold-chevron { transform: translateY(2px) rotate(-135deg); }

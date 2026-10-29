@@ -599,7 +599,11 @@ describe("Cyberpunk keeps colour's meaning under its neon", () => {
 
 describe("a run's own surfaces", () => {
   it("keeps host notification bookkeeping neutral, including its focus cue", () => {
-    expect(hostNoticeCss).not.toMatch(/var\(--(?:accent|decide|warn|danger)/);
+    expect(hostNoticeCss).not.toMatch(/var\(--(?:accent|decide)/);
+    const withoutKindAlerts = hostNoticeCss
+      .replace(/\.host-notice-kind-failure\s*\{[^}]*\}/g, "")
+      .replace(/\.host-notice-kind-escalation,\s*\.host-notice-kind-capacity\s*\{[^}]*\}/g, "");
+    expect(withoutKindAlerts).not.toMatch(/var\(--(?:warn|danger)/);
   });
   const run = [
     ...rules(runPanelCss, "OrchestrationPanel.css"),
