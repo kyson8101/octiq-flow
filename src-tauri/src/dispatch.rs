@@ -2697,6 +2697,9 @@ mod tests {
     async fn team_save_checks_the_edit_version_without_changing_approval_errors() {
         let home = crate::test_dir::TestDir::new("settings-team-version").canonicalized();
         let _profile = crate::profile::started_in(&home);
+        // Other team tests override default_path globally; take the same
+        // guard so this browser command keeps one store through all saves.
+        let _team = crate::team::use_test_path(crate::profile::profile_dir().join("team.json"));
         let svc = Services::load();
         let mut draft = json!({"name":"Papaya", "role":"Lead", "agent":"claude", "model":"sonnet", "access":"full"});
         let original = dispatch(&svc, "team_save", json!({"agent":draft})).unwrap();
