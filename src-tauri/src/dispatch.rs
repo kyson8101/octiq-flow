@@ -2197,7 +2197,19 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             ))
         }
         "team_save" => {
-            let saved = crate::team::save(&crate::team::default_path(), arg(&args, "agent")?)?;
+            let path = crate::team::default_path();
+            let agent = arg(&args, "agent")?;
+            let saved = match arg::<Option<i64>>(&args, "expected")? {
+                Some(expected) => crate::team::save_unchanged(&path, agent, expected).map_err(|error| {
+                    // MCP approval refusals keep their original wording. Only
+                    // this browser Settings route describes an editing conflict.
+                    match error.strip_suffix(" was changed while this waited for approval, so nothing was saved. Read it again and propose the change again.") {
+                        Some(name) => format!("{name} was changed somewhere else while you were editing, so nothing was saved. The list now shows the latest; check it and save again."),
+                        None => error,
+                    }
+                }),
+                None => crate::team::save(&path, agent),
+            }?;
             let memory = crate::team_tools::settle(&saved);
             let mut value = serde_json::to_value(&saved).map_err(|e| e.to_string())?;
             if let (Some(error), Some(object)) = (memory, value.as_object_mut()) {
@@ -2680,6 +2692,51 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn team_save_checks_the_edit_version_without_changing_approval_errors() {
+        let home = crate::test_dir::TestDir::new("settings-team-version").canonicalized();
+        let _profile = crate::profile::started_in(&home);
+        // Other team tests override default_path globally; take the same
+        // guard so this browser command keeps one store through all saves.
+        let _team = crate::team::use_test_path(crate::profile::profile_dir().join("team.json"));
+        let svc = Services::load();
+        let mut draft = json!({"name":"Papaya", "role":"Lead", "agent":"claude", "model":"sonnet", "access":"full"});
+        let original = dispatch(&svc, "team_save", json!({"agent":draft})).unwrap();
+        draft["id"] = original["id"].clone();
+        let mut remote = draft.clone();
+        remote["name"] = json!("Newest remote name");
+        remote["access"] = json!("read");
+        let newest = dispatch(&svc, "team_save", json!({"agent":remote})).unwrap();
+        let error = dispatch(
+            &svc,
+            "team_save",
+            json!({"agent":draft, "expected":original["updatedAt"]}),
+        )
+        .unwrap_err();
+        assert_eq!(error, "Newest remote name was changed somewhere else while you were editing, so nothing was saved. The list now shows the latest; check it and save again.");
+        let list = crate::team::list(&crate::team::default_path(), None, true).unwrap();
+        assert_eq!(list[0].name, "Newest remote name");
+        assert_eq!(list[0].access, Access::Read);
+        let approval = crate::team::save_unchanged(
+            &crate::team::default_path(),
+            serde_json::from_value(draft.clone()).unwrap(),
+            original["updatedAt"].as_i64().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(approval, "Newest remote name was changed while this waited for approval, so nothing was saved. Read it again and propose the change again.");
+        remote["role"] = json!("Updated details");
+        let saved = dispatch(
+            &svc,
+            "team_save",
+            json!({"agent":remote, "expected":newest["updatedAt"]}),
+        )
+        .unwrap();
+        assert_eq!(saved["name"], "Newest remote name");
+        assert_eq!(saved["access"], "read");
+        assert_eq!(saved["role"], "Updated details");
+        assert!(saved["updatedAt"].as_i64().unwrap() > newest["updatedAt"].as_i64().unwrap());
+    }
 
     #[test]
     fn argument_names_are_accepted_in_either_spelling() {

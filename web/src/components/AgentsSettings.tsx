@@ -18,7 +18,7 @@ import {
 import { orgChart, teamBadge } from "../lib/agentsDashboard";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentAvatarEditor } from "./AgentAvatarEditor";
-import { AgentRole, rolePreview } from "./AgentRole";
+import { rolePreview } from "./AgentRole";
 import { sharedProject } from "../lib/frontDesk";
 
 type ProjectRef = { id: string; name: string };
@@ -40,6 +40,12 @@ export function AgentsSettings({ on, onToggle, projects }: {
   const [error, setError] = useState("");
   const [draft, setDraft] = useState<TeamDraft | null>(null);
   const [saving, setSaving] = useState(false);
+  // Edit bases remain fixed across team-changed refreshes until a refused save
+  // re-reads the host. Never substitute a newer cache version for consent.
+  const [rowBase, setRowBase] = useState<TeamAgent | null>(null);
+  const [detailsBase, setDetailsBase] = useState<TeamAgent | null>(null);
+  const [details, setDetails] = useState<TeamDraft | null>(null);
+  const [detailsError, setDetailsError] = useState("");
   const [headId, setHeadId] = useState<string | null>(null);
   const [homeId, setHomeId] = useState<string | null>(null);
   const [teams, setTeams] = useState<AgentTeam[]>([]);
@@ -164,14 +170,12 @@ export function AgentsSettings({ on, onToggle, projects }: {
     () => new Map(projects.map((p) => [p.id, p.name])),
     [projects],
   );
-  const chart = useMemo(() => orgChart(team), [team]);
-
   const save = async () => {
-    if (!draft) return;
+    if (!draft || saving || !draft.name.trim() || !draft.model) return;
     setSaving(true);
     setError("");
     try {
-      const saved = await saveTeamAgent({ ...draft, projectId: draft.projectId || null, reportsTo: draft.reportsTo || null });
+      const saved = await saveTeamAgent({ ...draft, projectId: draft.projectId || null, reportsTo: draft.reportsTo || null }, draft.id ? rowBase?.updatedAt : undefined);
       if (saved.memoryError) setError(`${saved.name} was saved, but its memory note could not be created: ${saved.memoryError}`);
       // Re-read: a save can move nothing else today, but a delete moves
       // reports up, and one source of truth is simpler than two.
@@ -179,9 +183,46 @@ export function AgentsSettings({ on, onToggle, projects }: {
       setDraft(null);
     } catch (reason) {
       setError(String((reason as Error).message ?? reason));
+      // Keep every typed field, but let an explicit retry target the version
+      // the refreshed list now shows. A failed read retains the old base.
+      try {
+        const latest = await loadTeam(null, true);
+        setTeam(latest);
+        setRowBase(latest.find((agent) => agent.id === draft.id) ?? rowBase);
+      } catch { /* The save error remains visible. */ }
     } finally {
       setSaving(false);
     }
+  };
+
+  const saveDetails = async () => {
+    if (!details || saving) return;
+    const patch = agentDetailsPatch(details);
+    // An editing row owns its whole draft; the modal stages only its long
+    // fields, and Cancel on the row still discards all of those changes.
+    if (draft && draft.id === details.id) {
+      setDraft({ ...draft, ...patch });
+      setDetails(null);
+      return;
+    }
+    const current = detailsBase;
+    if (!current) { setDetailsError("This agent is no longer registered."); return; }
+    setSaving(true);
+    setError("");
+    setDetailsError("");
+    try {
+      const saved = await saveTeamAgent({ ...current, ...patch }, current.updatedAt);
+      if (saved.memoryError) setError(`${saved.name} was saved, but its memory note could not be created: ${saved.memoryError}`);
+      setTeam(await loadTeam(null, true));
+      setDetails(null);
+    } catch (reason) {
+      setDetailsError(String((reason as Error).message ?? reason));
+      try {
+        const latest = await loadTeam(null, true);
+        setTeam(latest);
+        setDetailsBase(latest.find((agent) => agent.id === details.id) ?? detailsBase);
+      } catch { /* Keep the modal text and original save error. */ }
+    } finally { setSaving(false); }
   };
 
   const saveTeam = async () => {
@@ -223,40 +264,6 @@ export function AgentsSettings({ on, onToggle, projects }: {
     } catch (reason) {
       setError(String((reason as Error).message ?? reason));
     }
-  };
-
-  const row = ({ agent, depth }: { agent: TeamAgent; depth: number }) => {
-    const badge = teamBadge(agent, teams);
-    return (
-    <li className="team-row" key={agent.id} style={{ "--team-depth": depth } as React.CSSProperties}>
-      <div className="team-row-head">
-        {depth > 0 && <span className="team-row-branch" aria-hidden="true">└</span>}
-        <AgentAvatar name={agent.name} avatar={agent.avatar} id={agent.id} size={28} decorative />
-        <span className="team-row-copy">
-          <span className="team-row-name">
-            <bdi>{agent.name}</bdi>
-            {leadOnly(agent) && <span className="team-tag" title="Fable and Astra can lead a task but cannot take one">lead only</span>}
-            {badge && <span className="team-tag team-badge" title={`On the team ${badge.name}: may ask its teammates for help`}><bdi>{badge.name}</bdi></span>}
-          </span>
-          <span className="team-row-meta">
-            {AGENT_NAME[agent.agent]} {teamModelLabel(agent)}{agent.effort ? ` · ${agent.effort}` : ""}
-            {" · "}{agent.projectId ? projectName.get(agent.projectId) ?? "Removed project" : "Every project"}
-          </span>
-        </span>
-        <span className="team-row-actions">
-          <button className="vault-button team-row-action" type="button" aria-label={`Edit ${agent.name}`} title="Edit"
-            onClick={() => setDraft({ ...agent, projectId: agent.projectId ?? null, reportsTo: agent.reportsTo ?? null, teamId: agent.teamId ?? null })}>
-            <EditIcon /><span className="team-row-action-text">Edit</span>
-          </button>
-          <button className="vault-button team-row-action" type="button" aria-label={`Remove ${agent.name}`} title="Remove"
-            onClick={() => void remove(agent)}>
-            <RemoveIcon /><span className="team-row-action-text">Remove</span>
-          </button>
-        </span>
-      </div>
-      {agent.role && <AgentRole className="team-row-role" text={agent.role} name={agent.name} />}
-    </li>
-    );
   };
 
   return (
@@ -347,39 +354,36 @@ export function AgentsSettings({ on, onToggle, projects }: {
 
       <div className="team-head">
         <h3>Registered agents</h3>
-        <button className="settings-primary" type="button" onClick={() => setDraft(blank(null))} disabled={!!draft && !draft.id}>
+        <button className="settings-primary" type="button" onClick={() => setDraft(blank(null))} disabled={loading || !!draft || saving}>
           Add agent
         </button>
       </div>
 
       {error && <p className="set-warn" role="alert">{error}</p>}
 
-      {draft && (
-        <TeamForm
-          draft={draft}
-          team={team}
-          teams={teams}
-          projects={projects}
-          saving={saving}
-          onChange={setDraft}
-          onSave={() => void save()}
-          onCancel={() => setDraft(null)}
-        />
-      )}
-
       {loading ? (
         <p role="status" className="settings-note">Loading agents…</p>
-      ) : team.length === 0 ? (
+      ) : team.length === 0 && !draft ? (
         <div className="settings-empty">
           <strong>No agents yet</strong>
           <span>Add one with a name, a role and the model it runs on.</span>
         </div>
       ) : (
-        <div className="team-group">
-          <h4>Org chart · agents at the top report to you</h4>
-          <ul className="team-list">{chart.map(row)}</ul>
-        </div>
+        <RegisteredAgentsTable team={team} teams={teams} projects={projects} draft={draft} saving={saving}
+          onDraft={(next) => {
+            if (!draft) setRowBase(team.find((agent) => agent.id === next?.id) ?? null);
+            setDraft(next);
+          }} onSave={() => void save()} onRemove={(agent) => void remove(agent)}
+          onDetails={(agent) => {
+            setDetailsError("");
+            setDetailsBase(team.find((item) => item.id === agent.id) ?? null);
+            setDetails({ ...agent });
+          }} />
       )}
+
+      {details && <AgentDetailsDialog draft={details} staged={!!draft && draft.id === details.id}
+        saving={saving} error={detailsError} onChange={setDetails}
+        onSave={() => void saveDetails()} onClose={() => { if (!saving) setDetails(null); }} />}
 
       <TeamsBlock
         teams={teams}
@@ -629,19 +633,19 @@ export function ModelFields({ agent, model, effort, onProvider, onModel, onEffor
     <>
       <label>
         <span>Provider</span>
-        <select value={agent} disabled={disabled} onChange={(event) => onProvider(event.target.value as Provider)}>
+        <select aria-label="Provider" value={agent} disabled={disabled} onChange={(event) => onProvider(event.target.value as Provider)}>
           {PROVIDERS.map((p) => <option key={p} value={p}>{AGENT_NAME[p]}</option>)}
         </select>
       </label>
       <label>
         <span>Model</span>
-        <select value={model} disabled={disabled} onChange={(event) => onModel(event.target.value)}>
+        <select aria-label="Model" value={model} disabled={disabled} onChange={(event) => onModel(event.target.value)}>
           {teamModels(agent).map((m) => <option key={m.id} value={m.flag}>{m.model}</option>)}
         </select>
       </label>
       <label>
         <span>Effort</span>
-        <select value={effort ?? ""} disabled={disabled} onChange={(event) => onEffort(event.target.value as Effort)}>
+        <select aria-label="Effort" value={effort ?? ""} disabled={disabled} onChange={(event) => onEffort(event.target.value as Effort)}>
           {EFFORTS[agent].map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
         </select>
       </label>
@@ -724,16 +728,9 @@ export function FrontDeskBlock({ desk, roster, headId, loading, busy, onPick, on
   );
 }
 
-export function TeamForm({ draft, team, teams, projects, saving, onChange, onSave, onCancel }: {
-  draft: TeamDraft;
-  team: TeamAgent[];
-  teams: AgentTeam[];
-  projects: ProjectRef[];
-  saving: boolean;
-  onChange: (draft: TeamDraft) => void;
-  onSave: () => void;
-  onCancel: () => void;
-}) {
+/** Shared by the compact row and the full form: provider resets, reporting
+ * visibility/loop protection and project/team compatibility stay together. */
+export function teamDraftFields(draft: TeamDraft, team: TeamAgent[], teams: AgentTeam[], onChange: (draft: TeamDraft) => void) {
   const access = ACCESS[draft.agent];
   const set = (patch: Partial<TeamDraft>) => onChange({ ...draft, ...patch });
   const pickProvider = (agent: Provider) => {
@@ -769,6 +766,188 @@ export function TeamForm({ draft, team, teams, projects, saving, onChange, onSav
     set({ projectId, ...(keeps ? {} : { teamId: null }) });
   };
 
+  return { access, set, pickProvider, lead, managers, joinable, pickProject };
+}
+
+/** Only these fields belong to the details modal. Other fields come
+ * from the row draft, or the modal edit base checked by the host on Save. */
+export function agentDetailsPatch(draft: TeamDraft) {
+  return { role: draft.role, persistentPrompt: draft.persistentPrompt, avatar: draft.avatar };
+}
+
+export function RegisteredAgentsTable({ team, teams, projects, draft, saving, onDraft, onSave, onRemove, onDetails }: {
+  team: TeamAgent[]; teams: AgentTeam[]; projects: ProjectRef[]; draft: TeamDraft | null; saving: boolean;
+  onDraft: (draft: TeamDraft | null) => void; onSave: () => void;
+  onRemove: (agent: TeamAgent) => void; onDetails: (draft: TeamDraft) => void;
+}) {
+  // A host refresh updates the roster, never the in-flight row's values.
+  // Keep its row visible even if the agent was removed on another device.
+  const roster = draft?.id && !team.some((agent) => agent.id === draft.id)
+    ? [...team, { ...draft, id: draft.id, createdAt: 0, updatedAt: 0 } as TeamAgent] : team;
+  const rowProps = { team, teams, projects, saving, onChange: onDraft, onSave, onCancel: () => onDraft(null), onDetails };
+  return <div className="registered-agents">
+    <p className="settings-note">Agents at the top report to you. Edit one row at a time.</p>
+    <table className="agents-table" aria-label="Registered agents">
+      <colgroup><col className="agents-col-agent" /><col className="agents-col-model" /><col className="agents-col-access" />
+        <col className="agents-col-manager" /><col className="agents-col-project" /><col className="agents-col-team" /><col className="agents-col-actions" /></colgroup>
+      <thead><tr>{["Agent", "Model", "Access", "Reports to", "Available in", "Team", "Actions"].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+      <tbody>
+        {draft && !draft.id && <InlineAgentRow {...rowProps} key="new" draft={draft} depth={0} />}
+        {orgChart(roster).map(({ agent, depth }) => draft?.id === agent.id
+          ? <InlineAgentRow {...rowProps} key={agent.id} draft={draft} depth={depth} />
+          : <tr key={agent.id}>
+            <td data-label="Agent"><AgentIdentity agent={agent} teams={teams} depth={depth}
+              roleButton={<button type="button" className="agent-role-button" aria-label={`Edit role, prompt and avatar for ${agent.name}`}
+                disabled={saving || !!draft} onClick={() => onDetails(agent)} title={agent.role || "Add role"}>
+                {agent.role ? rolePreview(agent.role) : "Add role"}</button>} /></td>
+            <AgentValue label="Model" text={`${AGENT_NAME[agent.agent]} · ${teamModelLabel(agent)}${agent.effort ? ` · ${agent.effort}` : ""}`} />
+            <AgentValue label="Access" text={ACCESS[agent.agent].find((level) => level.id === agent.access)?.label ?? agent.access} />
+            <AgentValue label="Reports to" text={agent.reportsTo ? team.find((manager) => manager.id === agent.reportsTo)?.name ?? "Removed agent" : "You"} />
+            <AgentValue label="Available in" text={agent.projectId ? projects.find((project) => project.id === agent.projectId)?.name ?? "Removed project" : "Every project"} />
+            <AgentValue label="Team" text={teams.find((group) => group.id === agent.teamId)?.name ?? "None"} />
+            <td data-label="Actions"><div className="agents-row-actions">
+              <button type="button" className="vault-button agents-icon-action" disabled={saving || !!draft} aria-label={`Edit ${agent.name}`} title={`Edit ${agent.name}`}
+                onClick={() => onDraft({ ...agent, projectId: agent.projectId ?? null, reportsTo: agent.reportsTo ?? null, teamId: agent.teamId ?? null })}><EditIcon /></button>
+              <button type="button" className="vault-button agents-icon-action" disabled={saving || !!draft} aria-label={`Remove ${agent.name}`} title={`Remove ${agent.name}`} onClick={() => onRemove(agent)}><RemoveIcon /></button>
+            </div></td>
+          </tr>)}
+      </tbody>
+    </table>
+  </div>;
+}
+
+/** Keep each whitespace-delimited word together; an oversized word gets its
+ * own ellipsis while the enclosing value's title keeps the full text. */
+function AgentWords({ text }: { text: string }) {
+  return text.split(/(\s+)/).map((part, index) => /\S/.test(part)
+    ? <span className="agents-word" key={index}>{part}</span> : part);
+}
+
+function AgentValue({ label, text }: { label: string; text: string }) {
+  return <td data-label={label}><span className="agents-cell-text" title={text}><AgentWords text={text} /></span></td>;
+}
+
+function AgentIdentity({ agent, teams, depth, roleButton }: { agent: TeamDraft; teams: AgentTeam[]; depth: number; roleButton?: React.ReactNode }) {
+  const badge = teamBadge({ teamId: agent.teamId ?? undefined }, teams);
+  return <div className="agents-identity" style={{ "--team-depth": depth } as React.CSSProperties}>
+    {depth > 0 && <span aria-hidden="true" className="agents-branch">└</span>}
+    <AgentAvatar name={agent.name} avatar={agent.avatar} id={agent.id} size={28} decorative />
+    <div className="agents-identity-copy"><span className="team-row-name"><bdi title={agent.name || "New agent"}><AgentWords text={agent.name || "New agent"} /></bdi>
+      {leadOnly(agent) && <span className="team-tag" title="Fable and Astra can lead a task but cannot take one">lead only</span>}
+      {badge && <span className="team-tag team-badge" title={`On the team ${badge.name}: may ask its teammates for help`}><bdi>{badge.name}</bdi></span>}
+    </span>{roleButton}</div>
+  </div>;
+}
+
+export function InlineAgentRow({ draft, depth, team, teams, projects, saving, onChange, onSave, onCancel, onDetails }: {
+  draft: TeamDraft; depth: number; team: TeamAgent[]; teams: AgentTeam[]; projects: ProjectRef[]; saving: boolean;
+  onChange: (draft: TeamDraft) => void; onSave: () => void; onCancel: () => void; onDetails: (draft: TeamDraft) => void;
+}) {
+  const { access, set, pickProvider, managers, joinable, pickProject } = teamDraftFields(draft, team, teams, onChange);
+  const valid = !!draft.name.trim() && !!draft.model;
+  return <tr className="agents-edit-row" aria-label={draft.id ? `Editing ${draft.name}` : "New agent"}
+    onKeyDown={(event) => {
+      if (event.nativeEvent.isComposing || saving) return;
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onCancel(); }
+      // Only text inputs save; selects, buttons and textareas keep native keys.
+      if (event.key === "Enter" && event.target instanceof HTMLInputElement && event.target.type === "text") {
+        event.preventDefault();
+        if (valid && !event.repeat) onSave();
+      }
+    }}>
+    <td colSpan={7}>
+      <AgentIdentity agent={draft} teams={teams} depth={depth} />
+      <div className="agents-edit-grid">
+        <label><span>Name</span><input autoFocus maxLength={60} value={draft.name} disabled={saving}
+          placeholder="e.g. Reviewer" onChange={(event) => set({ name: event.target.value })} /></label>
+        <ModelFields agent={draft.agent} model={draft.model} effort={draft.effort} disabled={saving}
+          onProvider={pickProvider} onModel={(model) => set({ model })} onEffort={(effort) => set({ effort })} />
+        <label><span>Access</span><select aria-label="Access" disabled={saving} value={draft.access} onChange={(event) => set({ access: event.target.value as AccessLevel })}>
+          {access.map((level) => <option key={level.id} value={level.id}>{level.label}</option>)}</select>
+          {providerFor(draft.agent).accessNote && <small className="team-field-note">{access.find((level) => level.id === draft.access)?.hint}</small>}</label>
+        <label><span>Reports to</span><select aria-label="Reports to" disabled={saving} value={draft.reportsTo ?? ""} onChange={(event) => set({ reportsTo: event.target.value || null })}>
+          <option value="">You</option>{managers.map((manager) => <option key={manager.id} value={manager.id}>{manager.name}</option>)}</select></label>
+        <label><span>Available in</span><select aria-label="Available in" disabled={saving} value={draft.projectId ?? ""} onChange={(event) => pickProject(event.target.value || null)}>
+          <option value="">Every project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+        <label><span>Team</span><select aria-label="Team" disabled={saving} value={draft.teamId ?? ""} onChange={(event) => set({ teamId: event.target.value || null })}>
+          <option value="">None</option>{joinable.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
+      </div>
+      {leadOnly(draft) && <small className="team-field-note">Fable and Astra can lead a task, but they cannot be given one.</small>}
+      <div className="agents-edit-footer">
+        <button type="button" className="vault-button" disabled={saving} onClick={() => onDetails(draft)}>Edit role, prompt & avatar</button>
+        <div className="agents-row-actions">
+          <button type="button" className="settings-primary" disabled={saving || !valid} onClick={onSave}>{saving ? "Saving…" : "Save"}</button>
+          <button type="button" className="vault-button" disabled={saving} onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
+    </td>
+  </tr>;
+}
+
+/** Native modal pattern shared with FeedbackInbox. Loop Tab explicitly so
+ * keyboard focus stays in the form rather than moving to browser chrome. */
+export function AgentDetailsDialog({ draft, staged, saving, error, onChange, onSave, onClose }: {
+  draft: TeamDraft; staged: boolean; saving: boolean; error: string;
+  onChange: (draft: TeamDraft) => void; onSave: () => void; onClose: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    const element = dialog.current!;
+    element.showModal();
+    return () => { element.close(); if (opener?.isConnected) opener.focus({ preventScroll: true }); };
+  }, []);
+  return <dialog ref={dialog} className="agent-details-dialog" aria-labelledby="agent-details-title" tabIndex={-1}
+    onCancel={(event) => { event.preventDefault(); if (!saving) onClose(); }}
+    onKeyDown={(event) => {
+      if (event.key === "Escape") event.stopPropagation();
+      if (event.key !== "Tab") return;
+      const controls = [...event.currentTarget.querySelectorAll<HTMLElement>("button:enabled, input:enabled, select:enabled, textarea:enabled, [tabindex]:not([tabindex='-1'])")]
+        .filter((element) => element.getClientRects().length > 0);
+      const first = controls[0], last = controls.at(-1);
+      if (!first) { event.preventDefault(); event.currentTarget.focus(); }
+      else if (event.shiftKey && (document.activeElement === first || document.activeElement === event.currentTarget)) {
+        event.preventDefault(); last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault(); first.focus();
+      }
+    }}>
+    <form className="team-form agent-details-form" onSubmit={(event) => { event.preventDefault(); if (!saving) onSave(); }}>
+      <header><h2 id="agent-details-title">{draft.name || "New agent"} · Details</h2>
+        <p className="settings-note">{staged ? "Changes stay in this row until you save the row." : "Save updates this agent’s role, prompt and avatar."}</p></header>
+      {error && <p role="alert" className="set-warn">{error}</p>}
+      <fieldset disabled={saving} className="agent-details-fields"><AgentLongFields draft={draft} onChange={onChange} /></fieldset>
+      <div className="team-form-actions">
+        <button type="button" className="vault-button" disabled={saving} onClick={onClose}>Cancel</button>
+        <button type="submit" className="settings-primary" disabled={saving}>{saving ? "Saving…" : "Save details"}</button>
+      </div>
+    </form>
+  </dialog>;
+}
+
+function AgentLongFields({ draft, onChange }: { draft: TeamDraft; onChange: (draft: TeamDraft) => void }) {
+  const set = (patch: Partial<TeamDraft>) => onChange({ ...draft, ...patch });
+  return <>
+    <AgentAvatarEditor key={draft.id ?? "new"} name={draft.name} role={draft.role} avatar={draft.avatar}
+      agentId={draft.id} onChange={(avatar) => set({ avatar })} />
+    <label className="team-form-wide"><span>Role</span>
+      <textarea aria-label="Role" value={draft.role} maxLength={ROLE_MAX} rows={4} placeholder="What this agent is good at, and what it should take on"
+        onChange={(event) => set({ role: event.target.value })} /></label>
+    <label className="team-form-wide"><span className="team-field-head"><span>Persistent prompt</span>
+      <CharCounter text={draft.persistentPrompt ?? ""} max={PERSISTENT_PROMPT_MAX} /></span>
+      <textarea aria-label="Persistent prompt" value={draft.persistentPrompt ?? ""} maxLength={PERSISTENT_PROMPT_MAX} rows={6} aria-describedby="team-persistent-prompt-hint"
+        placeholder="Runbooks, tool rules, how this agent builds and checks its work" onChange={(event) => set({ persistentPrompt: event.target.value })} />
+      <small className="team-field-note" id="team-persistent-prompt-hint">This agent's standing instructions. Sent ahead of its role in every brief it starts with, after the agent policy; never shown in the roster or to other agents. Applies to new chats and tasks.</small>
+    </label>
+  </>;
+}
+
+export function TeamForm({ draft, team, teams, projects, saving, onChange, onSave, onCancel }: {
+  draft: TeamDraft; team: TeamAgent[]; teams: AgentTeam[]; projects: ProjectRef[]; saving: boolean;
+  onChange: (draft: TeamDraft) => void; onSave: () => void; onCancel: () => void;
+}) {
+  const { access, set, pickProvider, lead, managers, joinable, pickProject } = teamDraftFields(draft, team, teams, onChange);
+
   return (
     <form className="team-form" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
       <label>
@@ -776,33 +955,7 @@ export function TeamForm({ draft, team, teams, projects, saving, onChange, onSav
         <input value={draft.name} maxLength={60} placeholder="e.g. Reviewer" autoFocus
           onChange={(event) => set({ name: event.target.value })} />
       </label>
-      <AgentAvatarEditor
-        key={draft.id ?? "new"}
-        name={draft.name}
-        role={draft.role}
-        avatar={draft.avatar}
-        agentId={draft.id}
-        onChange={(avatar) => set({ avatar })}
-      />
-      <label className="team-form-wide">
-        <span>Role</span>
-        <textarea value={draft.role} maxLength={ROLE_MAX} rows={3}
-          placeholder="What this agent is good at, and what it should take on"
-          onChange={(event) => set({ role: event.target.value })} />
-      </label>
-      <label className="team-form-wide">
-        <span className="team-field-head">
-          <span>Persistent prompt</span>
-          <CharCounter text={draft.persistentPrompt ?? ""} max={PERSISTENT_PROMPT_MAX} />
-        </span>
-        <textarea value={draft.persistentPrompt ?? ""} maxLength={PERSISTENT_PROMPT_MAX} rows={4}
-          aria-describedby="team-persistent-prompt-hint"
-          placeholder="Runbooks, tool rules, how this agent builds and checks its work"
-          onChange={(event) => set({ persistentPrompt: event.target.value })} />
-        <small className="team-field-note" id="team-persistent-prompt-hint">
-          This agent's standing instructions. Sent ahead of its role in every brief it starts with, after the agent policy; never shown in the roster or to other agents. Applies to new chats and tasks.
-        </small>
-      </label>
+      <AgentLongFields draft={draft} onChange={onChange} />
       <ModelFields
         agent={draft.agent}
         model={draft.model}
