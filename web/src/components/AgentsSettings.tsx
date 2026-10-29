@@ -40,6 +40,10 @@ export function AgentsSettings({ on, onToggle, projects }: {
   const [error, setError] = useState("");
   const [draft, setDraft] = useState<TeamDraft | null>(null);
   const [saving, setSaving] = useState(false);
+  // Edit bases remain fixed across team-changed refreshes until a refused save
+  // re-reads the host. Never substitute a newer cache version for consent.
+  const [rowBase, setRowBase] = useState<TeamAgent | null>(null);
+  const [detailsBase, setDetailsBase] = useState<TeamAgent | null>(null);
   const [details, setDetails] = useState<TeamDraft | null>(null);
   const [detailsError, setDetailsError] = useState("");
   const [headId, setHeadId] = useState<string | null>(null);
@@ -171,7 +175,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
     setSaving(true);
     setError("");
     try {
-      const saved = await saveTeamAgent({ ...draft, projectId: draft.projectId || null, reportsTo: draft.reportsTo || null });
+      const saved = await saveTeamAgent({ ...draft, projectId: draft.projectId || null, reportsTo: draft.reportsTo || null }, draft.id ? rowBase?.updatedAt : undefined);
       if (saved.memoryError) setError(`${saved.name} was saved, but its memory note could not be created: ${saved.memoryError}`);
       // Re-read: a save can move nothing else today, but a delete moves
       // reports up, and one source of truth is simpler than two.
@@ -179,6 +183,13 @@ export function AgentsSettings({ on, onToggle, projects }: {
       setDraft(null);
     } catch (reason) {
       setError(String((reason as Error).message ?? reason));
+      // Keep every typed field, but let an explicit retry target the version
+      // the refreshed list now shows. A failed read retains the old base.
+      try {
+        const latest = await loadTeam(null, true);
+        setTeam(latest);
+        setRowBase(latest.find((agent) => agent.id === draft.id) ?? rowBase);
+      } catch { /* The save error remains visible. */ }
     } finally {
       setSaving(false);
     }
@@ -194,18 +205,23 @@ export function AgentsSettings({ on, onToggle, projects }: {
       setDetails(null);
       return;
     }
-    const current = team.find((agent) => agent.id === details.id);
+    const current = detailsBase;
     if (!current) { setDetailsError("This agent is no longer registered."); return; }
     setSaving(true);
     setError("");
     setDetailsError("");
     try {
-      const saved = await saveTeamAgent({ ...current, ...patch });
+      const saved = await saveTeamAgent({ ...current, ...patch }, current.updatedAt);
       if (saved.memoryError) setError(`${saved.name} was saved, but its memory note could not be created: ${saved.memoryError}`);
       setTeam(await loadTeam(null, true));
       setDetails(null);
     } catch (reason) {
       setDetailsError(String((reason as Error).message ?? reason));
+      try {
+        const latest = await loadTeam(null, true);
+        setTeam(latest);
+        setDetailsBase(latest.find((agent) => agent.id === details.id) ?? detailsBase);
+      } catch { /* Keep the modal text and original save error. */ }
     } finally { setSaving(false); }
   };
 
@@ -354,8 +370,15 @@ export function AgentsSettings({ on, onToggle, projects }: {
         </div>
       ) : (
         <RegisteredAgentsTable team={team} teams={teams} projects={projects} draft={draft} saving={saving}
-          onDraft={setDraft} onSave={() => void save()} onRemove={(agent) => void remove(agent)}
-          onDetails={(agent) => { setDetailsError(""); setDetails({ ...agent }); }} />
+          onDraft={(next) => {
+            if (!draft) setRowBase(team.find((agent) => agent.id === next?.id) ?? null);
+            setDraft(next);
+          }} onSave={() => void save()} onRemove={(agent) => void remove(agent)}
+          onDetails={(agent) => {
+            setDetailsError("");
+            setDetailsBase(team.find((item) => item.id === agent.id) ?? null);
+            setDetails({ ...agent });
+          }} />
       )}
 
       {details && <AgentDetailsDialog draft={details} staged={!!draft && draft.id === details.id}
@@ -746,8 +769,8 @@ export function teamDraftFields(draft: TeamDraft, team: TeamAgent[], teams: Agen
   return { access, set, pickProvider, lead, managers, joinable, pickProject };
 }
 
-/** Only these fields belong to the details modal. Other fields always come
- * from the current row draft, or the newest roster when saving directly. */
+/** Only these fields belong to the details modal. Other fields come
+ * from the row draft, or the modal edit base checked by the host on Save. */
 export function agentDetailsPatch(draft: TeamDraft) {
   return { role: draft.role, persistentPrompt: draft.persistentPrompt, avatar: draft.avatar };
 }
@@ -826,8 +849,8 @@ export function InlineAgentRow({ draft, depth, team, teams, projects, saving, on
     onKeyDown={(event) => {
       if (event.nativeEvent.isComposing || saving) return;
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onCancel(); }
-      // Buttons retain native Enter (including opening details); fields save.
-      if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) {
+      // Only text inputs save; selects, buttons and textareas keep native keys.
+      if (event.key === "Enter" && event.target instanceof HTMLInputElement && event.target.type === "text") {
         event.preventDefault();
         if (valid && !event.repeat) onSave();
       }

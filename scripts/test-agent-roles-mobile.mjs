@@ -82,7 +82,10 @@ function resultFor(request) {
       saved.push(request.args);
       const draft = request.args.agent;
       const index = team.findIndex((item) => item.id === draft.id);
-      const item = { ...(team[index] ?? {}), ...draft, id: draft.id || "new-agent", createdAt: now, updatedAt: now };
+      if (request.args.expected !== undefined && request.args.expected !== team[index]?.updatedAt) {
+        throw new Error(`${team[index]?.name} was changed somewhere else while you were editing, so nothing was saved. The list now shows the latest; check it and save again.`);
+      }
+      const item = { ...(team[index] ?? {}), ...draft, id: draft.id || "new-agent", createdAt: now, updatedAt: Math.max(now, (team[index]?.updatedAt ?? 0) + 1) };
       if (index >= 0) team[index] = item; else team.push(item);
       return item;
     }
@@ -92,6 +95,14 @@ function resultFor(request) {
     case "codex_skills": return [];
     case "agent_avatar_status": return { available: false, reason: "Not signed in to Codex." };
     default: return null;
+  }
+}
+
+async function waitForHost(check, label) {
+  const deadline = Date.now() + 30_000;
+  while (!check()) {
+    assert(Date.now() < deadline, label);
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
 
@@ -218,11 +229,14 @@ try {
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
   });
   const base = `http://127.0.0.1:${server.httpServer.address().port}/`;
-  for (const [label, width, height] of [["390", 390, 844], ["1280", 1280, 960], ["375", 375, 812], ["430", 430, 932]]) {
+  for (const [label, width, height] of [["390", 390, 844], ["1280", 1280, 960], ["375", 375, 812], ["430", 430, 932], ["1280-coarse", 1280, 960]]) {
     team.splice(0, team.length, ...structuredClone(originalTeam));
     const phone = width < 700;
+    const coarse = phone || label.endsWith("coarse");
     let hostSocket;
-    const context = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce", hasTouch: phone, isMobile: phone });
+    let holdTeamLists = false;
+    const heldTeamLists = [];
+    const context = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce", hasTouch: coarse, isMobile: phone });
     await context.addInitScript((seed) => {
       localStorage.setItem("octiq.agentsMode", "on");
       localStorage.setItem("octiq.v2.gitColumn", "0");
@@ -235,7 +249,16 @@ try {
       socket.onMessage((raw) => {
         const request = JSON.parse(String(raw));
         if (request.t !== "invoke") return;
-        socket.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: resultFor(request) }));
+        if (request.cmd === "team_list" && holdTeamLists) {
+          heldTeamLists.push({ socket, request });
+          return;
+        }
+        if (request.cmd === "team_save") holdTeamLists = false;
+        try {
+          socket.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: resultFor(request) }));
+        } catch (error) {
+          socket.send(JSON.stringify({ t: "reply", id: request.id, ok: false, error: error.message }));
+        }
       });
     });
     const page = await context.newPage();
@@ -332,6 +355,10 @@ try {
       const name = button.parentElement.querySelector(".team-row-name").getBoundingClientRect();
       return button.closest("td").dataset.label === "Agent" && button.getBoundingClientRect().top >= name.bottom;
     }), true, "role preview sits under the name inside Agent");
+    if (coarse) {
+      const target = await roleOpener.boundingBox();
+      assert(target.width >= 44 && target.height >= 44, "role is a 44px touch target at every width");
+    }
     await roleOpener.click();
     const dialog = page.getByRole("dialog", { name: "Papaya Juice · Details" });
     assert.equal(await dialog.getByLabel("Role", { exact: true }).inputValue(), PAPAYA);
@@ -381,6 +408,20 @@ try {
     // Save through Enter, after provider reset and a staged modal edit.
     await papaya.getByRole("button", { name: "Edit Papaya Juice", exact: true }).click();
     editing = settings.locator(".agents-edit-row");
+    if (coarse) {
+      const targets = await editing.locator("input, select, .agents-edit-footer button").evaluateAll((els) => els.map((el) => ({
+        label: el.getAttribute("aria-label") || el.textContent || el.tagName,
+        width: el.getBoundingClientRect().width,
+        height: el.getBoundingClientRect().height,
+      })));
+      assert(targets.every((target) => target.width >= 44 && target.height >= 44), `all edit targets are 44px on coarse pointer: ${JSON.stringify(targets)}`);
+    }
+    const beforeProviderEnter = saved.length;
+    await editing.getByLabel("Provider", { exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await editing.getByLabel("Name", { exact: true }).focus(); // blur any native select popup
+    await page.waitForTimeout(50);
+    assert.equal(saved.length, beforeProviderEnter, "Provider Enter never saves the row");
     await editing.getByLabel("Provider", { exact: true }).selectOption("codex");
     await editing.getByLabel("Model", { exact: true }).selectOption({ label: "Sol" });
     await editing.getByLabel("Effort", { exact: true }).selectOption("high");
@@ -426,6 +467,47 @@ try {
     await editing.getByRole("button", { name: "Save", exact: true }).click();
     await editing.waitFor({ state: "detached" });
     await tableRow("New teammate").waitFor();
+    assert.equal(saved.at(-1).expected, undefined, "Add has no expected version");
+
+    // Review reproduction: team-changed starts a held roster refresh while
+    // the direct modal is open. The host enforces expected under its lock.
+    let remote = team.find((item) => item.id === "papaya");
+    remote.access = "full";
+    remote.updatedAt += 1;
+    hostSocket.send(JSON.stringify({ t: "event", event: "team-changed", payload: {} }));
+    await tableRow("Papaya Juice").getByTitle("Danger: full access", { exact: true }).waitFor();
+    await tableRow("Papaya Juice").getByRole("button", { name: "Edit role, prompt and avatar for Papaya Juice" }).click();
+    const conflictDialog = page.getByRole("dialog");
+    const openingVersion = remote.updatedAt;
+    await conflictDialog.getByLabel("Role", { exact: true }).fill("My conflict draft");
+    await conflictDialog.getByLabel("Persistent prompt").fill("Keep my modal text.");
+    remote.name = "Newest remote name";
+    remote.access = "read";
+    remote.updatedAt += 1;
+    holdTeamLists = true;
+    hostSocket.send(JSON.stringify({ t: "event", event: "team-changed", payload: {} }));
+    await waitForHost(() => heldTeamLists.length > 0, "team-changed roster reply is held before Save details");
+    await conflictDialog.getByRole("button", { name: "Save details", exact: true }).click();
+    await conflictDialog.getByRole("alert").waitFor();
+    assert.equal(saved.at(-1).expected, openingVersion, "modal sends opening version during the held refresh");
+    assert.equal(saved.at(-1).agent.name, "Papaya Juice");
+    assert.equal(saved.at(-1).agent.access, "full");
+    assert.equal(remote.name, "Newest remote name");
+    assert.equal(remote.access, "read");
+    assert.equal(await conflictDialog.getByLabel("Role", { exact: true }).inputValue(), "My conflict draft");
+    assert.equal(await conflictDialog.getByLabel("Persistent prompt").inputValue(), "Keep my modal text.");
+    await tableRow("Newest remote name").waitFor();
+    for (const { socket, request } of heldTeamLists.splice(0)) {
+      socket.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: structuredClone(team) }));
+    }
+    await conflictDialog.getByRole("button", { name: "Save details", exact: true }).click();
+    await conflictDialog.waitFor({ state: "detached" });
+    remote = team.find((item) => item.id === "papaya");
+    assert.equal(remote.name, "Newest remote name", "retry preserves the newest remote name");
+    assert.equal(remote.access, "read", "retry preserves the remote access reduction");
+    assert.equal(remote.role, "My conflict draft");
+    assert.equal(remote.persistentPrompt, "Keep my modal text.");
+
     // The lead picker names each lead with a short role, not a paragraph.
     const options = await page.locator("select.team-head-select").first().locator("option").allInnerTexts();
     assert(options.every((text) => text.length <= 80), `settings-${label}: lead options stay short: ${options.join(" | ")}`);

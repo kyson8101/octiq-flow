@@ -112,10 +112,10 @@ export function onTeamChanged(listener: () => void): () => void {
   return bridge.on("team-changed", () => listener());
 }
 
-export async function saveTeamAgent(agent: TeamDraft): Promise<TeamAgent> {
+export async function saveTeamAgent(agent: TeamDraft, expected?: number): Promise<TeamAgent> {
   // The host reads a missing team as "keep"; the form always says which.
   const teamId = agent.teamId === undefined ? undefined : agent.teamId ?? "";
-  return await bridge.invoke<TeamAgent>("team_save", { agent: { ...agent, teamId } });
+  return await bridge.invoke<TeamAgent>("team_save", { agent: { ...agent, teamId }, ...(expected === undefined ? {} : { expected }) });
 }
 
 /** The shared agent policy. An older backend has none: then it is empty.

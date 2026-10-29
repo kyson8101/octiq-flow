@@ -113,20 +113,24 @@ describe("Registered agents table", () => {
   });
 
   it("saves on Enter and cancels on Escape, excluding composition, held keys and buttons", () => {
+    class Input { type = "text"; }
+    class Select {}
     class Button {}
-    vi.stubGlobal("HTMLButtonElement", Button);
+    vi.stubGlobal("HTMLInputElement", Input);
     try {
       const onSave = vi.fn();
       const onCancel = vi.fn();
       const row = InlineAgentRow({ ...props, draft: report, depth: 1, onChange: noop, onSave, onCancel });
       const press = (key: string, over = {}) => (row.props.onKeyDown as (event: unknown) => void)({
-        key, target: {}, nativeEvent: { isComposing: false }, repeat: false,
+        key, target: new Input(), nativeEvent: { isComposing: false }, repeat: false,
         preventDefault: vi.fn(), stopPropagation: vi.fn(), ...over,
       });
       press("Enter");
       expect(onSave).toHaveBeenCalledOnce();
       press("Enter", { repeat: true });
       press("Enter", { target: new Button() });
+      press("Enter", { target: new Select() });
+      press("Enter", { target: { tagName: "TEXTAREA" } });
       press("Enter", { nativeEvent: { isComposing: true } });
       expect(onSave).toHaveBeenCalledOnce();
       press("Escape");

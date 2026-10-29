@@ -67,8 +67,13 @@
   .agents-edit-footer > button { min-height: 44px; }
 }
 
-@media (pointer: coarse) {
+@media (hover: none), (any-pointer: coarse) {
   .agents-col-actions { width: 110px; }
+  .agents-table .agent-role-button,
+  .agents-edit-row :is(input, select),
+  .agents-edit-footer button,
+  .agent-details-form .team-form-actions button { min-height: 44px; }
+  .agents-edit-footer button { min-width: 44px; }
   .agents-table .agents-icon-action { width: 44px; height: 44px; min-width: 44px; padding: 0; }
 }
 
