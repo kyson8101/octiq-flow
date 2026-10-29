@@ -38,15 +38,17 @@ export function MessageBubble({ user, message, wrapUp = false, onStart, onCancel
   // What a queued message waits for is the status's tooltip (`detail`); the
   // line itself carries the word, its clock and the actions.
   const waiting = delivery === "queued" && !accepted && !pending;
+  const receipt = label === "Sent" || label === "Awaiting agent confirmation" || label === "Sending…";
+  const receiptName = receipt ? (detail ? `${label} — ${detail}` : label) : undefined;
   return (
     <div className="message-bubble" data-noswipe={onStart || onCancel || onRestore || onDismiss ? "" : undefined}>
       {body}
       {(label || footer) && (
         <div className="message-delivery" data-delivery={delivery} aria-busy={pending}>
           <div className="message-delivery-line">
-            <span className="message-delivery-status" role="status" title={detail}>
+            <span className={`message-delivery-status${receipt ? " message-delivery-receipt" : ""}`} role="status" title={receiptName ?? detail} aria-label={receiptName}>
               {waiting && <QueuedIcon />}
-              {label}
+              {receipt ? <ReceiptIcon sending={label === "Sending…"} accepted={accepted} /> : label}
             </span>
             <div className="message-delivery-actions" role="group" aria-label="Message actions">
               {onStart && <button type="button" disabled={pending}
@@ -68,6 +70,15 @@ export function MessageBubble({ user, message, wrapUp = false, onStart, onCancel
       {detail && !accepted && delivery !== "dispatched" && delivery !== "queued" && <p className="message-delivery-detail">{detail}</p>}
       {message.queueError && <p className="message-delivery-error" role="alert">{message.queueError}</p>}
     </div>
+  );
+}
+
+/** An open circle: sending. One tick: handed off. Two ticks: confirmed. */
+function ReceiptIcon({ sending, accepted }: { sending: boolean; accepted: boolean }) {
+  return (
+    <svg className="message-delivery-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {sending ? <circle cx="12" cy="12" r="9" /> : accepted ? <><path d="m2 12 5 5L18 6" /><path d="m12 17 10-11" /></> : <path d="m4 12 5 5L20 6" />}
+    </svg>
   );
 }
 
