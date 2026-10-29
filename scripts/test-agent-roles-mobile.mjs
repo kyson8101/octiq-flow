@@ -115,6 +115,44 @@ async function assertInside(page, row, what) {
   }
 }
 
+/** Every word in table cells occupies one line box. Oversized words are
+ * ellipsised locally, with the enclosing value available in a native title. */
+async function assertWholeWords(settings, where) {
+  const failures = await settings.evaluate((table) => {
+    const failures = [];
+    const walker = document.createTreeWalker(table, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (!node.parentElement.closest("td") || node.parentElement.closest("svg, option")) continue;
+      for (const match of node.textContent.matchAll(/\S+/g)) {
+        const range = document.createRange();
+        range.setStart(node, match.index);
+        range.setEnd(node, match.index + match[0].length);
+        const tops = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top)));
+        if (tops.size > 1) failures.push(`${match[0]} spans ${tops.size} lines`);
+      }
+    }
+    return failures;
+  });
+  assert.deepEqual(failures, [], `${where}: cell text never breaks inside a word`);
+  const oversized = await settings.locator(".agents-word").first().evaluate((word) => {
+    const original = word.textContent;
+    word.textContent = "UnbrokenIdentity".repeat(12);
+    const range = document.createRange();
+    range.selectNodeContents(word);
+    const result = {
+      lines: new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size,
+      cut: word.scrollWidth > word.clientWidth,
+      ellipsis: getComputedStyle(word).textOverflow,
+      title: !!word.closest("[title]")?.title,
+    };
+    word.textContent = original;
+    return result;
+  });
+  assert.deepEqual(oversized, { lines: 1, cut: true, ellipsis: "ellipsis", title: true },
+    `${where}: a single oversized word is ellipsised with a full-value title`);
+}
+
 /** A list's rows: role at most two lines shut; its toggle opens the whole
  *  stored text by pointer and by keyboard; indentation stays shallow. */
 async function checkList(page, list, where, phone) {
@@ -267,16 +305,33 @@ try {
     }));
     assert.equal(clearBranches, true, `settings-${label}: branch marks never overlap avatars`);
     if (phone) {
-      assert(geometry.rowHeights.every((height) => height <= 300), `settings-${label}: compact cards stay under 300px`);
+      assert(geometry.rowHeights.every((height) => height >= 274 && height <= 292), `settings-${label}: compact cards stay between 274 and 292px`);
       assert.equal(await settings.locator("tbody > tr").first().locator("td").last().evaluate((el) => getComputedStyle(el, "::before").display), "none");
     }
     await page.screenshot({ path: join(artifacts, `settings-agents-${label}.png`), fullPage: true });
     assert.equal(await noHorizontalScroll(page), true, `settings-${label}: no sideways scroll`);
-    assert.equal(await settings.getByRole("columnheader").count(), 8);
+    assert.equal(await settings.getByRole("columnheader").count(), 7);
+    await assertWholeWords(settings, `settings-${label}`);
+    for (const action of ["Edit", "Remove"]) {
+      const target = tableRow("Papaya Juice").getByRole("button", { name: `${action} Papaya Juice`, exact: true });
+      assert.equal(await target.getAttribute("title"), `${action} Papaya Juice`);
+      assert.equal(await target.locator("svg").count(), 1);
+      const box = await target.boundingBox();
+      assert(box.width >= (phone ? 44 : 32) && box.height >= (phone ? 44 : 32), `${action}: sufficient hit target`);
+    }
+    const actionBoxes = await tableRow("Papaya Juice").locator(".agents-icon-action").evaluateAll((buttons) => buttons.map((button) => {
+      const box = button.getBoundingClientRect(); return { top: box.top, left: box.left, right: box.right };
+    }));
+    assert.equal(actionBoxes[0].top, actionBoxes[1].top, "icon actions share one line");
+    assert(actionBoxes[0].right <= actionBoxes[1].left, "icon actions never overlap");
     const papaya = tableRow("Papaya Juice");
     assert.match(await papaya.locator('[data-label="Model"]').innerText(), /Claude.*Opus.*high/);
     assert.equal(await papaya.locator('[data-label="Reports to"]').innerText(), "Potato Juice");
     const roleOpener = papaya.getByRole("button", { name: "Edit role, prompt and avatar for Papaya Juice" });
+    assert.equal(await roleOpener.evaluate((button) => {
+      const name = button.parentElement.querySelector(".team-row-name").getBoundingClientRect();
+      return button.closest("td").dataset.label === "Agent" && button.getBoundingClientRect().top >= name.bottom;
+    }), true, "role preview sits under the name inside Agent");
     await roleOpener.click();
     const dialog = page.getByRole("dialog", { name: "Papaya Juice · Details" });
     assert.equal(await dialog.getByLabel("Role", { exact: true }).inputValue(), PAPAYA);
@@ -305,6 +360,8 @@ try {
     await papaya.getByRole("button", { name: "Edit Papaya Juice", exact: true }).click();
     let editing = settings.locator(".agents-edit-row");
     assert.equal(await settings.locator(".agents-edit-row").count(), 1);
+    assert.equal(await editing.locator(":scope > td").count(), 1);
+    assert.equal(await editing.locator(":scope > td").getAttribute("colspan"), "7");
     await editing.getByLabel("Name", { exact: true }).fill("Unsaved name");
     hostSocket.send(JSON.stringify({ t: "event", event: "team-changed", payload: {} }));
     await page.waitForTimeout(50);
@@ -332,6 +389,23 @@ try {
     await staged.getByLabel("Role", { exact: true }).fill("Owns frontend delivery.");
     await staged.getByRole("button", { name: "Save details", exact: true }).click();
     await staged.waitFor({ state: "detached" });
+    await assertWholeWords(settings, `settings-edit-${label}`);
+    const fieldFits = await editing.locator("select").evaluateAll((selects) => selects.map((select) => {
+      const probe = document.createElement("span");
+      const style = getComputedStyle(select);
+      probe.style.cssText = `position:absolute;white-space:nowrap;font:${style.font};`;
+      probe.textContent = select.selectedOptions[0]?.textContent;
+      document.body.append(probe);
+      const fits = probe.getBoundingClientRect().width + 32 <= select.clientWidth;
+      const result = { name: select.getAttribute("aria-label"), fits };
+      probe.remove();
+      return result;
+    }));
+    assert(fieldFits.every((field) => field.fits), `settings-edit-${label}: selected values fit: ${JSON.stringify(fieldFits)}`);
+    await editing.evaluate((row) => {
+      const scroller = row.closest(".settings-content");
+      scroller.scrollTop += row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 16;
+    });
     await page.screenshot({ path: join(artifacts, `settings-edit-${label}.png`), fullPage: true });
     assert.equal(await noHorizontalScroll(page), true, `settings-edit-${label}: no sideways scroll`);
     await editing.getByLabel("Name", { exact: true }).press("Enter");

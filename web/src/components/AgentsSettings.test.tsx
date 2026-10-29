@@ -31,17 +31,25 @@ describe("Registered agents table", () => {
   it("shows every field, hierarchy, tags and a one-line role button", () => {
     const html = renderToStaticMarkup(<RegisteredAgentsTable {...props} />);
     expect(html).toContain('<table class="agents-table" aria-label="Registered agents">');
-    for (const column of ["Agent", "Model", "Access", "Reports to", "Available in", "Team", "Role", "Actions"]) {
+    for (const column of ["Agent", "Model", "Access", "Reports to", "Available in", "Team", "Actions"]) {
       expect(html).toContain(`scope="col">${column}</th>`);
     }
     expect(html).toContain("--team-depth:1");
     expect(html).toContain("lead only");
     expect(html).toContain("team-badge");
-    expect(html).toContain('data-label="Reports to">Lead</td>');
-    expect(html).toContain('data-label="Available in">OctiqFlow</td>');
-    expect(html).toContain("Edit role, prompt and avatar for Report");
+    expect(html).toContain('data-label="Reports to"><span class="agents-cell-text" title="Lead"><span class="agents-word">Lead</span></span></td>');
+    expect(html).toContain('data-label="Available in"><span class="agents-cell-text" title="OctiqFlow"><span class="agents-word">OctiqFlow</span></span></td>');
+    expect(html).not.toContain('scope="col">Role</th>');
+    expect(html).toMatch(/class="agents-identity-copy">.*Edit role, prompt and avatar for Report/s);
+    expect(html).toContain('title="Report"');
+    for (const action of ["Edit", "Remove"]) {
+      expect(html).toContain(`aria-label="${action} Report" title="${action} Report"`);
+      expect(html).toMatch(new RegExp(`aria-label="${action} Report"[^>]*><svg`));
+    }
     expect(html).not.toContain("Run pnpm test.");
     expect(html).not.toContain("<textarea");
+    const emptyRole = renderToStaticMarkup(<RegisteredAgentsTable {...props} team={[{ ...report, role: "" }]} />);
+    expect(emptyRole).toContain('title="Add role">Add role</button>');
   });
 
   it("starts editing from all stored values and keeps another row disabled", () => {
@@ -52,6 +60,10 @@ describe("Registered agents table", () => {
     expect(onDraft).toHaveBeenCalledWith({ ...report, reportsTo: "Lead", projectId: "p1", teamId: "web" });
     const html = renderToStaticMarkup(<RegisteredAgentsTable {...props} draft={report} />);
     expect(html.match(/class="agents-edit-row"/g)).toHaveLength(1);
+    expect(html).toContain('<td colSpan="7">');
+    expect(html).toContain('class="agents-edit-grid"');
+    const row = InlineAgentRow({ ...props, draft: report, depth: 1, onChange: noop, onCancel: noop });
+    expect(nodes(row).filter((node) => node.type === "td")).toHaveLength(1);
     expect(html).toMatch(/disabled="" aria-label="Edit Lead"/);
     expect(html).not.toContain("<textarea");
   });

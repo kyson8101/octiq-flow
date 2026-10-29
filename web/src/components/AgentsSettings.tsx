@@ -766,26 +766,26 @@ export function RegisteredAgentsTable({ team, teams, projects, draft, saving, on
     <p className="settings-note">Agents at the top report to you. Edit one row at a time.</p>
     <table className="agents-table" aria-label="Registered agents">
       <colgroup><col className="agents-col-agent" /><col className="agents-col-model" /><col className="agents-col-access" />
-        <col className="agents-col-manager" /><col className="agents-col-project" /><col className="agents-col-team" /><col className="agents-col-role" /><col className="agents-col-actions" /></colgroup>
-      <thead><tr>{["Agent", "Model", "Access", "Reports to", "Available in", "Team", "Role", "Actions"].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+        <col className="agents-col-manager" /><col className="agents-col-project" /><col className="agents-col-team" /><col className="agents-col-actions" /></colgroup>
+      <thead><tr>{["Agent", "Model", "Access", "Reports to", "Available in", "Team", "Actions"].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
       <tbody>
         {draft && !draft.id && <InlineAgentRow {...rowProps} key="new" draft={draft} depth={0} />}
         {orgChart(roster).map(({ agent, depth }) => draft?.id === agent.id
           ? <InlineAgentRow {...rowProps} key={agent.id} draft={draft} depth={depth} />
           : <tr key={agent.id}>
-            <td data-label="Agent"><AgentIdentity agent={agent} teams={teams} depth={depth} /></td>
-            <td data-label="Model">{AGENT_NAME[agent.agent]} · {teamModelLabel(agent)}{agent.effort ? ` · ${agent.effort}` : ""}</td>
-            <td data-label="Access">{ACCESS[agent.agent].find((level) => level.id === agent.access)?.label ?? agent.access}</td>
-            <td data-label="Reports to">{agent.reportsTo ? team.find((manager) => manager.id === agent.reportsTo)?.name ?? "Removed agent" : "You"}</td>
-            <td data-label="Available in">{agent.projectId ? projects.find((project) => project.id === agent.projectId)?.name ?? "Removed project" : "Every project"}</td>
-            <td data-label="Team">{teams.find((group) => group.id === agent.teamId)?.name ?? "None"}</td>
-            <td data-label="Role"><button type="button" className="agent-role-button" aria-label={`Edit role, prompt and avatar for ${agent.name}`}
-              disabled={saving || !!draft} onClick={() => onDetails(agent)} title={rolePreview(agent.role)}>
-              {agent.role ? rolePreview(agent.role) : "Add role…"}</button></td>
+            <td data-label="Agent"><AgentIdentity agent={agent} teams={teams} depth={depth}
+              roleButton={<button type="button" className="agent-role-button" aria-label={`Edit role, prompt and avatar for ${agent.name}`}
+                disabled={saving || !!draft} onClick={() => onDetails(agent)} title={agent.role || "Add role"}>
+                {agent.role ? rolePreview(agent.role) : "Add role"}</button>} /></td>
+            <AgentValue label="Model" text={`${AGENT_NAME[agent.agent]} · ${teamModelLabel(agent)}${agent.effort ? ` · ${agent.effort}` : ""}`} />
+            <AgentValue label="Access" text={ACCESS[agent.agent].find((level) => level.id === agent.access)?.label ?? agent.access} />
+            <AgentValue label="Reports to" text={agent.reportsTo ? team.find((manager) => manager.id === agent.reportsTo)?.name ?? "Removed agent" : "You"} />
+            <AgentValue label="Available in" text={agent.projectId ? projects.find((project) => project.id === agent.projectId)?.name ?? "Removed project" : "Every project"} />
+            <AgentValue label="Team" text={teams.find((group) => group.id === agent.teamId)?.name ?? "None"} />
             <td data-label="Actions"><div className="agents-row-actions">
-              <button type="button" className="vault-button" disabled={saving || !!draft} aria-label={`Edit ${agent.name}`}
-                onClick={() => onDraft({ ...agent, projectId: agent.projectId ?? null, reportsTo: agent.reportsTo ?? null, teamId: agent.teamId ?? null })}>Edit</button>
-              <button type="button" className="vault-button" disabled={saving || !!draft} aria-label={`Remove ${agent.name}`} onClick={() => onRemove(agent)}>Remove</button>
+              <button type="button" className="vault-button agents-icon-action" disabled={saving || !!draft} aria-label={`Edit ${agent.name}`} title={`Edit ${agent.name}`}
+                onClick={() => onDraft({ ...agent, projectId: agent.projectId ?? null, reportsTo: agent.reportsTo ?? null, teamId: agent.teamId ?? null })}><EditIcon /></button>
+              <button type="button" className="vault-button agents-icon-action" disabled={saving || !!draft} aria-label={`Remove ${agent.name}`} title={`Remove ${agent.name}`} onClick={() => onRemove(agent)}><RemoveIcon /></button>
             </div></td>
           </tr>)}
       </tbody>
@@ -793,15 +793,26 @@ export function RegisteredAgentsTable({ team, teams, projects, draft, saving, on
   </div>;
 }
 
-function AgentIdentity({ agent, teams, depth }: { agent: TeamDraft; teams: AgentTeam[]; depth: number }) {
+/** Keep each whitespace-delimited word together; an oversized word gets its
+ * own ellipsis while the enclosing value's title keeps the full text. */
+function AgentWords({ text }: { text: string }) {
+  return text.split(/(\s+)/).map((part, index) => /\S/.test(part)
+    ? <span className="agents-word" key={index}>{part}</span> : part);
+}
+
+function AgentValue({ label, text }: { label: string; text: string }) {
+  return <td data-label={label}><span className="agents-cell-text" title={text}><AgentWords text={text} /></span></td>;
+}
+
+function AgentIdentity({ agent, teams, depth, roleButton }: { agent: TeamDraft; teams: AgentTeam[]; depth: number; roleButton?: React.ReactNode }) {
   const badge = teamBadge({ teamId: agent.teamId ?? undefined }, teams);
   return <div className="agents-identity" style={{ "--team-depth": depth } as React.CSSProperties}>
     {depth > 0 && <span aria-hidden="true" className="agents-branch">└</span>}
     <AgentAvatar name={agent.name} avatar={agent.avatar} id={agent.id} size={28} decorative />
-    <span className="team-row-name"><bdi>{agent.name || "New agent"}</bdi>
+    <div className="agents-identity-copy"><span className="team-row-name"><bdi title={agent.name || "New agent"}><AgentWords text={agent.name || "New agent"} /></bdi>
       {leadOnly(agent) && <span className="team-tag" title="Fable and Astra can lead a task but cannot take one">lead only</span>}
       {badge && <span className="team-tag team-badge" title={`On the team ${badge.name}: may ask its teammates for help`}><bdi>{badge.name}</bdi></span>}
-    </span>
+    </span>{roleButton}</div>
   </div>;
 }
 
@@ -821,26 +832,32 @@ export function InlineAgentRow({ draft, depth, team, teams, projects, saving, on
         if (valid && !event.repeat) onSave();
       }
     }}>
-    <td data-label="Agent"><AgentIdentity agent={draft} teams={teams} depth={depth} />
-      <label><span>Name</span><input autoFocus maxLength={60} value={draft.name} disabled={saving}
-        placeholder="e.g. Reviewer" onChange={(event) => set({ name: event.target.value })} /></label></td>
-    <td data-label="Model"><div className="agents-model-fields"><ModelFields agent={draft.agent} model={draft.model} effort={draft.effort} disabled={saving}
-      onProvider={pickProvider} onModel={(model) => set({ model })} onEffort={(effort) => set({ effort })} /></div></td>
-    <td data-label="Access"><label><span>Access</span><select aria-label="Access" disabled={saving} value={draft.access} onChange={(event) => set({ access: event.target.value as AccessLevel })}>
-      {access.map((level) => <option key={level.id} value={level.id}>{level.label}</option>)}</select></label>
-      {providerFor(draft.agent).accessNote && <small className="team-field-note">{access.find((level) => level.id === draft.access)?.hint}</small>}</td>
-    <td data-label="Reports to"><label><span>Reports to</span><select aria-label="Reports to" disabled={saving} value={draft.reportsTo ?? ""} onChange={(event) => set({ reportsTo: event.target.value || null })}>
-      <option value="">You</option>{managers.map((manager) => <option key={manager.id} value={manager.id}>{manager.name}</option>)}</select></label></td>
-    <td data-label="Available in"><label><span>Available in</span><select aria-label="Available in" disabled={saving} value={draft.projectId ?? ""} onChange={(event) => pickProject(event.target.value || null)}>
-      <option value="">Every project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label></td>
-    <td data-label="Team"><label><span>Team</span><select aria-label="Team" disabled={saving} value={draft.teamId ?? ""} onChange={(event) => set({ teamId: event.target.value || null })}>
-      <option value="">None</option>{joinable.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label></td>
-    <td data-label="Role"><button type="button" className="agent-role-button" disabled={saving} onClick={() => onDetails(draft)}>Edit role, prompt & avatar</button>
-      {leadOnly(draft) && <small className="team-field-note">Fable and Astra can lead a task, but they cannot be given one.</small>}</td>
-    <td data-label="Actions"><div className="agents-row-actions">
-      <button type="button" className="settings-primary" disabled={saving || !valid} onClick={onSave}>{saving ? "Saving…" : "Save"}</button>
-      <button type="button" className="vault-button" disabled={saving} onClick={onCancel}>Cancel</button>
-    </div></td>
+    <td colSpan={7}>
+      <AgentIdentity agent={draft} teams={teams} depth={depth} />
+      <div className="agents-edit-grid">
+        <label><span>Name</span><input autoFocus maxLength={60} value={draft.name} disabled={saving}
+          placeholder="e.g. Reviewer" onChange={(event) => set({ name: event.target.value })} /></label>
+        <ModelFields agent={draft.agent} model={draft.model} effort={draft.effort} disabled={saving}
+          onProvider={pickProvider} onModel={(model) => set({ model })} onEffort={(effort) => set({ effort })} />
+        <label><span>Access</span><select aria-label="Access" disabled={saving} value={draft.access} onChange={(event) => set({ access: event.target.value as AccessLevel })}>
+          {access.map((level) => <option key={level.id} value={level.id}>{level.label}</option>)}</select>
+          {providerFor(draft.agent).accessNote && <small className="team-field-note">{access.find((level) => level.id === draft.access)?.hint}</small>}</label>
+        <label><span>Reports to</span><select aria-label="Reports to" disabled={saving} value={draft.reportsTo ?? ""} onChange={(event) => set({ reportsTo: event.target.value || null })}>
+          <option value="">You</option>{managers.map((manager) => <option key={manager.id} value={manager.id}>{manager.name}</option>)}</select></label>
+        <label><span>Available in</span><select aria-label="Available in" disabled={saving} value={draft.projectId ?? ""} onChange={(event) => pickProject(event.target.value || null)}>
+          <option value="">Every project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+        <label><span>Team</span><select aria-label="Team" disabled={saving} value={draft.teamId ?? ""} onChange={(event) => set({ teamId: event.target.value || null })}>
+          <option value="">None</option>{joinable.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
+      </div>
+      {leadOnly(draft) && <small className="team-field-note">Fable and Astra can lead a task, but they cannot be given one.</small>}
+      <div className="agents-edit-footer">
+        <button type="button" className="vault-button" disabled={saving} onClick={() => onDetails(draft)}>Edit role, prompt & avatar</button>
+        <div className="agents-row-actions">
+          <button type="button" className="settings-primary" disabled={saving || !valid} onClick={onSave}>{saving ? "Saving…" : "Save"}</button>
+          <button type="button" className="vault-button" disabled={saving} onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
+    </td>
   </tr>;
 }
 

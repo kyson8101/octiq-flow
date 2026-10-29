@@ -7,41 +7,43 @@
 .team-head h3 { margin: 0; color: var(--fg-0); font-size: 14px; font-weight: 600; }
 .team-settings button:disabled { opacity: .5; cursor: default; }
 
-/* Settings needs all eight fields together; narrow containers become cards
+/* Settings keeps each agent’s fields together; narrow containers become cards
    without making the page or its parent scroll sideways. */
 .settings-section.team-settings { width: 100%; max-width: 1440px; }
 .registered-agents { min-width: 0; container-type: inline-size; }
 .registered-agents > .settings-note { margin: 0 0 8px; }
 .agents-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; color: var(--fg-2); }
-.agents-col-agent { width: 19%; }
-.agents-col-model { width: 15%; }
+.agents-col-agent { width: 27%; }
+.agents-col-model { width: 17%; }
 .agents-col-access { width: 12%; }
-.agents-col-manager { width: 11%; }
-.agents-col-project { width: 10%; }
-.agents-col-team { width: 10%; }
-.agents-col-role { width: 11%; }
-.agents-col-actions { width: 12%; }
-.agents-table :is(th, td) { padding: 12px 8px; text-align: start; vertical-align: top; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.agents-col-manager { width: 12%; }
+.agents-col-project { width: 14%; }
+.agents-col-team { width: 7%; }
+.agents-col-actions { width: 86px; }
+.agents-table :is(th, td) { padding: 12px 8px; text-align: start; vertical-align: top; border-bottom: 1px solid var(--border); overflow-wrap: normal; word-break: normal; hyphens: none; }
 .agents-table th { font-size: 11px; font-weight: 600; color: var(--fg-3); }
 .agents-identity { --agent-indent: calc(min(var(--team-depth, 0), 3) * 10px); display: flex; align-items: flex-start; gap: 8px; position: relative; padding-inline-start: var(--agent-indent); min-width: 0; }
 .agents-identity > .agent-avatar { flex: 0 0 auto; }
-.agents-identity .team-row-name { font-size: 12px; min-width: 0; }
+.agents-identity-copy { min-width: 0; flex: 1; }
+.agents-identity .team-row-name { font-size: 12px; min-width: 0; overflow-wrap: normal; }
+.agents-identity .team-row-name bdi, .agents-cell-text { display: block; max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.agents-identity .team-row-name bdi { flex: 0 1 100%; }
+.agents-word { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .agents-branch { position: absolute; inset-inline-start: calc(var(--agent-indent) - 14px); top: 6px; color: var(--fg-3); font-size: 10px; }
 .agents-row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .agents-table .agents-row-actions button { padding: 5px 8px; font-size: 11px; white-space: nowrap; }
-.agents-table td[data-label="Access"] { overflow-wrap: normal; }
-.agent-role-button { display: block; width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--fg-1); font: inherit; text-align: start; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.agents-table .agents-icon-action { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-width: 32px; padding: 0; flex: 0 0 auto; }
+.agents-table td[data-label="Actions"] .agents-row-actions { flex-wrap: nowrap; }
+.agent-role-button { display: block; width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--fg-3); font: inherit; font-weight: 400; line-height: 1.5; text-align: start; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .agents-edit-row { background: var(--bg-1); }
-.agents-edit-row td { padding-inline: 4px; }
+.agents-edit-row td { padding: 16px; }
+.agents-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 12px 16px; align-items: start; }
+.agents-edit-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; }
 .agents-edit-row label { display: grid; gap: 5px; min-width: 0; font-size: 11px; color: var(--fg-2); }
 .agents-edit-row .agents-identity { margin-bottom: 10px; }
-.agents-model-fields { display: grid; gap: 8px; }
 .agents-edit-row :is(input, select) { width: 100%; min-width: 0; padding: 7px 5px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-0); color: var(--fg-1); font: inherit; }
 .agents-edit-row .team-field-note { display: block; margin-top: 6px; }
-.agents-edit-row .agent-role-button { white-space: normal; }
-.agents-table :is(button, input, select):focus-visible,
-.agent-details-dialog .team-form :is(button, input, textarea):focus-visible { outline: 2px solid var(--decide); outline-offset: 2px; }
-.agents-table .settings-primary, .agent-details-dialog .settings-primary { border-color: var(--decide); background: var(--decide); color: var(--decide-fg); }
+.agents-table :is(button, input, select):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .agent-details-dialog { width: min(640px, calc(100vw - 32px)); max-width: none; max-height: calc(100dvh - 32px); margin: auto; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg-1); color: var(--fg-1); overflow-y: auto; }
 .agent-details-dialog::backdrop { background: var(--scrim); }
 .team-form.agent-details-form { grid-template-columns: minmax(0, 1fr); border: 0; margin: 0; }
@@ -51,19 +53,23 @@
 @container (max-width: 639px) {
   .agents-table, .agents-table tbody { display: block; }
   .agents-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-  .agents-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .agents-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
   .agents-table :is(th, td) { display: block; min-width: 0; padding: 0; border: 0; }
   .agents-table td::before { content: attr(data-label); display: block; margin-bottom: 5px; color: var(--fg-3); font-size: 11px; }
   .agents-table td:first-child, .agents-table td:last-child { grid-column: 1 / -1; }
   .agents-table td:first-child::before, .agents-table td:last-child::before { display: none; }
   .agents-branch { display: none; }
   .agents-table .agents-row-actions button { min-height: 44px; padding: 8px 12px; font-size: 12px; }
+  .agents-table .agents-icon-action { width: 44px; height: 44px; min-width: 44px; padding: 0; }
   .agents-table .agent-role-button { min-height: 44px; }
   .agents-edit-row { padding: 14px !important; border: 1px solid var(--border); border-radius: var(--r-md); }
   .agents-edit-row :is(input, select) { min-height: 44px; }
-  .agents-edit-row td:not(:first-child)::before { display: none; }
-  .agents-edit-row td:nth-child(2), .agents-edit-row td:nth-child(7) { grid-column: 1 / -1; }
-  .agents-model-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .agents-edit-footer > button { min-height: 44px; }
+}
+
+@media (pointer: coarse) {
+  .agents-col-actions { width: 110px; }
+  .agents-table .agents-icon-action { width: 44px; height: 44px; min-width: 44px; padding: 0; }
 }
 
 @media (max-width: 520px) {
