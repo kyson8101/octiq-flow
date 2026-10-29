@@ -62,6 +62,11 @@ cd src-tauri && cargo build --profile release-local --bin octiq-server   # the b
 touch ~/.octiqflow/restart.request            # restart the backend (see below)
 ```
 
+On macOS, `scripts/prune-target.sh` removes only own-crate Cargo caches older than 2 days,
+including worktree targets; dependencies and top-level binaries stay. Install the daily 04:30 job once
+from a real terminal at the repo root: `./scripts/install-prune-agent.sh` (undo: `--uninstall`).
+Log: `~/.octiqflow/logs/prune-target.log`; preview: `./scripts/prune-target.sh --dry-run --worktrees`.
+
 Local service builds use thin LTO and parallel codegen and produce
 `src-tauri/target/release-local/octiq-server` (`.exe` on Windows). npm/CI
 release binaries still use `cargo build --release` with full LTO.

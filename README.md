@@ -112,6 +112,11 @@ cd src-tauri && cargo build --profile release-local --bin octiq-server   # the b
 ./target/release-local/octiq-server                        # run it
 ```
 
+On macOS, `scripts/prune-target.sh` removes only own-crate Cargo caches older than 2 days,
+including worktree targets; dependencies and top-level binaries stay. Install the daily 04:30 job once
+from a real terminal at the repo root: `./scripts/install-prune-agent.sh` (undo: `--uninstall`).
+Log: `~/.octiqflow/logs/prune-target.log`; preview: `./scripts/prune-target.sh --dry-run --worktrees`.
+
 Then open the URL it prints. The client is served at the root and needs the
 token from `<profile dir>/web.json`:
 
