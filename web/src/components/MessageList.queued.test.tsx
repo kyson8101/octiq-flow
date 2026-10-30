@@ -31,7 +31,7 @@ describe("turns triggered by the person", () => {
     expect(queued).toContain(cancel);
     expect(queued).toContain(">Send now</button>");
     expect(queued).not.toContain("msg-host");
-    expect(draw({ turnId, echo: "e1" })).toContain(">Sent</span>");
+    expect(draw({ turnId, echo: "e1" })).toContain('aria-label="Sent"');
   });
 });
 
@@ -63,6 +63,21 @@ describe("message delivery controls", () => {
     expect(html).not.toContain("message-delivery-detail");
   });
 
+  it("renders sending as a static hollow circle with accessible words", () => {
+    const html = draw({ delivery: "sending" });
+    const status = html.match(/<span class="message-delivery-status[^]*?<\/span>/)?.[0];
+    expect(status).toContain('title="Sending…"');
+    expect(status).toContain('aria-label="Sending…"');
+    expect(status).toContain('role="status"');
+    expect(status).toContain('width="12" height="12"');
+    expect(status).toContain('fill="none" stroke="currentColor"');
+    expect(status).toContain('aria-hidden="true"');
+    expect(status).toContain('<circle cx="12" cy="12" r="9"');
+    expect(status).not.toContain('<path');
+    expect(status).not.toContain('>Sending…</span>');
+    expect(status).not.toMatch(/animate|spinner/);
+  });
+
   it("separates the status and each action with a pipe that is drawn, never typed", () => {
     // `Queued | Send now | Edit | Copy`, `Sent | Copy`: the pipes are CSS
     // hairlines, so no button's name and no status reads "|".
@@ -86,6 +101,38 @@ describe("message delivery controls", () => {
   it("drops the waiting clock while a queue action is out", () => {
     expect(draw({})).toContain("message-delivery-icon");
     expect(draw({ queueAction: "start" })).not.toContain("message-delivery-icon");
+  });
+
+  it.each([
+    [{ delivery: "dispatched" }, "Awaiting agent confirmation — The message was handed off, but the agent has not confirmed receipt yet.", 1],
+    [{ delivery: "dispatched", takenUp: true }, "Sent", 2],
+    [{ echo: "e1" }, "Sent", 2],
+  ] as const)("renders accessible receipt icons for %j", (extra, name, ticks) => {
+    const html = draw(extra);
+    const status = html.match(/<span class="message-delivery-status[^]*?<\/span>/)?.[0];
+    expect(status).toContain(`title="${name}"`);
+    expect(status).toContain(`aria-label="${name}"`);
+    expect(status).toContain('role="status"');
+    expect(status).toContain('width="12" height="12"');
+    expect(status).toContain('stroke="currentColor"');
+    expect(status).toContain('aria-hidden="true"');
+    expect(status?.match(/<path /g)).toHaveLength(ticks);
+    expect(status).not.toMatch(/>(Sent|Awaiting agent confirmation)</);
+    expect(status).not.toContain("<circle");
+    expect(lf(bubbleCssRaw)).toContain(".message-delivery-receipt { min-height: 1.4em; }");
+  });
+
+  it.each([
+    [{}, "Queued"],
+    [{ delivery: "starting" }, "Sending next…"],
+    [{ delivery: "failed" }, "Not sent"],
+    [{ delivery: "unknown" }, "Delivery unconfirmed"],
+    [{ queueAction: "cancel" }, "Returning to composer…"],
+    [{ takenUp: true, queueAction: "start" }, "Sending next…"],
+  ] as const)("keeps the other status wording visible for %j", (extra, label) => {
+    const html = draw(extra);
+    expect(html).toContain(`>${label}</span>`);
+    expect(html).not.toContain("message-delivery-receipt");
   });
 
   it.each(["sending", "starting", "dispatched", "unknown", "failed"] as const)("never offers queue mutations for %s", (delivery) => {
@@ -129,7 +176,7 @@ describe("message delivery controls", () => {
       type: "turn.started", octiq_user_turn_id: "u-1",
     });
     expect(draw(working.messages[0])).not.toContain("Send this queued message now");
-    expect(draw(working.messages[0])).toContain('>Sent</span>');
+    expect(draw(working.messages[0])).toContain('aria-label="Sent"');
   });
 
   it("keeps the bubble text identical before and after pickup", () => {

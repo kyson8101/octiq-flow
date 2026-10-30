@@ -66,6 +66,8 @@
   white-space: nowrap;
 }
 .message-delivery-status:empty { padding: 0; }
+/* Keep the text line box when the receipt's words become a 12px icon. */
+.message-delivery-receipt { min-height: 1.4em; }
 /* The pipe: a short grey hairline, never the accent, and never the bubble's
    edge, which is ink in Manga.
    Drawn, not typed, so no button's name and no status says "|". */
