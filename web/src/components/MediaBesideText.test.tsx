@@ -58,8 +58,8 @@ describe("a media reply", () => {
     expect(render("- File:\n\n  " + fenced(JSON.stringify(data)).replaceAll("\n", "\n  "))).toContain('class="media-reply"');
     expect(render("- File:\n\n  ```octiq-media\n  " + JSON.stringify(data))).toContain('class="code"');
   });
-  it("holds the exact final markup unseen before closing, without a player or fetch", () => {
-    const drawn = mediaBlock("```octiq-media\n" + JSON.stringify(data), true);
+  it.each(["/abs/a.png", "/abs/a.mp4", "/abs/a.wav"])("reserves %s unseen before closing, without controls, a player or fetch", (path) => {
+    const drawn = mediaBlock("```octiq-media\n" + JSON.stringify({ ...data, path }), true);
     expect(drawn?.kind).toBe("pending");
     if (drawn?.kind !== "pending" || !drawn.media) throw Error("missing reservation");
     const html = renderToStaticMarkup(<MediaPending media={drawn.media} />);

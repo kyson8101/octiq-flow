@@ -1,3 +1,4 @@
+import { PlaybackSpeed } from "./PlaybackSpeed";
 import { useRef, useState } from "react";
 import { nowPlaying } from "../lib/nowPlaying";
 import { bridge } from "../lib/bridge";
@@ -18,7 +19,7 @@ export function ReviewVideo({ path, onError, chat = null, reply = "" }: { path: 
   const [duration, setDuration] = useState(0);
   const failed = useRef(onError);
   failed.current = onError;
-  const slot = useMediaSlot<HTMLVideoElement>({ chat, reply, path, kind: "video", name: baseName(path) }, bridge.fileUrl(path), (el) => {
+  const { slot, element } = useMediaSlot<HTMLVideoElement>({ chat, reply, path, kind: "video", name: baseName(path) }, bridge.fileUrl(path), (el) => {
     video.current = el;
     const meta = () => setDuration(el.duration || 0);
     const error = () => failed.current();
@@ -41,7 +42,10 @@ export function ReviewVideo({ path, onError, chat = null, reply = "" }: { path: 
   };
   return <span className="media-review-video">
     <span className="media-slot" ref={slot} />
-    <button type="button" className="media-comments-toggle" aria-expanded={comments} onClick={() => { if (!comments) video.current?.pause(); setComments(value => !value); }}>{comments ? "Hide comments" : "Comments"}</button>
+    <span className="media-playback-tools">
+      <PlaybackSpeed element={element} />
+      <button type="button" className="media-comments-toggle" aria-expanded={comments} onClick={() => { if (!comments) video.current?.pause(); setComments(value => !value); }}>{comments ? "Hide comments" : "Comments"}</button>
+    </span>
     {comments && <MediaComments key={path} path={path} captureTime={capture} seekTime={seek} duration={duration} />}
   </span>;
 }

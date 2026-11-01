@@ -1,0 +1,28 @@
+.media-playback-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  line-height: normal;
+}
+.playback-speed {
+  box-sizing: border-box;
+  flex: 0 0 64px;
+  width: 64px;
+  height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.playback-speed:disabled { opacity: .5; cursor: default; }
+.playback-speed:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+@media (max-width: 700px) {
+  .media-playback-tools { min-height: 52px; }
+  .playback-speed { height: 44px; }
+}

@@ -1,3 +1,4 @@
+import { PlaybackSpeed } from "./PlaybackSpeed";
 // What an `ask_user` question shows: the host's snapshots of local images,
 // video and sound beside the question when there is one, in a strip when
 // there are several, and a picture on an option
@@ -64,6 +65,7 @@ export function MediaFigure({ media, reserveOnly = false }: { media: Shown; rese
   const kept = useRef(false);
   if (held) kept.current = true;
   const [broken, setBroken] = useState(false);
+  const [element, setElement] = useState<HTMLMediaElement | null>(null);
   const failed = broken || shot.failed;
   let box: ReactNode;
   if (reserveOnly) {
@@ -85,13 +87,14 @@ export function MediaFigure({ media, reserveOnly = false }: { media: Shown; rese
     // Pointed at `/file`, as a reply's player is, so it streams and seeks.
     box = (
       <span className={`qa-media-box is-${media.kind}`}>
-        {(near || kept.current) && <FigurePlayer media={media} onError={() => setBroken(true)} />}
+        {(near || kept.current) && <FigurePlayer media={media} onElement={setElement} onError={() => setBroken(true)} />}
       </span>
     );
   }
   return (
     <figure className={`qa-media-item is-${media.kind}${failed ? " is-failed" : ""}`} ref={holder} data-media={media.id}>
       {box}
+      {media.kind !== "image" && <span className="media-playback-tools">{reserveOnly ? <span className="playback-speed" aria-hidden="true" /> : <PlaybackSpeed element={failed ? null : element} />}</span>}
       <figcaption className="qa-media-cap">
         {media.option && <span className="qa-media-option">Chosen · {media.option}</span>}
         {media.caption && <span className="qa-media-caption">{media.caption}</span>}
@@ -103,17 +106,18 @@ export function MediaFigure({ media, reserveOnly = false }: { media: Shown; rese
 
 /** Browser controls, preload="metadata", and the same nowPlaying ownership
  * as ProsePlayer: a playing file can leave the chat and come back. */
-function FigurePlayer({ media, onError }: { media: Shown; onError: () => void }) {
+function FigurePlayer({ media, onError, onElement }: { media: Shown; onError: () => void; onElement: (el: HTMLMediaElement | null) => void }) {
   const chat = useMediaChat();
   const reply = useMediaReply();
   const failed = useRef(onError);
   failed.current = onError;
-  const slot = useMediaSlot<HTMLMediaElement>({ chat, reply, path: media.path, kind: media.kind as "video" | "audio", name: media.name }, bridge.fileUrl(media.path), (el) => {
+  const { slot, element } = useMediaSlot<HTMLMediaElement>({ chat, reply, path: media.path, kind: media.kind as "video" | "audio", name: media.name }, bridge.fileUrl(media.path), (el) => {
     const error = () => failed.current();
     el.addEventListener("error", error);
     if (nowPlaying.errorOf(el)) error();
     return () => el.removeEventListener("error", error);
   });
+  useEffect(() => { onElement(element); return () => onElement(null); }, [element, onElement]);
   return <span className="media-slot" ref={slot} />;
 }
 

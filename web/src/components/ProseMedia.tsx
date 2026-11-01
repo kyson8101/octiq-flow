@@ -1,3 +1,4 @@
+import { PlaybackSpeed } from "./PlaybackSpeed";
 // The rest of what a reply can name, shown where it named it.
 //
 // `ProseShot` draws a picture under the path that named it. This does the same
@@ -75,7 +76,7 @@ function ProsePlayerForPath({ path, kind }: { path: string; kind: "video" | "aud
           holder.current?.querySelector<HTMLMediaElement>("video, audio")?.load();
         }}>Retry</button>
       </span>}
-      {!near && !kept.current ? <span className="prose-media-wait" aria-hidden="true" />
+      {!near && !kept.current ? <span className="prose-player-wait"><span className="prose-media-wait" aria-hidden="true" /><span className="media-playback-tools" aria-hidden="true" /></span>
         : kind === "video"
           ? <ReviewVideo key={path} path={path} chat={chat} reply={reply} onError={() => setFailed(true)} />
           : <ProseAudio key={path} path={path} chat={chat} reply={reply} onError={() => setFailed(true)} />}
@@ -86,13 +87,13 @@ function ProsePlayerForPath({ path, kind }: { path: string; kind: "video" | "aud
 function ProseAudio({ path, chat, reply, onError }: { path: string; chat: string | null; reply: string; onError: () => void }) {
   const failed = useRef(onError);
   failed.current = onError;
-  const slot = useMediaSlot<HTMLAudioElement>({ chat, reply, path, kind: "audio", name: baseName(path) }, bridge.fileUrl(path), (el) => {
+  const { slot, element } = useMediaSlot<HTMLAudioElement>({ chat, reply, path, kind: "audio", name: baseName(path) }, bridge.fileUrl(path), (el) => {
     const error = () => failed.current();
     el.addEventListener("error", error);
     if (nowPlaying.errorOf(el)) error();
     return () => el.removeEventListener("error", error);
   });
-  return <span className="media-slot" ref={slot} />;
+  return <><span className="media-slot" ref={slot} /><span className="media-playback-tools"><PlaybackSpeed element={element} /></span></>;
 }
 
 /** A PDF, its first pages in the browser's own reader. The frame scrolls; the

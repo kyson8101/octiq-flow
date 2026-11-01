@@ -32,6 +32,7 @@
 //   PLAYWRIGHT_CHANNEL=chrome                              a Chromium channel (chrome)
 //   OCTIQ_EVIDENCE_DIR=<dir>                               where the screenshots go (.shots/media-pip)
 //   OCTIQ_MEDIA_SIZES=1280,390                             optional width subset
+//   OCTIQ_MEDIA_SPEED_ONLY=1                              speed controls and handoff, video + audio
 //   OCTIQ_MEDIA_PATH_MENU_ONLY=1                          path → native Play and intentional file actions
 //   OCTIQ_MEDIA_PATH_COMPAT_ONLY=1                        missing/throwing Popover API and Escape
 import assert from "node:assert/strict";
@@ -982,6 +983,63 @@ async function pathMenuCompatibilityScene(browser, theme, size, mode, entry) {
   } finally { await context.close(); }
 }
 
+/** Shared speed controls in prose and octiq-media (the same MediaFigure as questions). */
+async function speedScene(browser, theme, size, kind, figure) {
+  const path = kind === 'video' ? VIDEO : AUDIO;
+  const text = figure ? 'The cut is ready.\n\n```octiq-media\n' + JSON.stringify({path, text: 'Playback speed review', title: 'Speed control'}) + '\n```' : undefined;
+  const {context, page} = await open(browser, theme, size, {text});
+  try {
+    const box = page.locator(figure ? `.qa-media-item.is-${kind}` : `.prose-media.is-${kind}`).first();
+    await box.scrollIntoViewIfNeeded();
+    const media = box.locator(kind);
+    await media.waitFor();
+    await media.evaluate(el => { el.dataset.mark = 'first'; });
+    const speed = box.getByRole('button', {name: 'Playback speed, 1×', exact: true});
+    await speed.waitFor();
+    const before = await speed.boundingBox();
+    // Native button activation: Enter and Space both cycle.
+    await speed.focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Space');
+    await page.keyboard.press('Enter');
+    const twice = box.getByRole('button', {name: 'Playback speed, 2×', exact: true});
+    await twice.waitFor();
+    const after = await twice.boundingBox();
+    assert.deepEqual(after, before, 'rate label never changes control geometry');
+    if (size.phone) assert.ok(after.width >= 44 && after.height >= 44, '44px phone target');
+    assert.equal(await media.evaluate(el => el.playbackRate), 2);
+    assert.equal(await media.evaluate(el => el.preservesPitch), true);
+    await media.evaluate(el => el.play());
+    await advances(page, 0);
+    await pick(page, size.phone, 'Release notes');
+    await page.waitForFunction(() => document.querySelector('[data-mark=first]')?.closest('.now-playing'));
+    assert.equal((await state(page)).rate, 2, '2x survives float/PiP');
+    const away = await state(page);
+    await advances(page, away.time);
+    await page.screenshot({path: join(artifacts, `${engine}-speed-${kind}-${figure ? 'figure' : 'prose'}-away-${size.name}.png`)});
+    await pick(page, size.phone, 'Launch video review');
+    await box.getByRole('button', {name: 'Playback speed, 2×', exact: true}).waitFor();
+    assert.equal(await media.evaluate(el => el.playbackRate), 2, '2x survives adoption back');
+    await pick(page, size.phone, 'Release notes');
+    // A native/PiP rate change while the slot is unbound must be re-read on adoption.
+    await page.locator('[data-mark=first]').evaluate(el => { el.playbackRate = 1.5; });
+    await pick(page, size.phone, 'Launch video review');
+    await box.getByRole('button', {name: 'Playback speed, 1.5×', exact: true}).waitFor();
+    assert.equal(await media.evaluate(el => el.dataset.mark), 'first', 'adopts same element');
+    assert.equal(await media.evaluate(el => el.playbackRate), 1.5);
+    await box.getByRole('button', {name: 'Playback speed, 1.5×', exact: true}).click();
+    assert.equal(await media.evaluate(el => el.playbackRate), 2);
+    // External native-control changes also update an already bound slot.
+    await media.evaluate(el => { el.playbackRate = 0.75; });
+    await box.getByRole('button', {name: 'Playback speed, 0.75×', exact: true}).waitFor();
+    for (let i = 0; i < 4; i++) await box.locator('.playback-speed').click();
+    await box.getByRole('button', {name: 'Playback speed, 2×', exact: true}).waitFor();
+    await page.screenshot({path: join(artifacts, `${engine}-speed-${kind}-${figure ? 'figure' : 'prose'}-back-${size.name}.png`)});
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    return {scene: 'speed', kind, figure, size: size.name, rate: 2, floatedAs: away.pip ? 'PiP' : 'mini'};
+  } finally { await context.close(); }
+}
+
 const deadline = setTimeout(() => { console.error("media-pip: timed out"); process.exit(1); }, 20 * 60_000);
 let browser;
 try {
@@ -991,6 +1049,10 @@ try {
     : await playwright.chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || "chrome", args: ["--autoplay-policy=no-user-gesture-required"] });
   for (const [index, theme] of themes.entries()) {
     for (const size of SIZES) {
+      if (process.env.OCTIQ_MEDIA_SPEED_ONLY) {
+        for (const figure of [false, true]) for (const kind of ['video', 'audio']) report.results.push(await speedScene(browser, theme, size, kind, figure));
+        continue;
+      }
       if (process.env.OCTIQ_MEDIA_PATH_COMPAT_ONLY) {
         for (const mode of ['native', 'missing', 'show-throws', 'hide-throws']) {
           for (const entry of ['hover', 'keyboard']) report.results.push(await pathMenuCompatibilityScene(browser, theme, size, mode, entry));
@@ -1035,6 +1097,7 @@ try {
   console.log(JSON.stringify(report.results.map(({ mini, ...rest }) => ({ ...rest, ...(mini ? { miniBox: mini.box } : {}) })), null, 1));
   console.log(`media-pip: ${report.results.length} scenes passed (${engine}); screenshots in ${artifacts}`);
 } catch (error) {
+  report.failure = error.stack ?? String(error);
   console.error(errors.length ? `page errors:\n${errors.join("\n")}` : "");
   throw error;
 } finally {

@@ -2,7 +2,7 @@
 // React's, so it can leave with the person when they go to another chat and
 // come back still playing; this is the span it is put into while its chat is
 // on screen.
-import { createContext, useContext, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { createContext, useContext, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { nowPlaying, type MediaKind, type MediaLike, type MediaSource } from "../lib/nowPlaying";
 import { keepMediaFresh } from "../lib/mediaFreshness";
 
@@ -34,10 +34,11 @@ export function createMedia(kind: MediaKind, url: string, label: string, path?: 
   return el;
 }
 
-/** The slot's ref. `bind` is called with each element the slot is given (its
- *  own, or the one coming back from another chat) and returns its unbind. */
+/** The slot's ref and current element, for controls that follow adoption.
+ *  `bind` receives its own element or one coming back, and returns unbind. */
 export function useMediaSlot<E extends HTMLMediaElement>(source: MediaSource, url: string, bind: (el: E) => () => void) {
   const holder = useRef<HTMLSpanElement>(null);
+  const [element, setElement] = useState<E | null>(null);
   const latest = useRef({ source, url, bind });
   latest.current = { source, url, bind };
   const { chat, reply, path, kind, name } = source;
@@ -48,8 +49,13 @@ export function useMediaSlot<E extends HTMLMediaElement>(source: MediaSource, ur
       slot,
       { chat, reply, path, kind, name },
       () => createMedia(kind, latest.current.url, name, path) as unknown as MediaLike,
-      (el) => latest.current.bind(el as unknown as E),
+      (el) => {
+        const media = el as unknown as E;
+        setElement(media);
+        const unbind = latest.current.bind(media);
+        return () => { unbind(); setElement(null); };
+      },
     );
   }, [chat, reply, path, kind, name]);
-  return holder;
+  return { slot: holder, element };
 }
