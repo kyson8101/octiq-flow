@@ -993,7 +993,14 @@ fn allowlisted_ignored_outputs_stay_finished_and_are_removed() {
         ".DS_Store",
         "build.log",
     ] {
-        r.write(path, "rebuildable");
+        r.write(
+            path,
+            if path.ends_with("pnpm-workspace.yaml") {
+                "allowBuilds:\n  esbuild: true\n"
+            } else {
+                "rebuildable"
+            },
+        );
     }
     r.age(15);
     let o = r.observe(now(), &known());
@@ -1211,4 +1218,591 @@ fn detached_validation_obeys_ignored_original_guard() {
         .unwrap_err()
         .contains("2 at-stake ignored files"));
     assert!(Path::new(&r.work).join("works/dist/final.mp4").exists());
+}
+
+#[test]
+fn h1_strip_uses_inventory_originals_override_even_under_manifest_target() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.write("source/Cargo.toml", "[package]");
+    r.write("source/target/ONLY-ORIGINAL.bin", "only original");
+    r.age(30);
+    let svc = r.services(30);
+    let state = Store::default();
+    sweep_checked(&svc, &state, &checks()).unwrap();
+    assert_eq!(ignored::inventory(&r.work).unwrap().files, 2);
+    assert_eq!(
+        fs::read_to_string(Path::new(&r.work).join("source/target/ONLY-ORIGINAL.bin")).unwrap(),
+        "only original"
+    );
+    assert_eq!(state.saved().unwrap().history[0].stripped, 0);
+}
+
+#[test]
+fn h2_nested_git_and_bare_repositories_survive_strip_and_finished_removal() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.write("package.json", "{}");
+    git::text(&r.work, &["add", "package.json"]).unwrap();
+    git::text(&r.work, &["commit", "-m", "manifest"]).unwrap();
+    r.write("node_modules/local-tool/original", "unpublished");
+    let nested = Path::new(&r.work).join("node_modules/local-tool");
+    let nested = nested.to_str().unwrap();
+    git::text(nested, &["init", "-b", "main"]).unwrap();
+    git::text(
+        nested,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "add",
+            ".",
+        ],
+    )
+    .unwrap();
+    git::text(
+        nested,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "unpublished",
+        ],
+    )
+    .unwrap();
+    let commit = git::text(nested, &["rev-parse", "HEAD"]).unwrap();
+    r.write("node_modules/linked/.GiT", "gitdir: elsewhere");
+    r.write("node_modules/bare/HEAD", "ref: refs/heads/main");
+    crate::profile::make_dir(&Path::new(&r.work).join("node_modules/bare/objects")).unwrap();
+    crate::profile::make_dir(&Path::new(&r.work).join("node_modules/bare/refs")).unwrap();
+    assert_eq!(ignored::inventory(&r.work).unwrap().files, 3);
+    r.age(30);
+    let svc = r.services(30);
+    let state = Store::default();
+    sweep_checked(&svc, &state, &checks()).unwrap();
+    assert_eq!(git::text(nested, &["rev-parse", "HEAD"]).unwrap(), commit);
+    assert!(Path::new(&r.work).join("node_modules/linked/.GiT").exists());
+    assert!(Path::new(&r.work).join("node_modules/bare/HEAD").exists());
+    let report = &state.saved().unwrap().history[0];
+    assert_eq!(report.stripped, 0);
+    assert!(report.removed.is_empty());
+}
+
+#[test]
+fn h4_only_pnpm_allowbuilds_placeholder_is_rebuildable() {
+    let r = Repo::new();
+    r.write("web/package.json", "{}");
+    for text in [
+        "packages:\n  - packages/*\n",
+        "onlyBuiltDependencies:\n  - esbuild\n",
+        "# generated\nallowBuilds:\n  esbuild: true\n",
+        "allowBuilds:\n   esbuild: true\n",
+        "allowBuilds:\n  esbuild: true # comment\n",
+        "allowBuilds:\nallowBuilds:\n",
+        "allowBuilds:\n  esbuild: maybe\n",
+    ] {
+        r.write("web/pnpm-workspace.yaml", text);
+        assert_eq!(ignored::inventory(&r.work).unwrap().files, 1, "{text}");
+    }
+    r.write("web/pnpm-workspace.yaml", &"x".repeat(4097));
+    assert_eq!(ignored::inventory(&r.work).unwrap().files, 1);
+    fs::write(
+        Path::new(&r.work).join("web/pnpm-workspace.yaml"),
+        [0xff, 0xfe],
+    )
+    .unwrap();
+    assert_eq!(ignored::inventory(&r.work).unwrap().files, 1);
+    r.write(
+        "web/pnpm-workspace.yaml",
+        "allowBuilds:\n  esbuild: true\n\n  @scope/tool: false\n",
+    );
+    assert_eq!(ignored::inventory(&r.work).unwrap().files, 0);
+    fs::remove_file(Path::new(&r.work).join("web/package.json")).unwrap();
+    assert_eq!(ignored::inventory(&r.work).unwrap().files, 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn pnpm_links_survive_by_target_both_strip_and_whole_folder_removal() {
+    for days in [4, 30] {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _profile = crate::profile::started_in(&home.dir);
+        let r = Repo::new();
+        r.write("web/package.json", "{}");
+        git::text(&r.work, &["add", "web/package.json"]).unwrap();
+        git::text(&r.work, &["commit", "-m", "manifest"]).unwrap();
+        r.write("web/node_modules/.pnpm/tool/file", "build output");
+        let sentinel = r._home.join("outside-sentinel");
+        fs::write(&sentinel, "target must survive").unwrap();
+        std::os::unix::fs::symlink(&sentinel, Path::new(&r.work).join("web/node_modules/tool"))
+            .unwrap();
+        std::os::unix::fs::symlink(
+            &sentinel,
+            Path::new(&r.work).join("web/node_modules/pnpm-workspace.yaml"),
+        )
+        .unwrap();
+        r.write("web/pnpm-workspace.yaml", "allowBuilds:\n  esbuild: true\n");
+        assert_eq!(ignored::inventory(&r.work).unwrap().files, 0);
+        r.age(days);
+        let svc = r.services(days);
+        let state = Store::default();
+        // At 30 days exercise Git's whole-folder removal directly, with the
+        // link still present; at 4 days exercise strip itself.
+        let preview = r.observe(now(), &known()).item;
+        state.inner.lock().unwrap().items = vec![preview.clone()];
+        assert!(operate(&svc, &state, &preview, now(), days == 4, &checks())
+            .unwrap()
+            .is_some());
+        assert!(!Path::new(&r.work).join("web/node_modules").exists());
+        assert_eq!(
+            fs::read_to_string(&sentinel).unwrap(),
+            "target must survive"
+        );
+        assert_eq!(gone(&r.work), days == 30);
+    }
+}
+
+#[test]
+fn m1_unknown_usage_withholds_strip_and_windows_does_too() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.write("Cargo.toml", "[package]");
+    git::text(&r.work, &["add", "Cargo.toml"]).unwrap();
+    git::text(&r.work, &["commit", "-m", "manifest"]).unwrap();
+    r.write("target/keep", "live build");
+    #[cfg(unix)]
+    let mut live = Command::new("sleep")
+        .arg("30")
+        .current_dir(&r.work)
+        .spawn()
+        .unwrap();
+    r.age(30);
+    let svc = r.services(30);
+    let state = Store::default();
+    for windows in [false, true] {
+        sweep_checked(
+            &svc,
+            &state,
+            &Checks {
+                windows,
+                usage: Usage::default,
+                ..checks()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(Path::new(&r.work).join("target/keep")).unwrap(),
+            "live build"
+        );
+        assert_eq!(state.saved().unwrap().history[0].stripped, 0);
+    }
+    #[cfg(unix)]
+    {
+        let _ = live.kill();
+        let _ = live.wait();
+    }
+}
+
+#[test]
+fn m2_content_budget_withholds_large_untracked_file_in_words() {
+    let r = Repo::new();
+    let f = fs::File::create(Path::new(&r.work).join("media.bin")).unwrap();
+    f.set_len(1024 * 1024 * 1024).unwrap();
+    let o = observe(
+        &r.allocation(),
+        &r.checkout(),
+        &Settings::default(),
+        &BTreeSet::new(),
+        &known(),
+        &crate::agent_chat::ChatManager::default(),
+        old(),
+        false,
+        ignored::inventory,
+    )
+    .unwrap();
+    assert_eq!(o.item.state, "abandoned");
+    assert!(o.item.status_hash.is_empty());
+    assert!(o.item.why.contains("512 MiB total limit"), "{}", o.item.why);
+}
+
+#[cfg(unix)]
+fn with_git_wrapper<T>(home: &Path, script: &str, action: impl FnOnce() -> T) -> T {
+    use std::os::unix::fs::PermissionsExt;
+    let path = home.join("git-wrapper");
+    fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    git::TEST_GIT.with(|p| *p.borrow_mut() = Some(path));
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            git::TEST_GIT.with(|p| *p.borrow_mut() = None);
+        }
+    }
+    let _reset = Reset;
+    action()
+}
+
+#[cfg(unix)]
+fn wait_file(path: &Path) {
+    let started = std::time::Instant::now();
+    while !path.exists() {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "hold was not reached: {}",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn h3_archive_held_add_saves_b_restores_a_and_must_keep_both() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.write("tracked", "A");
+    r.age(30);
+    let svc = r.services(30);
+    let state = Store::default();
+    let preview = r.observe(now(), &known()).item;
+    state.inner.lock().unwrap().items = vec![preview.clone()];
+    let hold = r._home.join("add-held");
+    let release = r._home.join("add-release");
+    let script = format!(
+        r#"
+case "$GIT_INDEX_FILE" in
+  */.archive-index-*)
+    case " $* " in
+      *" add -A "*)
+        touch -r '{work}/tracked' '{stamp}'
+        printf B > '{work}/tracked'
+        touch '{hold}'
+        while test ! -f '{release}'; do sleep 0.01; done
+        /usr/bin/git "$@"
+        result=$?
+        printf A > '{work}/tracked'
+        touch -r '{stamp}' '{work}/tracked'
+        exit "$result"
+        ;;
+    esac
+    ;;
+esac
+exec /usr/bin/git "$@"
+"#,
+        work = r.work,
+        stamp = r._home.join("tracked-stamp").display(),
+        hold = hold.display(),
+        release = release.display()
+    );
+    std::thread::scope(|scope| {
+        let mover = scope.spawn(|| {
+            wait_file(&hold);
+            assert_eq!(
+                fs::read_to_string(Path::new(&r.work).join("tracked")).unwrap(),
+                "B"
+            );
+            fs::write(&release, "release").unwrap();
+        });
+        let error = with_git_wrapper(&r._home, &script, || {
+            archive_checked(
+                &svc,
+                &state,
+                &checks(),
+                &preview.key,
+                &preview.head,
+                &preview.status_hash,
+            )
+        })
+        .unwrap_err();
+        mover.join().unwrap();
+        assert!(error.contains("archive and folder are kept"), "{error}");
+    });
+    assert_eq!(
+        fs::read_to_string(Path::new(&r.work).join("tracked")).unwrap(),
+        "A"
+    );
+    let saved = state.saved().unwrap();
+    assert_eq!(saved.archives.len(), 1);
+    assert_eq!(
+        git::text(
+            &r.root,
+            &["show", &format!("{}:tracked", saved.archives[0].reference)]
+        )
+        .unwrap(),
+        "B"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn m3_profile_moved_during_held_final_inventory_keeps_folder() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.age(30);
+    let svc = r.services(30);
+    let state = Store::default();
+    let preview = r.observe(now(), &known()).item;
+    state.inner.lock().unwrap().items = vec![preview.clone()];
+    let hold = r._home.join("inventory-held");
+    let release = r._home.join("inventory-release");
+    let count = r._home.join("inventory-count");
+    let profile = home.profile();
+    let moved = r._home.join("profile-away");
+    let script = format!(
+        r#"
+case " $* " in
+  *" --ignored=matching "*)
+    n=0
+    if test -f '{count}'; then n=$(cat '{count}'); fi
+    n=$((n+1))
+    echo "$n" > '{count}'
+    if test "$n" = 4; then
+      /usr/bin/git "$@"
+      result=$?
+      touch '{hold}'
+      while test ! -f '{release}'; do sleep 0.005; done
+      exit "$result"
+    fi
+    ;;
+esac
+exec /usr/bin/git "$@"
+"#,
+        count = count.display(),
+        hold = hold.display(),
+        release = release.display()
+    );
+    std::thread::scope(|scope| {
+        let mover = scope.spawn(|| {
+            wait_file(&hold);
+            fs::rename(&profile, &moved).unwrap();
+            fs::write(&release, "release").unwrap();
+        });
+        let result = with_git_wrapper(&r._home, &script, || {
+            operate(&svc, &state, &preview, now(), false, &checks())
+        });
+        mover.join().unwrap();
+        assert!(result.is_err());
+    });
+    assert!(Path::new(&r.work).exists());
+    assert!(!profile.exists());
+    fs::rename(&moved, &profile).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn m3_removed_outcome_is_owed_cache_dropped_and_reported_on_profile_return() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.age(30);
+    let svc = r.services(30);
+    let state = Store::default();
+    let profile = home.profile();
+    let moved = r._home.join("profile-away");
+    let script = format!(
+        r#"
+case " $* " in
+  *" worktree remove "*)
+    /usr/bin/git "$@"
+    result=$?
+    if test "$result" = 0; then mv '{profile}' '{moved}'; fi
+    exit "$result"
+    ;;
+esac
+exec /usr/bin/git "$@"
+"#,
+        profile = profile.display(),
+        moved = moved.display()
+    );
+    let mut rx = crate::bus::events().subscribe();
+    with_git_wrapper(&r._home, &script, || sweep_checked(&svc, &state, &checks())).unwrap();
+    assert!(gone(&r.work));
+    let cache = state.inner.lock().unwrap();
+    assert!(cache.owed);
+    assert!(!cache.items.iter().any(|i| i.path == r.work));
+    assert_eq!(cache.pending_reports.len(), 1);
+    assert_eq!(cache.saved.history[0].removed.len(), 1);
+    drop(cache);
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !(event.contains("worktree-swept") && event.contains(&r.work)),
+            "premature report: {event}"
+        );
+    }
+    fs::rename(&moved, &profile).unwrap();
+    settle_store(&state).unwrap();
+    assert!(!state.inner.lock().unwrap().owed);
+    let mut reported = false;
+    while let Ok(event) = rx.try_recv() {
+        reported |= event.contains("worktree-swept") && event.contains(&r.work);
+    }
+    assert!(
+        reported,
+        "owed-save retry must emit the report without an hourly sweep"
+    );
+    assert_eq!(
+        Store::default().saved().unwrap().history[0].removed.len(),
+        1
+    );
+}
+
+#[test]
+#[ignore = "manual 60-worktree host timing proof"]
+fn host_sixty_worktree_pass_timing_and_lock_hold() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.age(30);
+    let svc = r.services(30);
+    let project = crate::workspaces::list_workspaces_impl(&svc.workspaces).unwrap()[0]
+        .id
+        .clone();
+    for n in 1..60 {
+        let path = r
+            ._home
+            .canonical()
+            .unwrap()
+            .join(format!(".worktrees/repo/octiq/bench-{n}"));
+        git::text(
+            &r.root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                &format!("octiq/bench-{n}"),
+                path.to_str().unwrap(),
+                "octiq/test",
+            ],
+        )
+        .unwrap();
+        let modified = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        for entry in fs::read_dir(&path).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name() != ".git" {
+                fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(entry.path())
+                    .unwrap()
+                    .set_times(fs::FileTimes::new().set_modified(modified))
+                    .unwrap();
+            }
+        }
+        directory_handle(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        crate::chat_index::upsert(serde_json::from_value(json!({"id":format!("bench-{n}"),"projectId":project,"title":"timing","cwd":path,"updatedAt":now()-30*DAY,"createdAt":now()-30*DAY})).unwrap()).unwrap();
+    }
+    LOCK_MAX.with(|n| n.set(Duration::ZERO));
+    let started = std::time::Instant::now();
+    let state = Store::default();
+    sweep_checked(&svc, &state, &checks()).unwrap();
+    let elapsed = started.elapsed();
+    let max = LOCK_MAX.with(|n| n.get());
+    let saved = state.saved().unwrap();
+    println!(
+        "HOST_TIMING pass_ms={} max_lifecycle_hold_ms={} removed={} failures={}",
+        elapsed.as_millis(),
+        max.as_millis(),
+        saved.history[0].removed.len(),
+        saved.history[0].failed.len()
+    );
+    assert_eq!(saved.history[0].removed.len(), 60);
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "manual pnpm-sized 10800-entry real sweep proof"]
+fn host_real_pnpm_sized_sweep_with_783_links_preserves_external_sentinel() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.write("web/package.json", "{}");
+    git::text(&r.work, &["add", "web/package.json"]).unwrap();
+    git::text(&r.work, &["commit", "-m", "manifest"]).unwrap();
+    for n in 0..10_000 {
+        r.write(&format!("web/node_modules/.pnpm/file-{n}"), "rebuildable");
+    }
+    let sentinel = r._home.join("outside-sentinel");
+    fs::write(&sentinel, "must remain").unwrap();
+    for n in 0..783 {
+        std::os::unix::fs::symlink(
+            &sentinel,
+            Path::new(&r.work).join(format!("web/node_modules/link-{n}")),
+        )
+        .unwrap();
+    }
+    r.write("web/pnpm-workspace.yaml", "allowBuilds:\n  esbuild: true\n");
+    assert_eq!(ignored::inventory(&r.work).unwrap().files, 0);
+    let check_started = std::time::Instant::now();
+    assert_eq!(
+        ignored::bounded(&r.work, Duration::from_secs(10), 100_000)
+            .unwrap()
+            .files,
+        0
+    );
+    println!(
+        "PNPM_FINAL_CHECK entries=10783 budget_ms=10000 elapsed_ms={}",
+        check_started.elapsed().as_millis()
+    );
+    r.age(30);
+    let svc = r.services(30);
+    let state = Store::default();
+    LOCK_MAX.with(|n| n.set(Duration::ZERO));
+    sweep_checked(&svc, &state, &checks()).unwrap();
+    println!(
+        "PNPM_SWEEP {} max_lock_ms={}",
+        serde_json::to_string(&state.saved().unwrap().history[0]).unwrap(),
+        LOCK_MAX.with(|n| n.get()).as_millis()
+    );
+    assert!(gone(&r.work));
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "must remain");
+}
+
+#[test]
+fn archive_large_64mib_untracked_preview_and_final_disk_compare() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    let file = fs::File::create(Path::new(&r.work).join("large-media.bin")).unwrap();
+    file.set_len(64 * 1024 * 1024).unwrap();
+    r.write("tracked", "changed as well");
+    r.age(30);
+    let svc = r.services(30);
+    let state = Store::default();
+    let preview = r.observe(now(), &known()).item;
+    assert_eq!(preview.state, "abandoned");
+    state.inner.lock().unwrap().items = vec![preview.clone()];
+    let archive = archive_checked(
+        &svc,
+        &state,
+        &checks(),
+        &preview.key,
+        &preview.head,
+        &preview.status_hash,
+    )
+    .unwrap();
+    assert!(gone(&r.work));
+    assert_eq!(
+        git::text(
+            &r.root,
+            &[
+                "cat-file",
+                "-s",
+                &format!("{}:large-media.bin", archive.reference)
+            ]
+        )
+        .unwrap(),
+        (64 * 1024 * 1024).to_string()
+    );
 }

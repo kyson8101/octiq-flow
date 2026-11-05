@@ -37,7 +37,7 @@ pub(crate) fn command(cmd: &mut Command, timeout: Duration) -> Result<Vec<u8>, S
         }
         match child.try_wait() {
             Ok(Some(s)) => break s,
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => std::thread::sleep(Duration::from_millis(2)),
             Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -62,8 +62,18 @@ pub(crate) fn command(cmd: &mut Command, timeout: Duration) -> Result<Vec<u8>, S
     }
     Ok(bytes)
 }
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_GIT: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
 fn git_command(root: &str, args: &[&str]) -> Command {
-    let mut cmd = Command::new("git");
+    #[cfg(test)]
+    let executable = TEST_GIT
+        .with(|p| p.borrow().clone())
+        .unwrap_or_else(|| "git".into());
+    #[cfg(not(test))]
+    let executable = "git";
+    let mut cmd = Command::new(executable);
     cmd.args([
         "-c",
         "core.fsmonitor=false",
@@ -79,6 +89,9 @@ fn git_command(root: &str, args: &[&str]) -> Command {
         cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
     }
     cmd
+}
+pub(crate) fn git_bounded(root: &str, args: &[&str], timeout: Duration) -> Result<Vec<u8>, String> {
+    command(&mut git_command(root, args), timeout)
 }
 pub(crate) fn git(root: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     command(&mut git_command(root, args), Duration::from_secs(15))
@@ -111,7 +124,7 @@ pub(crate) fn archive(
             .env("GIT_AUTHOR_EMAIL", "archive@octiqflow.local")
             .env("GIT_COMMITTER_NAME", "OctiqFlow archive")
             .env("GIT_COMMITTER_EMAIL", "archive@octiqflow.local");
-        command(&mut cmd, Duration::from_secs(15))
+        command(&mut cmd, Duration::from_secs(120))
             .map(|b| String::from_utf8_lossy(&b).trim().to_owned())
     };
     let result = (|| {
@@ -154,6 +167,35 @@ pub(crate) fn archive(
     let _ = std::fs::remove_file(index);
     let _ = std::fs::remove_file(index.with_extension("lock"));
     result
+}
+/// A brand new index has no stat-cache entries: compare disk with the
+/// archived tree even when the real index thinks the bytes are clean.
+pub(crate) fn verify_archive_disk(path: &str, reference: &str, index: &Path) -> Result<(), String> {
+    let result = (|| {
+        let run = |args: &[&str]| {
+            let mut cmd = git_command(path, args);
+            cmd.env("GIT_INDEX_FILE", index);
+            command(&mut cmd, Duration::from_secs(120))
+        };
+        run(&["read-tree", reference])?;
+        // status also compares this index to the checkout's original HEAD,
+        // which is deliberately different for a dirty archive. diff checks
+        // disk against this fresh index; ls-files checks the extra paths.
+        run(&[
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--exit-code",
+            "--",
+        ])?;
+        if !run(&["ls-files", "--others", "--exclude-standard", "-z"])?.is_empty() {
+            return Err("Disk has files outside the archive tree".into());
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(index);
+    let _ = std::fs::remove_file(index.with_extension("lock"));
+    result.map_err(|e: String| format!("{e}; the archive and folder are kept."))
 }
 pub(crate) fn restore(repo: &str, path: &str, branch: &str, reference: &str) -> Result<(), String> {
     if std::fs::symlink_metadata(path).is_ok() {

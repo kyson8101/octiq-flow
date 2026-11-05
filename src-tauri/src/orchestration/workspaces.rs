@@ -1618,24 +1618,49 @@ impl OrchestrationStore {
                 crate::agent_chat::chat_stop_impl(chats, attempt.worker_chat_key.clone())?;
             }
             chats.require_checkout_idle(&ws.plan.checkout_root, true)?;
-            let evidence = workflow::inspect(&ws.plan, true)?;
+            let swept = ws.swept_at.is_some()
+                && matches!(std::fs::symlink_metadata(&ws.plan.checkout_root), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+            let evidence = if swept {
+                let saved = ws.delivery.clone().ok_or("This workspace was swept and has no saved delivery evidence. Restore the kept branch before Cleanup.")?;
+                let head = crate::git_ops::lifespan::text(&ws.plan.repository_root, &[
+                    "rev-parse", "--verify", &format!("refs/heads/{}^{{commit}}", ws.plan.branch)
+                ]).map_err(|e| format!("This workspace was swept; its kept branch cannot be verified. Restore the branch before Cleanup: {e}"))?;
+                if saved.head_sha != head {
+                    return Err("This workspace was swept and its kept branch changed. Restore it and refresh delivery evidence before Cleanup.".into());
+                }
+                saved
+            } else {
+                workflow::inspect(&ws.plan, true)?
+            };
             if expected_head.is_empty() || evidence.head_sha != expected_head {
+                if swept {
+                    return Err("This workspace was swept; the preview does not match its verified kept branch. Use that branch's saved delivery HEAD, or restore and refresh before Cleanup.".into());
+                }
                 return Err(
                     "HEAD changed since the cleanup preview. Refresh delivery status first.".into(),
                 );
             }
             if evidence.dirty {
+                if swept {
+                    return Err("This workspace was swept with uncommitted changes in its saved evidence. Restore its archive and refresh delivery before Cleanup.".into());
+                }
                 return Err(
                     "Workspace has uncommitted or untracked files. Preserve them before cleanup."
                         .into(),
                 );
             }
             if !abandon && !evidence.merged {
+                if swept {
+                    return Err("This workspace was swept and its saved evidence does not verify merge. Restore the kept branch and refresh delivery, or explicitly Abandon after preserving unpublished commits.".into());
+                }
                 return Err(
                     "Merge could not be verified for this exact commit and base branch.".into(),
                 );
             }
             if abandon && !evidence.pushed && evidence.has_commits {
+                if swept {
+                    return Err(format!("This workspace was swept; refs/heads/{} keeps unpublished commits. Push that branch or restore it before Abandon cleanup.", ws.plan.branch));
+                }
                 return Err("Push unpublished commits before abandoning this workspace. Cleanup never discards commits.".into());
             }
             self.mutate(|data| {
@@ -1648,7 +1673,9 @@ impl OrchestrationStore {
                 workspace.cleanup_intent = Some(abandon);
                 Ok(())
             })?;
-            workflow::cleanup(&ws.plan, &evidence.head_sha)?;
+            if !swept {
+                workflow::cleanup(&ws.plan, &evidence.head_sha)?;
+            }
             Ok(evidence)
         })();
         let result = self.mutate(|data| {
@@ -1844,6 +1871,51 @@ pub(super) mod tests {
         assert_eq!(closed.status, RunStatus::Closed);
         assert!(closed.mission_delivery[0].removed);
         assert!(!Path::new(root).exists());
+    }
+
+    #[test]
+    fn cleanup_swept_task_uses_kept_ref_and_delivery_without_rebuild() {
+        let repo = Repo::new();
+        let (store, _run, task) = setup(&repo, WorkspaceMode::Worktree);
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        report(&store, &first, WorkerOutcome::Completed);
+        let head = crate::git_ops::lifespan::text(&first.cwd, &["rev-parse", "HEAD"]).unwrap();
+        let root = first.cwd.trim_end_matches(['/', '\\']);
+        store
+            .lifespan_delivery(
+                root,
+                &DeliveryEvidence {
+                    head_sha: head.clone(),
+                    merged: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        crate::git_ops::lifespan::remove(&repo.root, root, false).unwrap();
+        store.lifespan_record_swept(root, 100).unwrap();
+        let attempts = store.snapshot(None).unwrap().attempts.len();
+        assert!(store
+            .cleanup_workspace(
+                &ChatManager::default(),
+                "chat:master",
+                &task.id,
+                false,
+                "stale-preview"
+            )
+            .unwrap_err()
+            .contains("workspace was swept"));
+        let cleaned = store
+            .cleanup_workspace(
+                &ChatManager::default(),
+                "chat:master",
+                &task.id,
+                false,
+                &head,
+            )
+            .unwrap();
+        assert_eq!(cleaned.workspace.unwrap().state, WorkspaceState::Cleaned);
+        assert!(!Path::new(root).exists());
+        assert_eq!(store.snapshot(None).unwrap().attempts.len(), attempts);
     }
 
     #[test]

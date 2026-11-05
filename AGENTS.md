@@ -3360,7 +3360,7 @@ The host strips only ignored `target` beside `Cargo.toml` and `node_modules`
 beside `package.json`, with no tracked files inside. `dist`, `out`, `renders`
 and `source` never qualify. Redirects are never traversed. A cargo/rustc process
 withholds cleanup; unknown cwd/open-file inventory (always Windows today)
-withholds worktree removal, as does a Windows reparse point. No profile means
+withholds both stripping and worktree removal, as does a Windows reparse point. No profile means
 no sweep. Git calls are bounded, non-interactive and do not fetch.
 
 Removal refreshes chat delivery first, saves intent before `git worktree remove`
@@ -3379,22 +3379,58 @@ there is no hook or MCP route. See `docs/subagent-worktree-lifecycle.md`.
 **A clean status says nothing about ignored files.** Non-force `git worktree
 remove` deletes them too; media under Starfall's ignored `works/` and `anime/`
 may be the only copy. Each worktree (validation checkouts included) gets a bounded
-`git status --ignored` metadata inventory, without following redirects. Only
+`git status --ignored=matching` metadata inventory, without following redirects. Only
 `target` beside `Cargo.toml`; `node_modules`, `dist`, `.astro`, `*.tsbuildinfo`
-and `pnpm-workspace.yaml` beside `package.json`; plus `.DS_Store` and `*.log`
+beside `package.json`; plus `.DS_Store` and `*.log`
 are rebuildable. Every file under a `source/`, `works/` or `anime/` tree overrides
-this list and is at stake, including `dist`. This classification does not expand
+this list and is at stake, including `dist`. `pnpm-workspace.yaml` is rebuildable
+only beside a tracked-or-present `package.json`, at most 4 KiB, valid UTF-8,
+with non-empty lines exactly `allowBuilds:` first and then two-space-indented
+`<name>: true|false` entries; comments, other keys and unread files are at stake.
+Any ASCII-case-insensitive `.git` entry or bare-repo shape (`HEAD` file plus
+`objects/` and `refs/`) is at stake and opaque, even inside build output.
+Symlinks inside a real qualifying `target`/`node_modules` are rebuildable links;
+their targets are never followed. All other symlinks remain at stake, and a
+symlink build root never qualifies. This classification does not expand
 the strip allow-list above. `Item.ignoredFiles` / `ignoredBytes` count only
 at-stake ignored files; null means incomplete/failed/timed-out inventory.
 Nonzero or null keeps an inactive item Abandoned and never Finished; state
 explains the count or failure. Removal repeats the inventory under the same
 lifecycle/path/start marks immediately before Git. Explicit validation cleanup
-also refuses nonzero/unknown inventories. Task/mission rebuild is unchanged.
+also refuses nonzero/unknown inventories and any Windows reparse point. Task/mission rebuild is unchanged.
 `statusHash` includes the at-stake ignored metadata inventory, so its change
 invalidates an archive preview. Archive refuses null inventory. Its confirmation
 must show the at-stake count and say these ignored files **will be deleted and
 are not in the archive ref**; only the person's confirmed archive flow may
 remove them. Never describe a clean Git status as proof all files are retained.
+
+Strip and Finished removal use the **same** ignored inventory predicate. Strip
+walks each complete build subtree with it; any at-stake entry, walk failure or
+limit withholds that subtree. Abandoned may still lose a proven safe build tree.
+Heavy usage, tree and content checks run outside the workspace lifecycle lock,
+with path/start marks retained. Reacquire lifecycle for each final operation and
+recheck allocation/activity. Content hashing has a 512 MiB total and 120-second
+budget, tree sizing 100,000 entries/15 seconds, inventory 100,000 entries/15
+seconds. The final inventory under lifecycle has 100,000 entries/10 seconds; a
+bound withholds that item with a reason and other workspaces continue. Archive capture and fresh-index comparisons have 120-second command bounds
+outside lifecycle. Git
+output stays capped at 32 MiB per command. Git removal is bounded to 15 seconds;
+filesystem mutation can still wait on the OS. Release lifecycle between items.
+
+After the archive status hash and ignored checks, compare disk with the archive
+using a **fresh** temporary index loaded from the archive tree, `diff --exit-code`
+(no ext diff/textconv) and `ls-files --others --exclude-standard`. This avoids
+both stale stat-cache assurances and status's comparison to the original HEAD.
+Any difference/failure keeps both archive and folder. An external writer can
+still change files after the final comparison and before/during Git removal;
+path/start marks block host starts, not arbitrary filesystem writers.
+Ask `profile::available` again after long checks, immediately before each
+removal. A removal already done is an ending action: retain its outcome in RAM,
+say `unsaved`, join `dispatch::settle_owed` / `profile_status.owed`, drop the path
+from cache, and emit the owed `worktree-swept` when the profile is back (the
+2-second retry, not the hourly sweep). A swept per-task Cleanup verifies the
+kept branch against saved delivery evidence without rebuilding or a worker;
+missing/stale evidence explains the swept state and asks for restore/refresh.
 
 ## Conventions & gotchas
 

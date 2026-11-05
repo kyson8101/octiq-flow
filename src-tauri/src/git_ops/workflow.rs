@@ -1069,6 +1069,49 @@ pub(crate) mod tests {
         remove_validation(&p, &target.to_string_lossy()).unwrap();
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn validation_removal_keeps_windows_junction_and_external_sentinel() {
+        let repo = Repo::new();
+        repo.commit(&repo.root, ".gitignore", "node_modules/\n");
+        repo.commit(&repo.root, "package.json", "{}");
+        let p = plan(
+            &repo.root,
+            "main",
+            "task_junctionvalidation",
+            WorkspaceMode::Worktree,
+        )
+        .unwrap();
+        provision(&p).unwrap();
+        let target = repo.dir.join("validation-junction");
+        validation_worktree(&p, &p.base_sha, &[], &target).unwrap();
+        crate::profile::make_dir(&target.join("node_modules")).unwrap();
+        let external = repo.dir.join("external-originals");
+        crate::profile::make_dir(&external).unwrap();
+        let sentinel = external.join("ONLY-ORIGINAL.bin");
+        std::fs::write(&sentinel, "must survive").unwrap();
+        let link = target.join("node_modules/local-tool");
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link.to_string_lossy().replace('/', "\\"))
+            .arg(external.to_string_lossy().replace('/', "\\"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let error = remove_validation(&p, &target.to_string_lossy()).unwrap_err();
+        assert!(error.contains("reparse point"), "{error}");
+        assert!(target.exists());
+        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "must survive");
+        // Unlink the fixture junction itself; never recurse into its target.
+        std::fs::remove_dir(&link).unwrap();
+        remove_validation(&p, &target.to_string_lossy()).unwrap();
+        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "must survive");
+    }
+
     #[test]
     fn validation_removal_preserves_ignored_originals_but_allows_rebuildable_output() {
         let repo = Repo::new();
@@ -1100,6 +1143,13 @@ pub(crate) mod tests {
         std::fs::write(target.join("dist/index.html"), "generated").unwrap();
         std::fs::write(target.join("tsconfig.tsbuildinfo"), "generated").unwrap();
         std::fs::write(target.join("pnpm-workspace.yaml"), "generated").unwrap();
+        let error = remove_validation(&p, &target.to_string_lossy()).unwrap_err();
+        assert!(error.contains("1 at-stake ignored files"), "{error}");
+        std::fs::write(
+            target.join("pnpm-workspace.yaml"),
+            "allowBuilds:\n  esbuild: true\n",
+        )
+        .unwrap();
         remove_validation(&p, &target.to_string_lossy()).unwrap();
         assert!(!target.exists());
         assert_eq!(

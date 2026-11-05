@@ -132,7 +132,7 @@ impl OrchestrationStore {
     /// Called with the workspace lifecycle held. Never changes task state,
     /// closes a mission, abandons a task or deletes a branch.
     pub(crate) fn lifespan_record_swept(&self, path: &str, at: i64) -> Result<(), String> {
-        self.mutate(|data| {
+        self.mutate_regardless("worktree sweep outcome", |data| {
             for task in data.tasks.values_mut() {
                 if let Some(ws) = &mut task.workspace {
                     if Path::new(&ws.plan.checkout_root) == Path::new(path)
