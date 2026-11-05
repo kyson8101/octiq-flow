@@ -1081,7 +1081,7 @@ pub(crate) mod tests {
         let p = plan(
             &repo.root,
             "main",
-            "task_ignored_validation",
+            "task_ignoredvalidation",
             WorkspaceMode::Worktree,
         )
         .unwrap();
