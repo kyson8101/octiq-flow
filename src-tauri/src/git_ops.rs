@@ -1,3 +1,4 @@
+pub(crate) mod lifespan;
 pub mod workflow;
 
 // Mutating git commands for the Git changes panel: commit, push, pull, switch

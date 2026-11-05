@@ -185,6 +185,7 @@ mod tests {
         store
             .mutate(|data| {
                 data.tasks.get_mut(&attempt.task_id).unwrap().workspace = Some(TaskWorkspace {
+                    swept_at: None,
                     plan: WorkspacePlan {
                         mode: WorkspaceMode::Direct,
                         cwd: "/retained/checkout".into(),

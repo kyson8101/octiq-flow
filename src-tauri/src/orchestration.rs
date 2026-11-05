@@ -43,6 +43,7 @@ mod facts_tests;
 pub mod inbox;
 pub mod levels;
 pub mod lifecycle;
+mod lifespan;
 pub mod mission;
 pub mod peer;
 pub mod peer_request;
@@ -1462,6 +1463,7 @@ impl OrchestrationStore {
             .filter(|ws| ws.state != workspaces::WorkspaceState::Cleaned)
             .flat_map(|ws| {
                 std::iter::once(PathBuf::from(&ws.plan.checkout_root))
+                    .filter(|_| ws.swept_at.is_none())
                     .chain(ws.validation_paths.iter().map(PathBuf::from))
             })
             .collect();
@@ -1472,7 +1474,7 @@ impl OrchestrationStore {
                 .runs
                 .values()
                 .flat_map(|run| run.mission_delivery.iter())
-                .filter(|delivery| !delivery.removed)
+                .filter(|delivery| !delivery.removed && delivery.swept_at.is_none())
                 .map(|delivery| PathBuf::from(&delivery.checkout_root)),
         );
         Ok(paths)
@@ -10532,6 +10534,7 @@ mod disk_report_workspace_tests {
             let task = inner.data.tasks.get_mut(&task.id).unwrap();
             task.status = TaskStatus::Completed;
             task.workspace = Some(workspaces::TaskWorkspace {
+                swept_at: None,
                 plan: crate::git_ops::workflow::WorkspacePlan {
                     mode: WorkspaceMode::Worktree,
                     cwd: checkout.to_string_lossy().into(),
@@ -10564,6 +10567,7 @@ mod disk_report_workspace_tests {
                 released: None,
                 release_note: String::new(),
                 removed: false,
+                swept_at: None,
                 branch_deleted: false,
             });
         }

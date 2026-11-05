@@ -76,6 +76,7 @@ mod unsaved;
 mod usage_limits;
 mod web;
 mod workspaces;
+mod worktree_lifespan;
 
 /// Run the backend as a service: no window, no Dock icon.
 ///

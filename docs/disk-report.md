@@ -2,7 +2,7 @@
 
 Manual inventory of development leftovers, exposed only through the authenticated
 browser socket's `dispatch.rs` command table. There is no hook route, MCP tool,
-scheduler, automatic scan or host cleanup operation. The browser renders the
+scheduler, automatic scan or host cleanup operation in this manual feature. The separate [host worktree lifespan](subagent-worktree-lifecycle.md#host-owned-worktree-lifespan) owns scheduled worktree cleanup through its own socket-only commands. The browser renders the
 returned items as a treemap/list and downloads script text; it does not send paths
 or commands for execution.
 
@@ -75,8 +75,8 @@ one summary row reporting additional skipped/unreadable entries. An older
 oversized `latest.json` is capped and rewritten on load; this touches only the
 report file and does not append CSV rows or start a scan. `.git` contents are excluded by definition
 and checked only by Git; this is not a gap in measured worktree data. The host's in-memory ledger supplies every task checkout/validation path whose
-workspace is not cleaned, plus every mission delivery whose `removed` is false.
-Run completion/archival does not release a mission. Scanner never opens the ledger.
+workspace is not cleaned or swept, plus its recorded validation paths and every mission delivery whose `removed` is false and `sweptAt` is absent.
+Run completion/archival does not release a mission. A lifespan sweep releases the physical path with `sweptAt` while preserving mission state and branches. Scanner never opens the ledger.
 
 On macOS, `Desktop`, `Documents`, `Downloads`, `Pictures`, `Movies`, `Music`, Trash,
 `Library/Mobile Documents`, `Library/CloudStorage`, `Library/{Mail,Messages,Safari,
