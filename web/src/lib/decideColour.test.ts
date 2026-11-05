@@ -27,6 +27,7 @@ import runPanelCss from "../components/OrchestrationPanel.css?raw";
 import workflowBarCss from "../components/ChatWorkflowBar.css?raw";
 import runProgressCss from "../components/RunProgress.css?raw";
 import hostNoticeCss from "../components/HostNotice.css?raw";
+import worktreeCss from "../components/WorktreeLifespan.css?raw";
 import pendingBadgeCss from "../components/PendingActionBadge.css?raw";
 import { pendingLabel, pendingTone, type PendingAction, type PendingActionKind } from "./pendingActions";
 import { MANAGED, mapTokens, parseOklch, parseThemeCss } from "./theme";
@@ -769,5 +770,24 @@ describe("automatic plan consent separates settings from a held decision", () =>
     expect(held.body).toContain("var(--decide-tint)");
     expect(held.body).toContain("var(--fg-1)");
     expect(sheet.some((rule) => /appearance:\s*none/.test(rule.body))).toBe(true);
+  });
+});
+
+
+describe("worktree review decisions", () => {
+  const sheet = rules(worktreeCss, "WorktreeLifespan.css");
+  it("keeps the review and leading answer on decide, with warn only on failures", () => {
+    for (const selector of [".wt-needs h3", ".wt-needs-row", ".wt-needs-row .wt-fact", ".wt-answer", ".ask-btn.is-primary.is-decision"]) {
+      expect(sheet.find(rule => rule.selector === selector)?.body, selector).toMatch(/var\(--decide\)/);
+    }
+    for (const rule of sheet) {
+      expect(rule.body, rule.selector).not.toMatch(/--(?:accent|composer-accent)\b/);
+      if (/--warn\b/.test(rule.body)) expect(rule.selector).toBe(".worktree-lifespan .wt-error");
+    }
+  });
+  it.each(each)("%s uses its readable decision foreground for the leading answer", (_id, mode) => {
+    expect(contrast(solid(mode.vars["--decide"]), solid(mode.vars["--decide-fg"]))).toBeGreaterThanOrEqual(4.5);
+    expect(sheet.find(rule => rule.selector === ".wt-answer")?.body).toContain("var(--decide-fg)");
+    expect(sheet.find(rule => rule.selector === ".ask-btn.is-primary.is-decision")?.body).toContain("var(--decide-fg)");
   });
 });

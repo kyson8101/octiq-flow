@@ -109,6 +109,7 @@ describe("who asks through the shared question", () => {
       "components/ReopenedNote.tsx",   // Stop a task's worker
       "components/RunCommand.tsx",     // Run a reply's shell command
       "components/TerminalDrawer.tsx", // Delete a saved command
+      "components/WorktreeLifespan.tsx", // Archive and remove an abandoned worktree
     ]);
   });
 

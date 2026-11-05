@@ -5,20 +5,21 @@ import { aggregateDiskMap, layoutDiskMap, type DiskMapTile, type Tile } from "..
 import { useDiskReport } from "../lib/useDiskReport";
 import { FoldBody, FoldLine, useFold } from "./CardFold";
 import { WorkspaceHeader } from "./WorkspaceHeader";
+import { WorktreeLifespanSection } from "./WorktreeLifespan";
 import "./DiskPage.css";
 
 export default function DiskPage({ connected, onClose }: { connected: boolean; onClose: () => void }) {
   const feed = useDiskReport(connected);
-  return <DiskReportPage {...feed} connected={connected} onScan={() => void feed.scan()} onClose={onClose} />;
+  return <DiskReportPage {...feed} worktrees={<WorktreeLifespanSection connected={connected} />} connected={connected} onScan={() => void feed.scan()} onClose={onClose} />;
 }
 
 const EMPTY_ITEMS: DiskItem[] = [];
 const EMPTY_SELECTION: ReadonlySet<string> = new Set();
 
 /** The presentation also accepts a fixture without a live socket. */
-export function DiskReportPage({ report, running = null, error, pending = false, loading = false, connected = true, onScan, onClose }: {
+export function DiskReportPage({ report, running = null, error, pending = false, loading = false, connected = true, worktrees, onScan, onClose }: {
   report: DiskReport | null; running?: DiskProgress | null; error?: string | null; pending?: boolean; loading?: boolean; connected?: boolean;
-  onScan: () => void; onClose: () => void;
+  worktrees?: React.ReactNode; onScan: () => void; onClose: () => void;
 }) {
   const [selection, setSelection] = useState<{ scanId: string; ids: ReadonlySet<string> }>({ scanId: "", ids: EMPTY_SELECTION });
   const [rmConsentScan, setRmConsentScan] = useState<string | null>(null);
@@ -70,10 +71,11 @@ export function DiskReportPage({ report, running = null, error, pending = false,
       </button>
     } />
     <div className="disk-body">
+      {worktrees}
       <div className="disk-intro"><div><h2>Development leftovers</h2><p>Manual scans of your home folder and system temp. Metadata, Git and open-file checks only.</p></div>
         {report && <div className="disk-total"><strong>{diskBytes(report.totalBytes)}</strong><span>{report.platform === "macos" ? "macOS" : report.platform === "windows" ? "Windows" : report.platform === "linux" ? "Linux" : "Unknown platform"} · Last scanned {diskDate(report.scannedAt)}</span></div>}
       </div>
-      <p className="disk-promise">OctiqFlow never deletes anything. You choose items, download a cleanup script and run it yourself.</p>
+      <p className="disk-promise">This manual scan never deletes anything. You choose items, download a cleanup script and run it yourself.</p>
       {!connected && <p className="disk-message" role="status">Connect to the host to scan.</p>}
       {error && <p className="disk-error" role="alert">{error}</p>}
       {running && <div className="disk-progress" role="status"><span className="disk-progress-mark" aria-hidden="true" /><span>Scanning {phaseLabel(running.phase)} · {running.entries.toLocaleString("en-US")} entries · {diskBytes(running.bytes)} counted</span></div>}

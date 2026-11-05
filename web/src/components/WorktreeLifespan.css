@@ -1,0 +1,32 @@
+.worktree-lifespan { min-width: 0; margin-bottom: 28px; padding-bottom: 24px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.wt-head, .wt-row-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+.worktree-lifespan .wt-head h2 { font-size: 22px; }
+.wt-head > span, .wt-quiet { color: var(--fg-2); }
+.wt-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 0; }
+.wt-settings label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.wt-settings input[type="number"] { width: 64px; min-width: 0; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--bg-1); color: var(--fg-0); padding: 6px; font: inherit; }
+.wt-validation, .wt-settings > p { flex-basis: 100%; color: var(--fg-2); }
+.wt-group { margin-top: 16px; min-width: 0; }
+.wt-group h3 { margin: 0 0 8px; color: var(--fg-1); font-size: 14px; font-weight: 600; }
+.wt-needs h3 { color: var(--decide); }
+.wt-row { padding: 14px; margin-top: 8px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-1); min-width: 0; overflow-wrap: anywhere; }
+.wt-needs-row { border-color: var(--decide); background: var(--decide-tint); }
+.wt-row-head strong { color: var(--fg-0); }
+.wt-row-head span { font-variant-numeric: tabular-nums; }
+.wt-row .wt-fact { color: var(--fg-2); }
+.wt-needs-row .wt-fact { color: var(--decide); }
+.wt-path { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wt-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.wt-button { min-height: 36px; max-width: 100%; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--bg-2); color: var(--fg-0); font: inherit; cursor: pointer; }
+.wt-button:disabled { cursor: default; opacity: .55; }
+.wt-button:hover:not(:disabled) { border-color: var(--fg-2); }
+.wt-answer { background: var(--decide); border-color: var(--decide); color: var(--decide-fg); }
+.wt-answer:hover:not(:disabled) { border-color: var(--decide); }
+.worktree-lifespan .wt-error { color: var(--warn); white-space: pre-wrap; }
+.wt-history { margin-top: 16px; }
+.wt-sweep { padding: 10px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+@media (max-width: 600px) { .wt-row { padding: 12px; } .wt-settings { align-items: flex-start; flex-direction: column; } }
+
+/* Shared Confirm keeps its safe focus and press guards; this answer is a decision. */
+.ask-btn.is-primary.is-decision { border-color: var(--decide); background-color: var(--decide); color: var(--decide-fg); }
+.ask-btn.is-primary.is-decision:focus-visible { outline-color: var(--decide); }
