@@ -19,6 +19,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 mod ignored;
+mod raw;
 
 /// Validation cleanup also uses Git's non-force removal, which still deletes
 /// ignored files. Keep unknown/original data until an explicit archive flow.
@@ -43,6 +44,44 @@ pub(crate) fn require_no_at_stake_ignored(path: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Explicit validation cleanup prepares this outside workspace lifecycle too.
+/// The final door rechecks task ownership and checkout identity, then validates
+/// these stamps and the shared ignored inventory while holding lifecycle.
+pub(crate) struct ValidationRemovalProof {
+    stamps: raw::Stamps,
+    head: String,
+}
+pub(crate) fn validation_removal_proof(
+    path: &str,
+) -> Result<Option<ValidationRemovalProof>, String> {
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+        _ => {}
+    }
+    real_dir(Path::new(path))?;
+    let stamps = raw::Stamps::capture(path)?;
+    let head = git::text(path, &["rev-parse", "HEAD"])?;
+    let proof = raw::verify(path, &head, false)?;
+    if proof.unrestorable > 0 {
+        return Err(format!(
+            "{} tracked files cannot be restored byte for byte; validation folder kept.",
+            proof.unrestorable
+        ));
+    }
+    Ok(Some(ValidationRemovalProof { stamps, head }))
+}
+pub(crate) fn verify_validation_removal(
+    path: &str,
+    proof: &ValidationRemovalProof,
+) -> Result<(), String> {
+    if git::text(path, &["rev-parse", "HEAD"])? != proof.head {
+        return Err("Validation HEAD changed during comparison; folder kept.".into());
+    }
+    proof.stamps.verify(path)?;
+    require_no_at_stake_ignored(path)
 }
 
 const DAY: i64 = 86_400_000;
@@ -501,14 +540,25 @@ fn real_dir(path: &Path) -> Result<(), String> {
     Ok(())
 }
 fn directory_handle(path: &Path) -> Result<fs::File, String> {
+    real_dir(path)?;
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        options.write(true).custom_flags(0x02000000);
+        options.write(true).custom_flags(0x02200000);
     }
-    options.open(path).map_err(|e| e.to_string())
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|e| e.to_string())?;
+    let m = file.metadata().map_err(|e| e.to_string())?;
+    if !m.is_dir() || redirect(&m) {
+        return Err("Directory handle changed type or is redirected".into());
+    }
+    Ok(file)
 }
 #[derive(Default)]
 struct Tree {
@@ -765,7 +815,7 @@ fn status_hash(
                 );
             }
             use std::io::Read;
-            let mut f = fs::File::open(&p).map_err(|e| e.to_string())?;
+            let mut f = raw::open_regular(&p)?;
             let mut buf = [0u8; 65536];
             loop {
                 if started.elapsed() > Duration::from_secs(120) {
@@ -784,6 +834,8 @@ fn status_hash(
                 }
                 h.update(&buf[..n]);
             }
+        } else if !m.is_dir() {
+            return Err("A tracked/untracked path is a special file; content verification is incomplete and the folder is kept.".into());
         }
     }
     Ok(format!("{:x}", h.finalize()))
@@ -993,7 +1045,13 @@ fn observe(
     let head = git::text(root, &["rev-parse", "HEAD"])?;
     let status = git::git(
         root,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
     )?;
     let mut dirty_files = 0;
     let mut untracked_files = 0;
@@ -1143,6 +1201,19 @@ fn observe(
             _ => {}
         }
     }
+    let raw_proof = raw::verify(root, &head, false);
+    match &raw_proof {
+        Ok(p) if p.unrestorable > 0 && active.is_none() => {
+            state = "abandoned";
+            dirty_files += p.hidden;
+            why = format!("{} tracked files cannot be restored byte for byte ({} edited assume-unchanged/skip-worktree files); the folder is kept.", p.unrestorable, p.hidden);
+        }
+        Err(e) if active.is_none() => {
+            state = "abandoned";
+            why = format!("Raw Restore verification is unknown: {e}");
+        }
+        _ => {}
+    }
     let status_hash = status_hash(root, &status, ignored.as_ref().ok());
     if let Err(error) = &status_hash {
         if active.is_none() {
@@ -1152,7 +1223,8 @@ fn observe(
     }
     let key = key(&a.repo, root);
     let pinned = pins.contains(&key);
-    let removable = status_hash.is_ok()
+    let removable = raw_proof.as_ref().is_ok_and(|p| p.unrestorable == 0)
+        && status_hash.is_ok()
         && state == "finished"
         && a.owner.kind != "unknown"
         && usage.known
@@ -1395,6 +1467,42 @@ fn final_allocation(svc: &Services, before: &Allocation) -> Result<(), String> {
     }
     Ok(())
 }
+fn final_budget(start: std::time::Instant) -> Result<Duration, String> {
+    let remaining = Duration::from_secs(10).saturating_sub(start.elapsed());
+    if remaining.is_zero() {
+        return Err("Final cleanup checks reached their 10 second bound; folder kept.".into());
+    }
+    Ok(remaining)
+}
+fn final_ready(
+    svc: &Services,
+    state: &Store,
+    a: &Allocation,
+    preview: &Item,
+    usage: &Usage,
+) -> Result<(), String> {
+    final_allocation(svc, a)?;
+    if !state.allowed(&preview.key)? {
+        return Err("Cleanup is disabled or the checkout is pinned; the folder is kept.".into());
+    }
+    crate::profile::available()?;
+    require_unprotected(Path::new(&preview.path))?;
+    real_dir(Path::new(&preview.path))?;
+    if !usage.known || usage.using(&preview.path) {
+        return Err("Usage is unknown or the checkout is in use; folder kept.".into());
+    }
+    svc.chats.require_checkout_idle(&preview.path, true)?;
+    if git::text(&preview.path, &["rev-parse", "HEAD"])? != preview.head {
+        return Err("HEAD changed; folder kept.".into());
+    }
+    Ok(())
+}
+#[derive(Default)]
+struct StripProgress {
+    count: usize,
+    bytes: u64,
+}
+#[cfg(test)]
 fn operate(
     svc: &Services,
     store: &Store,
@@ -1402,6 +1510,25 @@ fn operate(
     at: i64,
     strip: bool,
     checks: &Checks,
+) -> Result<Option<Observation>, String> {
+    operate_progress(
+        svc,
+        store,
+        preview,
+        at,
+        strip,
+        checks,
+        &mut StripProgress::default(),
+    )
+}
+fn operate_progress(
+    svc: &Services,
+    store: &Store,
+    preview: &Item,
+    at: i64,
+    strip: bool,
+    checks: &Checks,
+    progress: &mut StripProgress,
 ) -> Result<Option<Observation>, String> {
     let _lifecycle = hold_lifecycle(svc)?;
     let _marked = svc.chats.hold_lifespan_checkout(&preview.path)?;
@@ -1446,14 +1573,38 @@ fn operate(
         {
             return Ok(None);
         }
+        // Refuse the whole strip before deleting any candidate when any
+        // build subtree contains originals. Recheck each at its final door.
+        for build in &observed.tree.builds {
+            let relative = build
+                .strip_prefix(&preview.path)
+                .map_err(|e| e.to_string())?;
+            let inventory =
+                ignored::subtree(&preview.path, relative, Duration::from_secs(15), 100_000)?;
+            if inventory.files > 0 {
+                return Err(format!(
+                    "{} at-stake ignored files in a build folder; all build folders were kept.",
+                    inventory.files
+                ));
+            }
+        }
         for build in &observed.tree.builds {
             require_unprotected(build)?;
             real_dir(build)?;
             if !build_dir(&preview.path, build) {
                 return Err("Build folder no longer qualifies; it was kept.".into());
             }
+            let mut deleted = Tree::default();
+            walk(&preview.path, build, true, &mut deleted)?;
+            let usage = (checks.usage)();
             let _lifecycle = hold_lifecycle(svc)?;
-            final_allocation(svc, &a)?;
+            let final_started = std::time::Instant::now();
+            final_ready(svc, store, &a, preview, &usage)?;
+            require_unprotected(build)?;
+            real_dir(build)?;
+            if !build_dir(&preview.path, build) {
+                return Err("Build folder no longer qualifies; it was kept.".into());
+            }
             let mut c = store.inner.lock().map_err(|e| e.to_string())?;
             store.load(&mut c)?;
             if !c.saved.settings.enabled || c.saved.pins.contains(&preview.key) {
@@ -1463,8 +1614,12 @@ fn operate(
             let relative = build
                 .strip_prefix(&preview.path)
                 .map_err(|e| e.to_string())?;
-            let inventory =
-                ignored::subtree(&preview.path, relative, Duration::from_secs(10), 100_000)?;
+            let inventory = ignored::subtree(
+                &preview.path,
+                relative,
+                final_budget(final_started)?,
+                100_000,
+            )?;
             if inventory.files > 0 {
                 return Err(format!(
                     "{} at-stake ignored files in this build folder; it was kept.",
@@ -1477,7 +1632,10 @@ fn operate(
                 .map_err(|e| e.to_string())?;
             let parent_handle = directory_handle(parent)?;
             crate::profile::available()?;
+            final_budget(final_started)?;
             fs::remove_dir_all(build).map_err(|e| e.to_string())?;
+            progress.count += 1;
+            progress.bytes = progress.bytes.saturating_add(deleted.bytes);
             parent_handle
                 .set_times(fs::FileTimes::new().set_modified(modified))
                 .map_err(|e| e.to_string())?;
@@ -1488,6 +1646,7 @@ fn operate(
         }
         verify_delivery(svc, &a, &observed.item)?;
         record_intent(store, &observed.item, None, at)?;
+        let stamps = raw::Stamps::capture(&preview.path)?;
         let check = observe(
             &a,
             &c,
@@ -1512,15 +1671,17 @@ fn operate(
             );
         }
         {
+            let final_usage = (checks.usage)();
             let _lifecycle = hold_lifecycle(svc)?;
-            final_allocation(svc, &a)?;
+            let final_started = std::time::Instant::now();
+            final_ready(svc, store, &a, preview, &final_usage)?;
             let mut cache = store.inner.lock().map_err(|e| e.to_string())?;
             store.load(&mut cache)?;
             if !cache.saved.settings.enabled || cache.saved.pins.contains(&preview.key) {
                 return Ok(None);
             }
             crate::profile::available()?;
-            let ignored = ignored::bounded(&preview.path, Duration::from_secs(10), 100_000)
+            let ignored = ignored::bounded(&preview.path, final_budget(final_started)?, 100_000)
                 .map_err(|e| {
                     format!("Ignored-file inventory is unavailable; the folder was kept: {e}")
                 })?;
@@ -1530,7 +1691,9 @@ fn operate(
                     ignored.files
                 ));
             }
+            stamps.verify(&preview.path)?;
             crate::profile::available()?;
+            final_budget(final_started)?;
             git::remove(&preview.repo, &preview.path, false)?;
         }
         let _lifecycle = hold_lifecycle(svc)?;
@@ -1571,7 +1734,7 @@ fn sweep_checked(svc: &Services, store: &Store, checks: &Checks) -> Result<(), S
     let allocations = svc.orchestrations.lifespan_allocations()?;
     let usage = (checks.usage)();
     let mut items = Vec::new();
-    let mut stripped_paths = BTreeSet::new();
+    let mut stripped_paths = std::collections::BTreeMap::<String, u64>::new();
     for repo in project_repos(svc, &allocations)? {
         let checkouts = match checkouts(&repo) {
             Ok(c) => c,
@@ -1617,21 +1780,30 @@ fn sweep_checked(svc: &Services, store: &Store, checks: &Checks) -> Result<(), S
             let strip = item.build_bytes.is_some_and(|b| b > 0)
                 && item.idle_days >= f64::from(saved.settings.build_after_days);
             if strip {
-                match operate(svc, store, item, at, true, checks) {
-                    Ok(Some(o)) => {
-                        report.stripped += o.tree.builds.len();
-                        stripped_paths.insert(item.path.clone());
-                        report.freed_bytes = report.freed_bytes.saturating_add(o.tree.build_bytes);
-                    }
-                    Ok(None) => {}
+                let mut progress = StripProgress::default();
+                match operate_progress(svc, store, item, at, true, checks, &mut progress) {
+                    Ok(_) => {}
                     Err(why) => report.failed.push(Failed {
                         path: item.path.clone(),
                         why,
                     }),
                 }
+                if progress.count > 0 {
+                    report.stripped += progress.count;
+                    report.freed_bytes = report.freed_bytes.saturating_add(progress.bytes);
+                    stripped_paths.insert(item.path.clone(), progress.bytes);
+                }
             }
             if item.state == "finished" && item.remove_at.is_some_and(|t| t <= at) {
-                match operate(svc, store, item, at, false, checks) {
+                match operate_progress(
+                    svc,
+                    store,
+                    item,
+                    at,
+                    false,
+                    checks,
+                    &mut StripProgress::default(),
+                ) {
                     Ok(Some(o)) => {
                         report.freed_bytes =
                             report.freed_bytes.saturating_add(o.item.bytes.unwrap_or(0));
@@ -1664,12 +1836,9 @@ fn sweep_checked(svc: &Services, store: &Store, checks: &Checks) -> Result<(), S
         c.items
             .retain(|i| !report.removed.iter().any(|r| r.path == i.path));
         for item in &mut c.items {
-            if stripped_paths.contains(&item.path) {
-                item.bytes = item
-                    .bytes
-                    .zip(item.build_bytes)
-                    .map(|(all, build)| all.saturating_sub(build));
-                item.build_bytes = Some(0);
+            if let Some(deleted) = stripped_paths.get(&item.path) {
+                item.bytes = item.bytes.map(|all| all.saturating_sub(*deleted));
+                item.build_bytes = item.build_bytes.map(|build| build.saturating_sub(*deleted));
             }
             if item.build_bytes.is_some_and(|b| b > 0) && !Path::new(&item.path).exists() {
                 item.bytes = None;
@@ -1838,33 +2007,46 @@ fn archive_checked(
                 .into(),
         );
     }
+    // Snapshot immediately before both long comparisons. No final answer made
+    // before releasing lifecycle is reused after these steps.
+    let stamps = raw::Stamps::capture(&preview.path)?;
+    let fresh_index =
+        crate::profile::profile_dir().join(format!(".verify-archive-{}", uuid::Uuid::new_v4()));
+    git::verify_archive_disk(&preview.path, &archive.reference, &fresh_index)?;
+    let proof = raw::verify(&preview.path, &archive.reference, true).map_err(|e| {
+        format!(
+            "Raw Restore verification incomplete: {e}; archive ref {} and folder are kept.",
+            archive.reference
+        )
+    })?;
+    if proof.unrestorable > 0 {
+        return Err(format!("{} files cannot be restored byte for byte from this archive (filter/normalisation or unreadable file); archive ref {} and folder are kept.", proof.unrestorable, archive.reference));
+    }
+    let final_usage = (checks.usage)();
     {
         let _lifecycle = hold_lifecycle(svc)?;
-        final_allocation(svc, &a)?;
+        let final_started = std::time::Instant::now();
+        final_ready(svc, state, &a, &preview, &final_usage)?;
         let cache = state.inner.lock().map_err(|e| e.to_string())?;
-        if cache.saved.pins.contains(key) {
-            return Err("The checkout was pinned; its folder was kept.".into());
+        if !cache.saved.settings.enabled || cache.saved.pins.contains(key) {
+            return Err(
+                "Cleanup is disabled or the checkout was pinned; the archive and folder are kept."
+                    .into(),
+            );
         }
-        crate::profile::available()?;
-        let ignored =
-            ignored::bounded(&preview.path, Duration::from_secs(10), 100_000).map_err(|e| {
-                format!("Ignored-file inventory is unavailable; archive removal was refused: {e}")
+        let ignored = ignored::bounded(&preview.path, final_budget(final_started)?, 100_000)
+            .map_err(|e| {
+                format!("Ignored-file inventory unavailable; archive and folder kept: {e}")
             })?;
         if Some(&ignored.hash) != check.ignored_hash.as_ref() {
-            return Err("Ignored files changed after the archive preview; the archive is kept and the folder was not removed.".into());
+            return Err(
+                "Ignored files changed after the archive preview; the archive and folder are kept."
+                    .into(),
+            );
         }
-        drop(cache);
-        drop(_lifecycle);
-        let fresh_index =
-            crate::profile::profile_dir().join(format!(".verify-archive-{}", uuid::Uuid::new_v4()));
-        git::verify_archive_disk(&preview.path, &archive.reference, &fresh_index)?;
-        let _lifecycle = hold_lifecycle(svc)?;
-        final_allocation(svc, &a)?;
-        let cache = state.inner.lock().map_err(|e| e.to_string())?;
-        if cache.saved.pins.contains(key) {
-            return Err("The checkout was pinned; the archive and folder are kept.".into());
-        }
+        stamps.verify(&preview.path)?;
         crate::profile::available()?;
+        final_budget(final_started)?;
         git::remove(&preview.repo, &preview.path, true)?;
     }
     {

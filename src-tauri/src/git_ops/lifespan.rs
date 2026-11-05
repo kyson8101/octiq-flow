@@ -8,26 +8,49 @@ use std::{
 };
 
 pub(crate) fn command(cmd: &mut Command, timeout: Duration) -> Result<Vec<u8>, String> {
+    command_io(cmd, timeout, None, 32 * 1024 * 1024, false)
+}
+fn command_io(
+    cmd: &mut Command,
+    timeout: Duration,
+    input: Option<Vec<u8>>,
+    limit: usize,
+    strict_errors: bool,
+) -> Result<Vec<u8>, String> {
     crate::proc::no_console(cmd);
     let mut child = cmd
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
+    if let Some(input) = input {
+        let mut stdin = child.stdin.take().ok_or("Missing command input")?;
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = stdin.write_all(&input);
+        });
+    }
     let stdout = child.stdout.take().ok_or("Missing command output")?;
     let stderr = child.stderr.take().ok_or("Missing command errors")?;
-    fn reader(pipe: impl Read + Send + 'static) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    fn reader(
+        pipe: impl Read + Send + 'static,
+        limit: usize,
+    ) -> std::sync::mpsc::Receiver<Vec<u8>> {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
-            let _ = pipe.take(32 * 1024 * 1024 + 1).read_to_end(&mut bytes);
+            let _ = pipe.take(limit as u64 + 1).read_to_end(&mut bytes);
             let _ = tx.send(bytes);
         });
         rx
     }
-    let out = reader(stdout);
-    let err = reader(stderr);
+    let out = reader(stdout, limit);
+    let err = reader(stderr, 32 * 1024 * 1024);
     let start = Instant::now();
     let status = loop {
         if start.elapsed() >= timeout {
@@ -51,14 +74,14 @@ pub(crate) fn command(cmd: &mut Command, timeout: Duration) -> Result<Vec<u8>, S
     let errors = err
         .recv_timeout(Duration::from_secs(1))
         .map_err(|e| e.to_string())?;
-    if !status.success() {
+    if bytes.len() > limit {
+        return Err("Command output exceeded the safety limit.".into());
+    }
+    if !status.success() || strict_errors && !errors.is_empty() {
         return Err(format!(
             "Command failed: {}",
             String::from_utf8_lossy(&errors).trim()
         ));
-    }
-    if bytes.len() > 32 * 1024 * 1024 {
-        return Err("Command output exceeded the safety limit.".into());
     }
     Ok(bytes)
 }
@@ -78,6 +101,10 @@ fn git_command(root: &str, args: &[&str]) -> Command {
         "-c",
         "core.fsmonitor=false",
         "-c",
+        "core.untrackedCache=false",
+        "-c",
+        "status.showUntrackedFiles=all",
+        "-c",
         "core.hooksPath=/dev/null",
         "-C",
         root,
@@ -92,6 +119,15 @@ fn git_command(root: &str, args: &[&str]) -> Command {
 }
 pub(crate) fn git_bounded(root: &str, args: &[&str], timeout: Duration) -> Result<Vec<u8>, String> {
     command(&mut git_command(root, args), timeout)
+}
+pub(crate) fn git_io(
+    root: &str,
+    args: &[&str],
+    timeout: Duration,
+    input: Option<Vec<u8>>,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
+    command_io(&mut git_command(root, args), timeout, input, limit, true)
 }
 pub(crate) fn git(root: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     command(&mut git_command(root, args), Duration::from_secs(15))
@@ -186,6 +222,7 @@ pub(crate) fn verify_archive_disk(path: &str, reference: &str, index: &Path) -> 
             "--no-ext-diff",
             "--no-textconv",
             "--exit-code",
+            "--ignore-submodules=none",
             "--",
         ])?;
         if !run(&["ls-files", "--others", "--exclude-standard", "-z"])?.is_empty() {

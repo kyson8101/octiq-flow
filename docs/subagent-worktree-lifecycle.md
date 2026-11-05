@@ -334,7 +334,7 @@ A build root that is itself a link does not qualify. Only these ignored files ar
 - `*.tsbuildinfo` beside a regular `package.json`.
 - `pnpm-workspace.yaml` beside a tracked-or-present `package.json`, only when it
   is at most 4 KiB, valid UTF-8, and its non-empty lines are exactly one
-  `allowBuilds:` first followed only by two-space-indented `<name>: true|false`
+  `allowBuilds:` first followed only by two-space-indented `<name>: true|false|set this to true or false`
   lines. Comments, other keys, invalid encoding and unread files are at stake.
 - `.DS_Store` and `*.log`.
 
@@ -434,7 +434,7 @@ activity; it releases it between items. Content hashing is bounded to 512 MiB
 total/120 seconds, sizing to 100,000 entries/15 seconds. Final under-lock ignored
 checks use 100,000 entries/10 seconds including Git status; the normal inventory
 remains 100,000 entries/15 seconds. A limit holds that item in words and lets
-other workspaces continue. Git output is capped at 32 MiB per command and Git
+other workspaces continue. Git metadata output is capped at 32 MiB per command and Git
 removal at 15 seconds; archive commands/comparison have 120-second bounds outside
 lifecycle; OS filesystem operations may still block.
 
@@ -446,3 +446,54 @@ the profile returns, without waiting for the hourly scan. Per-task Cleanup on
 a swept folder uses its unchanged kept branch and saved delivery evidence,
 without a worker or rebuild; missing/stale evidence returns an actionable
 sentence naming the swept workspace and requiring restore/refresh.
+
+
+Git's clean or equal is not proof that the raw bytes can be restored. Removal
+requires each byte to be rebuildable by the shared predicate or restorable byte
+for byte from a retained ref. The host checks `ls-files -v` hidden index bits
+(assume-unchanged lowercase and skip-worktree `S`): edited existing files make
+an inactive worktree Abandoned with a count; absent sparse files are allowed.
+Status explicitly overrides `status.showUntrackedFiles`, `core.fsmonitor`,
+`core.untrackedCache`, and submodule hiding with `--ignore-submodules=none`.
+
+One `check-attr` pass selects tracked `filter`/`text`/`eol` files; active
+`core.autocrlf` selects all tracked files. An automatic checkout without these
+attributes/autocrlf or hidden bits adds no per-file raw Restore reads. The host
+compares raw bytes against `git cat-file --filters --path=<p> <ref>:<p>` (raw
+blob for symlinks). Archive checks every captured tree file, including changed
+and untracked content, separately from the fresh-index equality test. Reversible
+CRLF works; a lossy/failing filter, unreadable file or offline required LFS
+smudge withholds removal. Failure names the affected count and keeps both the
+archive ref and folder; a raw-proof failure is distinct from the fresh-index
+H3 failure. Raw comparisons run outside lifecycle, with a shared 512 MiB
+input/output and 120-second bound. Filtered output is bounded by that remaining
+budget, an explicit exception to the 32 MiB metadata command limit.
+
+Before long comparisons the host captures tracked/untracked paths and their
+size, mtime and ctime (real ChangeTime on Windows). Afterward it refreshes
+usage and reacquires lifecycle, then asks again about settings, pins, profile,
+allocation/activity, HEAD, ignored inventory versus preview, and file stamps.
+No long comparison or dropped lock follows these final checks. A shared
+10-second final-stage bound is checked before deletion. An arbitrary external
+writer can still race the final checks/removal; host starts are blocked.
+
+Strip preflights all build candidates before deleting any. Each deletion then
+rechecks qualification, usage and the shared ignored predicate under lifecycle.
+Successful strip counts/bytes survive a later refusal in the same worktree,
+reach history and the event beside that refusal, and reduce cached sizes.
+
+The pnpm placeholder may use `true`, `false`, or exactly the literal
+`set this to true or false`; the actual 50-byte generated file is accepted,
+near-misses are at stake. Only a non-redirect regular file is opened. Unix
+O_NOFOLLOW|O_NONBLOCK plus handle checks prevent a FIFO (including a racing
+replacement) from blocking; directory opens use O_DIRECTORY and no-follow,
+and Windows uses reparse-point flags. Special files remain at stake.
+
+
+Explicit validation cleanup also prepares raw restoration proof outside
+workspace lifecycle. It retakes lifecycle and rechecks actor/task ownership,
+checkout identity/repository/detached HEAD, retained HEAD, file stamps and the
+shared ignored inventory before non-force removal. An appeared/replaced or
+changed folder is kept; final checks share the 10-second bound. Git omits
+FIFOs/sockets from porcelain, so bounded metadata discovery supplements the
+ignored inventory and marks those entries at stake without opening them.

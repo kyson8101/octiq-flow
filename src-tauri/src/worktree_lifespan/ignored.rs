@@ -32,7 +32,13 @@ fn rebuildable(root: &Path, relative: &Path) -> bool {
         return false;
     }
     let name = relative.file_name().unwrap_or_default().to_string_lossy();
-    let link = fs::symlink_metadata(root.join(relative)).map_or(true, |m| redirect(&m));
+    let Ok(meta) = fs::symlink_metadata(root.join(relative)) else {
+        return false;
+    };
+    if !meta.is_file() && !meta.file_type().is_symlink() {
+        return false;
+    }
+    let link = redirect(&meta);
     if !link && (name == ".DS_Store" || name.ends_with(".log")) {
         return true;
     }
@@ -77,7 +83,7 @@ fn rebuildable(root: &Path, relative: &Path) -> bool {
 // pnpm's generated allowBuilds placeholder, never a hand-written workspace.
 fn pnpm_placeholder(path: &Path) -> bool {
     use std::io::Read;
-    let Ok(file) = fs::File::open(path) else {
+    let Ok(file) = super::raw::open_regular(path) else {
         return false;
     };
     let mut bytes = Vec::new();
@@ -102,7 +108,7 @@ fn pnpm_placeholder(path: &Path) -> bool {
             && name
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"@/._-".contains(&b))
-            && matches!(value, "true" | "false")
+            && matches!(value, "true" | "false" | "set this to true or false")
     })
 }
 
@@ -129,7 +135,7 @@ pub(super) fn bounded(
     max_entries: usize,
 ) -> Result<Inventory, String> {
     let start = Instant::now();
-    let bytes = git::git_bounded(
+    let mut bytes = git::git_bounded(
         root,
         &[
             "status",
@@ -137,10 +143,66 @@ pub(super) fn bounded(
             "-z",
             "--ignored=matching",
             "--untracked-files=all",
+            "--ignore-submodules=none",
         ],
         budget,
     )?;
-    from_status(Path::new(root), &bytes, start, budget, max_entries)
+    let mut visited = 0;
+    special_entries(
+        Path::new(root),
+        Path::new(""),
+        &mut bytes,
+        &mut visited,
+        start,
+        budget,
+        max_entries,
+    )?;
+    from_status(Path::new(root), &bytes, start, budget, max_entries, visited)
+}
+
+// Git omits FIFOs/sockets from porcelain entirely. Discover those metadata-only,
+// without opening them; otherwise even a safe open could still classify them
+// as absent and permit whole-folder removal. Repository entries stay opaque.
+fn special_entries(
+    root: &Path,
+    relative: &Path,
+    rows: &mut Vec<u8>,
+    visited: &mut usize,
+    start: Instant,
+    budget: Duration,
+    max: usize,
+) -> Result<(), String> {
+    let path = root.join(relative);
+    real_dir(&path)?;
+    for entry in fs::read_dir(&path).map_err(|e| e.to_string())? {
+        *visited += 1;
+        if *visited > max || relative.components().count() > 256 || start.elapsed() >= budget {
+            return Err(
+                "Special-file inventory reached its time or entry bound; folder kept.".into(),
+            );
+        }
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = relative.join(entry.file_name());
+        if relative.as_os_str().is_empty() && entry.file_name() == ".git" {
+            continue;
+        }
+        let m = fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
+        if redirect(&m) || repository_entry(&entry.path(), &name, &m) {
+            continue;
+        }
+        if m.is_dir() {
+            special_entries(root, &name, rows, visited, start, budget, max)?;
+        } else if !m.is_file() {
+            rows.extend_from_slice(b"!! ");
+            rows.extend_from_slice(
+                name.to_str()
+                    .ok_or("Special-file path is not UTF-8")?
+                    .as_bytes(),
+            );
+            rows.push(0);
+        }
+    }
+    Ok(())
 }
 
 fn walk(
@@ -229,6 +291,7 @@ pub(super) fn subtree(
         Instant::now(),
         budget,
         max,
+        0,
     )
 }
 
@@ -238,9 +301,10 @@ fn from_status(
     start: Instant,
     budget: Duration,
     max_entries: usize,
+    initial_visited: usize,
 ) -> Result<Inventory, String> {
     let mut entries = BTreeMap::new();
-    let mut visited = 0usize;
+    let mut visited = initial_visited;
     let mut rows = status.split(|b| *b == 0).filter(|r| !r.is_empty());
     while let Some(row) = rows.next() {
         if row.starts_with(b"!! ") {

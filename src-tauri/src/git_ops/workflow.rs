@@ -731,7 +731,17 @@ pub fn validation_worktree(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn remove_validation(plan: &WorkspacePlan, path: &str) -> Result<(), String> {
+    let proof = crate::worktree_lifespan::validation_removal_proof(path)?;
+    remove_validation_verified(plan, path, proof.as_ref())
+}
+pub(crate) fn remove_validation_verified(
+    plan: &WorkspacePlan,
+    path: &str,
+    proof: Option<&crate::worktree_lifespan::ValidationRemovalProof>,
+) -> Result<(), String> {
+    let started = std::time::Instant::now();
     if !Path::new(path).exists() {
         // Removing an already absent path needs no filesystem mutation. The
         // caller only removes its own recorded allocation.
@@ -752,7 +762,13 @@ pub fn remove_validation(plan: &WorkspacePlan, path: &str) -> Result<(), String>
             "Validation checkout now has a branch. Preserve it manually before removal.".into(),
         );
     }
-    crate::worktree_lifespan::require_no_at_stake_ignored(path)?;
+    crate::worktree_lifespan::verify_validation_removal(
+        path,
+        proof.ok_or("Validation folder appeared during comparison; it was kept.")?,
+    )?;
+    if started.elapsed() >= std::time::Duration::from_secs(10) {
+        return Err("Validation final checks reached their 10 second bound; folder kept.".into());
+    }
     run_git_mut(&plan.repository_root, &["worktree", "remove", path], false)?;
     Ok(())
 }

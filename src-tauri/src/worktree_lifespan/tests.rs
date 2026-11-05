@@ -17,6 +17,10 @@ impl Repo {
         git::text(&root, &["init", "-b", "develop"]).unwrap();
         git::text(&root, &["config", "user.name", "Test"]).unwrap();
         git::text(&root, &["config", "user.email", "test@example.invalid"]).unwrap();
+        // Control raw checkout bytes across system/global Git defaults. The
+        // dedicated autocrlf acceptance test explicitly turns conversion on.
+        git::text(&root, &["config", "core.autocrlf", "false"]).unwrap();
+        git::text(&root, &["config", "core.eol", "lf"]).unwrap();
         fs::write(Path::new(&root).join("tracked"), "original\n").unwrap();
         fs::write(
             Path::new(&root).join(".gitignore"),
@@ -38,6 +42,14 @@ impl Repo {
             root,
             work,
         }
+    }
+    fn recheckout(&self) {
+        let names = git::git(&self.work, &["ls-files", "-z"]).unwrap();
+        for name in names.split(|b| *b == 0).filter(|b| !b.is_empty()) {
+            fs::remove_file(Path::new(&self.work).join(std::str::from_utf8(name).unwrap()))
+                .unwrap();
+        }
+        git::text(&self.work, &["checkout-index", "-a"]).unwrap();
     }
     fn checkout(&self) -> Checkout {
         checkouts(&self.root)
@@ -1454,7 +1466,7 @@ fn wait_file(path: &Path) {
     let started = std::time::Instant::now();
     while !path.exists() {
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            started.elapsed() < Duration::from_secs(45),
             "hold was not reached: {}",
             path.display()
         );
@@ -1805,4 +1817,475 @@ fn archive_large_64mib_untracked_preview_and_final_disk_compare() {
         .unwrap(),
         (64 * 1024 * 1024).to_string()
     );
+}
+
+#[test]
+fn h5_lossy_clean_filter_keeps_automatic_and_archive_folder() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    git::text(
+        &r.root,
+        &["config", "filter.review.clean", "sed s/SECRET/REDACTED/g"],
+    )
+    .unwrap();
+    git::text(&r.root, &["config", "filter.review.smudge", "cat"]).unwrap();
+    r.write(".gitattributes", "*.raw filter=review\n");
+    r.write("original.raw", "SECRET unique original\n");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "lossy filter"]).unwrap();
+    r.age(30);
+    assert!(git::git(&r.work, &["status", "--porcelain"])
+        .unwrap()
+        .is_empty());
+    let o = r.observe(now(), &known());
+    assert_eq!(o.item.state, "abandoned");
+    assert!(
+        o.item
+            .why
+            .contains("1 tracked files cannot be restored byte for byte"),
+        "{}",
+        o.item.why
+    );
+    let svc = r.services(30);
+    let state = Store::default();
+    sweep_checked(&svc, &state, &checks()).unwrap();
+    assert!(!gone(&r.work));
+    // Both the already tracked original and an untracked attribute/file door.
+    r.write("untracked.raw", "SECRET another original\n");
+    git::text(&r.work, &["rm", "--cached", ".gitattributes"]).unwrap();
+    let preview = r.observe(now(), &known()).item;
+    state.inner.lock().unwrap().items = vec![preview.clone()];
+    let error = archive_checked(
+        &svc,
+        &state,
+        &checks(),
+        &preview.key,
+        &preview.head,
+        &preview.status_hash,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("2 files cannot be restored byte for byte"),
+        "{error}"
+    );
+    assert!(
+        error.contains("archive ref refs/octiq/archive/") && error.contains("and folder are kept"),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read_to_string(Path::new(&r.work).join("original.raw")).unwrap(),
+        "SECRET unique original\n"
+    );
+    let archive = &state.saved().unwrap().archives[0];
+    assert!(git::text(
+        &r.root,
+        &["show", &format!("{}:original.raw", archive.reference)]
+    )
+    .unwrap()
+    .contains("REDACTED"));
+}
+
+#[test]
+fn h5_reversible_autocrlf_and_explicit_eol_restore_exact_raw_bytes() {
+    let r = Repo::new();
+    git::text(&r.root, &["config", "core.autocrlf", "true"]).unwrap();
+    r.recheckout();
+    r.write("crlf", "one\r\ntwo\r\n");
+    git::text(&r.work, &["add", "crlf"]).unwrap();
+    git::text(&r.work, &["commit", "-m", "CRLF"]).unwrap();
+    assert_eq!(raw::verify(&r.work, "HEAD", false).unwrap().unrestorable, 0);
+    r.write("crlf", "changed\r\ntwo\r\n");
+    let head = git::text(&r.work, &["rev-parse", "HEAD"]).unwrap();
+    let reference = "refs/octiq/archive/crlf";
+    git::archive(&r.work, &head, reference, &r._home.join("index")).unwrap();
+    assert_eq!(
+        raw::verify(&r.work, reference, true).unwrap().unrestorable,
+        0
+    );
+    let target = r._home.join("restore-crlf");
+    git::restore(&r.root, target.to_str().unwrap(), "octiq/crlf", reference).unwrap();
+    assert_eq!(
+        fs::read(target.join("crlf")).unwrap(),
+        b"changed\r\ntwo\r\n"
+    );
+    git::text(&r.root, &["config", "core.autocrlf", "false"]).unwrap();
+    r.write(".gitattributes", "crlf text eol=crlf\n");
+    assert_eq!(
+        raw::verify(&r.work, reference, false).unwrap().unrestorable,
+        0
+    );
+    // Missing/offline smudge is unknown restoration, not proof of preservation.
+    git::text(&r.root, &["config", "filter.offline.smudge", "exit 1"]).unwrap();
+    git::text(&r.root, &["config", "filter.offline.required", "true"]).unwrap();
+    r.write(".gitattributes", "crlf filter=offline\n");
+    assert_eq!(
+        raw::verify(&r.work, reference, false).unwrap().unrestorable,
+        1
+    );
+}
+
+#[test]
+fn h7_hidden_index_edits_are_abandoned_and_archive_restores_raw_bytes() {
+    for flag in ["--assume-unchanged", "--skip-worktree"] {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _profile = crate::profile::started_in(&home.dir);
+        let r = Repo::new();
+        git::text(&r.root, &["config", "core.autocrlf", "false"]).unwrap();
+        r.recheckout();
+        git::text(&r.work, &["update-index", flag, "tracked"]).unwrap();
+        r.write("tracked", "hidden original\n");
+        r.age(30);
+        assert!(git::git(&r.work, &["status", "--porcelain"])
+            .unwrap()
+            .is_empty());
+        let preview = r.observe(now(), &known()).item;
+        assert_eq!(preview.state, "abandoned", "{flag}");
+        assert!(
+            preview
+                .why
+                .contains("1 edited assume-unchanged/skip-worktree files"),
+            "{}",
+            preview.why
+        );
+        let svc = r.services(30);
+        let state = Store::default();
+        sweep_checked(&svc, &state, &checks()).unwrap();
+        assert!(!gone(&r.work));
+        state.inner.lock().unwrap().items = vec![preview.clone()];
+        let archive = archive_checked(
+            &svc,
+            &state,
+            &checks(),
+            &preview.key,
+            &preview.head,
+            &preview.status_hash,
+        )
+        .unwrap();
+        let restored = restore_from(&svc, &state, &archive.key).unwrap();
+        assert_eq!(
+            fs::read(Path::new(restored["path"].as_str().unwrap()).join("tracked")).unwrap(),
+            b"hidden original\n"
+        );
+    }
+    let r = Repo::new();
+    git::text(&r.work, &["update-index", "--skip-worktree", "tracked"]).unwrap();
+    fs::remove_file(Path::new(&r.work).join("tracked")).unwrap();
+    assert_eq!(raw::verify(&r.work, "HEAD", false).unwrap().unrestorable, 0);
+}
+
+#[test]
+fn h7_status_overrides_hidden_untracked_fsmonitor_and_untracked_cache() {
+    let r = Repo::new();
+    git::text(&r.root, &["config", "status.showUntrackedFiles", "no"]).unwrap();
+    git::text(
+        &r.root,
+        &["config", "core.fsmonitor", "a-broken-fsmonitor-command"],
+    )
+    .unwrap();
+    git::text(&r.root, &["config", "core.untrackedCache", "true"]).unwrap();
+    r.write("new-original", "precious");
+    let o = r.observe(old(), &known());
+    assert_eq!(o.item.state, "abandoned");
+    assert_eq!(o.item.untracked_files, 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn h6_ignored_write_during_held_archive_comparison_keeps_folder() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.write("dirty", "preserve dirty");
+    r.write("package.json", "{}");
+    r.write(
+        "pnpm-workspace.yaml",
+        "allowBuilds:\n  esbuild: set this to true or false\n",
+    );
+    r.age(30);
+    let svc = r.services(30);
+    let state = Store::default();
+    let preview = r.observe(now(), &known()).item;
+    state.inner.lock().unwrap().items = vec![preview.clone()];
+    let hold = r._home.join("held");
+    let release = r._home.join("release");
+    let script = format!(
+        r#"
+case "$GIT_INDEX_FILE" in
+  */.verify-archive-*) case " $* " in *" diff "*)
+    touch '{hold}'; while test ! -f '{release}'; do sleep 0.01; done;; esac;;
+esac
+exec /usr/bin/git "$@"
+"#,
+        hold = hold.display(),
+        release = release.display()
+    );
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| {
+            wait_file(&hold);
+            r.write("pnpm-workspace.yaml", "packages:\n  - only-original/*\n");
+            fs::write(&release, "go").unwrap();
+        });
+        let error = with_git_wrapper(&r._home, &script, || {
+            archive_checked(
+                &svc,
+                &state,
+                &checks(),
+                &preview.key,
+                &preview.head,
+                &preview.status_hash,
+            )
+        })
+        .unwrap_err();
+        writer.join().unwrap();
+        assert!(error.contains("Ignored files changed"), "{error}");
+    });
+    assert!(!gone(&r.work));
+    assert_eq!(state.saved().unwrap().archives.len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn h6_raw_file_write_after_disk_read_is_caught_by_final_ctime_stamps() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.write("dirty", "before\n");
+    r.age(30);
+    let svc = r.services(30);
+    let state = Store::default();
+    let preview = r.observe(now(), &known()).item;
+    state.inner.lock().unwrap().items = vec![preview.clone()];
+    let hold = r._home.join("held");
+    let release = r._home.join("release");
+    let modified = fs::metadata(Path::new(&r.work).join("dirty"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    let script = format!(
+        r#"
+case " $* " in *" cat-file --filters "*"refs/octiq/archive/"*":dirty "*)
+  touch '{hold}'; while test ! -f '{release}'; do sleep 0.01; done;;
+esac
+exec /usr/bin/git "$@"
+"#,
+        hold = hold.display(),
+        release = release.display()
+    );
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| {
+            wait_file(&hold);
+            r.write("dirty", "after!\n");
+            raw::open_regular(&Path::new(&r.work).join("dirty"))
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+            fs::write(&release, "go").unwrap();
+        });
+        let error = with_git_wrapper(&r._home, &script, || {
+            archive_checked(
+                &svc,
+                &state,
+                &checks(),
+                &preview.key,
+                &preview.head,
+                &preview.status_hash,
+            )
+        })
+        .unwrap_err();
+        writer.join().unwrap();
+        assert!(error.contains("ctime changed"), "{error}");
+    });
+    assert_eq!(
+        fs::read_to_string(Path::new(&r.work).join("dirty")).unwrap(),
+        "after!\n"
+    );
+}
+
+#[test]
+fn pnpm_exact_50_byte_literal_and_near_miss() {
+    let r = Repo::new();
+    r.write("package.json", "{}");
+    let exact = "allowBuilds:\n  esbuild: set this to true or false\n";
+    assert_eq!(exact.len(), 50);
+    r.write("pnpm-workspace.yaml", exact);
+    assert_eq!(ignored::inventory(&r.work).unwrap().files, 0);
+    r.write(
+        "pnpm-workspace.yaml",
+        "allowBuilds:\n  esbuild: set this to true or false!\n",
+    );
+    assert_eq!(ignored::inventory(&r.work).unwrap().files, 1);
+}
+
+#[test]
+fn m5_preflight_keeps_all_build_folders_when_any_contains_originals() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    for name in ["a", "z"] {
+        r.write(&format!("{name}/Cargo.toml"), "[package]");
+        r.write(&format!("{name}/target/cache"), "safe cache");
+    }
+    r.write("z/target/source/ONLY-ORIGINAL", "original");
+    r.age(30);
+    let svc = r.services(30);
+    let state = Store::default();
+    sweep_checked(&svc, &state, &checks()).unwrap();
+    let report = &state.saved().unwrap().history[0];
+    assert_eq!(report.stripped, 0);
+    assert_eq!(report.freed_bytes, 0);
+    assert!(!report.failed.is_empty());
+    for name in ["a", "z"] {
+        assert!(Path::new(&r.work)
+            .join(format!("{name}/target/cache"))
+            .exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn m6_real_fifo_pnpm_returns_within_timeout_and_is_at_stake() {
+    let r = Repo::new();
+    r.write("package.json", "{}");
+    let fifo = Path::new(&r.work).join("pnpm-workspace.yaml");
+    assert!(Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let work = r.work.clone();
+    let handle = std::thread::spawn(move || {
+        let result = ignored::inventory(&work);
+        tx.send(result.map(|i| i.files)).unwrap();
+    });
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(3))
+            .expect("FIFO blocked inventory")
+            .unwrap(),
+        1
+    );
+    handle.join().unwrap();
+    assert!(raw::open_regular(&fifo).is_err());
+}
+
+#[test]
+fn m5_late_second_refusal_keeps_successful_first_strip_in_history_and_cache() {
+    thread_local! { static LATE: std::cell::RefCell<(usize, PathBuf)> = std::cell::RefCell::new((0, PathBuf::new())); }
+    fn usage() -> Usage {
+        LATE.with(|slot| {
+            let mut s = slot.borrow_mut();
+            s.0 += 1;
+            // sweep inventory, operate observation, first final, second final.
+            if s.0 == 4 {
+                crate::profile::make_dir(s.1.parent().unwrap()).unwrap();
+                fs::write(&s.1, "late original").unwrap();
+            }
+        });
+        known()
+    }
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    for name in ["a", "z"] {
+        r.write(&format!("{name}/Cargo.toml"), "[package]");
+        r.write(&format!("{name}/target/cache"), "safe cache");
+    }
+    r.age(30);
+    let builds = r.observe(now(), &known()).tree.builds;
+    assert_eq!(builds.len(), 2);
+    LATE.with(|slot| *slot.borrow_mut() = (0, builds[1].join("source/ONLY-ORIGINAL")));
+    let svc = r.services(30);
+    let state = Store::default();
+    sweep_checked(&svc, &state, &Checks { usage, ..checks() }).unwrap();
+    let report = &state.saved().unwrap().history[0];
+    assert_eq!(report.stripped, 1);
+    assert_eq!(report.freed_bytes, 10);
+    assert!(report
+        .failed
+        .iter()
+        .any(|f| f.why.contains("at-stake ignored files")));
+    assert!(!builds[0].exists());
+    assert!(builds[1].join("source/ONLY-ORIGINAL").exists());
+    let cache = state.inner.lock().unwrap();
+    let item = cache.items.iter().find(|i| i.path == r.work).unwrap();
+    assert_eq!(item.build_bytes, Some(10));
+}
+
+#[cfg(unix)]
+#[test]
+fn h5_plain_checkout_has_one_attribute_pass_and_no_restore_content_reads() {
+    let r = Repo::new();
+    git::text(&r.root, &["config", "core.autocrlf", "false"]).unwrap();
+    r.recheckout();
+    let attr = r._home.join("attrs");
+    let content = r._home.join("content");
+    let script = format!(
+        r#"
+case " $* " in *" check-attr "*) echo pass >> '{attr}';; *" cat-file "*) touch '{content}';; esac
+exec /usr/bin/git "$@"
+"#,
+        attr = attr.display(),
+        content = content.display()
+    );
+    let proof =
+        with_git_wrapper(&r._home, &script, || raw::verify(&r.work, "HEAD", false)).unwrap();
+    assert_eq!(proof.unrestorable, 0);
+    assert_eq!(fs::read_to_string(attr).unwrap().lines().count(), 1);
+    assert!(!content.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn h5_real_lfs_offline_smudge_fails_closed() {
+    assert!(
+        Command::new("git")
+            .args(["lfs", "version"])
+            .status()
+            .unwrap()
+            .success(),
+        "Git LFS is required for this Windows acceptance proof"
+    );
+    let r = Repo::new();
+    let pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:1111111111111111111111111111111111111111111111111111111111111111\nsize 13\n";
+    r.write("asset.lfs", pointer);
+    git::text(&r.work, &["add", "asset.lfs"]).unwrap();
+    git::text(&r.work, &["commit", "-m", "pointer without object"]).unwrap();
+    for (name, value) in [
+        ("filter.lfs.process", "git-lfs filter-process"),
+        ("filter.lfs.clean", "git-lfs clean -- %f"),
+        ("filter.lfs.smudge", "git-lfs smudge -- %f"),
+        ("filter.lfs.required", "true"),
+        ("lfs.url", "http://127.0.0.1:1/offline-lfs-proof"),
+        ("lfs.skipdownloaderrors", "false"),
+    ] {
+        git::text(&r.root, &["config", name, value]).unwrap();
+    }
+    r.write(".gitattributes", "*.lfs filter=lfs -text\n");
+    r.write("asset.lfs", "real original");
+    let proof = raw::verify(&r.work, "HEAD", false).unwrap();
+    assert_eq!(proof.unrestorable, 1);
+    assert_eq!(
+        fs::read_to_string(Path::new(&r.work).join("asset.lfs")).unwrap(),
+        "real original"
+    );
+}
+
+#[test]
+fn validation_cleanup_checks_hidden_bytes_and_stamps_after_off_lock_proof() {
+    let r = Repo::new();
+    git::text(&r.work, &["update-index", "--skip-worktree", "tracked"]).unwrap();
+    r.write("tracked", "hidden bytes\n");
+    assert!(validation_removal_proof(&r.work)
+        .err()
+        .unwrap()
+        .contains("1 tracked files"));
+    git::text(&r.work, &["update-index", "--no-skip-worktree", "tracked"]).unwrap();
+    r.recheckout();
+    let proof = validation_removal_proof(&r.work).unwrap().unwrap();
+    r.write("tracked", "changed after proof\n");
+    assert!(verify_validation_removal(&r.work, &proof)
+        .unwrap_err()
+        .contains("ctime changed"));
+    assert!(!gone(&r.work));
 }

@@ -1240,7 +1240,15 @@ impl OrchestrationStore {
         if !ws.validation_paths.iter().any(|p| p == path) {
             return Err("This task does not own that validation workspace.".into());
         }
-        workflow::remove_validation(&ws.plan, path)?;
+        drop(_operation);
+        let proof = crate::worktree_lifespan::validation_removal_proof(path)?;
+        let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
+        let task = self.validation_task(actor, task_id, true)?;
+        let ws = task.workspace.as_ref().ok_or("Task has no workspace.")?;
+        if !ws.validation_paths.iter().any(|p| p == path) {
+            return Err("This task no longer owns that validation workspace.".into());
+        }
+        workflow::remove_validation_verified(&ws.plan, path, proof.as_ref())?;
         self.mutate(|data| {
             let task = data.tasks.get_mut(task_id).ok_or("Task disappeared.")?;
             task.workspace
@@ -3138,6 +3146,105 @@ pub(super) mod tests {
         assert_eq!(retry.cwd, first.cwd);
         assert!(Path::new(&retry.cwd).join("keep.txt").exists());
     }
+    #[cfg(unix)]
+    #[test]
+    fn validation_removal_rechecks_after_held_raw_step_outside_lifecycle() {
+        use std::{
+            os::unix::fs::PermissionsExt,
+            time::{Duration, Instant},
+        };
+        for change_ignored in [false, true] {
+            let repo = Repo::new();
+            repo.git(&["config", "core.autocrlf", "false"]);
+            repo.commit(&repo.root, ".gitattributes", "source.txt text\n");
+            repo.commit(&repo.root, ".gitignore", "pnpm-workspace.yaml\n");
+            repo.commit(&repo.root, "package.json", "{}");
+            let (store, _, task) = setup(&repo, WorkspaceMode::Worktree);
+            let first = prepare(&store, &task, Access::Auto).unwrap();
+            let base = repo.git(&["rev-parse", "HEAD"]);
+            let path = store
+                .create_validation(&first.worker_chat_key, &task.id, &base, vec![])
+                .unwrap();
+            fs::write(
+                Path::new(&path).join("pnpm-workspace.yaml"),
+                "allowBuilds:\n  esbuild: set this to true or false\n",
+            )
+            .unwrap();
+            let hold = repo.dir.join("held");
+            let release = repo.dir.join("release");
+            let wrapper = repo.dir.join("git-wrapper");
+            fs::write(
+                &wrapper,
+                format!(
+                    r#"#!/bin/sh
+case " $* " in *" cat-file --filters --path=source.txt "*)
+  /usr/bin/git "$@"; result=$?
+  touch '{hold}'
+  n=0; while test ! -f '{release}'; do sleep 0.01; n=$((n+1)); test "$n" -lt 6000 || exit 98; done
+  exit "$result";;
+esac
+exec /usr/bin/git "$@"
+"#,
+                    hold = hold.display(),
+                    release = release.display()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+            crate::git_ops::lifespan::TEST_GIT.with(|slot| *slot.borrow_mut() = Some(wrapper));
+            struct Reset;
+            impl Drop for Reset {
+                fn drop(&mut self) {
+                    crate::git_ops::lifespan::TEST_GIT.with(|slot| *slot.borrow_mut() = None);
+                }
+            }
+            let _reset = Reset;
+            std::thread::scope(|scope| {
+                let writer = scope.spawn(|| {
+                    let start = Instant::now();
+                    while !hold.exists() {
+                        assert!(start.elapsed() < Duration::from_secs(45));
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    let unlocked = store.workspace_ops.try_lock().is_ok();
+                    if change_ignored {
+                        fs::write(
+                            Path::new(&path).join("pnpm-workspace.yaml"),
+                            "packages:\n  - only-original/*\n",
+                        )
+                        .unwrap();
+                    } else {
+                        fs::write(
+                            Path::new(&path).join("source.txt"),
+                            "changed during comparison\n",
+                        )
+                        .unwrap();
+                    }
+                    fs::write(&release, "go").unwrap();
+                    assert!(unlocked, "raw comparison held workspace lifecycle");
+                });
+                let error = store
+                    .remove_validation("chat:master", &task.id, &path)
+                    .unwrap_err();
+                writer.join().unwrap();
+                assert!(
+                    error.contains(if change_ignored {
+                        "at-stake ignored files"
+                    } else {
+                        "ctime changed"
+                    }),
+                    "{error}"
+                );
+            });
+            assert!(Path::new(&path).is_dir());
+            assert!(stored(&store, &task)
+                .workspace
+                .unwrap()
+                .validation_paths
+                .contains(&path));
+        }
+    }
+
     #[test]
     fn validation_paths_are_owned_and_block_parent_cleanup() {
         let repo = Repo::new();
