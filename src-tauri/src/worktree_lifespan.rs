@@ -1140,12 +1140,8 @@ fn reconcile(svc: &Services, store: &Store, at: i64, sweep: &mut Sweep) -> Resul
             continue;
         }
         svc.orchestrations.lifespan_record_swept(&a.path, at)?;
-        sweep.removed.push(Removed {
-            path: a.path,
-            branch: a.branch,
-            owner: a.owner,
-            bytes: None,
-        });
+        // Reconciliation changes the ledger, not the filesystem. Do not
+        // report a manually missing folder as a host deletion.
     }
     // A restart may have happened on either side of git worktree remove.
     // Existing folders are re-verified by a later sweep, never blindly replayed.
@@ -1170,10 +1166,8 @@ fn reconcile(svc: &Services, store: &Store, at: i64, sweep: &mut Sweep) -> Resul
                 .saturating_add(intent.item.bytes.unwrap_or(0));
             sweep.removed.push(intent.item.clone());
         }
-        store.change(false, |s| {
-            s.intents.retain(|i| i.item.path != intent.item.path);
-            Ok(())
-        })?;
+        // Keep the intent until the same save that records the sweep's
+        // outcome. A crash before that save must be able to report it again.
     }
     Ok(())
 }

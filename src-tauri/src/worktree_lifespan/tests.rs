@@ -754,7 +754,22 @@ fn actual_restart_reconciles_only_after_folder_disappeared_and_volume_returns() 
     fs::rename(moved, &r.root).unwrap();
     reconcile(&svc, &restarted, now(), &mut report).unwrap();
     assert_eq!(report.removed.len(), 1);
-    assert!(restarted.saved().unwrap().intents.is_empty());
+    assert_eq!(
+        restarted.saved().unwrap().intents.len(),
+        1,
+        "intent survives until outcome is saved"
+    );
+    let after_crash = Store::default();
+    assert_eq!(after_crash.saved().unwrap().intents.len(), 1);
+    after_crash
+        .change(false, |s| {
+            s.intents
+                .retain(|i| !report.removed.iter().any(|r| r.path == i.item.path));
+            history(s, report.clone());
+            Ok(())
+        })
+        .unwrap();
+    assert!(after_crash.saved().unwrap().intents.is_empty());
     assert!(git::text(&r.root, &["rev-parse", "refs/heads/octiq/test"]).is_ok());
 }
 
