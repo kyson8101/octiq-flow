@@ -32,11 +32,21 @@ pub(crate) fn require_no_at_stake_ignored(path: &str) -> Result<(), String> {
             inventory.files
         ));
     }
+    #[cfg(windows)]
+    {
+        // Git for Windows can descend into an ignored junction during
+        // worktree remove. Link classification never grants that traversal.
+        let mut tree = Tree::default();
+        walk(path, Path::new(path), false, &mut tree)?;
+        if tree.reparse {
+            return Err("A Windows validation checkout contains a reparse point; its folder is kept. Remove the link separately before retrying cleanup.".into());
+        }
+    }
     Ok(())
 }
 
 const DAY: i64 = 86_400_000;
-pub(crate) const OWED: &str = "worktree lifespan settings and pins";
+pub(crate) const OWED: &str = "worktree lifespan settings, pins and sweep outcomes";
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -188,6 +198,7 @@ struct Cache {
     owed: bool,
     pending_disable: bool,
     pending_pins: BTreeSet<String>,
+    pending_reports: Vec<Sweep>,
 }
 pub(crate) struct Store {
     inner: Mutex<Cache>,
@@ -305,13 +316,28 @@ impl Store {
     }
 }
 pub(crate) fn settle_owed() -> Result<(), String> {
-    let mut c = store().inner.lock().map_err(|e| e.to_string())?;
+    settle_store(store())
+}
+fn settle_store(state: &Store) -> Result<(), String> {
+    let mut c = state.inner.lock().map_err(|e| e.to_string())?;
     if c.owed {
-        store().load(&mut c)?;
+        state.load(&mut c)?;
         save(&c.saved)?;
         c.pending_disable = false;
         c.pending_pins.clear();
         c.owed = false;
+    }
+    for report in c.pending_reports.drain(..) {
+        crate::bus::emit("worktree-swept", &report);
+    }
+    Ok(())
+}
+fn publish_report(state: &Store, report: &Sweep) -> Result<(), String> {
+    let mut c = state.inner.lock().map_err(|e| e.to_string())?;
+    if c.owed {
+        c.pending_reports.push(report.clone());
+    } else {
+        crate::bus::emit("worktree-swept", report);
     }
     Ok(())
 }
@@ -491,6 +517,8 @@ struct Tree {
     build_bytes: u64,
     builds: Vec<PathBuf>,
     reparse: bool,
+    entries: usize,
+    started: Option<std::time::Instant>,
 }
 fn stamp(meta: &fs::Metadata) -> i64 {
     meta.modified()
@@ -518,13 +546,33 @@ fn build_dir(root: &str, p: &Path) -> bool {
         return false;
     };
     let relative = format!("{}/", relative.to_string_lossy().replace('\\', "/"));
+    if !fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !redirect(&m)) {
+        return false;
+    }
     git::git(root, &["check-ignore", "--quiet", "--", &relative]).is_ok()
         && git::git(root, &["ls-files", "-z", "--", &relative]).is_ok_and(|b| b.is_empty())
 }
 fn walk(root: &str, path: &Path, in_build: bool, tree: &mut Tree) -> Result<(), String> {
+    tree.entries += 1;
+    let started = *tree.started.get_or_insert_with(std::time::Instant::now);
+    if tree.entries > 100_000 || started.elapsed() > Duration::from_secs(15) {
+        return Err(
+            "Worktree walk reached its 100,000 entry or 15 second limit; this worktree is kept."
+                .into(),
+        );
+    }
     let m = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if redirect(&m) {
         tree.reparse = true;
+        tree.bytes = tree.bytes.saturating_add(m.len());
+        if !in_build {
+            tree.newest = tree.newest.max(stamp(&m));
+        }
+        return Ok(());
+    }
+    if path != Path::new(root) && ignored::repository_entry(path, path, &m) {
+        // Repository metadata is opaque here as well as in ignored inventory.
+        // Only the shared inventory predicate decides whether it is at stake.
         tree.bytes = tree.bytes.saturating_add(m.len());
         if !in_build {
             tree.newest = tree.newest.max(stamp(&m));
@@ -542,7 +590,7 @@ fn walk(root: &str, path: &Path, in_build: bool, tree: &mut Tree) -> Result<(), 
         }
         for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
-            if entry.file_name() == ".git" {
+            if path == Path::new(root) && entry.file_name() == ".git" {
                 continue;
             }
             walk(root, &entry.path(), ignored, tree)?;
@@ -625,38 +673,83 @@ fn status_hash(
     // Include index/worktree content and untracked content, so editing a dirty
     // file without changing its porcelain row invalidates the person's preview.
     use sha2::{Digest, Sha256};
+    let started = std::time::Instant::now();
+    const MAX_BYTES: u64 = 512 * 1024 * 1024;
+    let mut read_bytes = 0u64;
     let mut h = Sha256::new();
     h.update(status);
     h.update(ignored.map_or("ignored inventory unavailable", |i| i.hash.as_str()));
-    h.update(git::git(
+    let diff = git::git_bounded(
         path,
         &[
             "diff",
             "--no-ext-diff",
             "--no-textconv",
-            "--binary",
+            "--raw",
+            "--no-abbrev",
             "HEAD",
             "--",
         ],
-    )?);
-    h.update(git::git(
+        Duration::from_secs(120).saturating_sub(started.elapsed()),
+    )?;
+    read_bytes += diff.len() as u64;
+    if read_bytes > MAX_BYTES || started.elapsed() > Duration::from_secs(120) {
+        return Err(
+            "Status content check reached its 512 MiB or 120 second limit; this worktree is kept."
+                .into(),
+        );
+    }
+    h.update(diff);
+    let diff = git::git_bounded(
         path,
         &[
             "diff",
             "--cached",
             "--no-ext-diff",
             "--no-textconv",
-            "--binary",
+            "--raw",
+            "--no-abbrev",
             "HEAD",
             "--",
         ],
-    )?);
-    let files = git::git(path, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+        Duration::from_secs(120).saturating_sub(started.elapsed()),
+    )?;
+    read_bytes += diff.len() as u64;
+    if read_bytes > MAX_BYTES || started.elapsed() > Duration::from_secs(120) {
+        return Err(
+            "Status content check reached its 512 MiB or 120 second limit; this worktree is kept."
+                .into(),
+        );
+    }
+    h.update(diff);
+    let files = git::git_bounded(
+        path,
+        &[
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        Duration::from_secs(120).saturating_sub(started.elapsed()),
+    )?;
     for file in files.split(|b| *b == 0).filter(|b| !b.is_empty()) {
+        if started.elapsed() > Duration::from_secs(120) {
+            return Err(
+                "Status content check reached its 120 second limit; this worktree is kept.".into(),
+            );
+        }
         let relative = std::str::from_utf8(file).map_err(|e| e.to_string())?;
         h.update(file);
         let p = Path::new(path).join(relative);
-        let m = fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
+        let m = match fs::symlink_metadata(&p) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                h.update(b"missing");
+                continue;
+            }
+            Err(e) => return Err(e.to_string()),
+        };
         if redirect(&m) {
             h.update(
                 fs::read_link(&p)
@@ -665,13 +758,29 @@ fn status_hash(
                     .as_bytes(),
             );
         } else if m.is_file() {
+            if read_bytes.saturating_add(m.len()) > MAX_BYTES {
+                return Err(
+                    "Status content check reached its 512 MiB total limit; this worktree is kept."
+                        .into(),
+                );
+            }
             use std::io::Read;
             let mut f = fs::File::open(&p).map_err(|e| e.to_string())?;
             let mut buf = [0u8; 65536];
             loop {
+                if started.elapsed() > Duration::from_secs(120) {
+                    return Err(
+                        "Status content check reached its 120 second limit; this worktree is kept."
+                            .into(),
+                    );
+                }
                 let n = f.read(&mut buf).map_err(|e| e.to_string())?;
                 if n == 0 {
                     break;
+                }
+                read_bytes = read_bytes.saturating_add(n as u64);
+                if read_bytes > MAX_BYTES {
+                    return Err("Status content check reached its 512 MiB total limit; this worktree is kept.".into());
                 }
                 h.update(&buf[..n]);
             }
@@ -1034,9 +1143,17 @@ fn observe(
             _ => {}
         }
     }
+    let status_hash = status_hash(root, &status, ignored.as_ref().ok());
+    if let Err(error) = &status_hash {
+        if active.is_none() {
+            state = "abandoned";
+        }
+        why = format!("{error} Content verification is incomplete; automatic cleanup and archive are withheld.");
+    }
     let key = key(&a.repo, root);
     let pinned = pins.contains(&key);
-    let removable = state == "finished"
+    let removable = status_hash.is_ok()
+        && state == "finished"
         && a.owner.kind != "unknown"
         && usage.known
         && !windows
@@ -1046,14 +1163,19 @@ fn observe(
     if pinned {
         why = "The person pinned this worktree; it is never stripped or removed.".into();
     }
-    let qualified = a.owner.kind != "unknown" && !pinned && active.is_none();
+    let qualified = a.owner.kind != "unknown"
+        && !pinned
+        && active.is_none()
+        && usage.known
+        && !windows
+        && status_hash.is_ok();
     let item = Item {
         key,
         path: root.clone(),
         repo: a.repo.clone(),
         branch: checkout.branch.clone(),
         head,
-        status_hash: status_hash(root, &status, ignored.as_ref().ok())?,
+        status_hash: status_hash.unwrap_or_default(),
         owner: a.owner.clone(),
         state: state.into(),
         pinned,
@@ -1172,9 +1294,31 @@ fn parents_present(repo: &str, path: &str, validation: bool) -> bool {
             && real_dir(p).is_ok()
     })
 }
+struct LifecycleGuard<'a> {
+    _guard: std::sync::MutexGuard<'a, ()>,
+    #[cfg(test)]
+    started: std::time::Instant,
+}
+#[cfg(test)]
+thread_local! {
+    static LOCK_MAX: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+}
+#[cfg(test)]
+impl Drop for LifecycleGuard<'_> {
+    fn drop(&mut self) {
+        LOCK_MAX.with(|max| max.set(max.get().max(self.started.elapsed())));
+    }
+}
+fn hold_lifecycle(svc: &Services) -> Result<LifecycleGuard<'_>, String> {
+    Ok(LifecycleGuard {
+        _guard: svc.orchestrations.hold_workspace_lifecycle()?,
+        #[cfg(test)]
+        started: std::time::Instant::now(),
+    })
+}
 fn reconcile(svc: &Services, store: &Store, at: i64, sweep: &mut Sweep) -> Result<(), String> {
-    let _lifecycle = svc.orchestrations.hold_workspace_lifecycle()?;
     for a in svc.orchestrations.lifespan_allocations()? {
+        let _lifecycle = hold_lifecycle(svc)?;
         if a.owner.kind == "unknown"
             || a.swept_at.is_some()
             || !a.reconcilable
@@ -1190,6 +1334,7 @@ fn reconcile(svc: &Services, store: &Store, at: i64, sweep: &mut Sweep) -> Resul
     // A restart may have happened on either side of git worktree remove.
     // Existing folders are re-verified by a later sweep, never blindly replayed.
     for intent in store.saved()?.intents {
+        let _lifecycle = hold_lifecycle(svc)?;
         let repo = Some(intent.repo.clone());
         if !gone(&intent.item.path)
             || !repo.is_some_and(|r| {
@@ -1232,6 +1377,24 @@ fn runtime_checks() -> Checks {
         inventory: ignored::inventory,
     }
 }
+// Heavy disk/usage checks run with only the path/start marks. Once the
+// lifecycle is reacquired, a newly admitted worker/owner must withhold cleanup.
+fn final_allocation(svc: &Services, before: &Allocation) -> Result<(), String> {
+    for a in svc.orchestrations.lifespan_allocations()? {
+        if Path::new(&a.path).starts_with(&before.path)
+            || Path::new(&before.path).starts_with(&a.path)
+        {
+            if a.active.is_some() || a.repo != before.repo || a.last_activity > before.last_activity
+            {
+                return Err(
+                    "Workspace ownership or activity changed during cleanup; the folder was kept."
+                        .into(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
 fn operate(
     svc: &Services,
     store: &Store,
@@ -1240,8 +1403,9 @@ fn operate(
     strip: bool,
     checks: &Checks,
 ) -> Result<Option<Observation>, String> {
-    let _lifecycle = svc.orchestrations.hold_workspace_lifecycle()?;
+    let _lifecycle = hold_lifecycle(svc)?;
     let _marked = svc.chats.hold_lifespan_checkout(&preview.path)?;
+    drop(_lifecycle);
     let (mut a, c) = current(svc, store, &preview.path)?;
     a.chats.extend(svc.chats.lifespan_chat_keys(&preview.path)?);
     a.chats.sort();
@@ -1264,6 +1428,9 @@ fn operate(
         checks.windows,
         checks.inventory,
     )?;
+    if observed.item.status_hash.is_empty() {
+        return Err(observed.item.why.clone());
+    }
     if observed.item.state == "active"
         || observed.item.pinned
         || a.owner.kind == "unknown"
@@ -1272,7 +1439,9 @@ fn operate(
         return Ok(None);
     }
     if strip {
-        if observed.item.idle_days < f64::from(settings.settings.build_after_days)
+        if !usage.known
+            || checks.windows
+            || observed.item.idle_days < f64::from(settings.settings.build_after_days)
             || (checks.building)()
         {
             return Ok(None);
@@ -1283,24 +1452,31 @@ fn operate(
             if !build_dir(&preview.path, build) {
                 return Err("Build folder no longer qualifies; it was kept.".into());
             }
+            let _lifecycle = hold_lifecycle(svc)?;
+            final_allocation(svc, &a)?;
             let mut c = store.inner.lock().map_err(|e| e.to_string())?;
             store.load(&mut c)?;
             if !c.saved.settings.enabled || c.saved.pins.contains(&preview.key) {
                 return Ok(None);
             }
             crate::profile::available()?;
-            // No recursive redirect traversal. Windows reparse points anywhere
-            // in the candidate withhold removal rather than trusting Git/std.
-            let mut tree = Tree::default();
-            walk(&preview.path, build, true, &mut tree)?;
-            if checks.windows && tree.reparse {
-                return Err("A build folder contains a reparse point; it was kept.".into());
+            let relative = build
+                .strip_prefix(&preview.path)
+                .map_err(|e| e.to_string())?;
+            let inventory =
+                ignored::subtree(&preview.path, relative, Duration::from_secs(10), 100_000)?;
+            if inventory.files > 0 {
+                return Err(format!(
+                    "{} at-stake ignored files in this build folder; it was kept.",
+                    inventory.files
+                ));
             }
             let parent = build.parent().ok_or("Build folder has no parent")?;
             let modified = fs::metadata(parent)
                 .and_then(|m| m.modified())
                 .map_err(|e| e.to_string())?;
             let parent_handle = directory_handle(parent)?;
+            crate::profile::available()?;
             fs::remove_dir_all(build).map_err(|e| e.to_string())?;
             parent_handle
                 .set_times(fs::FileTimes::new().set_modified(modified))
@@ -1329,24 +1505,35 @@ fn operate(
         {
             return Err("The checkout changed before removal; it was kept.".into());
         }
+        let ignored = (checks.inventory)(&preview.path)?;
+        if ignored.files > 0 {
+            return Err(
+                "New at-stake ignored files arrived before removal; the folder was kept.".into(),
+            );
+        }
         {
+            let _lifecycle = hold_lifecycle(svc)?;
+            final_allocation(svc, &a)?;
             let mut cache = store.inner.lock().map_err(|e| e.to_string())?;
             store.load(&mut cache)?;
             if !cache.saved.settings.enabled || cache.saved.pins.contains(&preview.key) {
                 return Ok(None);
             }
             crate::profile::available()?;
-            let ignored = (checks.inventory)(&preview.path).map_err(|e| {
-                format!("Ignored-file inventory is unavailable; the folder was kept: {e}")
-            })?;
+            let ignored = ignored::bounded(&preview.path, Duration::from_secs(10), 100_000)
+                .map_err(|e| {
+                    format!("Ignored-file inventory is unavailable; the folder was kept: {e}")
+                })?;
             if ignored.files > 0 {
                 return Err(format!(
                     "{} at-stake ignored files arrived before removal; the folder was kept.",
                     ignored.files
                 ));
             }
+            crate::profile::available()?;
             git::remove(&preview.repo, &preview.path, false)?;
         }
+        let _lifecycle = hold_lifecycle(svc)?;
         svc.orchestrations
             .lifespan_record_swept(&preview.path, at)?;
     }
@@ -1465,7 +1652,7 @@ fn sweep_checked(svc: &Services, store: &Store, checks: &Checks) -> Result<(), S
         }
     }
     let changed = report.stripped > 0 || !report.removed.is_empty();
-    store.change(false, |s| {
+    store.change(true, |s| {
         for r in &report.removed {
             s.intents.retain(|i| i.item.path != r.path);
         }
@@ -1491,7 +1678,7 @@ fn sweep_checked(svc: &Services, store: &Store, checks: &Checks) -> Result<(), S
         }
     }
     if changed {
-        crate::bus::emit("worktree-swept", &report);
+        publish_report(store, &report)?;
     }
     crate::bus::emit("worktree-lifespan-changed", &json!({}));
     Ok(())
@@ -1544,8 +1731,9 @@ fn archive_checked(
         .find(|i| i.key == key)
         .cloned()
         .ok_or("This worktree is not in the current inventory; wait for its next scan.")?;
-    let _lifecycle = svc.orchestrations.hold_workspace_lifecycle()?;
+    let _lifecycle = hold_lifecycle(svc)?;
     let _marked = svc.chats.hold_lifespan_checkout(&preview.path)?;
+    drop(_lifecycle);
     let (mut a, c) = current(svc, state, &preview.path)?;
     a.chats.extend(svc.chats.lifespan_chat_keys(&preview.path)?);
     a.chats.sort();
@@ -1568,6 +1756,9 @@ fn archive_checked(
         checks.windows,
         checks.inventory,
     )?;
+    if o.item.status_hash.is_empty() {
+        return Err(o.item.why.clone());
+    }
     if o.item.ignored_files.is_none() {
         return Err("Ignored-file inventory is unavailable; archive and removal are refused. Wait for a complete scan.".into());
     }
@@ -1638,22 +1829,49 @@ fn archive_checked(
     {
         return Err("The checkout changed after archiving; the archive is kept and the folder was not removed.".into());
     }
+    let ignored = (checks.inventory)(&preview.path).map_err(|e| {
+        format!("Ignored-file inventory is unavailable; archive and folder are kept: {e}")
+    })?;
+    if Some(&ignored.hash) != check.ignored_hash.as_ref() {
+        return Err(
+            "Ignored files changed after the archive preview; the archive and folder are kept."
+                .into(),
+        );
+    }
     {
+        let _lifecycle = hold_lifecycle(svc)?;
+        final_allocation(svc, &a)?;
         let cache = state.inner.lock().map_err(|e| e.to_string())?;
         if cache.saved.pins.contains(key) {
             return Err("The checkout was pinned; its folder was kept.".into());
         }
         crate::profile::available()?;
-        let ignored = (checks.inventory)(&preview.path).map_err(|e| {
-            format!("Ignored-file inventory is unavailable; archive removal was refused: {e}")
-        })?;
+        let ignored =
+            ignored::bounded(&preview.path, Duration::from_secs(10), 100_000).map_err(|e| {
+                format!("Ignored-file inventory is unavailable; archive removal was refused: {e}")
+            })?;
         if Some(&ignored.hash) != check.ignored_hash.as_ref() {
             return Err("Ignored files changed after the archive preview; the archive is kept and the folder was not removed.".into());
         }
+        drop(cache);
+        drop(_lifecycle);
+        let fresh_index =
+            crate::profile::profile_dir().join(format!(".verify-archive-{}", uuid::Uuid::new_v4()));
+        git::verify_archive_disk(&preview.path, &archive.reference, &fresh_index)?;
+        let _lifecycle = hold_lifecycle(svc)?;
+        final_allocation(svc, &a)?;
+        let cache = state.inner.lock().map_err(|e| e.to_string())?;
+        if cache.saved.pins.contains(key) {
+            return Err("The checkout was pinned; the archive and folder are kept.".into());
+        }
+        crate::profile::available()?;
         git::remove(&preview.repo, &preview.path, true)?;
     }
-    svc.orchestrations
-        .lifespan_record_swept(&preview.path, now())?;
+    {
+        let _lifecycle = hold_lifecycle(svc)?;
+        svc.orchestrations
+            .lifespan_record_swept(&preview.path, now())?;
+    }
     let report = Sweep {
         at: now(),
         removed: vec![Removed {
@@ -1665,7 +1883,7 @@ fn archive_checked(
         freed_bytes: o.item.bytes.unwrap_or(0),
         ..Default::default()
     };
-    state.change(false, |s| {
+    state.change(true, |s| {
         s.intents.retain(|i| i.item.path != preview.path);
         history(s, report.clone());
         Ok(())
@@ -1676,14 +1894,14 @@ fn archive_checked(
         .map_err(|e| e.to_string())?
         .items
         .retain(|i| i.key != key);
-    crate::bus::emit("worktree-swept", &report);
+    publish_report(state, &report)?;
     Ok(archive)
 }
 pub(crate) fn restore(svc: &Services, key: &str) -> Result<Value, String> {
     restore_from(svc, store(), key)
 }
 fn restore_from(svc: &Services, state: &Store, key: &str) -> Result<Value, String> {
-    let _lifecycle = svc.orchestrations.hold_workspace_lifecycle()?;
+    let _lifecycle = hold_lifecycle(svc)?;
     let saved = state.saved()?;
     let a = saved
         .archives

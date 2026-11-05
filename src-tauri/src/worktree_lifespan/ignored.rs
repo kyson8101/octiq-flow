@@ -32,13 +32,29 @@ fn rebuildable(root: &Path, relative: &Path) -> bool {
         return false;
     }
     let name = relative.file_name().unwrap_or_default().to_string_lossy();
-    if name == ".DS_Store" || name.ends_with(".log") {
+    let link = fs::symlink_metadata(root.join(relative)).map_or(true, |m| redirect(&m));
+    if !link && (name == ".DS_Store" || name.ends_with(".log")) {
         return true;
     }
     let parent = root.join(relative.parent().unwrap_or(Path::new("")));
-    if (name.ends_with(".tsbuildinfo") || name == "pnpm-workspace.yaml")
-        && marker(&parent, "package.json")
-    {
+    if name == "pnpm-workspace.yaml" && !link {
+        let sibling = relative
+            .parent()
+            .unwrap_or(Path::new(""))
+            .join("package.json");
+        let manifest = marker(&parent, "package.json")
+            || (fs::symlink_metadata(root.join(&sibling)).is_err()
+                && sibling.to_str().is_some_and(|p| {
+                    git::git_bounded(
+                        root.to_str().unwrap_or(""),
+                        &["ls-files", "--error-unmatch", "--", p],
+                        Duration::from_millis(50),
+                    )
+                    .is_ok()
+                }));
+        return !link && manifest && pnpm_placeholder(&root.join(relative));
+    }
+    if !link && name.ends_with(".tsbuildinfo") && marker(&parent, "package.json") {
         return true;
     }
     relative
@@ -51,10 +67,56 @@ fn rebuildable(root: &Path, relative: &Path) -> bool {
             }
             match p.file_name().and_then(|n| n.to_str()) {
                 Some("target") => marker(&parent, "Cargo.toml"),
-                Some("node_modules" | "dist" | ".astro") => marker(&parent, "package.json"),
+                Some("node_modules") => marker(&parent, "package.json"),
+                Some("dist" | ".astro") if !link => marker(&parent, "package.json"),
                 _ => false,
             }
         })
+}
+
+// pnpm's generated allowBuilds placeholder, never a hand-written workspace.
+fn pnpm_placeholder(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut bytes = Vec::new();
+    if file.take(4097).read_to_end(&mut bytes).is_err() || bytes.len() > 4096 {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return false;
+    };
+    let mut lines = text.lines().filter(|line| !line.trim().is_empty());
+    if lines.next() != Some("allowBuilds:") {
+        return false;
+    }
+    lines.all(|line| {
+        let Some(line) = line.strip_prefix("  ") else {
+            return false;
+        };
+        let Some((name, value)) = line.rsplit_once(": ") else {
+            return false;
+        };
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"@/._-".contains(&b))
+            && matches!(value, "true" | "false")
+    })
+}
+
+pub(super) fn repository_entry(path: &Path, relative: &Path, m: &fs::Metadata) -> bool {
+    relative
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case(".git"))
+        || (m.is_dir()
+            && !redirect(m)
+            && marker(path, "HEAD")
+            && ["objects", "refs"].iter().all(|n| {
+                fs::symlink_metadata(path.join(n)).is_ok_and(|m| m.is_dir() && !redirect(&m))
+            }))
 }
 
 pub(super) fn inventory(root: &str) -> Result<Inventory, String> {
@@ -67,17 +129,107 @@ pub(super) fn bounded(
     max_entries: usize,
 ) -> Result<Inventory, String> {
     let start = Instant::now();
-    let bytes = git::git(
+    let bytes = git::git_bounded(
         root,
         &[
             "status",
             "--porcelain=v1",
             "-z",
-            "--ignored=traditional",
+            "--ignored=matching",
             "--untracked-files=all",
         ],
+        budget,
     )?;
     from_status(Path::new(root), &bytes, start, budget, max_entries)
+}
+
+fn walk(
+    root: &Path,
+    relative: &Path,
+    entries: &mut BTreeMap<Vec<u8>, (u64, Vec<u8>)>,
+    visited: &mut usize,
+    start: Instant,
+    budget: Duration,
+    max: usize,
+) -> Result<(), String> {
+    *visited += 1;
+    if *visited > max || relative.components().count() > 256 || start.elapsed() >= budget {
+        return Err(
+            "Ignored-file inventory reached its time or entry limit; the folder is kept.".into(),
+        );
+    }
+    let path = root.join(relative);
+    real_dir(path.parent().ok_or("Ignored path has no parent")?)?;
+    let m = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+    let repository = repository_entry(&path, relative, &m);
+    if m.is_dir() && !redirect(&m) && !repository {
+        for entry in fs::read_dir(&path).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            walk(
+                root,
+                &relative.join(entry.file_name()),
+                entries,
+                visited,
+                start,
+                budget,
+                max,
+            )?;
+        }
+    } else if repository || !rebuildable(root, relative) {
+        let name = relative
+            .to_str()
+            .ok_or("Ignored path is not valid UTF-8")?
+            .as_bytes()
+            .to_vec();
+        let mut h = Sha256::new();
+        h.update(m.len().to_le_bytes());
+        h.update([
+            u8::from(m.is_file()),
+            u8::from(m.is_dir()),
+            u8::from(redirect(&m)),
+        ]);
+        let modified = m
+            .modified()
+            .map_err(|e| e.to_string())?
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?;
+        h.update(modified.as_nanos().to_le_bytes());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            h.update(m.ctime().to_le_bytes());
+            h.update(m.ctime_nsec().to_le_bytes());
+        }
+        if m.file_type().is_symlink() {
+            h.update(
+                fs::read_link(&path)
+                    .map_err(|e| e.to_string())?
+                    .to_string_lossy()
+                    .as_bytes(),
+            );
+        }
+        entries.insert(name, (m.len(), h.finalize().to_vec()));
+    }
+    Ok(())
+}
+
+/// Strip and whole-folder removal share exactly the same at-stake predicate.
+/// No Git ignore traversal can hide a nested repository or source override.
+pub(super) fn subtree(
+    root: &str,
+    relative: &Path,
+    budget: Duration,
+    max: usize,
+) -> Result<Inventory, String> {
+    let name = relative.to_str().ok_or("Build path is not UTF-8")?;
+    let status = format!("!! {name}\0");
+    from_status(
+        Path::new(root),
+        status.as_bytes(),
+        Instant::now(),
+        budget,
+        max,
+    )
 }
 
 fn from_status(
@@ -89,75 +241,6 @@ fn from_status(
 ) -> Result<Inventory, String> {
     let mut entries = BTreeMap::new();
     let mut visited = 0usize;
-    fn walk(
-        root: &Path,
-        relative: &Path,
-        entries: &mut BTreeMap<Vec<u8>, (u64, Vec<u8>)>,
-        visited: &mut usize,
-        start: Instant,
-        budget: Duration,
-        max: usize,
-    ) -> Result<(), String> {
-        *visited += 1;
-        if *visited > max || relative.components().count() > 256 || start.elapsed() >= budget {
-            return Err(
-                "Ignored-file inventory reached its time or entry limit; the folder is kept."
-                    .into(),
-            );
-        }
-        let path = root.join(relative);
-        real_dir(path.parent().ok_or("Ignored path has no parent")?)?;
-        let m = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-        if m.is_dir() && !redirect(&m) {
-            for entry in fs::read_dir(&path).map_err(|e| e.to_string())? {
-                let entry = entry.map_err(|e| e.to_string())?;
-                walk(
-                    root,
-                    &relative.join(entry.file_name()),
-                    entries,
-                    visited,
-                    start,
-                    budget,
-                    max,
-                )?;
-            }
-        } else if redirect(&m) || !rebuildable(root, relative) {
-            let name = relative
-                .to_str()
-                .ok_or("Ignored path is not valid UTF-8")?
-                .as_bytes()
-                .to_vec();
-            let mut h = Sha256::new();
-            h.update(m.len().to_le_bytes());
-            h.update([
-                u8::from(m.is_file()),
-                u8::from(m.is_dir()),
-                u8::from(redirect(&m)),
-            ]);
-            let modified = m
-                .modified()
-                .map_err(|e| e.to_string())?
-                .duration_since(UNIX_EPOCH)
-                .map_err(|e| e.to_string())?;
-            h.update(modified.as_nanos().to_le_bytes());
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                h.update(m.ctime().to_le_bytes());
-                h.update(m.ctime_nsec().to_le_bytes());
-            }
-            if m.file_type().is_symlink() {
-                h.update(
-                    fs::read_link(&path)
-                        .map_err(|e| e.to_string())?
-                        .to_string_lossy()
-                        .as_bytes(),
-                );
-            }
-            entries.insert(name, (m.len(), h.finalize().to_vec()));
-        }
-        Ok(())
-    }
     let mut rows = status.split(|b| *b == 0).filter(|r| !r.is_empty());
     while let Some(row) = rows.next() {
         if row.starts_with(b"!! ") {
