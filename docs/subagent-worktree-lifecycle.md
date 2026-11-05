@@ -342,7 +342,8 @@ A temporary `GIT_INDEX_FILE` is loaded from HEAD, then `add -A`, `write-tree`,
 the tracked/untracked tree. The real index and branch do not move, and no hooks
 run. **Ignored files are not archived.** After verifying the ref's tree and
 saving its record, the host may force-remove that dirty worktree. A failed
-archive removes nothing. Restore makes a new branch `octiq/restored-<slug>` and
+archive removes nothing. Submodules and embedded Git repositories are refused
+because a gitlink does not preserve their working files or objects. Restore makes a new branch `octiq/restored-<slug>` and
 worktree under `.worktrees/<repo>/octiq/` at the archive commit, without replacing
 an existing folder. The archive ref remains available.
 

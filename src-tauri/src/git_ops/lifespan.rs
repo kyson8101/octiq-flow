@@ -118,6 +118,16 @@ pub(crate) fn archive(
         run(&["read-tree", head])?;
         run(&["add", "-A", "--", "."])?;
         let tree = run(&["write-tree"])?;
+        // A gitlink keeps a commit id, not the submodule/embedded repo's
+        // working files or objects. Force-removing it would lose data that
+        // this archive did not keep, so no archive/removal is offered.
+        let entries = git(path, &["ls-tree", "-r", "-z", &tree])?;
+        if entries
+            .split(|b| *b == 0)
+            .any(|entry| entry.starts_with(b"160000 "))
+        {
+            return Err("Submodules or embedded repositories need separate preservation; the folder was kept.".into());
+        }
         let commit = run(&[
             "commit-tree",
             &tree,

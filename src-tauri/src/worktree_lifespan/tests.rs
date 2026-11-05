@@ -881,3 +881,41 @@ fn agent_history_and_profile_ancestors_are_out_of_scope() {
         Some(home)
     ));
 }
+
+#[test]
+fn archive_refuses_embedded_gitlinks_instead_of_losing_their_working_files() {
+    let r = Repo::new();
+    let nested = Path::new(&r.work).join("embedded");
+    crate::profile::make_dir(&nested).unwrap();
+    let nested = nested.to_string_lossy().into_owned();
+    git::text(&nested, &["init", "-b", "main"]).unwrap();
+    git::text(&nested, &["config", "user.name", "Test"]).unwrap();
+    git::text(&nested, &["config", "user.email", "test@example.invalid"]).unwrap();
+    fs::write(Path::new(&nested).join("file"), "original").unwrap();
+    git::text(&nested, &["add", "."]).unwrap();
+    git::text(&nested, &["commit", "-m", "nested"]).unwrap();
+    fs::write(Path::new(&nested).join("file"), "uncommitted valuable work").unwrap();
+    let head = git::text(&r.work, &["rev-parse", "HEAD"]).unwrap();
+    let index = git::git(&r.work, &["ls-files", "--stage", "-z"]).unwrap();
+    let error = git::archive(
+        &r.work,
+        &head,
+        "refs/octiq/archive/unsafe-gitlink",
+        &r._home.join("index"),
+    )
+    .unwrap_err();
+    assert!(error.contains("embedded repositories"));
+    assert_eq!(
+        fs::read_to_string(Path::new(&nested).join("file")).unwrap(),
+        "uncommitted valuable work"
+    );
+    assert_eq!(
+        git::git(&r.work, &["ls-files", "--stage", "-z"]).unwrap(),
+        index
+    );
+    assert!(git::text(
+        &r.root,
+        &["rev-parse", "--verify", "refs/octiq/archive/unsafe-gitlink"]
+    )
+    .is_err());
+}
