@@ -18,6 +18,22 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+mod ignored;
+
+/// Validation cleanup also uses Git's non-force removal, which still deletes
+/// ignored files. Keep unknown/original data until an explicit archive flow.
+pub(crate) fn require_no_at_stake_ignored(path: &str) -> Result<(), String> {
+    real_dir(Path::new(path))?;
+    let inventory = ignored::inventory(path)
+        .map_err(|e| format!("Ignored-file inventory is unavailable; the folder is kept: {e}"))?;
+    if inventory.files > 0 {
+        return Err(format!(
+            "{} at-stake ignored files are not preserved by Git; the folder is kept.",
+            inventory.files
+        ));
+    }
+    Ok(())
+}
 
 const DAY: i64 = 86_400_000;
 pub(crate) const OWED: &str = "worktree lifespan settings and pins";
@@ -96,6 +112,8 @@ struct Item {
     build_bytes: Option<u64>,
     dirty_files: usize,
     untracked_files: usize,
+    ignored_files: Option<u64>,
+    ignored_bytes: Option<u64>,
     unmerged_commits: Option<u64>,
     pushed: Option<bool>,
     strip_at: Option<i64>,
@@ -599,12 +617,17 @@ fn building() -> bool {
 fn key(repo: &str, path: &str) -> String {
     format!("{repo}:{path}")
 }
-fn status_hash(path: &str, status: &[u8]) -> Result<String, String> {
+fn status_hash(
+    path: &str,
+    status: &[u8],
+    ignored: Option<&ignored::Inventory>,
+) -> Result<String, String> {
     // Include index/worktree content and untracked content, so editing a dirty
     // file without changing its porcelain row invalidates the person's preview.
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(status);
+    h.update(ignored.map_or("ignored inventory unavailable", |i| i.hash.as_str()));
     h.update(git::git(
         path,
         &[
@@ -841,6 +864,7 @@ struct Observation {
     item: Item,
     tree: Tree,
     removable: bool,
+    ignored_hash: Option<String>,
 }
 fn observe(
     a: &Allocation,
@@ -851,10 +875,12 @@ fn observe(
     chats: &crate::agent_chat::ChatManager,
     at: i64,
     windows: bool,
+    inventory: fn(&str) -> Result<ignored::Inventory, String>,
 ) -> Result<Observation, String> {
     require_unprotected(Path::new(&checkout.path))?;
     real_dir(Path::new(&checkout.path))?;
     let root = &checkout.path;
+    let ignored = inventory(root);
     let head = git::text(root, &["rev-parse", "HEAD"])?;
     let status = git::git(
         root,
@@ -976,7 +1002,7 @@ fn observe(
         git::git(root, &["rev-parse", "--verify", &remote]).ok()?;
         Some(git::git(root, &["merge-base", "--is-ancestor", &head, &remote]).is_ok())
     });
-    let (state, mut why) = decide(
+    let (mut state, mut why) = decide(
         Decision {
             active: active.as_deref(),
             idle_ms,
@@ -993,6 +1019,21 @@ fn observe(
         },
         settings,
     );
+    // Git's clean status (and non-force remove) permits deleting ignored
+    // files. Unknown inventories must hold removal just like known originals.
+    if active.is_none() {
+        match &ignored {
+            Ok(i) if i.files > 0 => {
+                state = "abandoned";
+                why = format!("{} at-stake ignored files need the person's decision; archive-and-remove deletes them without archiving them.", i.files);
+            }
+            Err(e) => {
+                state = "abandoned";
+                why = format!("Ignored-file inventory is unavailable: {e} No folder removal or archive is allowed.");
+            }
+            _ => {}
+        }
+    }
     let key = key(&a.repo, root);
     let pinned = pins.contains(&key);
     let removable = state == "finished"
@@ -1012,7 +1053,7 @@ fn observe(
         repo: a.repo.clone(),
         branch: checkout.branch.clone(),
         head,
-        status_hash: status_hash(root, &status)?,
+        status_hash: status_hash(root, &status, ignored.as_ref().ok())?,
         owner: a.owner.clone(),
         state: state.into(),
         pinned,
@@ -1021,6 +1062,8 @@ fn observe(
         build_bytes: Some(tree.build_bytes),
         dirty_files,
         untracked_files,
+        ignored_files: ignored.as_ref().ok().map(|i| i.files),
+        ignored_bytes: ignored.as_ref().ok().map(|i| i.bytes),
         unmerged_commits,
         pushed,
         strip_at: qualified.then_some(last + i64::from(settings.build_after_days) * DAY),
@@ -1032,6 +1075,7 @@ fn observe(
         item,
         tree,
         removable,
+        ignored_hash: ignored.ok().map(|i| i.hash),
     })
 }
 fn current(svc: &Services, state: &Store, path: &str) -> Result<(Allocation, Checkout), String> {
@@ -1175,6 +1219,7 @@ struct Checks {
     windows: bool,
     usage: fn() -> Usage,
     building: fn() -> bool,
+    inventory: fn(&str) -> Result<ignored::Inventory, String>,
 }
 fn runtime_usage() -> Usage {
     Usage::capture(cfg!(windows))
@@ -1184,6 +1229,7 @@ fn runtime_checks() -> Checks {
         windows: cfg!(windows),
         usage: runtime_usage,
         building,
+        inventory: ignored::inventory,
     }
 }
 fn operate(
@@ -1216,6 +1262,7 @@ fn operate(
         &svc.chats,
         at,
         checks.windows,
+        checks.inventory,
     )?;
     if observed.item.state == "active"
         || observed.item.pinned
@@ -1274,6 +1321,7 @@ fn operate(
             &svc.chats,
             now(),
             checks.windows,
+            checks.inventory,
         )?;
         if !check.removable
             || check.item.head != observed.item.head
@@ -1288,6 +1336,15 @@ fn operate(
                 return Ok(None);
             }
             crate::profile::available()?;
+            let ignored = (checks.inventory)(&preview.path).map_err(|e| {
+                format!("Ignored-file inventory is unavailable; the folder was kept: {e}")
+            })?;
+            if ignored.files > 0 {
+                return Err(format!(
+                    "{} at-stake ignored files arrived before removal; the folder was kept.",
+                    ignored.files
+                ));
+            }
             git::remove(&preview.repo, &preview.path, false)?;
         }
         svc.orchestrations
@@ -1350,6 +1407,7 @@ fn sweep_checked(svc: &Services, store: &Store, checks: &Checks) -> Result<(), S
                 &svc.chats,
                 at,
                 checks.windows,
+                checks.inventory,
             ) {
                 Ok(o) => items.push(o.item),
                 Err(e) => {
@@ -1508,7 +1566,11 @@ fn archive_checked(
         &svc.chats,
         now(),
         checks.windows,
+        checks.inventory,
     )?;
+    if o.item.ignored_files.is_none() {
+        return Err("Ignored-file inventory is unavailable; archive and removal are refused. Wait for a complete scan.".into());
+    }
     if o.item.head != expected_head {
         return Err(
             "HEAD changed since the preview. Review the worktree again before archiving.".into(),
@@ -1564,8 +1626,10 @@ fn archive_checked(
         &svc.chats,
         now(),
         checks.windows,
+        checks.inventory,
     )?;
-    if check.item.head != expected_head
+    if check.item.ignored_files.is_none()
+        || check.item.head != expected_head
         || check.item.status_hash != expected_status_hash
         || check.item.state != "abandoned"
         || check.item.pinned
@@ -1580,6 +1644,12 @@ fn archive_checked(
             return Err("The checkout was pinned; its folder was kept.".into());
         }
         crate::profile::available()?;
+        let ignored = (checks.inventory)(&preview.path).map_err(|e| {
+            format!("Ignored-file inventory is unavailable; archive removal was refused: {e}")
+        })?;
+        if Some(&ignored.hash) != check.ignored_hash.as_ref() {
+            return Err("Ignored files changed after the archive preview; the archive is kept and the folder was not removed.".into());
+        }
         git::remove(&preview.repo, &preview.path, true)?;
     }
     svc.orchestrations

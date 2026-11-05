@@ -752,6 +752,7 @@ pub fn remove_validation(plan: &WorkspacePlan, path: &str) -> Result<(), String>
             "Validation checkout now has a branch. Preserve it manually before removal.".into(),
         );
     }
+    crate::worktree_lifespan::require_no_at_stake_ignored(path)?;
     run_git_mut(&plan.repository_root, &["worktree", "remove", path], false)?;
     Ok(())
 }
@@ -1066,6 +1067,45 @@ pub(crate) mod tests {
             .unwrap()
             .is_empty());
         remove_validation(&p, &target.to_string_lossy()).unwrap();
+    }
+
+    #[test]
+    fn validation_removal_preserves_ignored_originals_but_allows_rebuildable_output() {
+        let repo = Repo::new();
+        repo.commit(
+            &repo.root,
+            ".gitignore",
+            "works/\ndist/\n*.tsbuildinfo\npnpm-workspace.yaml\n",
+        );
+        repo.commit(&repo.root, "package.json", "{}");
+        let p = plan(
+            &repo.root,
+            "main",
+            "task_ignoredvalidation",
+            WorkspaceMode::Worktree,
+        )
+        .unwrap();
+        provision(&p).unwrap();
+        let target = repo.dir.join("validation-ignored");
+        validation_worktree(&p, &p.base_sha, &[], &target).unwrap();
+        crate::profile::make_dir(&target.join("works/dist")).unwrap();
+        let render = target.join("works/dist/final.mp4");
+        std::fs::write(&render, "only copy").unwrap();
+        let error = remove_validation(&p, &target.to_string_lossy()).unwrap_err();
+        assert!(error.contains("1 at-stake ignored files"), "{error}");
+        assert_eq!(std::fs::read_to_string(&render).unwrap(), "only copy");
+        // Preserve the original outside this disposable validation fixture.
+        std::fs::rename(&render, repo.dir.join("preserved-final.mp4")).unwrap();
+        crate::profile::make_dir(&target.join("dist")).unwrap();
+        std::fs::write(target.join("dist/index.html"), "generated").unwrap();
+        std::fs::write(target.join("tsconfig.tsbuildinfo"), "generated").unwrap();
+        std::fs::write(target.join("pnpm-workspace.yaml"), "generated").unwrap();
+        remove_validation(&p, &target.to_string_lossy()).unwrap();
+        assert!(!target.exists());
+        assert_eq!(
+            std::fs::read_to_string(repo.dir.join("preserved-final.mp4")).unwrap(),
+            "only copy"
+        );
     }
 
     /// Feedback 1becac39 / 9b1e8978: the lead fast-forwards the base and

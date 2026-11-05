@@ -255,6 +255,9 @@ only a recorded path for that task and removes it without force; dirty results
 or conflicts must be resolved/preserved first. The UI also lists these paths.
 An active worker can manage only its own validation checkouts; the coordinator
 can manage them after the worker settles.
+Validation removal also requires a complete ignored-file inventory with no
+at-stake files (the same allow-list as the host lifespan below). Non-force Git
+removal alone does not protect ignored files.
 
 ## API surface
 
@@ -295,7 +298,10 @@ Before the removal threshold it is Idle. After it, a clean checkout with no Git
 operation and a named, kept branch is Finished; no merge or push is required
 when the local branch still holds its commits. Dirty/untracked files, an
 unfinished Git operation, or detached commits with no retaining ref make it
-Abandoned. Abandoned is never removed automatically. A recorded detached
+Abandoned. At-stake ignored files also make an inactive item Abandoned, with
+their count in its reason; an unavailable inventory makes it Abandoned with
+the failure reason. Neither can be Finished or removed automatically, even
+when ordinary Git status is clean. Abandoned is never removed automatically. A recorded detached
 validation checkout may qualify once its run has ended and refs retain HEAD.
 
 Ownership comes from managed task/mission plans, chat index cwd plus an
@@ -314,6 +320,24 @@ worktree can be removed: missing, failed, timed-out or empty `lsof`, and all
 Windows hosts today, keep the folder. Windows reparse points inside a checkout
 also withhold Git removal because Git may traverse a junction.
 
+**A clean status says nothing about ignored files:** even non-force
+`git worktree remove` deletes them. Starfall intentionally ignores original
+media and renders under `works/` and `anime/`, where they may be the only copy.
+Each worktree, including validation checkouts, gets a `git status --ignored`
+inventory bounded to 15 seconds, 32 MiB of Git output and 100,000 inspected
+entries. Metadata is read without following symlinks/junctions; redirected
+entries are conservatively at stake. Only these ignored files are rebuildable:
+
+- Files in `target` beside a regular `Cargo.toml`.
+- Files in `node_modules`, `dist` or `.astro` beside a regular `package.json`.
+- `*.tsbuildinfo` and `pnpm-workspace.yaml` beside a regular `package.json`.
+- `.DS_Store` and `*.log`.
+
+Any file under a `source/`, `works/` or `anime/` tree is at stake, overriding
+every rule above, even `works/.../dist` or a `.log` there. Everything else is
+at stake too. These classifications do not broaden build stripping, which
+still only touches its own `target`/`node_modules` allow-list.
+
 The host takes the workspace lifecycle lock, marks the path under the chat
 session table, obtains associated start claims, then rechecks idleness. A start
 that was already admitted prevents cleanup; one arriving afterwards sees the
@@ -322,6 +346,10 @@ Git reads have 15-second bounds and do not fetch. Chat delivery verification
 records `Delivery.head` before removal; ledger delivery evidence is refreshed,
 then an intent is synced to the lifespan record before Git removes the folder
 without `--force`. Both local and remote branches remain.
+Immediately before removal, under the same lifecycle/path/start marks, a fresh
+ignored inventory must still be complete and empty of at-stake files. A file
+arriving after the scan prevents removal. Explicit validation removal uses the
+same inventory protection; task/mission rebuild behavior is unchanged.
 
 A successful removal sets optional `sweptAt` on task workspaces and mission
 deliveries, preserving their old state and `removed` flag for older binaries.
@@ -337,10 +365,17 @@ mission task recreates its shared worktree. Ordinary chats keep the existing
 
 **Archive then remove** requires an Abandoned host-owned item and the exact
 preview HEAD and status hash. Changed files or HEAD refuse the stale preview.
+The hash also covers at-stake ignored paths, types, sizes, precise mtimes and
+available change metadata (plus symlink targets), without reading large media.
+Changes to that inventory invalidate the preview too. An incomplete/failed or
+timed-out ignored inventory refuses archive in words.
 A temporary `GIT_INDEX_FILE` is loaded from HEAD, then `add -A`, `write-tree`,
 `commit-tree` (HEAD as parent) and `update-ref refs/octiq/archive/<slug>` preserve
 the tracked/untracked tree. The real index and branch do not move, and no hooks
-run. **Ignored files are not archived.** After verifying the ref's tree and
+run. **Ignored files are not archived.** The person's confirmation must show
+the at-stake ignored-file count and state that archive-and-remove **deletes
+those files without putting them in the archive ref**; restoring the archive
+cannot recover them. After verifying the ref's tree and
 saving its record, the host may force-remove that dirty worktree. A failed
 archive removes nothing. Submodules and embedded Git repositories are refused
 because a gitlink does not preserve their working files or objects. Restore makes a new branch `octiq/restored-<slug>` and
@@ -352,6 +387,9 @@ Socket-only commands (no hook route or MCP tool):
 - `worktree_lifespan_list {}` returns settings, `lastSweepAt`, `scanning`, cached
   items, archives and the last 50 sweeps. Sizes are logical bytes, nullable when
   unknown, and cached between sweeps. States are never persisted.
+  Each Item includes `ignoredFiles: number|null` and `ignoredBytes: number|null`,
+  counting **only at-stake ignored files**. Both are null if the inventory
+  failed, timed out, reached its entry/output limit or could not finish.
 - `worktree_lifespan_set { enabled?, buildAfterDays?, removeAfterDays? }` requires
   days at least 1 and build cleanup no later than folder removal. Enabling needs
   a saved record; disabling acts at once and owes a failed write.

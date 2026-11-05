@@ -20,7 +20,7 @@ impl Repo {
         fs::write(Path::new(&root).join("tracked"), "original\n").unwrap();
         fs::write(
             Path::new(&root).join(".gitignore"),
-            "target/\nnode_modules/\nsource/\ndist/\nout/\nrenders/\n",
+            "target/\nnode_modules/\nsource/\nworks/\nanime/\ndist/\n.astro/\n*.tsbuildinfo\npnpm-workspace.yaml\n.DS_Store\n*.log\nout/\nrenders/\n",
         )
         .unwrap();
         git::text(&root, &["add", "."]).unwrap();
@@ -76,6 +76,7 @@ impl Repo {
             &crate::agent_chat::ChatManager::default(),
             at,
             false,
+            ignored::inventory,
         )
         .unwrap()
     }
@@ -225,6 +226,7 @@ fn real_git_clean_dirty_untracked_operation_detached_and_kept_branch() {
         &crate::agent_chat::ChatManager::default(),
         old(),
         false,
+        ignored::inventory,
     )
     .unwrap();
     assert!(o.removable);
@@ -239,6 +241,7 @@ fn real_git_clean_dirty_untracked_operation_detached_and_kept_branch() {
         &crate::agent_chat::ChatManager::default(),
         old(),
         false,
+        ignored::inventory,
     )
     .unwrap();
     assert_eq!(o.item.state, "abandoned");
@@ -258,6 +261,7 @@ fn process_unknown_windows_pins_and_owner_refuse_removal() {
         &manager,
         old(),
         false,
+        ignored::inventory,
     )
     .unwrap();
     assert!(o.item.pinned);
@@ -272,6 +276,7 @@ fn process_unknown_windows_pins_and_owner_refuse_removal() {
             &manager,
             old(),
             windows,
+            ignored::inventory,
         )
         .unwrap();
         assert!(!o.removable);
@@ -294,6 +299,7 @@ fn process_unknown_windows_pins_and_owner_refuse_removal() {
         &manager,
         old(),
         false,
+        ignored::inventory,
     )
     .unwrap();
     assert!(!o.removable);
@@ -345,12 +351,22 @@ fn redirects_never_traverse_and_ancestors_are_checked() {
     let external = TestDir::new("lifespan-external");
     fs::write(external.join("valuable"), "stay").unwrap();
     r.write("Cargo.toml", "[package]");
+    // A trailing-slash ignore rule matches directories, not symlinks.
+    r.write(".gitignore", "target\n");
     std::os::unix::fs::symlink(&*external, Path::new(&r.work).join("target")).unwrap();
     assert!(real_dir(&Path::new(&r.work).join("target/child")).is_err());
     let mut tree = Tree::default();
     walk(&r.work, Path::new(&r.work), false, &mut tree).unwrap();
     assert!(tree.reparse);
     assert!(tree.builds.is_empty());
+    let ignored = ignored::inventory(&r.work).unwrap();
+    assert_eq!(ignored.files, 1, "the link is counted, never its target");
+    assert_eq!(
+        ignored.bytes,
+        fs::symlink_metadata(Path::new(&r.work).join("target"))
+            .unwrap()
+            .len()
+    );
     assert_eq!(
         fs::read_to_string(external.join("valuable")).unwrap(),
         "stay"
@@ -595,6 +611,7 @@ fn checks() -> Checks {
         windows: false,
         usage: known,
         building: || false,
+        inventory: ignored::inventory,
     }
 }
 #[test]
@@ -635,6 +652,10 @@ fn actual_sweep_strips_only_builds_then_removes_and_chat_recovers_same_path() {
     meta.updated_at = now() - 15 * DAY;
     crate::chat_index::upsert(meta).unwrap();
     let head = git::text(&r.work, &["rev-parse", "HEAD"]).unwrap();
+    // The first pass must not authorize dropping ignored originals later.
+    fs::remove_dir_all(Path::new(&r.work).join("source")).unwrap();
+    fs::remove_dir_all(Path::new(&r.work).join("dist")).unwrap();
+    r.age(15);
     sweep_checked(&svc, &store, &checks()).unwrap();
     let report = &store.saved().unwrap().history[0];
     assert_eq!(
@@ -691,6 +712,7 @@ fn actual_sweep_pins_busy_compiler_disabled_and_abandoned_all_keep_folder() {
         windows: false,
         usage: known,
         building: || true,
+        inventory: ignored::inventory,
     };
     sweep_checked(&svc, &store, &busy).unwrap();
     assert!(Path::new(&r.work).exists());
@@ -918,4 +940,275 @@ fn archive_refuses_embedded_gitlinks_instead_of_losing_their_working_files() {
         &["rev-parse", "--verify", "refs/octiq/archive/unsafe-gitlink"]
     )
     .is_err());
+}
+
+#[test]
+fn ignored_originals_override_every_rebuildable_name_and_survive_sweep() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.write("works/ep1/final.mp4", "only copy");
+    r.write("works/ep1/package.json", "{}");
+    r.write("works/ep1/dist/final.log", "render");
+    r.write("anime/source/.DS_Store", "original");
+    r.write("source/target/cache", "original cache name");
+    assert!(
+        git::git(&r.work, &["status", "--porcelain", "--untracked-files=all"])
+            .unwrap()
+            .is_empty()
+    );
+    r.age(15);
+    let svc = r.services(15);
+    let store = Store::default();
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    let items = &store.inner.lock().unwrap().items;
+    let item = items.iter().find(|i| i.path == r.work).unwrap();
+    assert_eq!(item.state, "abandoned");
+    assert_eq!(item.ignored_files, Some(5));
+    assert_eq!(item.ignored_bytes, Some(9 + 2 + 6 + 8 + 19));
+    assert!(item.why.contains("5 at-stake ignored files"));
+    assert!(item.remove_at.is_none());
+    assert_eq!(
+        fs::read_to_string(Path::new(&r.work).join("works/ep1/final.mp4")).unwrap(),
+        "only copy"
+    );
+}
+
+#[test]
+fn allowlisted_ignored_outputs_stay_finished_and_are_removed() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.write("Cargo.toml", "[package]");
+    r.write("web/package.json", "{}");
+    git::text(&r.work, &["add", "Cargo.toml", "web/package.json"]).unwrap();
+    git::text(&r.work, &["commit", "-m", "manifests"]).unwrap();
+    for path in [
+        "target/cache",
+        "web/node_modules/cache",
+        "web/dist/index.html",
+        "web/.astro/cache",
+        "web/tsconfig.tsbuildinfo",
+        "web/pnpm-workspace.yaml",
+        ".DS_Store",
+        "build.log",
+    ] {
+        r.write(path, "rebuildable");
+    }
+    r.age(15);
+    let o = r.observe(now(), &known());
+    assert_eq!(o.item.state, "finished");
+    assert_eq!(
+        (o.item.ignored_files, o.item.ignored_bytes),
+        (Some(0), Some(0))
+    );
+    assert!(o.removable);
+    let svc = r.services(15);
+    let store = Store::default();
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(gone(&r.work));
+}
+
+#[test]
+fn generated_names_need_sibling_manifests_and_inventory_has_real_bounds() {
+    let r = Repo::new();
+    for path in [
+        "target/cache",
+        "node_modules/cache",
+        "dist/output",
+        ".astro/cache",
+        "tsconfig.tsbuildinfo",
+        "pnpm-workspace.yaml",
+    ] {
+        r.write(path, "precious");
+    }
+    assert_eq!(ignored::inventory(&r.work).unwrap().files, 6);
+    assert!(ignored::bounded(&r.work, Duration::ZERO, 100).is_err());
+    assert!(ignored::bounded(&r.work, Duration::from_secs(15), 1).is_err());
+}
+
+#[test]
+fn failed_ignored_inventory_keeps_folder_and_refuses_archive_in_words() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.write("source/original", "precious");
+    r.age(15);
+    let svc = r.services(15);
+    let state = Store::default();
+    let failed = Checks {
+        inventory: |root| ignored::bounded(root, Duration::ZERO, 0),
+        ..checks()
+    };
+    sweep_checked(&svc, &state, &failed).unwrap();
+    let preview = state
+        .inner
+        .lock()
+        .unwrap()
+        .items
+        .iter()
+        .find(|i| i.path == r.work)
+        .unwrap()
+        .clone();
+    assert_eq!(preview.state, "abandoned");
+    assert_eq!((preview.ignored_files, preview.ignored_bytes), (None, None));
+    assert!(preview.why.contains("inventory is unavailable"));
+    let error = archive_checked(
+        &svc,
+        &state,
+        &failed,
+        &preview.key,
+        &preview.head,
+        &preview.status_hash,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("Ignored-file inventory is unavailable"),
+        "{error}"
+    );
+    assert!(Path::new(&r.work).join("source/original").exists());
+}
+
+#[test]
+fn ignored_file_arriving_after_scan_stops_the_final_removal_check() {
+    use std::cell::Cell;
+    thread_local! {
+        static CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+    fn inventory(root: &str) -> Result<ignored::Inventory, String> {
+        let observed = ignored::inventory(root)?;
+        CALLS.with(|n| {
+            n.set(n.get() + 1);
+            if n.get() == 2 {
+                let folder = Path::new(root).join("works/ep1");
+                crate::profile::make_dir(&folder).unwrap();
+                let file = folder.join("late.mp4");
+                fs::write(&file, "arrived after scan").unwrap();
+                // Keep mtimes old to prove the ignored inventory itself
+                // blocks removal, independently of ordinary activity.
+                let time = UNIX_EPOCH + Duration::from_millis((now() - 30 * DAY) as u64);
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(file)
+                    .unwrap()
+                    .set_times(fs::FileTimes::new().set_modified(time))
+                    .unwrap();
+                for dir in [folder, Path::new(root).join("works"), PathBuf::from(root)] {
+                    directory_handle(&dir)
+                        .unwrap()
+                        .set_times(fs::FileTimes::new().set_modified(time))
+                        .unwrap();
+                }
+            }
+        });
+        Ok(observed)
+    }
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.age(15);
+    let svc = r.services(15);
+    let state = Store::default();
+    let preview = r.observe(now(), &known()).item;
+    state.inner.lock().unwrap().items = vec![preview.clone()];
+    CALLS.with(|n| n.set(0));
+    let error = operate(
+        &svc,
+        &state,
+        &preview,
+        now(),
+        false,
+        &Checks {
+            inventory,
+            ..checks()
+        },
+    )
+    .err()
+    .expect("late ignored file must stop removal");
+    assert!(
+        error.contains("at-stake ignored files arrived before removal"),
+        "{error}"
+    );
+    let o = r.observe(now(), &known());
+    assert_eq!(o.item.state, "abandoned");
+    assert_eq!(o.item.ignored_files, Some(1));
+    assert!(Path::new(&r.work).join("works/ep1/late.mp4").exists());
+}
+
+#[test]
+fn ignored_change_invalidates_archive_preview_and_confirmed_archive_excludes_it() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.write("works/final.mp4", "original");
+    r.age(15);
+    let svc = r.services(15);
+    let state = Store::default();
+    let preview = r.observe(now(), &known()).item;
+    state.inner.lock().unwrap().items = vec![preview.clone()];
+    r.write("works/final.mp4", "changed!");
+    let error = archive_checked(
+        &svc,
+        &state,
+        &checks(),
+        &preview.key,
+        &preview.head,
+        &preview.status_hash,
+    )
+    .unwrap_err();
+    assert!(error.contains("staging changed"));
+    assert!(Path::new(&r.work).join("works/final.mp4").exists());
+    r.age(15);
+    let fresh = r.observe(now(), &known()).item;
+    assert_ne!(preview.status_hash, fresh.status_hash);
+    assert_eq!(fresh.ignored_files, Some(1));
+    state.inner.lock().unwrap().items = vec![fresh.clone()];
+    let archive = archive_checked(
+        &svc,
+        &state,
+        &checks(),
+        &fresh.key,
+        &fresh.head,
+        &fresh.status_hash,
+    )
+    .unwrap();
+    assert!(gone(&r.work));
+    assert!(git::git(
+        &r.root,
+        &[
+            "cat-file",
+            "-e",
+            &format!("{}:works/final.mp4", archive.reference)
+        ]
+    )
+    .is_err());
+}
+
+#[test]
+fn detached_validation_obeys_ignored_original_guard() {
+    let r = Repo::new();
+    git::text(&r.work, &["checkout", "--detach"]).unwrap();
+    r.write("works/dist/package.json", "{}");
+    r.write("works/dist/final.mp4", "original");
+    let mut a = r.allocation();
+    a.owner.kind = "validation".into();
+    a.branch = None;
+    let o = observe(
+        &a,
+        &r.checkout(),
+        &Settings::default(),
+        &BTreeSet::new(),
+        &known(),
+        &crate::agent_chat::ChatManager::default(),
+        old(),
+        false,
+        ignored::inventory,
+    )
+    .unwrap();
+    assert_eq!(o.item.state, "abandoned");
+    assert!(!o.removable);
+    assert!(require_no_at_stake_ignored(&r.work)
+        .unwrap_err()
+        .contains("2 at-stake ignored files"));
+    assert!(Path::new(&r.work).join("works/dist/final.mp4").exists());
 }
