@@ -351,6 +351,8 @@ fn redirects_never_traverse_and_ancestors_are_checked() {
     let external = TestDir::new("lifespan-external");
     fs::write(external.join("valuable"), "stay").unwrap();
     r.write("Cargo.toml", "[package]");
+    // A trailing-slash ignore rule matches directories, not symlinks.
+    r.write(".gitignore", "target\n");
     std::os::unix::fs::symlink(&*external, Path::new(&r.work).join("target")).unwrap();
     assert!(real_dir(&Path::new(&r.work).join("target/child")).is_err());
     let mut tree = Tree::default();
