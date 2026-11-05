@@ -425,7 +425,9 @@ fn protected(root: &Path, profile: &Path, home: Option<&Path>) -> bool {
 }
 fn require_unprotected(root: &Path) -> Result<(), String> {
     let profile = crate::profile::profile_dir();
-    let home = crate::paths::home_dir();
+    let profile = crate::paths::canonical_target(&profile).unwrap_or(profile);
+    let home =
+        crate::paths::home_dir().map(|home| crate::paths::canonical_target(&home).unwrap_or(home));
     if protected(root, &profile, home.as_deref()) {
         return Err(
             "This path contains host state or agent history; worktree lifespan never changes it."

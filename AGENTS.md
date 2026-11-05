@@ -3348,7 +3348,9 @@ intents and the last 50 sweeps are saved through the pinned profile.
 A start and a removal never both go through: take the workspace lifecycle lock,
 mark the checkout under the chat session table, claim every associated chat's
 start, then check activity. `start_session` checks the path mark under that same
-table, including a new chat id and extra directories. Never hold the ledger
+table, including a new chat id and extra directories. Enqueue checks the same
+mark under the queue lock before acknowledgement, so a new queued turn cannot
+cross the cleanup check. Never hold the ledger
 across Git, a chat lock or roster reads. Never stop a chat to make it removable.
 Disabling and pinning narrow cleanup permission: act in memory on a failed save,
 say `unsaved`, and join `dispatch::settle_owed`. Enabling and unpinning need their

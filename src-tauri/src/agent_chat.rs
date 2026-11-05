@@ -2374,7 +2374,15 @@ impl ChatManager {
     }
 
     fn queue_turn(&self, key: &str, turn: QueuedTurn) -> Result<QueueTurnResult, String> {
+        let context = turn.context.clone().or_else(|| self.queue_context(key));
         let mut turns = self.queued_turns.lock().map_err(|e| e.to_string())?;
+        // A turn accepted before the path mark is visible to the sweep's
+        // subsequent queue read. One arriving after the mark is refused
+        // before it is recorded/acknowledged, leaving the person's input.
+        if let Some(context) = context {
+            self.lifespan_refusal(&context.cwd, context.extra_dirs.as_ref())?;
+        }
+
         let queue = turns.entry(key.to_string()).or_default();
         if turn
             .turn_ids()
@@ -12567,6 +12575,39 @@ mod start_claim_tests {
         drop(claim);
         drop(mark);
         assert!(manager.lifespan_refusal("/tmp/project", None).is_ok());
+    }
+
+    #[test]
+    fn lifespan_mark_refuses_a_new_queue_entry_before_acknowledging_it() {
+        let manager = ChatManager::default();
+        let dir = crate::test_dir::TestDir::new("lifespan-queue").canonicalized();
+        let cwd = dir.to_string_lossy().into_owned();
+        let turn = || QueuedTurn {
+            text: "keep this input".into(),
+            images: vec![],
+            turn_id: Some("user-racing".into()),
+            appended_turn_ids: vec![],
+            recorded: true,
+            context: Some(QueueContext {
+                cwd: cwd.clone(),
+                agent: ChatAgent::Codex,
+                model: None,
+                access: None,
+                extra_dirs: None,
+                env: None,
+                effort: None,
+                lite: None,
+            }),
+        };
+        let mark = manager.hold_lifespan_checkout(&cwd).unwrap();
+        assert!(manager
+            .queue_turn("chat:queued", turn())
+            .unwrap_err()
+            .contains("lifespan cleanup"));
+        assert!(!manager.has_queued_turns("chat:queued"));
+        drop(mark);
+        manager.queue_turn("chat:queued", turn()).unwrap();
+        assert!(manager.has_queued_turns("chat:queued"));
     }
 
     #[test]
