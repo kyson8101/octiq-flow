@@ -29,6 +29,10 @@ impl Repo {
         crate::profile::make_dir(work.parent().unwrap()).unwrap();
         let work = work.to_string_lossy().into_owned();
         git::text(&root, &["worktree", "add", "-b", "octiq/test", &work]).unwrap();
+        let work = crate::paths::canonicalize(&work)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         Self {
             _home: home,
             root,
