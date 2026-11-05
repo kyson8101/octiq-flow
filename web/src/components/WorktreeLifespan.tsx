@@ -3,7 +3,7 @@ import { bridge } from "../lib/bridge";
 import { diskBytes } from "../lib/diskReport";
 import { once, useInFlight } from "../lib/inFlight";
 import { dropHeld, notePress, repeatsAnother } from "../lib/pressGuard";
-import { archiveQuestion, DEFAULT_LIFESPAN_SETTINGS, groupWorktrees, idleWords, lifespanDate, lifespanUnavailable, sweepWords, validateLifespanSettings, worktreeFact, worktreeFlight, worktreeStakes, worktreeTotal, type LifespanItem, type LifespanSettings, type WorktreeArchive, type WorktreeLifespan, type WorktreeSweep } from "../lib/worktreeLifespan";
+import { archiveQuestion, DEFAULT_LIFESPAN_SETTINGS, groupWorktrees, idleWords, ignoredFilesUnchecked, lifespanDate, lifespanUnavailable, sweepWords, validateLifespanSettings, worktreeFact, worktreeFlight, worktreeStakes, worktreeTotal, type LifespanItem, type LifespanSettings, type WorktreeArchive, type WorktreeLifespan, type WorktreeSweep } from "../lib/worktreeLifespan";
 import { FoldBody, FoldLine, useFold } from "./CardFold";
 import { useConfirm } from "./Confirm";
 import "./WorktreeLifespan.css";
@@ -44,6 +44,7 @@ export function WorktreeLifespanSection({ connected }: { connected: boolean }) {
   }, [connected, reload]);
   const action: Action = async (key, command, args, question) => {
     if (!connected) return;
+    if (question && question.ignoredFiles == null) return;
     await once(worktreeFlight(key), async () => {
       if (question && !await confirm(archiveQuestion(question))) return;
       if (alive.current) setErrors(was => { const next = { ...was }; delete next[key]; return next; });
@@ -93,6 +94,7 @@ function WorktreeRow({ item, enabled, connected, error, action }: { item: Lifesp
     <p>{item.repo}{item.branch !== null && ` · ${item.branch}`} · {idleWords(item.idleDays)}</p>
     <p className="wt-fact">{worktreeFact(item, enabled)}</p>
     {needs && worktreeStakes(item) && <p>{worktreeStakes(item)}</p>}
+    {needs && item.ignoredFiles == null && <p>{ignoredFilesUnchecked}</p>}
     <FoldLine fold={fold} labels={["Path and details"]} what={`details for ${item.owner.label}`} />
     <FoldBody fold={fold}><code className="wt-path">{item.path}</code><p>{item.why}</p>
       {item.unmergedCommits > 0 && <p>{item.unmergedCommits} {item.unmergedCommits === 1 ? "commit" : "commits"} not merged</p>}
@@ -100,7 +102,7 @@ function WorktreeRow({ item, enabled, connected, error, action }: { item: Lifesp
       {item.buildBytes !== null && <p>Build output · {diskBytes(item.buildBytes)}</p>}
     </FoldBody>
     {known && (item.pinned || item.state !== "active") && <div className="wt-actions"><ActionButton flightKey={item.key} connected={connected} leading={needs} onClick={() => void action(item.key, "worktree_lifespan_keep", { key: item.key, keep: !item.pinned })}>{item.pinned ? "Stop keeping" : "Keep"}</ActionButton>
-      {needs && <ActionButton flightKey={item.key} connected={connected} onClick={() => void action(item.key, "worktree_lifespan_archive", { key: item.key, expectedHead: item.head, expectedStatusHash: item.statusHash }, item)}>Archive and remove</ActionButton>}
+      {needs && item.ignoredFiles != null && <ActionButton flightKey={item.key} connected={connected} onClick={() => void action(item.key, "worktree_lifespan_archive", { key: item.key, expectedHead: item.head, expectedStatusHash: item.statusHash }, item)}>Archive and remove</ActionButton>}
     </div>}
     {error && <p className="wt-error" role="alert">{error}</p>}
   </article>;

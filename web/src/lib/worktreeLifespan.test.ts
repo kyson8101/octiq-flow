@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { archiveQuestion, DEFAULT_LIFESPAN_SETTINGS, groupWorktrees, idleWords, lifespanUnavailable, nextClearAt, sweepWords, validateLifespanSettings, worktreeFact, worktreeFlight, worktreeGroup, worktreeStakes, worktreeTotal, type LifespanItem, type WorktreeSweep } from "./worktreeLifespan";
 
-const item = (patch: Partial<LifespanItem> = {}): LifespanItem => ({ key: "work", path: "/repo/work", repo: "/repo", branch: "feature/work", head: "abc", statusHash: "status", owner: { kind: "task", label: "Work" }, state: "finished", pinned: false, idleDays: 14, bytes: 100, buildBytes: null, dirtyFiles: 0, untrackedFiles: 0, unmergedCommits: 0, pushed: null, stripAt: null, removeAt: null, why: "Finished", ...patch });
+const item = (patch: Partial<LifespanItem> = {}): LifespanItem => ({ key: "work", path: "/repo/work", repo: "/repo", branch: "feature/work", head: "abc", statusHash: "status", owner: { kind: "task", label: "Work" }, state: "finished", pinned: false, idleDays: 14, bytes: 100, buildBytes: null, dirtyFiles: 0, untrackedFiles: 0, ignoredFiles: 0, ignoredBytes: 0, unmergedCommits: 0, pushed: null, stripAt: null, removeAt: null, why: "Finished", ...patch });
 
 describe("worktree groups and clearing order", () => {
   it("orders nonempty groups and leaves unknown owners alone, even when pinned or abandoned", () => {
@@ -42,12 +42,29 @@ describe("facts, words, and absent measurements", () => {
     expect(sweepWords({ ...sweep, stripped: 1 })).toContain("1 build output cleared");
     expect(sweepWords({ ...sweep, stripped: 2 })).toContain("2 build outputs cleared");
   });
+  it("names ignored files and only measured sizes, omitting zero and unknown counts", () => {
+    expect(worktreeStakes(item({ dirtyFiles: 3, untrackedFiles: 2, ignoredFiles: 2, ignoredBytes: 1200000000 }))).toBe("3 changed · 2 new files · 2 ignored files (1.2 GB)");
+    expect(worktreeStakes(item({ ignoredFiles: 1, ignoredBytes: null }))).toBe("1 ignored file");
+    expect(worktreeStakes(item({ ignoredFiles: 2, ignoredBytes: 0 }))).toBe("2 ignored files (0 KB)");
+    expect(worktreeStakes(item({ ignoredFiles: 0, ignoredBytes: 1200000000 }))).toBe("");
+    expect(worktreeStakes(item({ ignoredFiles: null, ignoredBytes: null }))).toBe("");
+  });
   it("puts file stakes, whole path and ignored-file consequence in the shared question", () => {
     const question = archiveQuestion(item({ dirtyFiles: 3, untrackedFiles: 2, unmergedCommits: 1 }));
     expect(question.body).toContain("3 changed · 2 new files · 1 commit not merged");
     expect(question.body).toContain("/repo/work"); expect(question.body).toContain("Ignored files are not kept.");
     expect(question.cancelLabel).toBe("Keep worktree"); expect(question.decision).toBe(true);
     expect(question.confirmLabel).toBe("Archive and remove");
+  });
+  it("leads with the count, size and deletion outside the archive", () => {
+    expect(archiveQuestion(item({ ignoredFiles: 2, ignoredBytes: 1200000000 })).body).toMatch(/^2 ignored files \(1.2 GB\) will be deleted and are not in the archive\./);
+    expect(archiveQuestion(item({ ignoredFiles: 1, ignoredBytes: null })).body).toMatch(/^1 ignored file will be deleted and is not in the archive\./);
+    expect(archiveQuestion(item()).body).toBe("/repo/work\nNo changed files or unmerged commits reported.\nThe archive keeps tracked changes and new files before removing this worktree. Ignored files are not kept.");
+  });
+  it("says the host could not check rather than treating a null count as zero", () => {
+    const body = archiveQuestion(item({ ignoredFiles: null, ignoredBytes: null })).body;
+    expect(body).toMatch(/^The host could not check for ignored files\. Archive and remove is unavailable\./);
+    expect(body).not.toMatch(/0 ignored|No ignored|Ignored files are not kept|null/);
   });
 });
 describe("settings and compatibility", () => {
