@@ -24,11 +24,12 @@ const calls = [], errors = [], results = [];
 let server, browser;
 let mutations = 0;
 const now = 1793860000000;
+const withheldReason = "Automatic clearing is withheld because the host cannot determine whether a process on Windows is using this worktree, so the folder and its build output are kept until process usage can be checked safely.";
 const owner = label => ({ kind: "task", label, runId: "run", taskId: label });
 const item = (key, patch = {}) => ({ key, path: `/work/very-long-project-name/.worktrees/${key}/deep-folder`, repo: "/work/very-long-project-name", branch: `feature/${key}`, head: `head-${key}`, statusHash: `status-${key}`, owner: owner(key), state: "finished", pinned: false, idleDays: 15, bytes: 4200000000, buildBytes: 2100000000, dirtyFiles: 0, untrackedFiles: 0, ignoredFiles: 0, ignoredBytes: 0, unmergedCommits: 0, pushed: null, stripAt: now + 86400000, removeAt: now + 7 * 86400000, why: "The host confirmed this task has finished. " + "Whole reason. ".repeat(15), ...patch });
 function fixture() {
   return { settings: { enabled: true, buildAfterDays: 3, removeAfterDays: 14 }, lastSweepAt: now, scanning: true,
-    items: [item("abandoned", { state: "abandoned", dirtyFiles: 3, untrackedFiles: 2, unmergedCommits: 1, pushed: false, stripAt: null, removeAt: null }), item("finished"), item("idle", { state: "idle", stripAt: now + 1000 }), item("kept", { pinned: true }), item("active", { state: "active" }), item("unknown", { state: "abandoned", owner: { kind: "unknown", label: "Unknown ownership" }, bytes: null, buildBytes: null })],
+    items: [item("abandoned", { state: "abandoned", dirtyFiles: 3, untrackedFiles: 2, unmergedCommits: 1, pushed: false, stripAt: null, removeAt: null }), item("finished", { idleDays: 30.00318267361111, why: withheldReason, stripAt: null, removeAt: null }), item("idle", { state: "idle", stripAt: now + 1000 }), item("kept", { pinned: true }), item("active", { state: "active" }), item("unknown", { state: "abandoned", owner: { kind: "unknown", label: "Unknown ownership" }, bytes: null, buildBytes: null })],
     archives: [{ key: "archive", ref: "refs/octiq/archive/previous", repo: "/work/project", branch: "feature/previous", path: "/work/project/.worktrees/previous", archivedAt: now, files: 2, restoredAt: null }],
     history: [{ at: now, stripped: 2, removed: [{ path: "/removed/" + "whole-path/".repeat(20), branch: "feature/removed", owner: owner("Old work"), bytes: null }], freedBytes: 3700000000, failed: [{ path: "/failed/" + "whole-path/".repeat(20), why: "Host refusal: open files " + "reason stays whole. ".repeat(20) }] }] };
 }
@@ -119,6 +120,30 @@ async function layout(app, width, theme) {
   assert.equal(await row(page, "finished").getByText(data.items[1].path, { exact: true }).count(), 0, "Path starts folded");
   await keyClick(row(page, "finished").getByRole("button", { name: "Show details for finished" }));
   assert.equal(await row(page, "finished").getByText(data.items[1].path, { exact: true }).textContent(), data.items[1].path);
+  assert.match(await row(page, "finished").textContent(), /30 idle days/);
+  assert.doesNotMatch(await row(page, "finished").textContent(), /30\.003/);
+  const reason = row(page, "finished").getByText(withheldReason, { exact: true });
+  await reason.scrollIntoViewIfNeeded();
+  assert.equal(await reason.isVisible(), true, "The complete host sentence opens by keyboard, without hover");
+  assert.equal(await reason.evaluate(el => {
+    const range = document.createRange(); range.selectNodeContents(el);
+    const bounds = el.getBoundingClientRect();
+    return [...range.getClientRects()].every(rect => rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1 && rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1)
+      && el.scrollWidth <= el.clientWidth + 1 && el.scrollHeight <= el.clientHeight + 1;
+  }), true, "Every line of the host reason fits, without clipping or ellipsis");
+  await reason.evaluate(el => {
+    const range = document.createRange(); range.selectNodeContents(el.firstChild); range.setStart(range.endContainer, range.endOffset - 1);
+    const end = range.getBoundingClientRect(), scroller = el.closest(".disk-body");
+    const bounds = scroller.getBoundingClientRect();
+    scroller.scrollTop += Math.max(0, end.bottom - bounds.bottom + 8);
+  });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  assert.equal(await reason.evaluate(el => {
+    const range = document.createRange(); range.selectNodeContents(el.firstChild); range.setStart(range.endContainer, range.endOffset - 1);
+    const end = range.getBoundingClientRect(), bounds = el.closest(".disk-body").getBoundingClientRect();
+    return end.top >= bounds.top && end.bottom <= bounds.bottom;
+  }), true, "The end of the sentence is reachable in the page scroller");
+  await page.screenshot({ path: join(evidence, `${theme}-${width}-host-reason.png`) });
   await keyClick(page.getByRole("button", { name: "Show past sweeps", exact: true }));
   assert.equal(await page.getByText(data.history[0].removed[0].path, { exact: true }).textContent(), data.history[0].removed[0].path);
   assert.equal(await page.getByText(data.history[0].failed[0].why, { exact: false }).count(), 1);
