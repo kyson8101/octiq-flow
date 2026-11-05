@@ -384,6 +384,7 @@ directories, not these file roots. Native cards carry the actual provider.
 | personal preferences (end every chat's system prompt) | `<profile dir>/preferences.json` | `personal_preferences.rs` |
 | chat transcripts | profile dir | `chat_index.rs`, `transcript.rs` |
 | agent diagnostics | `~/.octiqflow/logs/agent-diagnostics.jsonl` (one rotated predecessor) | `diagnostics.rs` |
+| worktree lifespan settings, pins, archives, sweep intents/history | `<profile dir>/worktree-lifespan.json` | `worktree_lifespan.rs` |
 | chat task status | `<chats dir>/task-status.json` | `chat_task.rs` |
 | registered agents (agents mode) | `<profile dir>/team.json` | `team.rs` — see `docs/agents-mode.md` |
 | XP awards (agents mode) | `xp_awards` in `<profile dir>/orchestrations.json` | `orchestration/levels.rs` |
@@ -3332,6 +3333,48 @@ card, and one past its limit is ended on the first look after the card is
 answered. Used time never goes down, and what the agent left running in the
 background after its turn ended is not counted (`docs/agents-mode.md`, The
 time limit).
+
+### Host worktree lifespan
+
+`worktree_lifespan.rs` owns one process-wide sweep thread, started from
+`Services::load` only outside tests: first pass after three minutes, then hourly.
+Defaults are enabled, build output after 3 idle days, Finished folders after 14.
+Only managed task/mission worktrees, indexed `octiq/` chat worktrees under
+`.worktrees`, and recorded validation checkouts qualify. Primary, adopted,
+direct and hand-made checkouts are informational and never changed. State is
+derived each scan, never saved; settings, pins, verified archive refs, removal
+intents and the last 50 sweeps are saved through the pinned profile.
+
+A start and a removal never both go through: take the workspace lifecycle lock,
+mark the checkout under the chat session table, claim every associated chat's
+start, then check activity. `start_session` checks the path mark under that same
+table, including a new chat id and extra directories. Enqueue checks the same
+mark under the queue lock before acknowledgement, so a new queued turn cannot
+cross the cleanup check. Never hold the ledger
+across Git, a chat lock or roster reads. Never stop a chat to make it removable.
+Disabling and pinning narrow cleanup permission: act in memory on a failed save,
+say `unsaved`, and join `dispatch::settle_owed`. Enabling and unpinning need their
+record first. An unread record is never replaced with defaults on that retry.
+
+The host strips only ignored `target` beside `Cargo.toml` and `node_modules`
+beside `package.json`, with no tracked files inside. `dist`, `out`, `renders`
+and `source` never qualify. Redirects are never traversed. A cargo/rustc process
+withholds cleanup; unknown cwd/open-file inventory (always Windows today)
+withholds worktree removal, as does a Windows reparse point. No profile means
+no sweep. Git calls are bounded, non-interactive and do not fetch.
+
+Removal refreshes chat delivery first, saves intent before `git worktree remove`
+without force, then records `sweptAt` without changing task workspace state,
+mission `removed`, or the person's Close/Abandon. Branches stay. A missing folder
+is reconciled only with its repository and original worktree container present;
+no global prune is run by a sweep. A later task restores the same path from the
+kept branch; existing merged/abandoned refusals remain. Chat recovery keeps its
+existing order. Archives use a temporary index, `commit-tree`, and
+`refs/octiq/archive/<slug>`; the real index and branches do not move and hooks do
+not run. Only a verified archive permits force-removing a dirty abandoned tree.
+Ignored files are excluded. Agent history and its worktree-named session folders
+are never touched. The five `worktree_lifespan_*` commands are socket-only;
+there is no hook or MCP route. See `docs/subagent-worktree-lifecycle.md`.
 
 ## Conventions & gotchas
 

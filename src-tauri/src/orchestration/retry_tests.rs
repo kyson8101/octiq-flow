@@ -192,6 +192,7 @@ impl Lead {
             .mutate(|data| {
                 let task = data.tasks.get_mut(task_id).unwrap();
                 task.workspace = Some(workspaces::TaskWorkspace {
+                    swept_at: None,
                     plan: crate::git_ops::workflow::plan(
                         &root,
                         "",

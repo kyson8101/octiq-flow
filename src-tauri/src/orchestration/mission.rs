@@ -39,6 +39,8 @@ pub struct MissionDelivery {
     /// The worktree is gone: the mission was closed.
     #[serde(default)]
     pub removed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swept_at: Option<i64>,
     /// Close deleted the local branch. False when Git kept it.
     #[serde(default)]
     pub branch_deleted: bool,
@@ -142,7 +144,72 @@ pub struct CoordinatedRun {
     pub close_blocker: Option<String>,
 }
 
+/// A swept folder has no working tree to inspect. Its kept branch and the
+/// saved delivery still answer for it, without recreating it to draw the page.
+fn swept_delivery(run: &Run, plan: &WorkspacePlan) -> Result<Option<MissionDelivery>, String> {
+    let Some(known) = run
+        .mission_delivery
+        .iter()
+        .find(|d| d.checkout_root == plan.checkout_root && d.swept_at.is_some())
+    else {
+        return Ok(None);
+    };
+    if !matches!(std::fs::symlink_metadata(&plan.checkout_root), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+    {
+        return Ok(None);
+    }
+    let head = crate::git_ops::lifespan::text(
+        &plan.repository_root,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("refs/heads/{}^{{commit}}", plan.branch),
+        ],
+    )?;
+    let same = known.evidence.head_sha == head;
+    let mut delivery = known.clone();
+    delivery.evidence.head_sha = head.clone();
+    delivery.evidence.dirty = false;
+    delivery.evidence.has_commits = head != plan.base_sha;
+    delivery.evidence.checked_at = now_ms();
+    delivery.merged = !delivery.evidence.has_commits || same && known.merged;
+    delivery.evidence.merged = delivery.merged;
+    if !same {
+        delivery.evidence.pushed = false;
+        delivery.released = None;
+        delivery.release_note.clear();
+    }
+    Ok(Some(delivery))
+}
+
 fn delivery_of(run: &Run, plan: &WorkspacePlan) -> Result<MissionDelivery, String> {
+    if let Some(mut delivery) = swept_delivery(run, plan)? {
+        delivery.merged |=
+            workflow::merged_into_remote_base(plan, &delivery.evidence.head_sha) == Some(true);
+        delivery.evidence.merged = delivery.merged;
+        delivery.evidence.pushed = false;
+        if let (Ok(remote), Ok(branch)) = (
+            crate::git_ops::lifespan::text(
+                &plan.repository_root,
+                &["config", "--get", &format!("branch.{}.remote", plan.branch)],
+            ),
+            crate::git_ops::lifespan::text(
+                &plan.repository_root,
+                &["config", "--get", &format!("branch.{}.merge", plan.branch)],
+            ),
+        ) {
+            if remote != "." && !remote.starts_with('-') && branch.starts_with("refs/heads/") {
+                delivery.evidence.pushed = crate::git_ops::lifespan::text(
+                    &plan.repository_root,
+                    &["ls-remote", "--exit-code", &remote, &branch],
+                )
+                .is_ok_and(|tip| {
+                    tip.split_whitespace().next() == Some(delivery.evidence.head_sha.as_str())
+                });
+            }
+        }
+        return Ok(delivery);
+    }
     let evidence = workflow::inspect(plan, true)?;
     // Nothing committed is nothing to merge: the base already holds it all.
     let merged = evidence.merged
@@ -167,6 +234,7 @@ fn delivery_of(run: &Run, plan: &WorkspacePlan) -> Result<MissionDelivery, Strin
         released,
         release_note,
         removed: false,
+        swept_at: None,
         branch_deleted: false,
     })
 }
@@ -175,6 +243,19 @@ fn delivery_of(run: &Run, plan: &WorkspacePlan) -> Result<MissionDelivery, Strin
 /// local look at its worktrees and the merge the last refresh recorded.
 fn close_blocker(run: &Run, plans: &[WorkspacePlan]) -> Option<String> {
     for plan in plans {
+        match swept_delivery(run, plan) {
+            Ok(Some(delivery)) => {
+                if delivery.merged {
+                    continue;
+                }
+                return Some(format!(
+                    "{} is not known to be merged into {}. Refresh the mission to ask git.",
+                    plan.branch, plan.base_branch
+                ));
+            }
+            Ok(None) => {}
+            Err(error) => return Some(error),
+        }
         let evidence = match workflow::inspect(plan, false) {
             Ok(evidence) => evidence,
             Err(error) => return Some(error),
@@ -344,7 +425,12 @@ impl OrchestrationStore {
                         plan.branch
                     ));
                 }
-                workflow::cleanup(plan, &delivery.evidence.head_sha)?;
+                // The automatic sweep already removed this physical folder.
+                // Close/Abandon still verify its kept head and remain the
+                // person's decision; neither needs to resurrect a clean tree.
+                if delivery.swept_at.is_none() || Path::new(&plan.checkout_root).exists() {
+                    workflow::cleanup(plan, &delivery.evidence.head_sha)?;
+                }
                 delivery.removed = true;
                 if delivery.merged {
                     delivery.branch_deleted = workflow::delete_merged_branch(plan)?;

@@ -108,6 +108,8 @@ impl Services {
         // opened the island (`island::start_wishes`).
         #[cfg(not(test))]
         crate::island::start_wishes(services.clone());
+        #[cfg(not(test))]
+        crate::worktree_lifespan::start(services.clone());
         services
     }
 }
@@ -700,6 +702,9 @@ pub fn settle_owed(svc: &Services) -> Vec<&'static str> {
     if svc.chats.jobs.settle().is_err() {
         owed.push(crate::chat_jobs::OWED);
     }
+    if crate::worktree_lifespan::settle_owed().is_err() {
+        owed.push(crate::worktree_lifespan::OWED);
+    }
     owed
 }
 
@@ -711,6 +716,9 @@ fn owed(svc: &Services) -> Vec<&'static str> {
     }
     if svc.chats.jobs.owes() {
         owed.push(crate::chat_jobs::OWED);
+    }
+    if crate::worktree_lifespan::owes() {
+        owed.push(crate::worktree_lifespan::OWED);
     }
     owed
 }
@@ -765,6 +773,31 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         .transpose()?;
 
     match cmd {
+        "worktree_lifespan_list" => return crate::worktree_lifespan::list(),
+        "worktree_lifespan_set" => {
+            return to_value(crate::worktree_lifespan::set(
+                arg(&args, "enabled")?,
+                arg(&args, "buildAfterDays")?,
+                arg(&args, "removeAfterDays")?,
+            ))
+        }
+        "worktree_lifespan_keep" => {
+            return unit(crate::worktree_lifespan::keep(
+                &arg::<String>(&args, "key")?,
+                arg(&args, "keep")?,
+            ))
+        }
+        "worktree_lifespan_archive" => {
+            return to_value(crate::worktree_lifespan::archive(
+                svc,
+                &arg::<String>(&args, "key")?,
+                &arg::<String>(&args, "expectedHead")?,
+                &arg::<String>(&args, "expectedStatusHash")?,
+            ))
+        }
+        "worktree_lifespan_restore" => {
+            return crate::worktree_lifespan::restore(svc, &arg::<String>(&args, "key")?)
+        }
         "disk_scan_start" => return crate::disk_report::start(&svc.orchestrations),
         "disk_scan_cancel" => return crate::disk_report::cancel(&arg::<String>(&args, "scanId")?),
         "disk_scan_state" => return crate::disk_report::state(),

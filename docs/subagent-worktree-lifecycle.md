@@ -223,7 +223,7 @@ their chat links, reports, and restore actions. Restoring changes visibility
 only, and does not resume a settled worker. Archiving never deletes transcripts,
 branches, or workspaces and has no automatic expiry.
 
-Cleanup is a separate person-facing confirmation in the Orchestrator. Persistent
+The explicit per-task cleanup remains a separate person-facing confirmation in the Orchestrator. The host lifespan below is an additional automatic path, superseding person-facing-only removal statements for that path. Persistent
 task-worktree removal is not exposed through the chat-bound MCP hook. Its
 backend command requires the HEAD from the preview and checks everything again:
 
@@ -275,3 +275,97 @@ The authenticated browser dispatch and chat-bound MCP share these operations:
 `orchestration_workspace_cleanup` is a browser/user API command only. It takes
 `taskId`, `expectedHead`, and optional `abandon`; it is intentionally absent from
 MCP tool discovery and the local orchestration hook's action allowlist.
+
+
+## Host-owned worktree lifespan
+
+The host automatically strips safe build output after **3 idle days** and removes
+**Finished** folders after **14 idle days**, reporting changes afterwards. These
+thresholds and the enabled switch are adjustable in the authenticated browser.
+Pinning prevents both actions. Close, Abandon and explicit per-task cleanup keep
+their existing person-only meaning; a sweep never closes or abandons a run.
+Agent history (`~/.codex`, `~/.claude`) and the session folders named after a
+worktree are outside this feature.
+
+Each scan derives Active, Idle, Finished or Abandoned. A process, lease,
+unsettled attempt, open gate, queued turn, observed cwd/open file, or unfinished
+owning run task holds the checkout Active. Last activity is the newest host-known
+task/attempt timestamp, chat index update, last commit and non-build tree mtime.
+Before the removal threshold it is Idle. After it, a clean checkout with no Git
+operation and a named, kept branch is Finished; no merge or push is required
+when the local branch still holds its commits. Dirty/untracked files, an
+unfinished Git operation, or detached commits with no retaining ref make it
+Abandoned. Abandoned is never removed automatically. A recorded detached
+validation checkout may qualify once its run has ended and refs retain HEAD.
+
+Ownership comes from managed task/mission plans, chat index cwd plus an
+`octiq/` branch under `.worktrees`, and recorded validation allocations.
+Primary, adopted, direct and hand-made worktrees are listed as Unknown and never
+changed. Repositories come from registered projects and ledger allocations.
+The one thread starts three minutes after host startup and scans hourly; tests
+never start it. Disabled settings or an unavailable pinned profile withhold a
+pass. A cargo/rustc process withholds cleanup. No timer belongs to a worktree.
+
+Build stripping is an allow-list: only ignored, untracked `target` beside
+`Cargo.toml`, and `node_modules` beside `package.json`. Neither the tree walk nor
+deletion follows symlinks/junctions. `source`, `dist`, `out` and `renders` do not
+qualify, even when ignored. Cwd/open-file inventory must be known before a
+worktree can be removed: missing, failed, timed-out or empty `lsof`, and all
+Windows hosts today, keep the folder. Windows reparse points inside a checkout
+also withhold Git removal because Git may traverse a junction.
+
+The host takes the workspace lifecycle lock, marks the path under the chat
+session table, obtains associated start claims, then rechecks idleness. A start
+that was already admitted prevents cleanup; one arriving afterwards sees the
+mark, including a new chat id. No process is stopped or killed for cleanup.
+Git reads have 15-second bounds and do not fetch. Chat delivery verification
+records `Delivery.head` before removal; ledger delivery evidence is refreshed,
+then an intent is synced to the lifespan record before Git removes the folder
+without `--force`. Both local and remote branches remain.
+
+A successful removal sets optional `sweptAt` on task workspaces and mission
+deliveries, preserving their old state and `removed` flag for older binaries.
+Disk inventory and lease admission no longer treat a swept root as held.
+Missing retained/ready folders are reconciled only when both the repository and
+its original `.worktrees/<repo>` parent are present; a missing volume changes
+nothing, and no sweep runs global `git worktree prune`. Saved intents are
+reconciled after restart; an existing folder is always re-inspected. A new
+attempt restores a swept checkout at the same path from the kept branch through
+`git_ops::restore_worktree`; merged and abandoned task refusals remain. A later
+mission task recreates its shared worktree. Ordinary chats keep the existing
+`chat_recover` order and remembered delivery path.
+
+**Archive then remove** requires an Abandoned host-owned item and the exact
+preview HEAD and status hash. Changed files or HEAD refuse the stale preview.
+A temporary `GIT_INDEX_FILE` is loaded from HEAD, then `add -A`, `write-tree`,
+`commit-tree` (HEAD as parent) and `update-ref refs/octiq/archive/<slug>` preserve
+the tracked/untracked tree. The real index and branch do not move, and no hooks
+run. **Ignored files are not archived.** After verifying the ref's tree and
+saving its record, the host may force-remove that dirty worktree. A failed
+archive removes nothing. Submodules and embedded Git repositories are refused
+because a gitlink does not preserve their working files or objects. Restore makes a new branch `octiq/restored-<slug>` and
+worktree under `.worktrees/<repo>/octiq/` at the archive commit, without replacing
+an existing folder. The archive ref remains available.
+
+Socket-only commands (no hook route or MCP tool):
+
+- `worktree_lifespan_list {}` returns settings, `lastSweepAt`, `scanning`, cached
+  items, archives and the last 50 sweeps. Sizes are logical bytes, nullable when
+  unknown, and cached between sweeps. States are never persisted.
+- `worktree_lifespan_set { enabled?, buildAfterDays?, removeAfterDays? }` requires
+  days at least 1 and build cleanup no later than folder removal. Enabling needs
+  a saved record; disabling acts at once and owes a failed write.
+- `worktree_lifespan_keep { key, keep }` pins/unpins. Pinning acts at once;
+  unpinning needs a saved record.
+- `worktree_lifespan_archive { key, expectedHead, expectedStatusHash }` returns
+  the verified Archive; ignored files are excluded.
+- `worktree_lifespan_restore { key }` returns `{ path, branch }`.
+
+All timestamps are Unix milliseconds. `unmergedCommits` counts HEAD commits
+outside the base branch; `pushed` independently says whether its known remote
+branch contains HEAD, or `null` when unknown. No fetch or unpushed count is used.
+`worktree-swept` carries a Sweep only after changes;
+`worktree-lifespan-changed {}` refreshes the page. Settings, pins, archives,
+intents and history live in `<profile dir>/worktree-lifespan.json`, read through
+`profile::read` and written through `profile::make_dir`. Unsaved narrowing joins
+the host's owed-save retry and never claims to be saved.

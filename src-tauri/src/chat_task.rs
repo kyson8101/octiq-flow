@@ -42,7 +42,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::git::run_git;
+fn run_git(root: &str, args: &[&str]) -> Option<String> {
+    crate::git_ops::lifespan::text(root, args).ok()
+}
 
 /// One step of the agent's own plan.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -535,6 +537,38 @@ fn assemble(chat_id: String, stored: Stored, store: &Store) -> TaskStatus {
         project_id: stored.project_id,
         pr_completion,
     }
+}
+
+/// Fresh local verification for a lifespan removal. No project release
+/// command is executed; HEAD and primary checkout must be recorded first.
+pub(crate) fn verify_before_sweep(chat_id: &str, expected_head: &str) -> Result<(), String> {
+    let meta = crate::chat_index::find(chat_id)?
+        .ok_or("Chat disappeared before lifespan verification.")?;
+    let before = read()?;
+    let mut stored = before.chats.get(chat_id).cloned().unwrap_or_default();
+    let (workspace, delivery) = verify(
+        &stored,
+        meta.cwd.as_deref(),
+        &ReleaseCheck::default(),
+        meta.launch.as_ref().map(|p| p.base_branch.as_str()),
+    );
+    if delivery.as_ref().is_none_or(|d| d.head != expected_head)
+        || workspace
+            .as_ref()
+            .is_none_or(|w| !w.exists || !w.is_worktree)
+    {
+        return Err("Chat delivery HEAD could not be verified; the worktree is kept.".into());
+    }
+    stored.workspace = workspace;
+    stored.delivery = delivery;
+    stored.project_id = meta.project_id;
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut saved = read()?;
+    let entry = saved.chats.entry(chat_id.to_owned()).or_default();
+    entry.workspace = stored.workspace;
+    entry.delivery = stored.delivery;
+    entry.project_id = stored.project_id;
+    write(&saved)
 }
 
 /// What the last verification stored for a chat: where it was, and the commit

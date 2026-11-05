@@ -1347,6 +1347,8 @@ pub struct ChatManager {
     /// Chats whose removed folder is being put back, each with the thread
     /// doing it — see `ChatManager::claim_start`.
     start_claims: Mutex<HashMap<String, thread::ThreadId>>,
+    /// Leaf path marks, taken under sessions before checking idleness.
+    lifespan_holds: Mutex<std::collections::BTreeSet<String>>,
     /// Chats the person is completing, each with the id of its wrap-up turn
     /// — see `chat_complete_impl`. In memory only: a server restart forgets
     /// it and the chat is simply not ticked.
@@ -2100,6 +2102,56 @@ impl ChatManager {
             .unwrap_or(true)
     }
 
+    pub(crate) fn hold_lifespan_checkout(
+        &self,
+        checkout: &str,
+    ) -> Result<LifespanHold<'_>, String> {
+        let checkout = crate::paths::canonical_target(std::path::Path::new(checkout))
+            .unwrap_or_else(|| std::path::PathBuf::from(checkout))
+            .to_string_lossy()
+            .into_owned();
+        let _sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+        let mut holds = self.lifespan_holds.lock().map_err(|e| e.to_string())?;
+        if !holds.insert(checkout.clone()) {
+            return Err("A lifespan operation already holds this checkout.".into());
+        }
+        Ok(LifespanHold {
+            manager: self,
+            checkout: checkout.to_owned(),
+        })
+    }
+    fn lifespan_refusal(&self, cwd: &str, extra: Option<&Vec<String>>) -> Result<(), String> {
+        let holds = self.lifespan_holds.lock().map_err(|e| e.to_string())?;
+        for path in std::iter::once(cwd).chain(extra.into_iter().flatten().map(String::as_str)) {
+            if holds.iter().any(|root| {
+                crate::paths::canonical_target(std::path::Path::new(path))
+                    .unwrap_or_else(|| std::path::PathBuf::from(path))
+                    .starts_with(root)
+            }) {
+                return Err(
+                    "This worktree is being checked for lifespan cleanup; retry shortly.".into(),
+                );
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn lifespan_chat_keys(&self, checkout: &str) -> Result<Vec<String>, String> {
+        let starts = self.starts.lock().map_err(|e| e.to_string())?;
+        Ok(starts
+            .iter()
+            .filter(|(_, s)| {
+                std::iter::once(&s.cwd)
+                    .chain(s.extra_dirs.iter().flatten())
+                    .any(|p| {
+                        crate::paths::canonical_target(std::path::Path::new(p))
+                            .unwrap_or_else(|| std::path::PathBuf::from(p))
+                            .starts_with(checkout)
+                    })
+            })
+            .map(|(k, _)| k.clone())
+            .collect())
+    }
+
     /// Hold a chat that has no process for the one start that is about to put
     /// its removed folder back (`chat_recover`). Refused while it has a
     /// process, in the words `start_session` uses, so a stale page falls back
@@ -2322,7 +2374,15 @@ impl ChatManager {
     }
 
     fn queue_turn(&self, key: &str, turn: QueuedTurn) -> Result<QueueTurnResult, String> {
+        let context = turn.context.clone().or_else(|| self.queue_context(key));
         let mut turns = self.queued_turns.lock().map_err(|e| e.to_string())?;
+        // A turn accepted before the path mark is visible to the sweep's
+        // subsequent queue read. One arriving after the mark is refused
+        // before it is recorded/acknowledged, leaving the person's input.
+        if let Some(context) = context {
+            self.lifespan_refusal(&context.cwd, context.extra_dirs.as_ref())?;
+        }
+
         let queue = turns.entry(key.to_string()).or_default();
         if turn
             .turn_ids()
@@ -4085,6 +4145,7 @@ pub(crate) fn start_session(
     } = voice;
     {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        manager.lifespan_refusal(&cwd, extra_dirs.as_ref())?;
         if sessions.contains_key(&session_key) || manager.claimed_elsewhere(&session_key) {
             return Err(format!("chat '{session_key}' is already running"));
         }
@@ -4143,6 +4204,7 @@ pub(crate) fn start_session(
     // reads an atomic, never a chat lock. Sends/starts use their ordinary path.
     // Keep creation and insertion atomic with other starts and sends.
     let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+    manager.lifespan_refusal(&cwd, extra_dirs.as_ref())?;
     if let Some(id) = user_turn_id
         .as_deref()
         .and_then(|id| id.strip_prefix("octiq-provider-switch-"))
@@ -12452,6 +12514,20 @@ mod access_tests {
     }
 }
 
+/// A path mark blocks even a brand new chat id, under the session table.
+/// The caller holds the workspace lifecycle lock until this guard is dropped.
+pub(crate) struct LifespanHold<'a> {
+    manager: &'a ChatManager,
+    checkout: String,
+}
+impl Drop for LifespanHold<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut holds) = self.manager.lifespan_holds.lock() {
+            holds.remove(&self.checkout);
+        }
+    }
+}
+
 /// A start's claim on a chat keeps every other start out (`claim_start`).
 #[cfg(test)]
 mod start_claim_tests {
@@ -12476,6 +12552,62 @@ mod start_claim_tests {
             true,
             None,
         )
+    }
+
+    #[test]
+    fn lifespan_mark_refuses_a_racing_brand_new_chat_and_extra_directory() {
+        let manager = Arc::new(ChatManager::default());
+        let _lifecycle = manager.orchestrations.hold_workspace_lifecycle().unwrap();
+        let mark = manager.hold_lifespan_checkout("/tmp/project").unwrap();
+        let claim = manager.claim_start("chat:known").unwrap();
+        // A new id wasn't in the scan's index. It must still see the mark.
+        let other = manager.clone();
+        let refusal = thread::spawn(move || start(other, "chat:brand-new"))
+            .join()
+            .unwrap()
+            .unwrap_err();
+        assert!(refusal.contains("lifespan cleanup"), "{refusal}");
+        assert!(manager
+            .lifespan_refusal("/tmp/elsewhere", Some(&vec!["/tmp/project/child".into()]))
+            .is_err());
+        assert!(manager.lifespan_refusal("/tmp/project-other", None).is_ok());
+        assert!(!manager.has_process("chat:brand-new"));
+        drop(claim);
+        drop(mark);
+        assert!(manager.lifespan_refusal("/tmp/project", None).is_ok());
+    }
+
+    #[test]
+    fn lifespan_mark_refuses_a_new_queue_entry_before_acknowledging_it() {
+        let manager = ChatManager::default();
+        let dir = crate::test_dir::TestDir::new("lifespan-queue").canonicalized();
+        let cwd = dir.to_string_lossy().into_owned();
+        let turn = || QueuedTurn {
+            text: "keep this input".into(),
+            images: vec![],
+            turn_id: Some("user-racing".into()),
+            appended_turn_ids: vec![],
+            recorded: true,
+            context: Some(QueueContext {
+                cwd: cwd.clone(),
+                agent: ChatAgent::Codex,
+                model: None,
+                access: None,
+                extra_dirs: None,
+                env: None,
+                effort: None,
+                lite: None,
+            }),
+        };
+        let mark = manager.hold_lifespan_checkout(&cwd).unwrap();
+        assert!(manager
+            .queue_turn("chat:queued", turn())
+            .unwrap_err()
+            .contains("lifespan cleanup"));
+        assert!(!manager.has_queued_turns("chat:queued"));
+        drop(mark);
+        manager.queue_turn("chat:queued", turn()).unwrap();
+        assert!(manager.has_queued_turns("chat:queued"));
     }
 
     #[test]

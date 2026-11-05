@@ -44,6 +44,8 @@ pub enum WorkspaceState {
 #[serde(rename_all = "camelCase")]
 pub struct TaskWorkspace {
     pub plan: WorkspacePlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swept_at: Option<i64>,
     pub state: WorkspaceState,
     pub lease_attempt_id: Option<String>,
     pub delivery: Option<DeliveryEvidence>,
@@ -834,6 +836,7 @@ impl OrchestrationStore {
             let managed = plan.is_managed_worktree();
             for other in data.tasks.values() {
                 let Some(other_ws) = &other.workspace else { continue; };
+                if other_ws.swept_at.is_some() { continue; }
                 if !workflow::leases_clash(&other_ws.plan.checkout_root, other_ws.plan.is_managed_worktree(), &plan.checkout_root, managed) { continue; }
                 if other_ws.state == WorkspaceState::Cleaning { return Err("Workspace cleanup is in progress.".into()); }
                 if let Some(owner) = other_ws.lease_attempt_id.as_ref().and_then(|id| data.attempts.get(id)) {
@@ -849,7 +852,7 @@ impl OrchestrationStore {
                     return Err(format!("This checkout is already leased to task {}.", other.task_id));
                 }
             }
-            let resource = TaskWorkspace { plan: plan.clone(), state: saved.as_ref().map_or(WorkspaceState::Preparing, |w| w.state),
+            let resource = TaskWorkspace { plan: plan.clone(), swept_at: saved.as_ref().and_then(|w| w.swept_at), state: saved.as_ref().map_or(WorkspaceState::Preparing, |w| w.state),
                 lease_attempt_id: Some(attempt.id.clone()), delivery: None, abandoned: false, cleanup_intent: None,
                 validation_paths: saved.as_ref().map(|w| w.validation_paths.clone()).unwrap_or_default() };
             let task = data.tasks.get_mut(&task.id).ok_or("Task disappeared.")?;
@@ -872,7 +875,15 @@ impl OrchestrationStore {
             writable,
             plan.is_managed_worktree(),
         )?;
-        if saved
+        if saved.as_ref().is_some_and(|w| w.swept_at.is_some()) {
+            crate::git_ops::restore_worktree(
+                &plan.repository_root,
+                &plan.checkout_root,
+                &plan.branch,
+                "",
+            )?;
+            workflow::provision(&plan)?;
+        } else if saved
             .as_ref()
             .is_none_or(|w| w.state == WorkspaceState::Preparing)
         {
@@ -894,6 +905,21 @@ impl OrchestrationStore {
                 .and_then(|t| t.workspace.as_mut())
                 .ok_or("Workspace disappeared.")?;
             ws.state = WorkspaceState::Ready;
+            ws.swept_at = None;
+            for other in data.tasks.values_mut().filter_map(|t| t.workspace.as_mut()) {
+                if other.plan.checkout_root == plan.checkout_root {
+                    other.swept_at = None;
+                }
+            }
+            for delivery in data
+                .runs
+                .values_mut()
+                .flat_map(|r| r.mission_delivery.iter_mut())
+            {
+                if delivery.checkout_root == plan.checkout_root {
+                    delivery.swept_at = None;
+                }
+            }
             Ok(())
         })?;
         Ok(crate::git_ops::PreparedWorkspace {
@@ -957,11 +983,12 @@ impl OrchestrationStore {
             let Some(ws) = &task.workspace else {
                 continue;
             };
-            let held = ws.lease_attempt_id.is_some()
-                || matches!(
-                    ws.state,
-                    WorkspaceState::Preparing | WorkspaceState::Cleaning
-                );
+            let held = ws.swept_at.is_none()
+                && (ws.lease_attempt_id.is_some()
+                    || matches!(
+                        ws.state,
+                        WorkspaceState::Preparing | WorkspaceState::Cleaning
+                    ));
             // A plan with no checkout names nothing, and every path starts
             // with nothing.
             if !held || ws.plan.checkout_root.trim().is_empty() {
@@ -1567,7 +1594,7 @@ impl OrchestrationStore {
             if abandon && data.tasks.values().any(|t| t.depends_on.iter().any(|id| id == task_id) && t.active_attempt_id.is_some()) {
                 return Err("A dependent task already started. Preserve this workspace until that work is resolved.".into());
             }
-            if data.tasks.values().filter(|t| t.id != task_id).any(|t| t.workspace.as_ref().is_some_and(|other| other.state != WorkspaceState::Cleaned && workflow::leases_clash(&other.plan.checkout_root, other.plan.is_managed_worktree(), &ws.plan.checkout_root, true))) {
+            if data.tasks.values().filter(|t| t.id != task_id).any(|t| t.workspace.as_ref().is_some_and(|other| other.state != WorkspaceState::Cleaned && other.swept_at.is_none() && workflow::leases_clash(&other.plan.checkout_root, other.plan.is_managed_worktree(), &ws.plan.checkout_root, true))) {
                 return Err("Another task retains this checkout. Preserve it until all workspace owners are resolved.".into());
             }
             if !abandon && task.status != TaskStatus::Completed {
@@ -1723,6 +1750,140 @@ pub(super) mod tests {
         let task = super::super::tests::task(&store, &run, vec![]);
         (store, run, task)
     }
+    #[test]
+    fn swept_task_rebuilds_same_path_branch_and_committed_head_on_retry() {
+        let repo = Repo::new();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Worktree);
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        fs::write(Path::new(&first.cwd).join("kept.txt"), "committed work").unwrap();
+        crate::git_ops::lifespan::text(&first.cwd, &["add", "."]).unwrap();
+        crate::git_ops::lifespan::text(&first.cwd, &["commit", "-m", "kept work"]).unwrap();
+        let head = crate::git_ops::lifespan::text(&first.cwd, &["rev-parse", "HEAD"]).unwrap();
+        report(&store, &first, WorkerOutcome::Failed);
+        crate::git_ops::lifespan::remove(&repo.root, &first.cwd, false).unwrap();
+        store.lifespan_record_swept(&first.cwd, 100).unwrap();
+        assert!(!store
+            .disk_report_workspaces()
+            .unwrap()
+            .contains(Path::new(&first.cwd)));
+        let retry = prepare(&store, &task, Access::Auto).unwrap();
+        assert_eq!((&retry.cwd, &retry.branch), (&first.cwd, &first.branch));
+        assert_eq!(
+            crate::git_ops::lifespan::text(&retry.cwd, &["rev-parse", "HEAD"]).unwrap(),
+            head
+        );
+        assert_eq!(
+            fs::read_to_string(Path::new(&retry.cwd).join("kept.txt")).unwrap(),
+            "committed work"
+        );
+        let ws = store
+            .snapshot(Some(&run.id))
+            .unwrap()
+            .tasks
+            .remove(0)
+            .workspace
+            .unwrap();
+        assert!(ws.swept_at.is_none());
+        assert_eq!(ws.state, WorkspaceState::Ready);
+    }
+
+    #[test]
+    fn swept_mission_is_recreated_for_a_later_task_without_closing_the_run() {
+        let repo = Repo::new();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Mission);
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        report(&store, &first, WorkerOutcome::Completed);
+        crate::git_ops::lifespan::remove(&repo.root, &first.cwd, false).unwrap();
+        store.lifespan_record_swept(&first.cwd, 100).unwrap();
+        let next = store
+            .create_task(
+                "chat:master",
+                run.id.clone(),
+                "Later task".into(),
+                "Continue mission".into(),
+                vec![],
+                None,
+                None,
+            )
+            .unwrap();
+        let later = prepare(&store, &next, Access::Auto).unwrap();
+        assert_eq!((&later.cwd, &later.branch), (&first.cwd, &first.branch));
+        assert!(store
+            .snapshot(Some(&run.id))
+            .unwrap()
+            .tasks
+            .iter()
+            .all(|t| t.workspace.as_ref().is_none_or(|ws| ws.swept_at.is_none())));
+    }
+
+    #[test]
+    fn the_person_can_close_a_swept_mission_without_recreating_its_folder() {
+        let repo = Repo::new();
+        let (store, run, task) = setup(&repo, WorkspaceMode::Mission);
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        report(&store, &first, WorkerOutcome::Completed);
+        let head = crate::git_ops::lifespan::text(&first.cwd, &["rev-parse", "HEAD"]).unwrap();
+        let root = first.cwd.trim_end_matches(['/', '\\']);
+        store
+            .lifespan_delivery(
+                root,
+                &DeliveryEvidence {
+                    head_sha: head,
+                    has_commits: false,
+                    merged: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        crate::git_ops::lifespan::remove(&repo.root, root, false).unwrap();
+        store.lifespan_record_swept(root, 100).unwrap();
+        assert!(store.coordinated_runs("chat:master").unwrap()[0].close_eligible);
+        let closed = store
+            .close_mission(&ChatManager::default(), "chat:master", &run.id, false)
+            .unwrap();
+        assert_eq!(closed.status, RunStatus::Closed);
+        assert!(closed.mission_delivery[0].removed);
+        assert!(!Path::new(root).exists());
+    }
+
+    #[test]
+    fn sweeping_does_not_bypass_merged_or_abandoned_task_refusals() {
+        for merged in [false, true] {
+            let repo = Repo::new();
+            let (store, _run, task) = setup(&repo, WorkspaceMode::Worktree);
+            let first = prepare(&store, &task, Access::Auto).unwrap();
+            report(&store, &first, WorkerOutcome::Failed);
+            crate::git_ops::lifespan::remove(&repo.root, &first.cwd, false).unwrap();
+            store.lifespan_record_swept(&first.cwd, 100).unwrap();
+            store
+                .mutate(|data| {
+                    let ws = data
+                        .tasks
+                        .get_mut(&task.id)
+                        .unwrap()
+                        .workspace
+                        .as_mut()
+                        .unwrap();
+                    if merged {
+                        ws.delivery = Some(DeliveryEvidence {
+                            merged: true,
+                            ..Default::default()
+                        });
+                    } else {
+                        ws.abandoned = true;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            let error = prepare(&store, &task, Access::Auto).unwrap_err();
+            assert!(
+                error.contains(if merged { "merged" } else { "closed" }),
+                "{error}"
+            );
+            assert!(!Path::new(&first.cwd).exists());
+        }
+    }
+
     /// Feedback b17ade5a: an Auto run over a folder with no Git history plans
     /// the folder itself, rather than a worktree that fails after approval.
     #[test]
@@ -3162,6 +3323,7 @@ pub(super) mod tests {
                     task.status = TaskStatus::Completed;
                     task.result = Some("Done".into());
                     task.workspace = Some(TaskWorkspace {
+                        swept_at: None,
                         plan: workflow::plan(&root, "", &task.id, WorkspaceMode::Direct)?,
                         state: WorkspaceState::Retained,
                         lease_attempt_id: Some(attempt.id.clone()),
@@ -5175,6 +5337,7 @@ mod recovery_tests {
         store
             .mutate(|data| {
                 data.tasks.get_mut(&task.id).unwrap().workspace = Some(TaskWorkspace {
+                    swept_at: None,
                     plan,
                     state: WorkspaceState::Cleaning,
                     lease_attempt_id: Some("old".into()),
