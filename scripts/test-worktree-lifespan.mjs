@@ -16,7 +16,7 @@ const { chromium } = await import(isAbsolute(pw) ? pathToFileURL(pw).href : pw);
 const check = process.env.OCTIQ_LIFESPAN_CHECK || "all";
 const mutation = process.env.OCTIQ_LIFESPAN_MUTATION || "";
 const themes = process.env.OCTIQ_LIFESPAN_THEMES?.split(",") || ["dark", "light", "fun", "manga", "guofeng", "xp", "cyberpunk"];
-const checks = ["layout", "flight", "repeat", "refusal", "older", "flow"];
+const checks = ["layout", "flight", "repeat", "refusal", "ignored", "older", "flow"];
 assert.ok(check === "all" || checks.includes(check), `Unknown check: ${check}`);
 assert.ok(!mutation || checks.includes(mutation), `Unknown mutation: ${mutation}`);
 const evidence = process.env.OCTIQ_EVIDENCE_DIR || await mkdtemp(join(tmpdir(), "octiq-worktree-lifespan-"));
@@ -25,7 +25,7 @@ let server, browser;
 let mutations = 0;
 const now = 1793860000000;
 const owner = label => ({ kind: "task", label, runId: "run", taskId: label });
-const item = (key, patch = {}) => ({ key, path: `/work/very-long-project-name/.worktrees/${key}/deep-folder`, repo: "/work/very-long-project-name", branch: `feature/${key}`, head: `head-${key}`, statusHash: `status-${key}`, owner: owner(key), state: "finished", pinned: false, idleDays: 15, bytes: 4200000000, buildBytes: 2100000000, dirtyFiles: 0, untrackedFiles: 0, unmergedCommits: 0, pushed: null, stripAt: now + 86400000, removeAt: now + 7 * 86400000, why: "The host confirmed this task has finished. " + "Whole reason. ".repeat(15), ...patch });
+const item = (key, patch = {}) => ({ key, path: `/work/very-long-project-name/.worktrees/${key}/deep-folder`, repo: "/work/very-long-project-name", branch: `feature/${key}`, head: `head-${key}`, statusHash: `status-${key}`, owner: owner(key), state: "finished", pinned: false, idleDays: 15, bytes: 4200000000, buildBytes: 2100000000, dirtyFiles: 0, untrackedFiles: 0, ignoredFiles: 0, ignoredBytes: 0, unmergedCommits: 0, pushed: null, stripAt: now + 86400000, removeAt: now + 7 * 86400000, why: "The host confirmed this task has finished. " + "Whole reason. ".repeat(15), ...patch });
 function fixture() {
   return { settings: { enabled: true, buildAfterDays: 3, removeAfterDays: 14 }, lastSweepAt: now, scanning: true,
     items: [item("abandoned", { state: "abandoned", dirtyFiles: 3, untrackedFiles: 2, unmergedCommits: 1, pushed: false, stripAt: null, removeAt: null }), item("finished"), item("idle", { state: "idle", stripAt: now + 1000 }), item("kept", { pinned: true }), item("active", { state: "active" }), item("unknown", { state: "abandoned", owner: { kind: "unknown", label: "Unknown ownership" }, bytes: null, buildBytes: null })],
@@ -55,6 +55,7 @@ function mutate(code, id) {
   if (mutation === "refusal" && id.includes("WorktreeLifespan.tsx")) next = code.replace("[key]: words(reason)", "[key]: 'Hidden host refusal'");
   if (mutation === "older" && id.includes("worktreeLifespan.ts") && !id.includes(".tsx")) next = code.replace("export const lifespanUnavailable = (message: string) =>", "export const lifespanUnavailable = (_message: string) => false &&");
   if (mutation === "flow" && id.includes("WorktreeLifespan.tsx")) next = code.replace('"worktree-lifespan-changed", () => void reload()', '"worktree-lifespan-changed", () => {}');
+  if (mutation === "ignored" && id.includes("worktreeLifespan.ts") && !id.includes(".tsx")) next = code.replace("will be deleted and", "will be archived and");
   if (next !== code) { mutations++; return next; }
 }
 async function open(width, theme) {
@@ -77,6 +78,7 @@ async function open(width, theme) {
       reply(request, null); event(); return;
     }
     if (cmd === "worktree_lifespan_archive") {
+      if (data.items.find(item => item.key === args.key)?.ignoredFiles == null) return reply(request, null, "Host could not check for ignored files; archive refused.");
       if (rejectArchive) return reply(request, null, "Host refused: worktree changed since it was drawn.");
       const index = data.items.findIndex(item => item.key === args.key);
       data.items.splice(index, 1); reply(request, data.archives[0]); event(); return;
@@ -202,6 +204,35 @@ async function older(app) {
   await page.getByText("Worktree lifespan is not available on this backend.", { exact: true }).waitFor();
   assert.equal(await page.locator(".worktree-lifespan [role=alert]").count(), 0, "An older backend is quiet on the first read too");
 }
+async function ignored(app) {
+  const { page, data, localCalls } = app;
+  const abandoned = data.items.find(item => item.key === "abandoned");
+  const archive = () => row(page, "abandoned").getByRole("button", { name: "Archive and remove", exact: true });
+  const dialog = page.getByRole("alertdialog");
+  const before = localCalls.filter(call => call.cmd === "worktree_lifespan_archive").length;
+  Object.assign(abandoned, { ignoredFiles: 2, ignoredBytes: 1200000000 }); app.event();
+  await row(page, "abandoned").getByText(/2 ignored files \(1.2 GB\)/).waitFor();
+  await keyClick(archive()); await dialog.waitFor();
+  assert.match(await dialog.locator(".ask-body").textContent(), /^2 ignored files \(1.2 GB\) will be deleted and are not in the archive\./, "Ignored files warning names deletion outside the archive");
+  await page.screenshot({ path: join(evidence, `ignored-${page.viewportSize().width}.png`) });
+  await page.keyboard.press("Escape"); await dialog.waitFor({ state: "detached" });
+  abandoned.ignoredBytes = null; app.event();
+  await page.waitForFunction(() => !document.querySelector('[aria-label="abandoned"]')?.textContent.includes("1.2 GB"));
+  await keyClick(archive()); await dialog.waitFor();
+  assert.match(await dialog.locator(".ask-body").textContent(), /^2 ignored files will be deleted and are not in the archive\./);
+  await page.keyboard.press("Escape"); await dialog.waitFor({ state: "detached" });
+  abandoned.ignoredFiles = null; app.event();
+  await row(page, "abandoned").getByText("The host could not check for ignored files. Archive and remove is unavailable.", { exact: true }).waitFor();
+  assert.equal(await archive().count(), 0, "Unknown ignored-file count offers no archive action");
+  assert.equal(await row(page, "abandoned").getByRole("button", { name: "Keep", exact: true }).isEnabled(), true);
+  assert.doesNotMatch(await row(page, "abandoned").textContent(), /0 ignored|No ignored|null|undefined/);
+  abandoned.ignoredFiles = 0; abandoned.ignoredBytes = 0; app.event(); await archive().waitFor();
+  await keyClick(archive()); await dialog.waitFor();
+  assert.match(await dialog.locator(".ask-body").textContent(), /The archive keeps tracked changes and new files before removing this worktree\. Ignored files are not kept\.$/);
+  assert.doesNotMatch(await dialog.locator(".ask-body").textContent(), /will be deleted|could not check/);
+  await page.keyboard.press("Escape"); await dialog.waitFor({ state: "detached" });
+  assert.equal(localCalls.filter(call => call.cmd === "worktree_lifespan_archive").length, before, "Review and cancellation do not send deletion");
+}
 async function flow(app) {
   const { page, data, localCalls } = app;
   const before = localCalls.filter(call => call.cmd === "worktree_lifespan_list").length;
@@ -236,7 +267,7 @@ try {
     const app = await open(width, theme);
     try {
       for (const name of checks) if ((check === "all" || check === name) && (name === "layout" || theme === themes[0])) {
-        await ({ layout, flight, repeat, refusal, older, flow })[name](app, width, theme);
+        await ({ layout, flight, repeat, refusal, ignored, older, flow })[name](app, width, theme);
         results.push({ width, theme, check: name, passed: true });
         // Older host replaces this section; no later actions in that context.
         if (name === "older" && check === "all") break;

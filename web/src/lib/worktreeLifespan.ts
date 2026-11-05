@@ -5,6 +5,7 @@ export type LifespanItem = {
   key: string; path: string; repo: string; branch: string | null; head: string; statusHash: string;
   owner: WorktreeOwner; state: "active" | "idle" | "finished" | "abandoned"; pinned: boolean; idleDays: number;
   bytes: number | null; buildBytes: number | null; dirtyFiles: number; untrackedFiles: number; unmergedCommits: number; pushed: boolean | null;
+  ignoredFiles: number | null; ignoredBytes: number | null;
   stripAt: number | null; removeAt: number | null; why: string;
 };
 export type WorktreeArchive = { key: string; ref: string; repo: string; branch: string | null; path: string; archivedAt: number; files: number; restoredAt: number | null };
@@ -34,8 +35,13 @@ export function lifespanDate(at: number): string {
   return new Date(at).toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 export const idleWords = (days: number) => `${days} idle ${days === 1 ? "day" : "days"}`;
+export const ignoredFilesUnchecked = "The host could not check for ignored files. Archive and remove is unavailable.";
+function ignoredFileStakes(item: LifespanItem): string {
+  return item.ignoredFiles != null && item.ignoredFiles > 0 ? `${item.ignoredFiles} ignored ${item.ignoredFiles === 1 ? "file" : "files"}${item.ignoredBytes != null ? ` (${diskBytes(item.ignoredBytes)})` : ""}` : "";
+}
 export function worktreeStakes(item: LifespanItem): string {
   return [item.dirtyFiles > 0 && `${item.dirtyFiles} changed`, item.untrackedFiles > 0 && `${item.untrackedFiles} new ${item.untrackedFiles === 1 ? "file" : "files"}`,
+    ignoredFileStakes(item),
     item.unmergedCommits > 0 && `${item.unmergedCommits} ${item.unmergedCommits === 1 ? "commit" : "commits"} not merged`, item.pushed === false && "Not pushed"].filter(Boolean).join(" · ");
 }
 export function worktreeFact(item: LifespanItem, enabled = true): string {
@@ -61,6 +67,8 @@ export function validateLifespanSettings(build: string, remove: string): string 
   return null;
 }
 export function archiveQuestion(item: LifespanItem) {
-  return { title: `Archive and remove ${item.owner.label}?`, body: `${item.path}\n${worktreeStakes(item) || "No changed files or unmerged commits reported."}\nThe archive keeps tracked changes and new files before removing this worktree. Ignored files are not kept.`, confirmLabel: "Archive and remove", cancelLabel: "Keep worktree", decision: true };
+  const ignored = ignoredFileStakes(item);
+  const warning = item.ignoredFiles == null ? ignoredFilesUnchecked : ignored ? `${ignored} will be deleted and ${item.ignoredFiles === 1 ? "is" : "are"} not in the archive.` : "";
+  return { title: `Archive and remove ${item.owner.label}?`, body: `${warning ? `${warning}\n` : ""}${item.path}\n${worktreeStakes(item) || "No changed files or unmerged commits reported."}\nThe archive keeps tracked changes and new files before removing this worktree.${!warning ? " Ignored files are not kept." : ""}`, confirmLabel: "Archive and remove", cancelLabel: "Keep worktree", decision: true };
 }
 export const lifespanUnavailable = (message: string) => /'worktree_lifespan_\w+' is not available on this backend/.test(message);
