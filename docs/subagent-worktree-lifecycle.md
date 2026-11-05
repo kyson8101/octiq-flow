@@ -467,6 +467,14 @@ kept with an explanation, and the recognized `--attr-source` option prevents a
 silently ignored environment variable from being treated as proof.
 `$GIT_DIR/info/attributes` and `core.attributesFile` still apply as they would
 on Restore in this repository; later changes to them can change Restore bytes.
+A non-empty `config.worktree` is kept without interpreting its keys: Git removes
+that admin file and Restore does not recreate its settings, so the restoration
+environment was not proven. This applies to automatic, validation and confirmed
+Archive removal. An unreadable, redirected or unexpected config file also keeps
+the folder; empty or absent proceeds. Its presence and metadata are included
+in pre/post proof stamps, including a file created during the comparison.
+This conservatively holds sparse-only worktree configuration too; missing
+sparse tree entries themselves remain allowed.
 Mode-120000 entries use the raw blob, including regular-file checkouts under
 `core.symlinks=false`. Compare effective type and, on Unix, executable bit
 against the tree mode regardless of `core.filemode`; Windows has no executable

@@ -2325,7 +2325,9 @@ fn h8_stat_cache_cannot_hide_ordinary_tracked_bytes_at_either_removal_door() {
     let p = Path::new(&r.work).join("tracked");
     let time = fs::metadata(&p).unwrap().modified().unwrap();
     r.write("tracked", "authored\n"); // same length as original\n
-    raw::open_regular(&p)
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&p)
         .unwrap()
         .set_times(fs::FileTimes::new().set_modified(time))
         .unwrap();
@@ -2672,4 +2674,132 @@ fn kept_ref_attributes_override_changed_disk_attributes_for_hidden_observation()
     let proof = raw::observe_hidden(&r.work, "HEAD", cfg!(windows)).unwrap();
     assert_eq!(proof.path.as_deref(), Some("tracked"));
     assert_eq!(proof.hidden, 1);
+}
+
+#[test]
+fn config_worktree_settings_are_kept_at_every_removal_door_and_empty_is_a_control() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.age(30);
+    let config = PathBuf::from(
+        git::text(
+            &r.work,
+            &[
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                "config.worktree",
+            ],
+        )
+        .unwrap(),
+    );
+    fs::write(&config, "[core]\n autocrlf = true\n").unwrap();
+    let error = raw::verify(&r.work, "HEAD", false, cfg!(windows))
+        .err()
+        .unwrap();
+    assert!(
+        error.contains("settings cannot be recreated by Restore") && error.contains("not proven"),
+        "{error}"
+    );
+    assert!(validation_removal_proof(&r.work)
+        .err()
+        .unwrap()
+        .contains("config.worktree"));
+    let svc = r.services(30);
+    let store = Store::default();
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(!gone(&r.work));
+    assert!(store
+        .inner
+        .lock()
+        .unwrap()
+        .items
+        .iter()
+        .any(|i| i.path == r.work && i.why.contains("config.worktree")));
+    r.write("dirty", "authored archive candidate");
+    r.age(30);
+    let preview = r.observe(now(), &known()).item;
+    store.inner.lock().unwrap().items = vec![preview.clone()];
+    let error = archive_checked(
+        &svc,
+        &store,
+        &checks(),
+        &preview.key,
+        &preview.head,
+        &preview.status_hash,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("config.worktree") && error.contains("archive ref"),
+        "{error}"
+    );
+    assert!(!gone(&r.work));
+    fs::remove_file(Path::new(&r.work).join("dirty")).unwrap();
+    fs::remove_file(&config).unwrap();
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
+        0
+    );
+    let before = raw::Stamps::capture(&r.work).unwrap();
+    fs::write(&config, "").unwrap();
+    assert!(
+        before.verify(&r.work).is_err(),
+        "a newly appeared config must invalidate long-proof stamps"
+    );
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
+        0
+    );
+    r.age(30);
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(
+        gone(&r.work),
+        "empty config is an actual safe removal control"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn config_worktree_redirect_special_and_unreadable_are_not_opened_as_settings() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let r = Repo::new();
+    let config = PathBuf::from(
+        git::text(
+            &r.work,
+            &[
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                "config.worktree",
+            ],
+        )
+        .unwrap(),
+    );
+    let outside = r._home.join("sentinel");
+    fs::write(&outside, "").unwrap();
+    symlink(&outside, &config).unwrap();
+    assert!(raw::verify(&r.work, "HEAD", false, false)
+        .err()
+        .unwrap()
+        .contains("config.worktree"));
+    fs::remove_file(&config).unwrap();
+    assert!(Command::new("mkfifo")
+        .arg(&config)
+        .status()
+        .unwrap()
+        .success());
+    let start = std::time::Instant::now();
+    assert!(raw::verify(&r.work, "HEAD", false, false).is_err());
+    assert!(start.elapsed() < Duration::from_secs(2));
+    fs::remove_file(&config).unwrap();
+    fs::write(&config, "").unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0)).unwrap();
+    assert!(raw::verify(&r.work, "HEAD", false, false).is_err());
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(fs::read(&outside).unwrap(), b"");
 }

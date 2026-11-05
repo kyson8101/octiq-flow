@@ -3432,6 +3432,10 @@ which paths get compared. For regular files compare raw disk bytes with what
 `cat-file --filters` would write, covering ident and all other conversions.
 `--attr-source` / `GIT_ATTR_SOURCE` binds attributes to the kept ref, including sparse omissions. Git below 2.41 or an unparseable version keeps the
 folder: an unknown environment variable alone is never evidence of support.
+A non-empty `config.worktree` keeps automatic, validation and confirmed Archive
+removal: Restore does not recreate those settings, so they were not proven.
+Do not interpret keys. Read without redirects; unreadable/unexpected keeps,
+empty/absent proceeds. Include its presence and metadata in final file stamps.
 Mode-120000 entries use the raw blob, including regular-file checkouts under
 `core.symlinks=false`. Compare effective type and, on Unix, executable bit
 against the tree mode regardless of `core.filemode`; Windows has no executable

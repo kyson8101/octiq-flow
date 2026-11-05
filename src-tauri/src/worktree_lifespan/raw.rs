@@ -148,6 +148,8 @@ impl Stamps {
             let p = Path::new(root).join(std::str::from_utf8(name).map_err(|e| e.to_string())?);
             result.insert(p.clone(), stamp(&p)?);
         }
+        let config = config_path(root, budget.saturating_sub(start.elapsed()))?;
+        result.insert(config.clone(), stamp(&config)?);
         Ok(Self(result))
     }
     pub fn verify(&self, root: &str) -> Result<(), String> {
@@ -157,6 +159,71 @@ impl Stamps {
         }
         Ok(())
     }
+}
+
+fn config_path(root: &str, timeout: Duration) -> Result<PathBuf, String> {
+    let started = Instant::now();
+    let budget = git::remaining(timeout)?;
+    let dot_git = Path::new(root).join(".git");
+    let meta = fs::symlink_metadata(&dot_git).map_err(|e| {
+        format!("Cannot inspect Git admin path for config.worktree: {e}; folder kept.")
+    })?;
+    // rev-parse --git-path can resolve the final symlink, and Git may read
+    // config.worktree before answering any command. Read the regular gitdir
+    // pointer directly so the guard precedes Git and never follows a redirect.
+    let admin = if meta.is_dir() && !redirect(&meta) {
+        dot_git
+    } else {
+        let file = open_regular(&dot_git).map_err(|e| {
+            format!("Cannot safely read Git pointer for config.worktree: {e}; folder kept.")
+        })?;
+        let mut bytes = Vec::new();
+        file.take(65537)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > 65536 {
+            return Err("Git pointer for config.worktree exceeded its bound; folder kept.".into());
+        }
+        let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
+        let text = text.strip_suffix('\n').unwrap_or(text);
+        let text = text.strip_suffix('\r').unwrap_or(text);
+        let path = text
+            .strip_prefix("gitdir: ")
+            .ok_or("Unknown Git pointer for config.worktree; folder kept.")?;
+        if path.is_empty() || path.contains(['\n', '\r']) {
+            return Err("Cannot carry Git pointer for config.worktree; folder kept.".into());
+        }
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            path
+        } else {
+            Path::new(root).join(path)
+        }
+    };
+    real_dir(&admin)?;
+    if started.elapsed() >= budget {
+        return Err("Config metadata reached its remaining bound; folder kept.".into());
+    }
+    Ok(admin.join("config.worktree"))
+}
+fn require_recreatable_config(root: &str, timeout: Duration) -> Result<(), String> {
+    let path = config_path(root, timeout)?;
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("Cannot inspect config.worktree: {e}; folder kept.")),
+        Ok(_) => {}
+    }
+    let mut file = open_regular(&path)
+        .map_err(|e| format!("Cannot safely read config.worktree: {e}; folder kept."))?;
+    let mut byte = [0u8];
+    if file
+        .read(&mut byte)
+        .map_err(|e| format!("Cannot read config.worktree: {e}; folder kept."))?
+        != 0
+    {
+        return Err("Non-empty config.worktree settings cannot be recreated by Restore and were not proven; folder kept.".into());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Default)]
@@ -279,6 +346,7 @@ fn verify_with_budget(
     let start = Instant::now();
     let remaining = || timeout.checked_sub(start.elapsed()).ok_or_else(bound);
     let run = |args: &[&str]| git::git_bounded(root, args, remaining()?);
+    require_recreatable_config(root, remaining()?)?;
     let listed = run(&["ls-files", "-v", "--stage", "-z"])?;
     let mut hidden = BTreeSet::new();
     let mut index = Vec::new();
