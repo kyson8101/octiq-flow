@@ -18,6 +18,9 @@ describe("worktree groups and clearing order", () => {
   });
 });
 describe("facts, words, and absent measurements", () => {
+  it.each([[0.4, "Idle less than a day"], [1, "1 idle day"], [1.9, "1 idle day"], [30.003, "30 idle days"]])("shows completed idle days for %s", (days, words) => {
+    expect(idleWords(Number(days))).toBe(words);
+  });
   it("names states, unknown owners, pauses, and each host clearing timestamp", () => {
     expect(worktreeFact(item({ state: "abandoned" }))).toBe("Abandoned · Waiting for you");
     expect(worktreeFact(item({ state: "active" }))).toBe("In use");

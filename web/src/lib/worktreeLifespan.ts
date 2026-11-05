@@ -34,7 +34,10 @@ export function groupWorktrees(items: LifespanItem[]) {
 export function lifespanDate(at: number): string {
   return new Date(at).toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
-export const idleWords = (days: number) => `${days} idle ${days === 1 ? "day" : "days"}`;
+export function idleWords(days: number): string {
+  const wholeDays = Math.floor(days);
+  return wholeDays < 1 ? "Idle less than a day" : `${wholeDays} idle ${wholeDays === 1 ? "day" : "days"}`;
+}
 export const ignoredFilesUnchecked = "The host could not check for ignored files. Archive and remove is unavailable.";
 function ignoredFileStakes(item: LifespanItem): string {
   return item.ignoredFiles != null && item.ignoredFiles > 0 ? `${item.ignoredFiles} ignored ${item.ignoredFiles === 1 ? "file" : "files"}${item.ignoredBytes != null ? ` (${diskBytes(item.ignoredBytes)})` : ""}` : "";
