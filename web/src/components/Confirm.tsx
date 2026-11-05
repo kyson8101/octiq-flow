@@ -41,6 +41,8 @@ export type ConfirmOptions = {
   cancelLabel?: string;
   /** Paints the confirm button as destructive. For anything that deletes. */
   danger?: boolean;
+  /** A host-owned decision, in the decision colour. */
+  decision?: boolean;
 };
 
 type Ask = (options: ConfirmOptions) => Promise<boolean>;
@@ -145,7 +147,7 @@ export function ConfirmDialog({
             {options.cancelLabel ?? "Cancel"}
           </button>
           <button
-            className={`ask-btn is-primary ${options.danger ? "is-danger" : ""}`}
+            className={`ask-btn is-primary ${options.danger ? "is-danger" : ""} ${options.decision ? "is-decision" : ""}`}
             type="button"
             onClick={careful.confirm}
           >

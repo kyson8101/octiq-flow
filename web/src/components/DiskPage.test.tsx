@@ -12,7 +12,7 @@ const render = (over: Partial<Parameters<typeof DiskReportPage>[0]> = {}) => ren
 describe("Disk report page", () => {
   it("renders the fixture groups, worktree checks, growth and explicit warnings", () => {
     const html = render();
-    for (const text of ["Safe to clean", "Review first", "Your work", "Video project", "+500 MB since", "Not recommended to delete", "Working tree clean", "Merged to mainline", "Not a mainline worktree", "Not in use", "280 MB", "Git does not protect these files", "1 folders skipped", "OctiqFlow never deletes anything", "Select at least one item", "Items with no tool command are printed as Skipped."]) expect(html).toContain(text);
+    for (const text of ["Safe to clean", "Review first", "Your work", "Video project", "+500 MB since", "Not recommended to delete", "Working tree clean", "Merged to mainline", "Not a mainline worktree", "Not in use", "280 MB", "Git does not protect these files", "1 folders skipped", "This manual scan never deletes anything", "Select at least one item", "Items with no tool command are printed as Skipped."]) expect(html).toContain(text);
     expect(html).not.toContain('checked=""');
     expect(html.match(/type="checkbox"/g)).toHaveLength(10); // 7 rows, 2 sections, 1 rm switch; no work checkbox
     expect(html.match(/aria-disabled="true"/g)).toHaveLength(2);
