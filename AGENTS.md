@@ -3284,7 +3284,7 @@ ledger that holds one needs nothing done to it: the key is ignored on read
 and gone at the next write. A new derived field gets a line in
 `retry_tests::the_ledger_on_file_holds_nothing_a_read_derives`, which makes
 real writes and reads the file. A fact the host does know is said outright:
-`heldByPlan` is `true` or `false` on every task of a run that has a plan
+`heldByPlan` is `true`, `false`, or exactly `set this to true or false` on every task of a run that has a plan
 approval, because a page sent nothing for "not held" could not tell it from
 a host that does not say, and read an approved task as held. `awaits` says
 who must decide and nothing else; whether the attempt can go on right now is
@@ -3386,7 +3386,7 @@ are rebuildable. Every file under a `source/`, `works/` or `anime/` tree overrid
 this list and is at stake, including `dist`. `pnpm-workspace.yaml` is rebuildable
 only beside a tracked-or-present `package.json`, at most 4 KiB, valid UTF-8,
 with non-empty lines exactly `allowBuilds:` first and then two-space-indented
-`<name>: true|false` entries; comments, other keys and unread files are at stake.
+`<name>: true|false|set this to true or false` entries; comments, other keys and unread files are at stake.
 Any ASCII-case-insensitive `.git` entry or bare-repo shape (`HEAD` file plus
 `objects/` and `refs/`) is at stake and opaque, even inside build output.
 Symlinks inside a real qualifying `target`/`node_modules` are rebuildable links;
@@ -3414,8 +3414,48 @@ budget, tree sizing 100,000 entries/15 seconds, inventory 100,000 entries/15
 seconds. The final inventory under lifecycle has 100,000 entries/10 seconds; a
 bound withholds that item with a reason and other workspaces continue. Archive capture and fresh-index comparisons have 120-second command bounds
 outside lifecycle. Git
-output stays capped at 32 MiB per command. Git removal is bounded to 15 seconds;
+metadata output stays capped at 32 MiB per command. Git removal is bounded to 15 seconds;
 filesystem mutation can still wait on the OS. Release lifecycle between items.
+
+**Git's clean or equal is not proof that raw bytes can be restored.** Every
+removed byte must be rebuildable by the shared predicate, or restorable byte
+for byte from a kept ref. `raw.rs` reads `ls-files -v`: lowercase
+assume-unchanged and `S` skip-worktree entries existing on disk must match
+Restore's output; absent sparse entries are fine. Hidden edits make the item
+Abandoned and name the count. Status overrides `status.showUntrackedFiles=all`,
+`core.fsmonitor=false`, `core.untrackedCache=false`, `--untracked-files=all`,
+and `--ignore-submodules=none`.
+
+A single `check-attr` pass selects tracked `filter`, `text`, or `eol` paths;
+active `core.autocrlf` selects all tracked files. Ordinary automatic checkouts
+with neither need no per-file content comparisons in this proof. Compare raw
+bytes to `cat-file --filters --path=<p> <ref>:<p>` (symlinks use their raw blob).
+Reversible CRLF is accepted; lossy filters, unreadable files, filter errors,
+and offline required LFS smudges keep the folder. Archive verifies all tree
+entries, including every changed/untracked file captured by its temporary
+index; a mismatch names the count and states that its ref and folder stay.
+This is separate from H3's fresh-index/disk equality check. Raw comparison runs
+outside lifecycle, bounded to 512 MiB total input/output and 120 seconds;
+filtered output uses the remaining byte budget rather than the 32 MiB metadata
+cap. Bounds mean kept, never successful preservation.
+
+Before either long final comparison, snapshot tracked/untracked path identities
+and size/mtime/ctime (Windows uses FILE_BASIC_INFO.ChangeTime). Afterwards
+capture usage again, reacquire lifecycle, then recheck settings, pin, profile,
+allocation/activity, HEAD, ignored inventory against the preview hash, and the
+complete file stamp inventory. The final stage has a shared 10-second bound
+checked before deletion; there is no dropped lock or content comparison after
+these final answers. Strip preflights every build subtree before deleting any,
+then repeats qualification/usage/inventory at each final door. Actual successful
+strip count/bytes survive a later refusal, are published beside it, and update
+the cache.
+
+Only non-redirect regular files are opened for pnpm or content checks. Unix
+uses O_NOFOLLOW|O_NONBLOCK and validates the opened handle, so a FIFO or a
+racing FIFO replacement cannot block open. Directory handles are checked and
+opened with O_DIRECTORY|O_NOFOLLOW|O_NONBLOCK; Windows uses reparse-point flags.
+Other file types stay at stake. The pnpm grammar accepts the exact 50-byte
+`allowBuilds:\n  esbuild: set this to true or false\n` placeholder; near-misses do not.
 
 After the archive status hash and ignored checks, compare disk with the archive
 using a **fresh** temporary index loaded from the archive tree, `diff --exit-code`
@@ -3693,3 +3733,12 @@ missing/stale evidence explains the swept state and asks for restore/refresh.
 - `scripts/hooks/agent-session-capture.cjs` is **orphaned**: it was installed by
   the deleted `agent_resume.rs`. Users may still have it wired into
   `~/.claude/settings.json`, so it was left on disk rather than deleted.
+
+
+Explicit validation cleanup also prepares raw restoration proof outside
+workspace lifecycle. It retakes lifecycle and rechecks actor/task ownership,
+checkout identity/repository/detached HEAD, retained HEAD, file stamps and the
+shared ignored inventory before non-force removal. An appeared/replaced or
+changed folder is kept; final checks share the 10-second bound. Git omits
+FIFOs/sockets from porcelain, so bounded metadata discovery supplements the
+ignored inventory and marks those entries at stake without opening them.
