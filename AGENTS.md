@@ -3376,6 +3376,26 @@ Ignored files are excluded. Agent history and its worktree-named session folders
 are never touched. The five `worktree_lifespan_*` commands are socket-only;
 there is no hook or MCP route. See `docs/subagent-worktree-lifecycle.md`.
 
+**A clean status says nothing about ignored files.** Non-force `git worktree
+remove` deletes them too; media under Starfall's ignored `works/` and `anime/`
+may be the only copy. Each worktree (validation checkouts included) gets a bounded
+`git status --ignored` metadata inventory, without following redirects. Only
+`target` beside `Cargo.toml`; `node_modules`, `dist`, `.astro`, `*.tsbuildinfo`
+and `pnpm-workspace.yaml` beside `package.json`; plus `.DS_Store` and `*.log`
+are rebuildable. Every file under a `source/`, `works/` or `anime/` tree overrides
+this list and is at stake, including `dist`. This classification does not expand
+the strip allow-list above. `Item.ignoredFiles` / `ignoredBytes` count only
+at-stake ignored files; null means incomplete/failed/timed-out inventory.
+Nonzero or null keeps an inactive item Abandoned and never Finished; state
+explains the count or failure. Removal repeats the inventory under the same
+lifecycle/path/start marks immediately before Git. Explicit validation cleanup
+also refuses nonzero/unknown inventories. Task/mission rebuild is unchanged.
+`statusHash` includes the at-stake ignored metadata inventory, so its change
+invalidates an archive preview. Archive refuses null inventory. Its confirmation
+must show the at-stake count and say these ignored files **will be deleted and
+are not in the archive ref**; only the person's confirmed archive flow may
+remove them. Never describe a clean Git status as proof all files are retained.
+
 ## Conventions & gotchas
 
 - **Keep closing replies natural and concise.** Do not append `Task Completed`,
