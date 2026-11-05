@@ -430,7 +430,7 @@ the host's owed-save retry and never claims to be saved.
 Heavy usage capture, tree walks and content hashes run outside the global
 workspace lifecycle lock while checkout/start marks prevent host starts. The
 host reacquires lifecycle for each final operation and rechecks allocations and
-activity; it releases it between items. Content hashing is bounded to 512 MiB
+activity; it releases it between items. Content hashing is bounded to 2 GiB
 total/120 seconds, sizing to 100,000 entries/15 seconds. Final under-lock ignored
 checks use 100,000 entries/10 seconds including Git status; the normal inventory
 remains 100,000 entries/15 seconds. A limit holds that item in words and lets
@@ -444,6 +444,7 @@ and appears in `profile_status.owed`; the removed path leaves the inventory
 cache. `dispatch::settle_owed` records it and emits `worktree-swept` as soon as
 the profile returns, without waiting for the hourly scan. Per-task Cleanup on
 a swept folder uses its unchanged kept branch and saved delivery evidence,
+and re-verifies ancestry against the current base,
 without a worker or rebuild; missing/stale evidence returns an actionable
 sentence naming the swept workspace and requiring restore/refresh.
 
@@ -456,25 +457,55 @@ an inactive worktree Abandoned with a count; absent sparse files are allowed.
 Status explicitly overrides `status.showUntrackedFiles`, `core.fsmonitor`,
 `core.untrackedCache`, and submodule hiding with `--ignore-submodules=none`.
 
-One `check-attr` pass selects tracked `filter`/`text`/`eol` files; active
-`core.autocrlf` selects all tracked files. An automatic checkout without these
-attributes/autocrlf or hidden bits adds no per-file raw Restore reads. The host
-compares raw bytes against `git cat-file --filters --path=<p> <ref>:<p>` (raw
-blob for symlinks). Archive checks every captured tree file, including changed
-and untracked content, separately from the fresh-index equality test. Reversible
-CRLF works; a lossy/failing filter, unreadable file or offline required LFS
-smudge withholds removal. Failure names the affected count and keeps both the
-archive ref and folder; a raw-proof failure is distinct from the fresh-index
-H3 failure. Raw comparisons run outside lifecycle, with a shared 512 MiB
-input/output and 120-second bound. Filtered output is bounded by that remaining
-budget, an explicit exception to the 32 MiB metadata command limit.
+Every removal other than a confirmed Archive proves **every tracked path**
+against the kept ref's tree; attributes, autocrlf and hidden bits never select
+which paths get compared. For regular files compare raw disk bytes with what
+`cat-file --filters` would write, covering ident and all other conversions.
+`--attr-source` / `GIT_ATTR_SOURCE` binds attributes to the kept ref, including when a sparse
+attributes file is absent on disk. Git below 2.41 or an unparseable version is
+kept with an explanation, and the recognized `--attr-source` option prevents a
+silently ignored environment variable from being treated as proof.
+`$GIT_DIR/info/attributes` and `core.attributesFile` still apply as they would
+on Restore in this repository; later changes to them can change Restore bytes.
+Mode-120000 entries use the raw blob, including regular-file checkouts under
+`core.symlinks=false`. Compare effective type and, on Unix, executable bit
+against the tree mode regardless of `core.filemode`; Windows has no executable
+bit. Any present gitlink, extra index entry or unmerged stage keeps the folder.
+A missing sparse entry has no bytes to lose. Archive keeps its existing full
+captured-tree check and also verifies effective mode. Reversible CRLF and an
+untouched expanded ident remain removable; unknown/unreadable/filter failures
+keep the folder and explain why.
+
+The full proof runs **only at removal**, outside lifecycle, bounded to **2 GiB**
+total disk/Restore bytes and **120 seconds**. It streams and hashes, with one
+`cat-file --batch --filters -z` process and a separate raw batch only for
+symlinks. Batch headers report the original blob size even after conversion:
+read exactly the disk length, then require the framing LF and a random nonce's
+missing-object response at that exact offset. Never scan for a later marker;
+first mismatch stops/kills the batch and names the path (at least 1 file).
+Input is one file request/response at a time; spaces/newlines use NUL input,
+while leading-whitespace paths are kept rather than misparsed. Oversized or
+hung filters cannot grow a whole-output buffer: a deadline kills the child
+and descendants (Unix process group; Windows suspended launch into a Job
+Object before resume). Metadata output retains its 32 MiB cap. The proof runs the repository's
+configured filters. Its buffer bound covers the host only: Git and a configured
+filter's own memory use are not bounded by the proof; the deadline and process
+containment apply to them.
+
+Observe retains a cheap hidden-entry-only check, so hidden edits still appear
+Abandoned with a count. A removal mismatch also appears Abandoned with its
+path/reason. Failed full proofs are remembered in RAM by HEAD plus the complete
+file stamp inventory; unchanged failures are not re-proven each hourly sweep.
+Changed HEAD/stamps invalidate that outcome. A bound is a kept reason, never
+Abandoned merely for exceeding a bound.
 
 Before long comparisons the host captures tracked/untracked paths and their
 size, mtime and ctime (real ChangeTime on Windows). Afterward it refreshes
 usage and reacquires lifecycle, then asks again about settings, pins, profile,
 allocation/activity, HEAD, ignored inventory versus preview, and file stamps.
-No long comparison or dropped lock follows these final checks. A shared
-10-second final-stage bound is checked before deletion. An arbitrary external
+No long comparison or dropped lock follows these final checks. Every Git call under lifecycle, including HEAD and stamp inventories, takes
+only the remaining shared 10-second final-stage budget. Non-force Git removal
+retains its separate 15-second bound. An arbitrary external
 writer can still race the final checks/removal; host starts are blocked.
 
 Strip preflights all build candidates before deleting any. Each deletion then
@@ -490,8 +521,10 @@ replacement) from blocking; directory opens use O_DIRECTORY and no-follow,
 and Windows uses reparse-point flags. Special files remain at stake.
 
 
-Explicit validation cleanup also prepares raw restoration proof outside
-workspace lifecycle. It retakes lifecycle and rechecks actor/task ownership,
+Explicit validation cleanup first acquires path marks and start claims under
+workspace lifecycle, then keeps those guards throughout its off-lock raw proof
+and final removal. Active, starting or queued chats refuse cleanup, including
+queues without a live process; every error releases the marks. It retakes lifecycle and rechecks actor/task ownership,
 checkout identity/repository/detached HEAD, retained HEAD, file stamps and the
 shared ignored inventory before non-force removal. An appeared/replaced or
 changed folder is kept; final checks share the 10-second bound. Git omits

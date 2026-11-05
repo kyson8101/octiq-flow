@@ -2333,6 +2333,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg::<Option<Vec<String>>>(&args, "commits")?.unwrap_or_default(),
         )),
         "orchestration_validation_remove" => to_value(svc.orchestrations.remove_validation(
+            &svc.chats,
             &arg::<String>(&args, "actorChatKey")?,
             &arg::<String>(&args, "taskId")?,
             &arg::<String>(&args, "path")?,

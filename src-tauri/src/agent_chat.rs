@@ -2090,6 +2090,63 @@ impl ChatManager {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_lifespan_admission(&self, path: &str) -> Result<(), String> {
+        self.lifespan_refusal(path, None)
+    }
+    #[cfg(test)]
+    pub(crate) fn test_lifespan_queue(&self, path: &str) -> Result<(), String> {
+        self.queue_turn(
+            "chat:validation-queued",
+            QueuedTurn {
+                text: "retained queued input".into(),
+                images: vec![],
+                turn_id: Some("validation-turn".into()),
+                appended_turn_ids: vec![],
+                recorded: true,
+                context: Some(QueueContext {
+                    cwd: path.into(),
+                    agent: ChatAgent::Codex,
+                    model: None,
+                    access: None,
+                    extra_dirs: None,
+                    env: None,
+                    effort: None,
+                    lite: None,
+                }),
+            },
+        )
+        .map(|_| ())
+    }
+    /// Path/start marks are acquired under lifecycle before this question.
+    /// Include queued turns even when the chat has no live process.
+    pub(crate) fn require_lifespan_idle(&self, checkout: &str) -> Result<(), String> {
+        self.require_checkout_idle(checkout, true)?;
+        let turns = self.queued_turns.lock().map_err(|e| e.to_string())?;
+        for (key, queue) in turns.iter() {
+            if queue.iter().any(|turn| {
+                turn.context.as_ref().is_some_and(|context| {
+                    std::iter::once(&context.cwd)
+                        .chain(context.extra_dirs.iter().flatten())
+                        .any(|path| {
+                            crate::paths::canonical_target(std::path::Path::new(path))
+                                .unwrap_or_else(|| PathBuf::from(path))
+                                .starts_with(checkout)
+                        })
+                })
+            }) {
+                return Err(format!("A queued turn in {key} still needs this checkout."));
+            }
+        }
+        drop(turns);
+        for key in self.lifespan_chat_keys(checkout)? {
+            if self.has_queued_turns(&key) {
+                return Err(format!("A queued turn in {key} still needs this checkout."));
+            }
+        }
+        Ok(())
+    }
+
     /// The background work this chat's agent left running, `(id, description)`.
     pub(crate) fn running_background(&self, key: &str) -> Vec<(String, String)> {
         self.background.running(key)
@@ -2247,7 +2304,14 @@ impl ChatManager {
             for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
                 if crate::git_ops::workflow::shares_checkout(
                     checkout,
-                    &crate::git_ops::workflow::held_checkout(path),
+                    &if managed_worktree {
+                        crate::paths::canonical_target(std::path::Path::new(path))
+                            .unwrap_or_else(|| PathBuf::from(path))
+                            .to_string_lossy()
+                            .into_owned()
+                    } else {
+                        crate::git_ops::workflow::held_checkout(path)
+                    },
                     managed_worktree,
                 ) {
                     return Err(format!("Chat {key} is still using this checkout."));

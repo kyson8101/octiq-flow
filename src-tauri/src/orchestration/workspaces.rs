@@ -1230,6 +1230,7 @@ impl OrchestrationStore {
 
     pub fn remove_validation(
         &self,
+        chats: &ChatManager,
         actor: &str,
         task_id: &str,
         path: &str,
@@ -1240,6 +1241,25 @@ impl OrchestrationStore {
         if !ws.validation_paths.iter().any(|p| p == path) {
             return Err("This task does not own that validation workspace.".into());
         }
+        let _marked = chats.hold_lifespan_checkout(path)?;
+        let mut keys = chats.lifespan_chat_keys(path)?;
+        keys.extend(
+            crate::chat_index::list()
+                .into_iter()
+                .filter(|c| {
+                    c.cwd
+                        .as_ref()
+                        .is_some_and(|cwd| Path::new(cwd).starts_with(path))
+                })
+                .map(|c| format!("chat:{}", c.id)),
+        );
+        keys.sort();
+        keys.dedup();
+        let _claims = keys
+            .iter()
+            .map(|k| chats.claim_start(k))
+            .collect::<Result<Vec<_>, _>>()?;
+        chats.require_lifespan_idle(path)?;
         drop(_operation);
         let proof = crate::worktree_lifespan::validation_removal_proof(path)?;
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
@@ -1248,6 +1268,8 @@ impl OrchestrationStore {
         if !ws.validation_paths.iter().any(|p| p == path) {
             return Err("This task no longer owns that validation workspace.".into());
         }
+        let _budget = crate::git_ops::lifespan::FinalBudget::start();
+        chats.require_lifespan_idle(path)?;
         workflow::remove_validation_verified(&ws.plan, path, proof.as_ref())?;
         self.mutate(|data| {
             let task = data.tasks.get_mut(task_id).ok_or("Task disappeared.")?;
@@ -1620,6 +1642,7 @@ impl OrchestrationStore {
                 .state = WorkspaceState::Cleaning;
             Ok(())
         })?;
+        let mut swept_merge_failed = false;
         let cleaned = (|| {
             let snapshot = self.snapshot(Some(&run.id))?;
             for attempt in snapshot.attempts.iter().filter(|a| a.task_id == task_id) {
@@ -1636,6 +1659,17 @@ impl OrchestrationStore {
                 if saved.head_sha != head {
                     return Err("This workspace was swept and its kept branch changed. Restore it and refresh delivery evidence before Cleanup.".into());
                 }
+                let mut saved = saved;
+                swept_merge_failed = true;
+                let current_base = crate::git_ops::lifespan::text(&ws.plan.repository_root, &[
+                    "rev-parse", "--verify", &format!("refs/heads/{}^{{commit}}", ws.plan.base_branch)
+                ]).map_err(|e| format!("This workspace was swept; the current base cannot be verified. The record is kept: {e}"))?;
+                crate::git_ops::lifespan::git(&ws.plan.repository_root, &[
+                    "merge-base", "--is-ancestor", &head, &current_base
+                ]).map_err(|e| format!("This workspace was swept; its kept HEAD is not verified as merged into the current base. The record is kept: {e}"))?;
+                swept_merge_failed = false;
+                saved.merged = true;
+                saved.checked_at = now_ms();
                 saved
             } else {
                 workflow::inspect(&ws.plan, true)?
@@ -1700,7 +1734,20 @@ impl OrchestrationStore {
                         task.status = TaskStatus::Cancelled;
                     }
                 }
-                Err(_) => ws.state = WorkspaceState::Retained,
+                Err(error) => {
+                    ws.state = WorkspaceState::Retained;
+                    if swept_merge_failed {
+                        if let Some(delivery) = &mut ws.delivery {
+                            delivery.merged = false;
+                            delivery.released = None;
+                            delivery.release_note.clear();
+                            delivery.checked_at = now_ms();
+                            delivery
+                                .notes
+                                .push(format!("Current base merge verification failed: {error}"));
+                        }
+                    }
+                }
             }
             task.updated_at = now_ms();
             let result = task.clone();
@@ -1924,6 +1971,59 @@ pub(super) mod tests {
         assert_eq!(cleaned.workspace.unwrap().state, WorkspaceState::Cleaned);
         assert!(!Path::new(root).exists());
         assert_eq!(store.snapshot(None).unwrap().attempts.len(), attempts);
+    }
+
+    #[test]
+    fn m10_swept_cleanup_reverifies_merge_against_the_current_base() {
+        let repo = Repo::new();
+        let old_base = repo.git(&["rev-parse", "main"]);
+        let (store, _run, task) = setup(&repo, WorkspaceMode::Worktree);
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        let head = repo.commit(&first.cwd, "unique", "keep this commit");
+        repo.git(&["update-ref", "refs/heads/main", &head]);
+        report(&store, &first, WorkerOutcome::Completed);
+        store
+            .lifespan_delivery(
+                &first.cwd,
+                &DeliveryEvidence {
+                    head_sha: head.clone(),
+                    merged: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        crate::git_ops::lifespan::remove(&repo.root, &first.cwd, false).unwrap();
+        store.lifespan_record_swept(&first.cwd, 100).unwrap();
+        repo.git(&["update-ref", "refs/heads/main", &old_base]);
+        let error = store
+            .cleanup_workspace(
+                &ChatManager::default(),
+                "chat:master",
+                &task.id,
+                false,
+                &head,
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("current base") && error.contains("record is kept"),
+            "{error}"
+        );
+        let retained = stored(&store, &task).workspace.unwrap();
+        assert_ne!(retained.state, WorkspaceState::Cleaned);
+        assert!(retained.swept_at.is_some());
+        assert!(!retained.delivery.as_ref().unwrap().merged);
+        assert_eq!(repo.git(&["rev-parse", &retained.plan.branch]), head);
+        repo.git(&["update-ref", "refs/heads/main", &head]);
+        let cleaned = store
+            .cleanup_workspace(
+                &ChatManager::default(),
+                "chat:master",
+                &task.id,
+                false,
+                &head,
+            )
+            .unwrap();
+        assert_eq!(cleaned.workspace.unwrap().state, WorkspaceState::Cleaned);
     }
 
     #[test]
@@ -3177,7 +3277,7 @@ pub(super) mod tests {
                 &wrapper,
                 format!(
                     r#"#!/bin/sh
-case " $* " in *" cat-file --filters --path=source.txt "*)
+case " $* " in *" cat-file --batch "*)
   /usr/bin/git "$@"; result=$?
   touch '{hold}'
   n=0; while test ! -f '{release}'; do sleep 0.01; n=$((n+1)); test "$n" -lt 6000 || exit 98; done
@@ -3199,6 +3299,7 @@ exec /usr/bin/git "$@"
                 }
             }
             let _reset = Reset;
+            let chats = ChatManager::default();
             std::thread::scope(|scope| {
                 let writer = scope.spawn(|| {
                     let start = Instant::now();
@@ -3207,6 +3308,8 @@ exec /usr/bin/git "$@"
                         std::thread::sleep(Duration::from_millis(5));
                     }
                     let unlocked = store.workspace_ops.try_lock().is_ok();
+                    let admission = chats.test_lifespan_admission(&path);
+                    let queued = chats.test_lifespan_queue(&path);
                     if change_ignored {
                         fs::write(
                             Path::new(&path).join("pnpm-workspace.yaml"),
@@ -3222,9 +3325,11 @@ exec /usr/bin/git "$@"
                     }
                     fs::write(&release, "go").unwrap();
                     assert!(unlocked, "raw comparison held workspace lifecycle");
+                    assert!(admission.unwrap_err().contains("lifespan cleanup"));
+                    assert!(queued.unwrap_err().contains("lifespan cleanup"));
                 });
                 let error = store
-                    .remove_validation("chat:master", &task.id, &path)
+                    .remove_validation(&chats, "chat:master", &task.id, &path)
                     .unwrap_err();
                 writer.join().unwrap();
                 assert!(
@@ -3236,6 +3341,10 @@ exec /usr/bin/git "$@"
                     "{error}"
                 );
             });
+            assert!(
+                chats.test_lifespan_admission(&path).is_ok(),
+                "error path leaked a path mark"
+            );
             assert!(Path::new(&path).is_dir());
             assert!(stored(&store, &task)
                 .workspace
@@ -3243,6 +3352,34 @@ exec /usr/bin/git "$@"
                 .validation_paths
                 .contains(&path));
         }
+    }
+
+    #[test]
+    fn m7_validation_cleanup_refuses_a_queued_turn_without_a_live_process() {
+        let repo = Repo::new();
+        let (store, _, task) = setup(&repo, WorkspaceMode::Worktree);
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        let base = repo.git(&["rev-parse", "HEAD"]);
+        let path = store
+            .create_validation(&first.worker_chat_key, &task.id, &base, vec![])
+            .unwrap();
+        let chats = ChatManager::default();
+        chats.test_lifespan_queue(&path).unwrap();
+        let error = store
+            .remove_validation(&chats, "chat:master", &task.id, &path)
+            .unwrap_err();
+        assert!(error.contains("queued turn"), "{error}");
+        assert!(Path::new(&path).exists());
+        assert!(chats.has_queued_turns("chat:validation-queued"));
+        assert!(
+            chats.test_lifespan_admission(&path).is_ok(),
+            "refusal leaked the mark"
+        );
+        // The same owned checkout remains clean/removable without a queued owner.
+        store
+            .remove_validation(&ChatManager::default(), "chat:master", &task.id, &path)
+            .unwrap();
+        assert!(!Path::new(&path).exists());
     }
 
     #[test]
@@ -3255,10 +3392,10 @@ exec /usr/bin/git "$@"
             .create_validation(&first.worker_chat_key, &task.id, &base, vec![])
             .unwrap();
         assert!(store
-            .remove_validation("chat:outsider", &task.id, &path)
+            .remove_validation(&ChatManager::default(), "chat:outsider", &task.id, &path)
             .is_err());
         assert!(store
-            .remove_validation("chat:master", &task.id, &first.cwd)
+            .remove_validation(&ChatManager::default(), "chat:master", &task.id, &first.cwd)
             .is_err());
         report(&store, &first, WorkerOutcome::Completed);
         assert!(store
@@ -3272,7 +3409,7 @@ exec /usr/bin/git "$@"
             .unwrap_err()
             .contains("validation"));
         store
-            .remove_validation("chat:master", &task.id, &path)
+            .remove_validation(&ChatManager::default(), "chat:master", &task.id, &path)
             .unwrap();
         assert!(!Path::new(&path).exists());
         assert!(Path::new(&first.cwd).exists());

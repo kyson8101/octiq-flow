@@ -4878,7 +4878,12 @@ pub(crate) mod tests {
         );
         assert_eq!(
             store
-                .remove_validation(LEAD_CHAT, &made.task_id, "/tmp/octiq-validation-x")
+                .remove_validation(
+                    &crate::agent_chat::ChatManager::default(),
+                    LEAD_CHAT,
+                    &made.task_id,
+                    "/tmp/octiq-validation-x"
+                )
                 .unwrap_err(),
             PEERS_VALIDATION_IN_USE
         );
@@ -4896,7 +4901,12 @@ pub(crate) mod tests {
         report(&store, &peer, "volume1, volume2");
         assert_eq!(
             store
-                .remove_validation(LEAD_CHAT, &made.task_id, "/tmp/octiq-validation-x")
+                .remove_validation(
+                    &crate::agent_chat::ChatManager::default(),
+                    LEAD_CHAT,
+                    &made.task_id,
+                    "/tmp/octiq-validation-x"
+                )
                 .unwrap_err(),
             "Task has no workspace."
         );

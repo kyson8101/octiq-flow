@@ -3409,7 +3409,7 @@ walks each complete build subtree with it; any at-stake entry, walk failure or
 limit withholds that subtree. Abandoned may still lose a proven safe build tree.
 Heavy usage, tree and content checks run outside the workspace lifecycle lock,
 with path/start marks retained. Reacquire lifecycle for each final operation and
-recheck allocation/activity. Content hashing has a 512 MiB total and 120-second
+recheck allocation/activity. Content hashing has a 2 GiB total and 120-second
 budget, tree sizing 100,000 entries/15 seconds, inventory 100,000 entries/15
 seconds. The final inventory under lifecycle has 100,000 entries/10 seconds; a
 bound withholds that item with a reason and other workspaces continue. Archive capture and fresh-index comparisons have 120-second command bounds
@@ -3426,25 +3426,53 @@ Abandoned and name the count. Status overrides `status.showUntrackedFiles=all`,
 `core.fsmonitor=false`, `core.untrackedCache=false`, `--untracked-files=all`,
 and `--ignore-submodules=none`.
 
-A single `check-attr` pass selects tracked `filter`, `text`, or `eol` paths;
-active `core.autocrlf` selects all tracked files. Ordinary automatic checkouts
-with neither need no per-file content comparisons in this proof. Compare raw
-bytes to `cat-file --filters --path=<p> <ref>:<p>` (symlinks use their raw blob).
-Reversible CRLF is accepted; lossy filters, unreadable files, filter errors,
-and offline required LFS smudges keep the folder. Archive verifies all tree
-entries, including every changed/untracked file captured by its temporary
-index; a mismatch names the count and states that its ref and folder stay.
-This is separate from H3's fresh-index/disk equality check. Raw comparison runs
-outside lifecycle, bounded to 512 MiB total input/output and 120 seconds;
-filtered output uses the remaining byte budget rather than the 32 MiB metadata
-cap. Bounds mean kept, never successful preservation.
+Every removal other than a confirmed Archive proves **every tracked path**
+against the kept ref's tree; attributes, autocrlf and hidden bits never select
+which paths get compared. For regular files compare raw disk bytes with what
+`cat-file --filters` would write, covering ident and all other conversions.
+`--attr-source` / `GIT_ATTR_SOURCE` binds attributes to the kept ref, including sparse omissions. Git below 2.41 or an unparseable version keeps the
+folder: an unknown environment variable alone is never evidence of support.
+Mode-120000 entries use the raw blob, including regular-file checkouts under
+`core.symlinks=false`. Compare effective type and, on Unix, executable bit
+against the tree mode regardless of `core.filemode`; Windows has no executable
+bit. Any present gitlink, extra index entry or unmerged stage keeps the folder.
+A missing sparse entry has no bytes to lose. Archive keeps its existing full
+captured-tree check and also verifies effective mode. Reversible CRLF and an
+untouched expanded ident remain removable; unknown/unreadable/filter failures
+keep the folder and explain why.
+
+The full proof runs **only at removal**, outside lifecycle, bounded to **2 GiB**
+total disk/Restore bytes and **120 seconds**. It streams and hashes, with one
+`cat-file --batch --filters -z` process and a separate raw batch only for
+symlinks. Batch headers report the original blob size even after conversion:
+read exactly the disk length, then require the framing LF and a random nonce's
+missing-object response at that exact offset. Never scan for a later marker;
+first mismatch stops/kills the batch and names the path (at least 1 file).
+Input is one file request/response at a time; spaces/newlines use NUL input,
+while leading-whitespace paths are kept rather than misparsed. Oversized or
+hung filters cannot grow a whole-output buffer: a deadline kills the child
+and descendants (Unix process group; Windows suspended launch into a Job
+Object before resume). Metadata output retains its 32 MiB cap.
+
+Observe retains a cheap hidden-entry-only check, so hidden edits still appear
+Abandoned with a count. A removal mismatch also appears Abandoned with its
+path/reason. Failed full proofs are remembered in RAM by HEAD plus the complete
+file stamp inventory; unchanged failures are not re-proven each hourly sweep.
+Changed HEAD/stamps invalidate that outcome. A bound is a kept reason, never
+Abandoned merely for exceeding a bound.
+
+Explicit validation cleanup takes path and start claims under workspace
+lifecycle before its off-lock proof and keeps them through the final removal.
+Active, starting and queued chats on that path refuse cleanup; guards release
+on every error. The final door rechecks chat activity as well as ownership.
 
 Before either long final comparison, snapshot tracked/untracked path identities
 and size/mtime/ctime (Windows uses FILE_BASIC_INFO.ChangeTime). Afterwards
 capture usage again, reacquire lifecycle, then recheck settings, pin, profile,
 allocation/activity, HEAD, ignored inventory against the preview hash, and the
-complete file stamp inventory. The final stage has a shared 10-second bound
-checked before deletion; there is no dropped lock or content comparison after
+complete file stamp inventory. Every Git call in the final stage, including HEAD and stamp inventories, uses
+only the remaining shared 10-second budget; Git removal keeps its separate
+15-second bound; there is no dropped lock or content comparison after
 these final answers. Strip preflights every build subtree before deleting any,
 then repeats qualification/usage/inventory at each final door. Actual successful
 strip count/bytes survive a later refusal, are published beside it, and update
@@ -3469,10 +3497,16 @@ removal. A removal already done is an ending action: retain its outcome in RAM,
 say `unsaved`, join `dispatch::settle_owed` / `profile_status.owed`, drop the path
 from cache, and emit the owed `worktree-swept` when the profile is back (the
 2-second retry, not the hourly sweep). A swept per-task Cleanup verifies the
-kept branch against saved delivery evidence without rebuilding or a worker;
+kept branch against saved delivery evidence and re-verifies ancestry against
+the current base, without rebuilding or a worker;
 missing/stale evidence explains the swept state and asks for restore/refresh.
 
 ## Conventions & gotchas
+
+- **An automatic cleanup test needs a safe control actually stripped or
+  removed.** Any cargo/rustc on the machine holds the whole sweep, so a
+  no-delete result alone proves nothing. Every fixture agent CLI is a stub;
+  never allow a test fixture to invoke a paid/live provider CLI.
 
 - **Keep closing replies natural and concise.** Do not append `Task Completed`,
   `Task Not Completed`, or `— ready to ship` sign-offs. State any remaining work

@@ -747,17 +747,33 @@ pub(crate) fn remove_validation_verified(
         // caller only removes its own recorded allocation.
         return Ok(());
     }
-    if checkout_identity(path)? != path {
+    let _budget = super::lifespan::FinalBudget::start();
+    let root = super::lifespan::text(path, &["rev-parse", "--show-toplevel"])?;
+    if Path::new(&root)
+        .canonical()
+        .map_err(|e| e.to_string())?
+        .to_string_lossy()
+        != path
+    {
         return Err("Validation checkout path changed.".into());
     }
-    if primary_checkout_root(path)?
+    let common = super::lifespan::text(
+        path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    if Path::new(&common)
+        .parent()
+        .ok_or("Missing common Git parent")?
         .canonical()
         .map_err(|e| e.to_string())?
         != Path::new(&plan.repository_root)
     {
         return Err("Validation checkout belongs to a different repository.".into());
     }
-    if git(path, &["symbolic-ref", "-q", "HEAD"]).is_ok() {
+    // --symbolic-full-name prints a ref for symbolic HEAD and HEAD for a
+    // detached checkout; read failure is distinct from the detached result.
+    let head = super::lifespan::text(path, &["rev-parse", "--symbolic-full-name", "HEAD"])?;
+    if head != "HEAD" {
         return Err(
             "Validation checkout now has a branch. Preserve it manually before removal.".into(),
         );
@@ -769,7 +785,7 @@ pub(crate) fn remove_validation_verified(
     if started.elapsed() >= std::time::Duration::from_secs(10) {
         return Err("Validation final checks reached their 10 second bound; folder kept.".into());
     }
-    run_git_mut(&plan.repository_root, &["worktree", "remove", path], false)?;
+    super::lifespan::remove(&plan.repository_root, path, false)?;
     Ok(())
 }
 

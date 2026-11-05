@@ -7,6 +7,41 @@ use std::{
     time::{Duration, Instant},
 };
 
+// Every Git read while lifecycle is held shares the same final deadline.
+// Nested helpers cannot silently restart a fixed 15-second timeout.
+thread_local! {
+    static FINAL_DEADLINE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+pub(crate) struct FinalBudget(Option<Instant>);
+impl FinalBudget {
+    pub(crate) fn start() -> Self {
+        Self::with_timeout(Duration::from_secs(10))
+    }
+    pub(crate) fn with_timeout(timeout: Duration) -> Self {
+        let deadline = Instant::now() + timeout;
+        Self(
+            FINAL_DEADLINE.with(|d| d.replace(Some(d.get().map_or(deadline, |v| v.min(deadline))))),
+        )
+    }
+}
+impl Drop for FinalBudget {
+    fn drop(&mut self) {
+        FINAL_DEADLINE.with(|d| d.set(self.0));
+    }
+}
+pub(crate) fn remaining(timeout: Duration) -> Result<Duration, String> {
+    let timeout = FINAL_DEADLINE.with(|d| {
+        d.get().map_or(timeout, |v| {
+            timeout.min(v.saturating_duration_since(Instant::now()))
+        })
+    });
+    if timeout.is_zero() {
+        Err("Final cleanup checks reached their 10 second bound; folder kept.".into())
+    } else {
+        Ok(timeout)
+    }
+}
+
 pub(crate) fn command(cmd: &mut Command, timeout: Duration) -> Result<Vec<u8>, String> {
     command_io(cmd, timeout, None, 32 * 1024 * 1024, false)
 }
@@ -17,6 +52,8 @@ fn command_io(
     limit: usize,
     strict_errors: bool,
 ) -> Result<Vec<u8>, String> {
+    let timeout = remaining(timeout)?;
+    let start = Instant::now();
     crate::proc::no_console(cmd);
     let mut child = cmd
         .stdin(if input.is_some() {
@@ -51,7 +88,6 @@ fn command_io(
     }
     let out = reader(stdout, limit);
     let err = reader(stderr, 32 * 1024 * 1024);
-    let start = Instant::now();
     let status = loop {
         if start.elapsed() >= timeout {
             let _ = child.kill();
@@ -69,10 +105,10 @@ fn command_io(
         }
     };
     let bytes = out
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(timeout.saturating_sub(start.elapsed()))
         .map_err(|e| e.to_string())?;
     let errors = err
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(timeout.saturating_sub(start.elapsed()))
         .map_err(|e| e.to_string())?;
     if bytes.len() > limit {
         return Err("Command output exceeded the safety limit.".into());
@@ -89,7 +125,7 @@ fn command_io(
 thread_local! {
     pub(crate) static TEST_GIT: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
 }
-fn git_command(root: &str, args: &[&str]) -> Command {
+pub(crate) fn git_command(root: &str, args: &[&str]) -> Command {
     #[cfg(test)]
     let executable = TEST_GIT
         .with(|p| p.borrow().clone())
@@ -143,7 +179,13 @@ pub(crate) fn remove(repo: &str, path: &str, archived: bool) -> Result<(), Strin
         args.push("--force");
     }
     args.extend(["--", path]);
-    git(repo, &args).map(|_| ())
+    // Removal itself has its own documented 15-second bound. Final checks
+    // have already passed, and lifecycle remains held throughout the mutation.
+    let previous = FINAL_DEADLINE.with(|d| d.replace(None));
+    let restore = FinalBudget(previous);
+    let result = git(repo, &args).map(|_| ());
+    drop(restore);
+    result
 }
 /// Index is copied from HEAD into a new temporary index. The real index,
 /// branch and hooks are untouched. Ignored files deliberately stay out.

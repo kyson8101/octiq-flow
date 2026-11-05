@@ -64,12 +64,9 @@ pub(crate) fn validation_removal_proof(
     real_dir(Path::new(path))?;
     let stamps = raw::Stamps::capture(path)?;
     let head = git::text(path, &["rev-parse", "HEAD"])?;
-    let proof = raw::verify(path, &head, false)?;
+    let proof = raw::verify(path, &head, false, cfg!(windows))?;
     if proof.unrestorable > 0 {
-        return Err(format!(
-            "{} tracked files cannot be restored byte for byte; validation folder kept.",
-            proof.unrestorable
-        ));
+        return Err(proof.reason());
     }
     Ok(Some(ValidationRemovalProof { stamps, head }))
 }
@@ -238,6 +235,69 @@ struct Cache {
     pending_disable: bool,
     pending_pins: BTreeSet<String>,
     pending_reports: Vec<Sweep>,
+    raw_failures: std::collections::BTreeMap<String, RawFailure>,
+}
+#[derive(Clone)]
+struct RawFailure {
+    head: String,
+    stamps: raw::Stamps,
+    why: String,
+    mismatch: bool,
+}
+fn apply_raw_failure(store: &Store, o: &mut Observation) -> Result<(), String> {
+    let failure = store
+        .inner
+        .lock()
+        .map_err(|e| e.to_string())?
+        .raw_failures
+        .get(&o.item.path)
+        .cloned();
+    if let Some(failure) = failure {
+        if failure.head == o.item.head && failure.stamps == raw::Stamps::capture(&o.item.path)? {
+            o.removable = false;
+            o.item.remove_at = None;
+            if o.item.state != "active" && !o.item.pinned {
+                if failure.mismatch {
+                    o.item.state = "abandoned".into();
+                }
+                o.item.why = failure.why;
+            }
+        } else {
+            store
+                .inner
+                .lock()
+                .map_err(|e| e.to_string())?
+                .raw_failures
+                .remove(&o.item.path);
+        }
+    }
+    Ok(())
+}
+fn remember_raw_failure(
+    store: &Store,
+    o: &Observation,
+    stamps: raw::Stamps,
+    why: String,
+    mismatch: bool,
+) -> Result<(), String> {
+    let mut cache = store.inner.lock().map_err(|e| e.to_string())?;
+    cache.raw_failures.insert(
+        o.item.path.clone(),
+        RawFailure {
+            head: o.item.head.clone(),
+            stamps,
+            why: why.clone(),
+            mismatch,
+        },
+    );
+    if let Some(item) = cache.items.iter_mut().find(|i| i.path == o.item.path) {
+        if mismatch {
+            item.state = "abandoned".into();
+        }
+        item.why = why;
+        item.remove_at = None;
+    }
+    Ok(())
 }
 pub(crate) struct Store {
     inner: Mutex<Cache>,
@@ -724,7 +784,7 @@ fn status_hash(
     // file without changing its porcelain row invalidates the person's preview.
     use sha2::{Digest, Sha256};
     let started = std::time::Instant::now();
-    const MAX_BYTES: u64 = 512 * 1024 * 1024;
+    const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
     let mut read_bytes = 0u64;
     let mut h = Sha256::new();
     h.update(status);
@@ -745,7 +805,7 @@ fn status_hash(
     read_bytes += diff.len() as u64;
     if read_bytes > MAX_BYTES || started.elapsed() > Duration::from_secs(120) {
         return Err(
-            "Status content check reached its 512 MiB or 120 second limit; this worktree is kept."
+            "Status content check reached its 2 GiB or 120 second limit; this worktree is kept."
                 .into(),
         );
     }
@@ -767,7 +827,7 @@ fn status_hash(
     read_bytes += diff.len() as u64;
     if read_bytes > MAX_BYTES || started.elapsed() > Duration::from_secs(120) {
         return Err(
-            "Status content check reached its 512 MiB or 120 second limit; this worktree is kept."
+            "Status content check reached its 2 GiB or 120 second limit; this worktree is kept."
                 .into(),
         );
     }
@@ -810,7 +870,7 @@ fn status_hash(
         } else if m.is_file() {
             if read_bytes.saturating_add(m.len()) > MAX_BYTES {
                 return Err(
-                    "Status content check reached its 512 MiB total limit; this worktree is kept."
+                    "Status content check reached its 2 GiB total limit; this worktree is kept."
                         .into(),
                 );
             }
@@ -830,7 +890,7 @@ fn status_hash(
                 }
                 read_bytes = read_bytes.saturating_add(n as u64);
                 if read_bytes > MAX_BYTES {
-                    return Err("Status content check reached its 512 MiB total limit; this worktree is kept.".into());
+                    return Err("Status content check reached its 2 GiB total limit; this worktree is kept.".into());
                 }
                 h.update(&buf[..n]);
             }
@@ -1069,6 +1129,7 @@ fn observe(
             rows.next();
         }
     }
+    let git_dir = git::text(root, &["rev-parse", "--absolute-git-dir"])?;
     let operation = [
         "MERGE_HEAD",
         "CHERRY_PICK_HEAD",
@@ -1078,13 +1139,12 @@ fn observe(
         "sequencer",
     ]
     .iter()
-    .any(|name| {
-        git::text(
-            root,
-            &["rev-parse", "--path-format=absolute", "--git-path", name],
-        )
-        .map_or(true, |p| fs::symlink_metadata(p).is_ok())
-    });
+    .any(
+        |name| match fs::symlink_metadata(Path::new(&git_dir).join(name)) {
+            Ok(_) => true,
+            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+        },
+    );
     let mut tree = Tree::default();
     walk(root, Path::new(root), false, &mut tree)?;
     let last_commit = git::text(root, &["show", "-s", "--format=%ct", "HEAD"])?
@@ -1201,15 +1261,14 @@ fn observe(
             _ => {}
         }
     }
-    let raw_proof = raw::verify(root, &head, false);
+    let raw_proof = raw::observe_hidden(root, &head, windows);
     match &raw_proof {
         Ok(p) if p.unrestorable > 0 && active.is_none() => {
             state = "abandoned";
             dirty_files += p.hidden;
-            why = format!("{} tracked files cannot be restored byte for byte ({} edited assume-unchanged/skip-worktree files); the folder is kept.", p.unrestorable, p.hidden);
+            why = p.reason();
         }
         Err(e) if active.is_none() => {
-            state = "abandoned";
             why = format!("Raw Restore verification is unknown: {e}");
         }
         _ => {}
@@ -1370,6 +1429,7 @@ struct LifecycleGuard<'a> {
     _guard: std::sync::MutexGuard<'a, ()>,
     #[cfg(test)]
     started: std::time::Instant,
+    _budget: git::FinalBudget,
 }
 #[cfg(test)]
 thread_local! {
@@ -1384,6 +1444,7 @@ impl Drop for LifecycleGuard<'_> {
 fn hold_lifecycle(svc: &Services) -> Result<LifecycleGuard<'_>, String> {
     Ok(LifecycleGuard {
         _guard: svc.orchestrations.hold_workspace_lifecycle()?,
+        _budget: git::FinalBudget::start(),
         #[cfg(test)]
         started: std::time::Instant::now(),
     })
@@ -1491,7 +1552,7 @@ fn final_ready(
     if !usage.known || usage.using(&preview.path) {
         return Err("Usage is unknown or the checkout is in use; folder kept.".into());
     }
-    svc.chats.require_checkout_idle(&preview.path, true)?;
+    svc.chats.require_lifespan_idle(&preview.path)?;
     if git::text(&preview.path, &["rev-parse", "HEAD"])? != preview.head {
         return Err("HEAD changed; folder kept.".into());
     }
@@ -1544,7 +1605,7 @@ fn operate_progress(
         .collect::<Result<Vec<_>, _>>()?;
     let settings = store.saved()?;
     let usage = (checks.usage)();
-    let observed = observe(
+    let mut observed = observe(
         &a,
         &c,
         &settings.settings,
@@ -1555,6 +1616,7 @@ fn operate_progress(
         checks.windows,
         checks.inventory,
     )?;
+    apply_raw_failure(store, &mut observed)?;
     if observed.item.status_hash.is_empty() {
         return Err(observed.item.why.clone());
     }
@@ -1647,6 +1709,19 @@ fn operate_progress(
         verify_delivery(svc, &a, &observed.item)?;
         record_intent(store, &observed.item, None, at)?;
         let stamps = raw::Stamps::capture(&preview.path)?;
+        let proof = raw::verify(&preview.path, &observed.item.head, false, checks.windows);
+        match proof {
+            Ok(proof) if proof.unrestorable > 0 => {
+                let why = proof.reason();
+                remember_raw_failure(store, &observed, stamps, why.clone(), true)?;
+                return Err(why);
+            }
+            Err(why) => {
+                remember_raw_failure(store, &observed, stamps, why.clone(), false)?;
+                return Err(why);
+            }
+            _ => {}
+        }
         let check = observe(
             &a,
             &c,
@@ -1759,7 +1834,10 @@ fn sweep_checked(svc: &Services, store: &Store, checks: &Checks) -> Result<(), S
                 checks.windows,
                 checks.inventory,
             ) {
-                Ok(o) => items.push(o.item),
+                Ok(mut o) => {
+                    apply_raw_failure(store, &mut o)?;
+                    items.push(o.item);
+                }
                 Err(e) => {
                     report.failed.push(Failed {
                         path: checkout.path,
@@ -1835,6 +1913,9 @@ fn sweep_checked(svc: &Services, store: &Store, checks: &Checks) -> Result<(), S
         let mut c = store.inner.lock().map_err(|e| e.to_string())?;
         c.items
             .retain(|i| !report.removed.iter().any(|r| r.path == i.path));
+        for removed in &report.removed {
+            c.raw_failures.remove(&removed.path);
+        }
         for item in &mut c.items {
             if let Some(deleted) = stripped_paths.get(&item.path) {
                 item.bytes = item.bytes.map(|all| all.saturating_sub(*deleted));
@@ -1914,7 +1995,7 @@ fn archive_checked(
         .collect::<Result<Vec<_>, _>>()?;
     let settings = state.saved()?;
     let usage = (checks.usage)();
-    let o = observe(
+    let mut o = observe(
         &a,
         &c,
         &settings.settings,
@@ -1925,6 +2006,7 @@ fn archive_checked(
         checks.windows,
         checks.inventory,
     )?;
+    apply_raw_failure(state, &mut o)?;
     if o.item.status_hash.is_empty() {
         return Err(o.item.why.clone());
     }
@@ -2013,14 +2095,19 @@ fn archive_checked(
     let fresh_index =
         crate::profile::profile_dir().join(format!(".verify-archive-{}", uuid::Uuid::new_v4()));
     git::verify_archive_disk(&preview.path, &archive.reference, &fresh_index)?;
-    let proof = raw::verify(&preview.path, &archive.reference, true).map_err(|e| {
-        format!(
-            "Raw Restore verification incomplete: {e}; archive ref {} and folder are kept.",
-            archive.reference
-        )
-    })?;
+    let proof =
+        raw::verify(&preview.path, &archive.reference, true, checks.windows).map_err(|e| {
+            format!(
+                "Raw Restore verification incomplete: {e}; archive ref {} and folder are kept.",
+                archive.reference
+            )
+        })?;
     if proof.unrestorable > 0 {
-        return Err(format!("{} files cannot be restored byte for byte from this archive (filter/normalisation or unreadable file); archive ref {} and folder are kept.", proof.unrestorable, archive.reference));
+        return Err(format!(
+            "{} Archive ref {} and folder are kept.",
+            proof.reason(),
+            archive.reference
+        ));
     }
     let final_usage = (checks.usage)();
     {

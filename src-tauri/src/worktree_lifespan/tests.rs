@@ -1426,7 +1426,7 @@ fn m1_unknown_usage_withholds_strip_and_windows_does_too() {
 fn m2_content_budget_withholds_large_untracked_file_in_words() {
     let r = Repo::new();
     let f = fs::File::create(Path::new(&r.work).join("media.bin")).unwrap();
-    f.set_len(1024 * 1024 * 1024).unwrap();
+    f.set_len(3 * 1024 * 1024 * 1024).unwrap();
     let o = observe(
         &r.allocation(),
         &r.checkout(),
@@ -1441,7 +1441,7 @@ fn m2_content_budget_withholds_large_untracked_file_in_words() {
     .unwrap();
     assert_eq!(o.item.state, "abandoned");
     assert!(o.item.status_hash.is_empty());
-    assert!(o.item.why.contains("512 MiB total limit"), "{}", o.item.why);
+    assert!(o.item.why.contains("2 GiB total limit"), "{}", o.item.why);
 }
 
 #[cfg(unix)]
@@ -1839,14 +1839,7 @@ fn h5_lossy_clean_filter_keeps_automatic_and_archive_folder() {
         .unwrap()
         .is_empty());
     let o = r.observe(now(), &known());
-    assert_eq!(o.item.state, "abandoned");
-    assert!(
-        o.item
-            .why
-            .contains("1 tracked files cannot be restored byte for byte"),
-        "{}",
-        o.item.why
-    );
+    assert_eq!(o.item.state, "finished"); // full proof only at removal
     let svc = r.services(30);
     let state = Store::default();
     sweep_checked(&svc, &state, &checks()).unwrap();
@@ -1854,6 +1847,7 @@ fn h5_lossy_clean_filter_keeps_automatic_and_archive_folder() {
     // Both the already tracked original and an untracked attribute/file door.
     r.write("untracked.raw", "SECRET another original\n");
     git::text(&r.work, &["rm", "--cached", ".gitattributes"]).unwrap();
+    r.age(30);
     let preview = r.observe(now(), &known()).item;
     state.inner.lock().unwrap().items = vec![preview.clone()];
     let error = archive_checked(
@@ -1866,11 +1860,11 @@ fn h5_lossy_clean_filter_keeps_automatic_and_archive_folder() {
     )
     .unwrap_err();
     assert!(
-        error.contains("2 files cannot be restored byte for byte"),
+        error.contains("At least 1 tracked file cannot be restored byte for byte"),
         "{error}"
     );
     assert!(
-        error.contains("archive ref refs/octiq/archive/") && error.contains("and folder are kept"),
+        error.contains("Archive ref refs/octiq/archive/") && error.contains("and folder are kept"),
         "{error}"
     );
     assert_eq!(
@@ -1894,13 +1888,20 @@ fn h5_reversible_autocrlf_and_explicit_eol_restore_exact_raw_bytes() {
     r.write("crlf", "one\r\ntwo\r\n");
     git::text(&r.work, &["add", "crlf"]).unwrap();
     git::text(&r.work, &["commit", "-m", "CRLF"]).unwrap();
-    assert_eq!(raw::verify(&r.work, "HEAD", false).unwrap().unrestorable, 0);
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
+        0
+    );
     r.write("crlf", "changed\r\ntwo\r\n");
     let head = git::text(&r.work, &["rev-parse", "HEAD"]).unwrap();
     let reference = "refs/octiq/archive/crlf";
     git::archive(&r.work, &head, reference, &r._home.join("index")).unwrap();
     assert_eq!(
-        raw::verify(&r.work, reference, true).unwrap().unrestorable,
+        raw::verify(&r.work, reference, true, cfg!(windows))
+            .unwrap()
+            .unrestorable,
         0
     );
     let target = r._home.join("restore-crlf");
@@ -1911,18 +1912,29 @@ fn h5_reversible_autocrlf_and_explicit_eol_restore_exact_raw_bytes() {
     );
     git::text(&r.root, &["config", "core.autocrlf", "false"]).unwrap();
     r.write(".gitattributes", "crlf text eol=crlf\n");
+    git::text(&r.work, &["add", ".gitattributes", "crlf"]).unwrap();
+    git::text(&r.work, &["commit", "-m", "retained explicit EOL"]).unwrap();
+    let reference = "HEAD";
+    // With autocrlf now off, the other tracked files must also be restored in
+    // that configuration; every kept-tree path is compared, not only crlf.
+    for name in [".gitignore", "tracked"] {
+        let data = git::git(&r.work, &["show", &format!("{reference}:{name}")]).unwrap();
+        fs::write(Path::new(&r.work).join(name), data).unwrap();
+    }
     assert_eq!(
-        raw::verify(&r.work, reference, false).unwrap().unrestorable,
+        raw::verify(&r.work, reference, false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
         0
     );
     // Missing/offline smudge is unknown restoration, not proof of preservation.
     git::text(&r.root, &["config", "filter.offline.smudge", "exit 1"]).unwrap();
     git::text(&r.root, &["config", "filter.offline.required", "true"]).unwrap();
     r.write(".gitattributes", "crlf filter=offline\n");
-    assert_eq!(
-        raw::verify(&r.work, reference, false).unwrap().unrestorable,
-        1
-    );
+    git::text(&r.work, &["add", ".gitattributes"]).unwrap();
+    git::text(&r.work, &["commit", "-m", "retained offline filter"]).unwrap();
+    let proof = raw::verify(&r.work, reference, false, cfg!(windows));
+    assert!(proof.is_err() || proof.unwrap().unrestorable > 0);
 }
 
 #[test]
@@ -1971,7 +1983,12 @@ fn h7_hidden_index_edits_are_abandoned_and_archive_restores_raw_bytes() {
     let r = Repo::new();
     git::text(&r.work, &["update-index", "--skip-worktree", "tracked"]).unwrap();
     fs::remove_file(Path::new(&r.work).join("tracked")).unwrap();
-    assert_eq!(raw::verify(&r.work, "HEAD", false).unwrap().unrestorable, 0);
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
+        0
+    );
 }
 
 #[test]
@@ -2064,8 +2081,10 @@ fn h6_raw_file_write_after_disk_read_is_caught_by_final_ctime_stamps() {
         .unwrap();
     let script = format!(
         r#"
-case " $* " in *" cat-file --filters "*"refs/octiq/archive/"*":dirty "*)
-  touch '{hold}'; while test ! -f '{release}'; do sleep 0.01; done;;
+case " $* " in *" cat-file --batch "*)
+  /usr/bin/git "$@"; result=$?
+  touch '{hold}'; while test ! -f '{release}'; do sleep 0.01; done
+  exit "$result";;
 esac
 exec /usr/bin/git "$@"
 "#,
@@ -2214,25 +2233,26 @@ fn m5_late_second_refusal_keeps_successful_first_strip_in_history_and_cache() {
 
 #[cfg(unix)]
 #[test]
-fn h5_plain_checkout_has_one_attribute_pass_and_no_restore_content_reads() {
+fn h8_plain_checkout_uses_one_filtered_batch_and_no_attribute_selector() {
     let r = Repo::new();
-    git::text(&r.root, &["config", "core.autocrlf", "false"]).unwrap();
     r.recheckout();
     let attr = r._home.join("attrs");
     let content = r._home.join("content");
     let script = format!(
         r#"
-case " $* " in *" check-attr "*) echo pass >> '{attr}';; *" cat-file "*) touch '{content}';; esac
+case " $* " in *" check-attr "*) touch '{attr}';; *" cat-file "*) echo pass >> '{content}';; esac
 exec /usr/bin/git "$@"
 "#,
         attr = attr.display(),
         content = content.display()
     );
-    let proof =
-        with_git_wrapper(&r._home, &script, || raw::verify(&r.work, "HEAD", false)).unwrap();
+    let proof = with_git_wrapper(&r._home, &script, || {
+        raw::verify(&r.work, "HEAD", false, false)
+    })
+    .unwrap();
     assert_eq!(proof.unrestorable, 0);
-    assert_eq!(fs::read_to_string(attr).unwrap().lines().count(), 1);
-    assert!(!content.exists());
+    assert!(!attr.exists());
+    assert_eq!(fs::read_to_string(content).unwrap().lines().count(), 1);
 }
 
 #[cfg(windows)]
@@ -2262,9 +2282,11 @@ fn h5_real_lfs_offline_smudge_fails_closed() {
         git::text(&r.root, &["config", name, value]).unwrap();
     }
     r.write(".gitattributes", "*.lfs filter=lfs -text\n");
+    git::text(&r.work, &["add", ".gitattributes"]).unwrap();
+    git::text(&r.work, &["commit", "-m", "retained LFS attributes"]).unwrap();
     r.write("asset.lfs", "real original");
-    let proof = raw::verify(&r.work, "HEAD", false).unwrap();
-    assert_eq!(proof.unrestorable, 1);
+    let proof = raw::verify(&r.work, "HEAD", false, cfg!(windows));
+    assert!(proof.is_err() || proof.unwrap().unrestorable > 0);
     assert_eq!(
         fs::read_to_string(Path::new(&r.work).join("asset.lfs")).unwrap(),
         "real original"
@@ -2279,7 +2301,7 @@ fn validation_cleanup_checks_hidden_bytes_and_stamps_after_off_lock_proof() {
     assert!(validation_removal_proof(&r.work)
         .err()
         .unwrap()
-        .contains("1 tracked files"));
+        .contains("At least 1 tracked file"));
     git::text(&r.work, &["update-index", "--no-skip-worktree", "tracked"]).unwrap();
     r.recheckout();
     let proof = validation_removal_proof(&r.work).unwrap().unwrap();
@@ -2288,4 +2310,366 @@ fn validation_cleanup_checks_hidden_bytes_and_stamps_after_off_lock_proof() {
         .unwrap_err()
         .contains("ctime changed"));
     assert!(!gone(&r.work));
+}
+
+#[test]
+fn h8_stat_cache_cannot_hide_ordinary_tracked_bytes_at_either_removal_door() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    for (key, value) in [("core.trustctime", "false"), ("core.checkStat", "minimal")] {
+        git::text(&r.work, &["config", key, value]).unwrap();
+    }
+    r.age(30);
+    git::text(&r.work, &["update-index", "--refresh"]).unwrap();
+    let p = Path::new(&r.work).join("tracked");
+    let time = fs::metadata(&p).unwrap().modified().unwrap();
+    r.write("tracked", "authored\n"); // same length as original\n
+    raw::open_regular(&p)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(time))
+        .unwrap();
+    assert!(git::git(&r.work, &["status", "--porcelain"])
+        .unwrap()
+        .is_empty());
+    let proof = raw::verify(&r.work, "HEAD", false, cfg!(windows)).unwrap();
+    assert_eq!(proof.unrestorable, 1);
+    assert_eq!(proof.path.as_deref(), Some("tracked"));
+    assert!(validation_removal_proof(&r.work).is_err());
+    let svc = r.services(30);
+    let store = Store::default();
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(!gone(&r.work));
+    let cache = store.inner.lock().unwrap();
+    let item = cache.items.iter().find(|i| i.path == r.work).unwrap();
+    assert_eq!(item.state, "abandoned");
+    assert!(item.why.contains("tracked"));
+    assert_eq!(fs::read(&p).unwrap(), b"authored\n");
+}
+
+#[test]
+fn h9_ident_authored_note_is_kept_and_untouched_ident_is_removable() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.write(".gitattributes", "id.txt ident\n");
+    r.write("id.txt", "$Id$\n");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "ident"]).unwrap();
+    r.recheckout();
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
+        0
+    );
+    r.write("id.txt", "$Id: Unique authored note $\n");
+    git::text(&r.work, &["add", "id.txt"]).unwrap();
+    assert!(git::git(&r.work, &["status", "--porcelain"])
+        .unwrap()
+        .is_empty());
+    r.age(30);
+    let svc = r.services(30);
+    let store = Store::default();
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(!gone(&r.work));
+    assert!(validation_removal_proof(&r.work).is_err());
+    // Removing the authored variant restores the exact expanded bytes. The
+    // failure cache must invalidate on changed stamps and prove it again.
+    r.recheckout();
+    r.age(30);
+    // checkout-index records a pre-expansion stat size on Git 2.45.1; aging
+    // that fixture makes porcelain say M despite an empty diff. Refresh the
+    // unchanged expanded file's index stat; its disk bytes stay untouched.
+    git::text(&r.work, &["add", "id.txt"]).unwrap();
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(
+        gone(&r.work),
+        "unchanged ident is a positive removal control: {} items={}",
+        serde_json::to_string(&store.saved().unwrap().history).unwrap(),
+        serde_json::to_string(&store.inner.lock().unwrap().items).unwrap()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn m9_effective_modes_ignore_core_filemode_and_windows_has_no_exec_bit() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    git::text(&r.work, &["config", "core.filemode", "false"]).unwrap();
+    let p = Path::new(&r.work).join("tracked");
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(git::git(&r.work, &["status", "--porcelain"])
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, false)
+            .unwrap()
+            .unrestorable,
+        1
+    );
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, true)
+            .unwrap()
+            .unrestorable,
+        0
+    );
+    // Archive's temporary index can also ignore executable changes. It must
+    // not force-remove a mode it didn't capture.
+    let head = git::text(&r.work, &["rev-parse", "HEAD"]).unwrap();
+    git::archive(
+        &r.work,
+        &head,
+        "refs/octiq/archive/mode",
+        &r._home.join("idx"),
+    )
+    .unwrap();
+    assert_eq!(
+        raw::verify(&r.work, "refs/octiq/archive/mode", true, false)
+            .unwrap()
+            .unrestorable,
+        1
+    );
+    fs::remove_file(&p).unwrap();
+    std::os::unix::fs::symlink("original\n", &p).unwrap();
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, true)
+            .unwrap()
+            .unrestorable,
+        1
+    );
+}
+
+#[test]
+fn full_proof_rejects_extra_and_unmerged_index_entries_but_allows_sparse_absence() {
+    let r = Repo::new();
+    r.write("extra", "authored");
+    git::text(&r.work, &["add", "extra"]).unwrap();
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
+        1
+    );
+    git::text(&r.work, &["reset", "--", "extra"]).unwrap();
+    fs::remove_file(Path::new(&r.work).join("extra")).unwrap();
+    git::text(&r.work, &["update-index", "--skip-worktree", "tracked"]).unwrap();
+    fs::remove_file(Path::new(&r.work).join("tracked")).unwrap();
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
+        0
+    );
+    let oid = git::text(&r.work, &["rev-parse", "HEAD:tracked"]).unwrap();
+    git::git_io(
+        &r.work,
+        &["update-index", "--index-info"],
+        Duration::from_secs(10),
+        Some(format!("0 {}\ttracked\n100644 {oid} 1\ttracked\n", "0".repeat(40)).into_bytes()),
+        4096,
+    )
+    .unwrap();
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn raw_symlink_blob_and_core_symlinks_false_are_proven_without_smudge() {
+    use std::os::unix::fs::symlink;
+    let r = Repo::new();
+    symlink("target id", Path::new(&r.work).join("sym link")).unwrap();
+    r.write(".gitattributes", "* filter=upper\n");
+    git::text(&r.work, &["config", "filter.upper.smudge", "tr a-z A-Z"]).unwrap();
+    git::text(&r.work, &["add", "sym link"]).unwrap();
+    git::text(&r.work, &["commit", "-m", "link"]).unwrap();
+    fs::remove_file(Path::new(&r.work).join(".gitattributes")).unwrap();
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, false)
+            .unwrap()
+            .unrestorable,
+        0
+    );
+    git::text(&r.work, &["config", "core.symlinks", "false"]).unwrap();
+    fs::remove_file(Path::new(&r.work).join("sym link")).unwrap();
+    r.write("sym link", "target id");
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, false)
+            .unwrap()
+            .unrestorable,
+        0
+    );
+    r.write("sym link", "authored!");
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, false)
+            .unwrap()
+            .unrestorable,
+        1
+    );
+}
+
+#[test]
+fn full_proof_streams_binary_large_files_spaces_and_newlines() {
+    use std::io::Write;
+    let r = Repo::new();
+    let name = if cfg!(windows) {
+        "large space.bin"
+    } else {
+        "large space\nname.bin"
+    };
+    let mut f = fs::File::create(Path::new(&r.work).join(name)).unwrap();
+    let chunk = [0u8; 65536];
+    for _ in 0..1100 {
+        f.write_all(&chunk).unwrap();
+    }
+    drop(f);
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "large binary"]).unwrap();
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
+        0
+    );
+    let stamps = raw::Stamps::capture(&r.work).unwrap();
+    assert_eq!(stamps, raw::Stamps::capture(&r.work).unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn m8_final_git_calls_share_one_remaining_budget_including_stamps_and_head() {
+    let r = Repo::new();
+    let script = "sleep 2\nexec /usr/bin/git \"$@\"\n";
+    for stamps in [true, false] {
+        let started = std::time::Instant::now();
+        let result = with_git_wrapper(&r._home, script, || {
+            let _budget = git::FinalBudget::with_timeout(Duration::from_millis(150));
+            if stamps {
+                raw::Stamps::capture(&r.work).map(|_| ())
+            } else {
+                git::text(&r.work, &["rev-parse", "HEAD"]).map(|_| ())
+            }
+        });
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+}
+
+#[test]
+fn a_raw_bound_is_a_kept_reason_and_unchanged_failure_is_not_proven_each_sweep() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.age(30);
+    let svc = r.services(30);
+    let store = Store::default();
+    raw::TEST_LIMIT.with(|slot| slot.set(Some(1)));
+    let result = sweep_checked(&svc, &store, &checks());
+    raw::TEST_LIMIT.with(|slot| slot.set(None));
+    result.unwrap();
+    assert!(!gone(&r.work));
+    let items = &store.inner.lock().unwrap().items.clone();
+    let item = items.iter().find(|i| i.path == r.work).unwrap();
+    assert_eq!(item.state, "finished");
+    assert!(item.why.contains("bound"));
+    assert!(item.remove_at.is_none());
+    // A succeeding proof is now possible. Unchanged HEAD+stamps must still
+    // hold, proving the full check was not repeated automatically.
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(!gone(&r.work));
+    r.write("tracked", "original\n");
+    r.age(30);
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(
+        gone(&r.work),
+        "changed stamps must invalidate the cached bound and admit a safe proof"
+    );
+}
+
+#[test]
+fn sparse_missing_attributes_still_use_the_kept_refs_restore_conversions() {
+    let r = Repo::new();
+    r.write(".gitattributes", "tracked ident\n");
+    r.write("tracked", "$Id$\n");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "kept ident"]).unwrap();
+    // A sparse attribute file may also have a staged variant. Git's normal
+    // fallback is that index variant, while Restore uses the kept ref.
+    r.write(".gitattributes", "tracked -ident\n");
+    git::text(&r.work, &["add", ".gitattributes"]).unwrap();
+    git::text(
+        &r.work,
+        &["update-index", "--skip-worktree", ".gitattributes"],
+    )
+    .unwrap();
+    fs::remove_file(Path::new(&r.work).join(".gitattributes")).unwrap();
+    // Without binding attributes to the ref, the raw $Id$ bytes would compare
+    // equal but Restore would write an expanded Id and lose these bytes.
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
+        1
+    );
+    git::text(
+        &r.work,
+        &["update-index", "--no-skip-worktree", ".gitattributes"],
+    )
+    .unwrap();
+    git::text(&r.work, &["reset", "HEAD", "--", ".gitattributes"]).unwrap();
+    r.write(".gitattributes", "tracked ident\n");
+    r.recheckout();
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
+        0
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn unknown_or_old_git_cannot_silently_ignore_kept_ref_attributes() {
+    let r = Repo::new();
+    for version in ["git version 2.40.9", "unrecognized vendor version"] {
+        let script=format!("case \" $* \" in *\" --version \"*) echo '{version}'; exit 0;; esac\nexec /usr/bin/git \"$@\"\n");
+        let error = with_git_wrapper(&r._home, &script, || {
+            raw::verify(&r.work, "HEAD", false, false)
+        })
+        .err()
+        .unwrap();
+        assert!(
+            error.contains("Cannot confirm kept-ref attributes") && error.contains("folder kept"),
+            "{error}"
+        );
+    }
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, false)
+            .unwrap()
+            .unrestorable,
+        0
+    );
+}
+
+#[test]
+fn kept_ref_attributes_override_changed_disk_attributes_for_hidden_observation() {
+    let r = Repo::new();
+    r.write(".gitattributes", "tracked ident\n");
+    r.write("tracked", "$Id$\n");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "kept ident"]).unwrap();
+    git::text(&r.work, &["update-index", "--assume-unchanged", "tracked"]).unwrap();
+    r.write(".gitattributes", "tracked -ident\n");
+    let proof = raw::observe_hidden(&r.work, "HEAD", cfg!(windows)).unwrap();
+    assert_eq!(proof.path.as_deref(), Some("tracked"));
+    assert_eq!(proof.hidden, 1);
 }
