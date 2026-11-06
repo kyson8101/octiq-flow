@@ -23,7 +23,7 @@ vi.mock("./bridge", () => ({
 }));
 
 import type { OrchestrationSnapshot } from "./orchestration";
-import { createOrchestrationFeed, executionUpdate, NOTIFY_MS, READ_GAP_MS } from "./orchestrationFeed";
+import { createLegacyOrchestrationFeed as createOrchestrationFeed, executionUpdate, NOTIFY_MS, READ_GAP_MS } from "./orchestrationFeed";
 
 function ledger(state = "executing"): OrchestrationSnapshot {
   return {

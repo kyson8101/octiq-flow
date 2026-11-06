@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 const { invoke, refresh } = vi.hoisted(() => ({ invoke: vi.fn(), refresh: vi.fn(async () => {}) }));
 vi.mock("./bridge", () => ({ bridge: { invoke, on: () => () => {} } }));
-vi.mock("./orchestrationFeed", () => ({ orchestrationFeed: { refresh } }));
+vi.mock("./orchestrationFeed", () => ({ orchestrationFeed: { refresh, getState: () => ({ snapshot: null, error: null }), subscribe: () => () => {} } }));
 import { approveWithAutoPlan, autoPlanHeld, AUTO_PLAN_REFRESH_MS, setAutoPlan } from "./autoPlan";
 import { IN_FLIGHT, inFlight } from "./inFlight";
 import { AutoPlanSwitch } from "../components/AutoPlanSwitch";

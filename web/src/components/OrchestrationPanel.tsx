@@ -25,7 +25,7 @@ import type { CrewMember } from "../lib/missionPage";
 import { SIZE_LABEL } from "../lib/agentLevels";
 import { workerArchiveDisabledReason } from "../lib/workerArchive";
 import { orchestrationFeed } from "../lib/orchestrationFeed";
-import { useOrchestrationFeed } from "../lib/useOrchestrationSnapshot";
+import { useOrchestrationFeed, useRunDetail } from "../lib/useOrchestrationSnapshot";
 import { initialRunDisclosures, syncRunDisclosures, toggleRunDisclosure } from "../lib/runDisclosure";
 import { AgentLogo } from "./AgentLogo";
 import { AgentAvatar } from "./AgentAvatar";
@@ -730,12 +730,12 @@ const NOTIFICATIONS_SHOWN = 20;
 const MESSAGES_SHOWN = 20;
 
 function RunDetail({
-  run,
-  snapshot,
-  tasks,
-  attempts,
-  messages,
-  notifications,
+  run: inputRun,
+  snapshot: inputSnapshot,
+  tasks: inputTasks,
+  attempts: inputAttempts,
+  messages: inputMessages,
+  notifications: inputNotifications,
   answers,
   busy,
   readOnly,
@@ -810,6 +810,13 @@ function RunDetail({
   sharedHeading: boolean;
   compactControls: boolean;
 }) {
+  const detail = useRunDetail(inputSnapshot, inputRun.id);
+  const snapshot = detail.snapshot;
+  const run = snapshot.runs.find(r => r.id === inputRun.id) ?? inputRun;
+  const tasks = detail.ready ? snapshot.tasks.filter(t => t.runId === run.id) : inputTasks;
+  const attempts = detail.ready ? snapshot.attempts.filter(a => a.runId === run.id) : inputAttempts;
+  const messages = detail.ready ? snapshot.messages.filter(m => m.runId === run.id) : inputMessages;
+  const notifications = detail.ready ? (snapshot.notifications ?? []).filter(n => n.runId === run.id) : inputNotifications;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [confirmEnd, setConfirmEnd] = useState<"close" | "abandon" | null>(null);
@@ -852,10 +859,7 @@ function RunDetail({
   };
   // A finished run's specs, results and bodies are left out of the tab's
   // whole-ledger read; showing the run is when they are asked for.
-  const brief = snapshot.briefRuns?.includes(run.id) ?? false;
-  useEffect(() => {
-    if (brief) return orchestrationFeed.detail(run.id);
-  }, [brief, run.id]);
+  const brief = !detail.ready;
   // A mission's plan goes back to approval when a task changes hands, and the
   // rows are where the next change of hands, or the correction of a wrong one,
   // is made. So they stay, unfiltered, with every start held by the host.
@@ -922,6 +926,8 @@ function RunDetail({
     onClick={() => { if (settingsOpen) onCancelStop(); setSettingsOpen(!settingsOpen); setConfirmArchive(false); }}>
     {compactControls ? <MoreIcon /> : <SettingsIcon />}{!compactControls && <span>Settings</span>}
   </button>;
+
+  if (brief) return <p role="status">{detail.error ?? "Reading run…"}</p>;
 
   return (
     <section ref={detailRef} className="orch-run-detail" aria-label={sharedHeading ? run.objective : undefined} aria-labelledby={sharedHeading ? undefined : "orch-run-title"}>

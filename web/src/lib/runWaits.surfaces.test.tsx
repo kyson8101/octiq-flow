@@ -31,6 +31,13 @@ vi.mock("./bridge", () => ({
   bridge: { invoke: async () => null, on: () => () => {}, onState: () => () => {} },
 }));
 
+// These are status surfaces after their detail read. Fetch lifetime and the
+// status/evidence merge have independent feed tests; this table does not mount App.
+vi.mock("./useOrchestrationSnapshot", async (original) => {
+  const actual = await original<typeof import("./useOrchestrationSnapshot")>();
+  return { ...actual, useRunDetail: (snapshot: import("./orchestration").OrchestrationSnapshot) => ({ snapshot, ready: true, error: undefined }) };
+});
+import { summaryFact } from "./__fixtures__/summaryFacts";
 import { agentRoster } from "./agentsDashboard";
 import type { TeamAgent } from "./agentsMode";
 import { chatRunStatus, chatSnapshot, rowRun } from "./chatWorkflow";
@@ -249,6 +256,22 @@ const SHAPES: Shape[] = [
   })(),
 ];
 
+// Same host facts through the server's real summary projection. All counts
+// are the table's handwritten expectations; no expectation comes from runWaits.
+SHAPES.push(...[
+  ["open gates", hostFacts.gatesOpen(), 1],
+  ["peer gate", hostFacts.peerGate(), 1],
+  ["native card", hostFacts.cardPending(), 1],
+  ["card blocked on gate", hostFacts.cardOnGateBlocked(), 1],
+  ["quiet refusal", hostFacts.claudeRefusal(), 0],
+  ["pending plan", hostFacts.heldByPlan(), 1],
+  ["reopen hold", hostFacts.heldByReopen(), 0],
+  ["coordinator retry", hostFacts.retryExecuting(), 0],
+  ["failure to person", hostFacts.failureAwaitsPerson(), 1],
+  ["escalated failure", hostFacts.failureEscalated(), 1],
+].map(([name, snapshot, person]) => ({ name: `summary: ${name}`, host: "new" as const, person: person as number,
+  ...(name === "failure to person" || name === "escalated failure" ? { said: "failed" as const } : {}), ledger: real(summaryFact(snapshot as OrchestrationSnapshot)) })));
+
 /* ---- The surfaces ------------------------------------------------------ */
 
 const TEAM: TeamAgent[] = [
@@ -450,6 +473,7 @@ const ALLOWED: Record<string, { uses: number; why: string }> = {
   // names the field. `finishedWell.surfaces.test` scans for a second reader
   // of a task's `failure`, and asks every surface the same counts.
   "./orchestration.ts": { uses: 7, why: "the ledger's type (gates, nativeDecisions, awaits on a gate, on a decision and on a task's failure), the empty ledger, and failureMove: the one read of a failure's awaits" },
+  "./orchestrationSummaryFeed.ts": { uses: 2, why: "replaceRun transports all run-scoped lists without reading a wait or its state" },
   "./chatWorkflow.ts": { uses: 5, why: "chatSnapshot copies both lists into a chat's own ledger, unread, so runWaits sees the same facts in it" },
 };
 

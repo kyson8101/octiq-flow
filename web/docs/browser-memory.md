@@ -12,7 +12,7 @@ A controlled real-browser regression alternates two callback dependency lifetime
 
 - App event/subscription callbacks use an isolated committed cell. Old function handles no longer own old App scopes. Dependency changes still replace the handle and re-run subscribing effects. Pure render-time readers are constructed outside App so they see the current render without retaining its scope.
 - Only the main and beside transcripts stay loaded in RAM. Other durable chats become three text previews of at most 420 characters each, retaining status/session facts. Unacknowledged prompts and local-only/imported words are protected. Returning to a released chat replays the durable record; previews never become full checkpoints.
-- The 12-entry `chatCache` limit applies to IndexedDB storage, not App's live state. The previous-checkpoint marker uses weak keys. Sidebar transcript copies are released with the loaded chat. Short snippets detach their string backing storage.
+- In the initial retention fix, the 12-entry `chatCache` limit applied to IndexedDB storage, not App's live state. The screen-scoped integration below replaces that count cap with a byte budget. The previous-checkpoint marker uses weak keys. Sidebar transcript copies are released with the loaded chat. Short snippets detach their string backing storage.
 - `ChatHistory` holds only a cursor. Explicit **Load earlier messages** re-reads the displayed raw window and replays it with the older page, preserving cross-page tool results, pending prompts, and racing live events.
 - Finished-run detail text is leased by mounted panels. Closing the last panel releases both the text cache and its injected snapshot fields; a closed panel's late response cannot repopulate the cache.
 
@@ -48,10 +48,57 @@ PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs node web/scripts/test-c
 
 `PLAYWRIGHT_EXECUTABLE_PATH` selects a disposable Brave process. `OCTIQ_TEST_DIST` optionally points the real-App harness at an isolated production build. Without it, the harness starts its own Vite server and optimizer cache. The real-App harness mocks every command socket, so it never starts agents or changes live records.
 
-## Limits and backend follow-up
+## Initial retention fix: limits
 
-No production deployment or restart is part of this work. The person's existing Brave profile/tabs are untouched. The reported multi-GB crash itself was not reproduced. Headless Chromium soaks and disposable Brave regressions do not establish real-phone, Safari/WebKit, tunnel, or 18-hour stability.
+The measurements above belong to `6f93e7d`. That fix alone still received the legacy brief ledger and global chat streams, and explicit older-history reads could download an unbounded raw tail. The integration below supersedes those limits. The original multi-GB crash itself was not reproduced; neither stage establishes real-phone, Safari/WebKit, tunnel, or 18-hour stability.
 
-This is not a cap on an intentionally expanded visible transcript or on unacknowledged local input. Explicit older-history reads may still download a large raw window using the existing `chat_since` contract. The probe's brief-ledger replies contain about 12.2 million JSON characters per read (UTF-16 code units, not wire bytes). The feed shares one ledger among consumers; known execution events patch it, while other changes request non-overlapping reads, normally at least one second apart. It has no polling interval. Explicit refreshes can bypass that gap.
+## Screen-scoped client integration (2026-11-07)
 
-A scoped lightweight summary and per-run detail, plus socket chat subscriptions, remain useful backend contracts to avoid parsing broad broadcasts/whole-ledger replies. This patch adds no server API or subscription mechanism.
+The client now opts into the server contract in `docs/browser-event-subscriptions.md`:
+
+- `chat_subscribe` is every socket's first invoke. Pane changes replace the set derived from `chatShown` and `besideShown`; catch-up waits for the latest acknowledgement. Reconnect reuses the current selection. Covered, narrow-layout and closed chats release their transcripts/cursors, retaining small status/clock facts and local unacknowledged input. Reopening reads the window again.
+- Unopened chats use global compact activity for host running/busy facts and the existing restored-park work signal. Activity sequences never advance transcript cursors, and activity timestamps never reorder sidebar rows. Cards, completion, jobs and the island's existing shared agent reading remain global. Background completion preserves the index preview and does not save a fabricated empty transcript/preview.
+- Whole-app readers share `orchestration_summary`. Structural changes replace one run's summary; compact execution/report events patch only summary-sized facts. Changes during a read schedule a follow-up. Full detail is leased separately by the visible run panel, its inline plan review and the strip's own run, then refetched on that run's change. Hidden mounted subtrees release their leases. Detail evidence uses current summary status/wait facts, through `runWaits`; it cannot resurrect a cleared gate.
+- IndexedDB checkpoints use a conservative UTF-16/object-size budget: 16 MiB total and 8 MiB per checkpoint. A small metadata store drives eviction without materialising all transcript rows. The old count-capped v1 cache is invalidated on upgrade without loading its large rows; durable server records are untouched. The optional cache remains separate from drafts and live local/imported input.
+- Recent records use `chat_page`. A long gap after a checkpoint resets to a recent page rather than downloading the entire missing `chat_since` tail. Earlier reads rebuild bounded pages, targeting 8 MiB and at most 12 raw pages; on reaching the window limit, they slide to older turns and offer **Return to latest messages**. A past window is never saved as a whole checkpoint. Live status/clock facts stay current while its historical messages remain still.
+- The server preserves an indivisible turn. One such turn can exceed the 256 KiB page target and the client's window target. This is not a strict cap on one oversized tool result, a full visible run's detail, or local-only/imported words.
+- Explicit `not available on this backend` replies keep the legacy subscription/brief-snapshot path. Network/profile errors keep the last reading and surface the error; they do not silently switch to an empty ledger or a full transcript download.
+
+### Reproduced memory growth and final-source measurements
+
+`web/scripts/test-screen-memory.mjs` runs the real production App in a disposable Brave process with fixture command sockets. Both clients receive the same recorded real ledger and the same synthetic ~171.5 MB (163.6 MiB) durable transcript, 18 chat switches, eight unopened tool streams per switch, and identical run invalidations. The old v1 cache contains a valid 600-turn prefix below Chromium's per-value limit; the old client downloads the remaining 444-turn tail. The new client invalidates that optional cache and fetches three recent turns. No real agent, token or profile is used by the browser harness.
+
+The control build loads exact `eea5655c33e345cfcac6e7a4cffd83f20c59c2f6` client source. Heap values below are decimal MB of CDP `JSHeapUsedSize` after forced GC, not RSS/physical footprint or a production ceiling. No heap snapshot or duplicate client-side WebSocket observer is used. Timing can alter the number of coalesced summary reads; the navigation/actions and synthetic event counts are fixed.
+
+| Viewport | Open record: before → after | After 18 switches: before → after | Older window after |
+| --- | ---: | ---: | ---: |
+| 1280px | 207.98 → 13.40 MB | 477.02 → 18.94 MB | 27.15 MB; returned to latest |
+| 390px | 207.61 → 13.34 MB | 462.91 → 18.83 MB | 27.07 MB; returned to latest |
+
+All four cases have zero page errors. The after cases receive zero heavy background `chat-event` frames versus 432 before, and 144 compact activity frames. The client never issues a whole-ledger `orchestration_snapshot` or `chat_since` in the after workload. Initial real payloads are 30,996,850 B full, 13,184,305 B legacy brief and 3,891,296 B summary. Per-run invalidation reduces repeated ledger traffic further. Sanitized counters and fixture hashes are in `browser-memory-scoped.json`.
+
+### Verification and reproduction
+
+- Full Vitest: 335 files / 4,555 tests passed. `tsc -b`, isolated production build and `git diff --check` pass. The build retains the existing large-chunk warning.
+- `runWaits.surfaces`, `finishedWell.surfaces`, wiring, restored-park, question placement, cache/window, subscription/reconnect and detail-in-flight tests pass. `capture-summary-fixtures.mjs` projects the existing host fixtures through the actual Rust `summary::project`; the status tables use their existing handwritten expectations for both transport shapes.
+- Disposable Brave real-App checks cover 30 desktop and 30 phone-width chat selections, compact background activity, true two-pane geometry, Settings coverage/reopen, earlier history and legacy fallback. A final production-client pass additionally checks per-run detail invalidation/release and every reconnect's first invoke. The wider two-pane fixture uses 2200px: at 1280px the run column leaves only one transcript on screen.
+- `test-composer-fit.mjs` passes in installed Chrome, including 1280/390/320 layouts, action-bar controls and the run/git columns. Its mock now explicitly rejects unavailable capabilities and supplies the existing provider-fallback choice list. The missing bundled Playwright browser and stale null choice fixture encountered initially were harness issues, not a production client failure.
+- The callback GC regression still retains 101 historical contexts before versus two after in disposable Brave.
+
+```sh
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+PLAYWRIGHT_EXECUTABLE_PATH=/absolute/path/to/Brave \
+OCTIQ_TEST_DIST=/absolute/path/to/isolated/client/dist \
+node web/scripts/test-chat-retention.mjs
+
+# LEGACY_BACKEND=1 exercises explicit capability fallback.
+# SCREEN_CONTROL_DIST adds an isolated exact-base control. SCREEN_LEDGER_DIR
+# contains read-only full.json, brief.json and Rust-projected summary.json.
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+PLAYWRIGHT_EXECUTABLE_PATH=/absolute/path/to/Brave \
+OCTIQ_TEST_DIST=/absolute/path/to/isolated/client/dist \
+SCREEN_LEDGER_DIR=/absolute/path/to/private/captured-fixtures \
+node web/scripts/test-screen-memory.mjs
+```
+
+No production restart/deployment, real phone, Safari/WebKit or tunnel/endurance acceptance was performed. No 3 GB crash-free ceiling is claimed. Disposable browsers and scratch servers are closed after each run; captured private ledger payloads are not committed.

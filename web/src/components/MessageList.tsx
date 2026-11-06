@@ -1408,6 +1408,7 @@ const MessageListBody = function MessageList({
   loadingEarlier = false,
   earlierError,
   onLoadEarlier,
+  onLoadLatest,
   tail,
   head,
   marks,
@@ -1432,6 +1433,7 @@ const MessageListBody = function MessageList({
   loadingEarlier?: boolean;
   earlierError?: string;
   onLoadEarlier?: () => Promise<void>;
+  onLoadLatest?: () => Promise<void>;
   busy: boolean;
   stoppedAt?: string;
   /** What to call the host over its replies: the name of the PROVIDER this
@@ -2126,6 +2128,7 @@ const MessageListBody = function MessageList({
           </div>
         )}
         {head}
+        {onLoadLatest && <button type="button" className="load-earlier" disabled={loadingEarlier} onClick={() => void onLoadLatest()}>Return to latest messages</button>}
         {earlierMarks}
         {visibleTurns.map((turn, i) => (
           <Fragment key={turn[0].id}>

@@ -49,7 +49,7 @@ it("keeps an offline request queued until a socket opens", async () => {
   await vi.advanceTimersByTimeAsync(500);
   const socket = Socket.instances[1];
   socket.open();
-  expect(socket.frames).toHaveLength(1);
+  expect(socket.frames.map(frame => JSON.parse(frame).cmd)).toEqual(["chat_subscribe", "chat_since"]);
   socket.reply([]);
   await expect(read).resolves.toEqual([]);
 });

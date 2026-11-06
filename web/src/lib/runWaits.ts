@@ -275,3 +275,16 @@ export function decisionSummary(decision: NativeDecision): { label: string; line
 export function pendingDecisions(snapshot: Pick<OrchestrationSnapshot, "nativeDecisions">, attemptId: string): NativeDecision[] {
   return (snapshot.nativeDecisions ?? []).filter((decision) => decision.attemptId === attemptId && decision.status === "pending");
 }
+
+/** A detail surface keeps closed evidence, while pending facts always come
+ * from the app's current summary reading. A delayed detail cannot resurrect a
+ * card which that reading has already cleared. No other module tests waits. */
+export function currentWaitEvidence(summary: OrchestrationSnapshot, detail: OrchestrationSnapshot, runId: string) {
+  return {
+    gates: [...detail.gates.filter(g => g.status !== "open"), ...summary.gates.filter(g => g.runId === runId).map(g => ({ ...detail.gates.find(full => full.id === g.id), ...g, question: detail.gates.find(full => full.id === g.id)?.question ?? g.question, options: detail.gates.find(full => full.id === g.id)?.options ?? g.options }))],
+    nativeDecisions: [...(detail.nativeDecisions ?? []).filter(d => d.status !== "pending"), ...(summary.nativeDecisions ?? []).filter(d => d.runId === runId).map(d => {
+      const full = (detail.nativeDecisions ?? []).find(saved => saved.id === d.id);
+      return { ...full, ...d, reason: full?.reason ?? d.reason, blockedAction: full?.blockedAction ?? d.blockedAction, recovery: full?.recovery ?? d.recovery };
+    })],
+  };
+}

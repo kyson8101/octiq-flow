@@ -182,7 +182,7 @@ describe("a list that has not been read yet", () => {
     expect(code).toMatch(/const old = \(mine as \{ guessed\?: number \} \| undefined\)\?\.guessed;/);
     // The agent's sign of work reaches the machine from the one place live
     // frames are folded, after the reducer, and from no replay.
-    expect(app).toMatch(/patch\(id, \(s\) => \{\s*const next = withWork\(reduceChat\(s, frame\.event\), frame\.event, Date\.now\(\)\);/);
+    expect(app).toMatch(/const folded = withWork\(reduceChat\(past \? \{ \.\.\.s, messages: \[\] \} : s, frame\.event\), frame\.event, Date\.now\(\)\);/);
     expect(app.match(/withWork\(/g)).toHaveLength(1);
     // The mutation that was the bug: a card that confirms the wait takes it
     // out of the machine's hands, so its going ends the park unread.

@@ -41,6 +41,7 @@ export type TaskChatPaneProps = {
   loadingEarlier: boolean;
   earlierError?: string;
   onLoadEarlier: () => Promise<void>;
+  onLoadLatest?: () => Promise<void>;
   connected: boolean;
   context?: PanelContext;
   /** The page's one reading of this chat (`lib/chatWait`). */
@@ -104,6 +105,7 @@ export const TaskChatPane = forwardRef(function TaskChatPane(props: TaskChatPane
                   loadingEarlier={props.loadingEarlier}
                   earlierError={props.earlierError}
                   onLoadEarlier={props.onLoadEarlier}
+                  onLoadLatest={props.onLoadLatest}
                   hostName={props.hostName}
                   hostPersona={persona}
                   // Read-only: nothing here can queue, take back or send.

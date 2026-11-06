@@ -151,8 +151,13 @@ export function withWait<T extends Turn>(state: T, waiting: Seen, now: number, r
  *  restored park, and only after a card the page saw has gone
  *  (`lib/restoredPark`). The same object when nothing changed. */
 export function withWork<T extends Turn>(state: T, event: unknown, now: number): T {
+  return withWorkSignal(state, signOfWork(event), now);
+}
+
+/** Compact host activity has already applied signOfWork to the omitted frame. */
+export function withWorkSignal<T extends Turn>(state: T, work: boolean, now: number): T {
   const waits = state.busy && state.turnWaits?.turn === state.turnStartedAt ? state.turnWaits : undefined;
-  if (!waits || !isParked(waits) || !signOfWork(event)) return state;
+  if (!waits || !isParked(waits) || !work) return state;
   const after = parked(waits, { type: "work" }, now);
   return after === waits ? state : { ...state, turnWaits: after };
 }

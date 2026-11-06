@@ -27,6 +27,9 @@ export type OrchestrationFeedState = {
   /** Null until the first read lands. */
   snapshot: OrchestrationSnapshot | null;
   error: string | null;
+  /** Full text is leased only by mounted run surfaces, never by app readers. */
+  details?: ReadonlyMap<string, OrchestrationSnapshot>;
+  detailErrors?: ReadonlyMap<string, string>;
 };
 
 type Patch = (snapshot: OrchestrationSnapshot) => OrchestrationSnapshot;
@@ -116,7 +119,7 @@ function withoutTexts(snapshot: OrchestrationSnapshot, runId: string): Orchestra
     messages: clear("messages", snapshot.messages)!, notifications: clear("notifications", snapshot.notifications) };
 }
 
-export function createOrchestrationFeed() {
+export function createLegacyOrchestrationFeed() {
   let state: OrchestrationFeedState = { snapshot: null, error: null };
   /** Text leased by open finished-run panels, put back after each brief read.
    *  The last reader releases it. An active-again run reads whole instead. */
@@ -319,4 +322,4 @@ export function createOrchestrationFeed() {
   };
 }
 
-export const orchestrationFeed = createOrchestrationFeed();
+export { createOrchestrationFeed, orchestrationFeed } from "./orchestrationSummaryFeed";

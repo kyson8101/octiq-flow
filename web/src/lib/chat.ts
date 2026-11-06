@@ -380,6 +380,8 @@ export type ChatState = {
   commands?: string[];
   /** True between sending a turn and its `result`. */
   busy: boolean;
+  /** Host turn identity carried by compact activity, never a replay cursor. */
+  activityTurnId?: string;
   /** What the agent is doing when it is doing something other than writing —
    *  compacting, so far. Shown in place of the generic "working…". */
   activity?: string;

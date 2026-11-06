@@ -136,14 +136,14 @@ it("prepends older pages and keeps both streamed and reconnected tails exactly o
   }) });
   options.catchUp.live("chat:a", 5, frame(5).event);
   options.publish(reduceChat(options.getState(), frame(5).event));
-  await loadEarlierChat({ ...options, history, request: async (after) => {
-    expect(after).toBe(2);
+  const request = vi.fn(async () => { throw new Error("must not download an unbounded tail"); });
+  await loadEarlierChat({ ...options, history, request, requestPage: async (before) => {
+    if (before === 3) return { events: [frame(1), frame(2)], context: [], before: null };
+    expect(before).toBe(null);
     options.catchUp.live("chat:a", 7, frame(7).event);
-    return [frame(3), frame(4), frame(5), frame(6), frame(7)];
-  }, requestPage: async (before) => {
-    expect(before).toBe(3);
-    return { events: [frame(1), frame(2)], context: [], before: null };
+    return { events: [frame(3), frame(4), frame(5), frame(6), frame(7)], context: [], before: 3 };
   } });
+  expect(request).not.toHaveBeenCalled();
   expect(options.getState().messages.map((m) => m.id)).toEqual(["m1", "m2", "m3", "m4", "m5", "m6", "m7"]);
   expect(options.catchUp.mark("chat:a")).toBe(7);
   expect(history.hasEarlier("a")).toBe(false);
@@ -161,9 +161,9 @@ it("rejoins tool results to older tool calls when their page is loaded", async (
   await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({
     events: [result, frame(3)], context: [], before: 2,
   }) });
-  await loadEarlierChat({ ...options, history, request: async () => [result, frame(3)], requestPage: async () => ({
+  await loadEarlierChat({ ...options, history, request: async () => [result, frame(3)], requestPage: async before => before === 2 ? ({
     events: [tool], context: [], before: null,
-  }) });
+  }) : ({ events: [result, frame(3)], context: [], before: 2 }) });
   expect(options.getState().messages[0].blocks[0]).toMatchObject({ kind: "tool", result: "file contents", state: "done" });
 });
 
@@ -174,9 +174,9 @@ it.each([false, true])("keeps an optimistic prompt while prepending history (ech
     events: [frame(2)], context: [], before: 2,
   }) });
   options.publish(addUserTurn(options.getState(), "queued locally", [], 100, "pending"));
-  await loadEarlierChat({ ...options, history, request: async () => [frame(2), ...(echo ? [{ seq: 3, event: {
-    type: "user", uuid: "echoed", message: { content: [{ type: "text", text: "queued locally" }] },
-  } }] : [])], requestPage: async () => ({ events: [frame(1)], context: [], before: null }) });
+  await loadEarlierChat({ ...options, history, request: async () => [], requestPage: async before => before === 2
+    ? { events: [frame(1)], context: [], before: null }
+    : { events: [frame(2), ...(echo ? [{ seq: 3, event: { type: "user", uuid: "echoed", message: { content: [{ type: "text", text: "queued locally" }] } } }] : [])], context: [], before: 2 } });
   const users = options.getState().messages.filter((m) => m.role === "user");
   expect(users).toHaveLength(1);
   expect(users[0].turnId).toBe("pending");
@@ -208,4 +208,32 @@ it("yields during a long cold replay and folds every event", async () => {
   expect(yielded).toBe(true);
   expect(result.messages).toHaveLength(1000);
   clock.mockRestore();
+});
+
+it("a long offline gap resets to the recent page without downloading the whole missing record", async () => {
+  const options = setup();
+  await saveChatCheckpoint({ id: "a", seq: 1, state: await replayChat(emptyChat(), [frame(1)], 0, () => false), updatedAt: 1 });
+  const history = new ChatHistory();
+  const request = vi.fn(async () => { throw new Error("unbounded tail"); });
+  await loadChat({ ...options, history, request, requestPage: async () => ({ events: [frame(100000)], context: [], before: 100000 }) });
+  expect(request).not.toHaveBeenCalled();
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m100000"]);
+  expect(history.hasEarlier("a")).toBe(true);
+  expect(options.catchUp.mark("chat:a")).toBe(100000);
+});
+
+it("slides a byte-full history window backwards without caching it as a complete record", async () => {
+  const options = setup(); const history = new ChatHistory();
+  const big = (seq: number, length: number): Frame => ({ seq, event: { type: "assistant", message: { id: `m${seq}`, content: [{ type: "text", text: "x".repeat(length) }] } } });
+  const latest = big(30, 3 * 1024 * 1024), older = big(20, 2 * 1024 * 1024);
+  await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({ events: [latest], context: [], before: 30 }) });
+  const request = vi.fn(async () => { throw new Error("unbounded tail"); });
+  await loadEarlierChat({ ...options, history, request, requestPage: async before => before === 30
+    ? { events: [older], context: [], before: null }
+    : { events: [latest], context: [], before: 30 } });
+  expect(request).not.toHaveBeenCalled();
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m20"]);
+  expect(history.isPast("a")).toBe(true); expect(history.isPartial("a")).toBe(true);
+  expect(history.hasEarlier("a")).toBe(false);
+  expect(await readChatCheckpoint("a")).toBeUndefined();
 });

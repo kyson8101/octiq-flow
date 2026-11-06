@@ -43,6 +43,13 @@ vi.mock("./bridge", () => ({
   bridge: { invoke: async () => null, on: () => () => {}, onState: () => () => {} },
 }));
 
+// These are status surfaces after their detail read. Fetch lifetime and the
+// status/evidence merge have independent feed tests; this table does not mount App.
+vi.mock("./useOrchestrationSnapshot", async (original) => {
+  const actual = await original<typeof import("./useOrchestrationSnapshot")>();
+  return { ...actual, useRunDetail: (snapshot: import("./orchestration").OrchestrationSnapshot) => ({ snapshot, ready: true, error: undefined }) };
+});
+import { summaryFact } from "./__fixtures__/summaryFacts";
 import { agentRoster, rosterSummary } from "./agentsDashboard";
 import type { TeamAgent } from "./agentsMode";
 import { boardCounts } from "./agentTaskBoard";
@@ -135,6 +142,18 @@ const SCENES: Scene[] = (Object.keys(KINDS) as Kind[]).flatMap((kind) => [
   { name: `${kind}, beside a pending plan`, kind, plan: true, ledger: placed(KINDS[kind]()), total: 2 },
   { name: `${kind}, with no plan`, kind, plan: false, ledger: placed(noPlan(KINDS[kind]())), total: 1 },
 ]);
+
+// The same A/B state table through Rust's summary projection. Only evidence
+// text disappeared; failure/hold/verdict fields must give the same answers.
+for (const [kind, source] of Object.entries(KINDS) as [Kind, () => OrchestrationSnapshot][]) {
+  const summary = kind === "finished" ? summaryFact(hostFacts.planAfterFailed()) : summaryFact(source());
+  if (kind === "finished") {
+    Object.assign(summary.tasks[0], { status: "completed" });
+    Object.assign(summary.attempts[0], { status: "completed", execution: { ...summary.attempts[0].execution!, state: "completed" } });
+  }
+  SCENES.push({ name: `summary ${kind}, beside a pending plan`, kind, plan: true, ledger: placed(summary), total: 2 },
+    { name: `summary ${kind}, with no plan`, kind, plan: false, ledger: placed(noPlan(summary)), total: 1 });
+}
 
 /** A moment after the ledger's latest stamp. */
 const after = (snapshot: OrchestrationSnapshot) => Math.max(...snapshot.tasks.map((task) => task.updatedAt)) + 5_000;
@@ -621,7 +640,8 @@ const TOLD: Record<string, Told> = {
     people: ["failed"], agent: ["failed", "Failed"], status: "failed",
   },
 };
-const MOVES = Object.entries(TOLD).map(([name, told]) => ({ name, ...told }));
+const ORIGINAL_MOVES = Object.entries(TOLD).map(([name, told]) => ({ name, ...told }));
+const MOVES = [...ORIGINAL_MOVES, ...ORIGINAL_MOVES.map(move => ({ ...move, name: `summary ${move.name}`, ledger: () => summaryFact(move.ledger()) }))];
 
 describe("the failure ledgers", () => {
   it("are the host's, and say whose move each failure is", () => {
@@ -645,7 +665,7 @@ describe("the failure ledgers", () => {
     // The two checks keep the workspace the person's reopen puts back to work.
     for (const name of ["checkSpent", "checkCoordinatorGone"]) expect(first(name).workspace).toMatchObject({ state: "retained" });
     // What the host calls the run is not whether a failure in it is history.
-    expect(MOVES.map((move) => move.ledger().runs[0].status)).toEqual(["failed", "running", "failed", "waiting", "running", "completed", "stopped", "completed", "failed", "completed", "failed"]);
+    expect(ORIGINAL_MOVES.map((move) => move.ledger().runs[0].status)).toEqual(["failed", "running", "failed", "waiting", "running", "completed", "stopped", "completed", "failed", "completed", "failed"]);
   });
 });
 

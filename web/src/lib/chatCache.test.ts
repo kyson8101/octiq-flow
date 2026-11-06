@@ -9,7 +9,7 @@ afterEach(() => vi.unstubAllGlobals());
 it("retains a full checkpoint larger than the entire localStorage budget", async () => {
   const state = emptyChat();
   state.messages = [{ id: "m", role: "assistant", streaming: false,
-    blocks: [{ kind: "text", text: "x".repeat(4 * 1024 * 1024) }] }];
+    blocks: [{ kind: "text", text: "x".repeat(3 * 1024 * 1024) }] }];
   state.awaitingSummary = true;
   await saveChatCheckpoint({ id: "large", seq: 16000, state, updatedAt: 1 });
   expect(await readChatCheckpoint("large")).toEqual({ id: "large", seq: 16000, state, updatedAt: 1 });
@@ -17,14 +17,23 @@ it("retains a full checkpoint larger than the entire localStorage budget", async
   expect(await readChatCheckpoint("large")).toBeUndefined();
 });
 
-it("evicts old checkpoints while retaining recent chats", async () => {
-  for (let n = 0; n < 14; n++) {
-    await saveChatCheckpoint({ id: `c${n}`, seq: n, state: emptyChat(), updatedAt: n });
-  }
-  expect(await readChatCheckpoint("c0")).toBeUndefined();
-  expect(await readChatCheckpoint("c1")).toBeUndefined();
-  expect((await readChatCheckpoint("c2"))?.seq).toBe(2);
-  expect((await readChatCheckpoint("c13"))?.seq).toBe(13);
+it("evicts by bytes even below twelve rows, and keeps many tiny chats", async () => {
+  const large = emptyChat();
+  large.messages = [{ id: "m", role: "assistant", streaming: false, blocks: [{ kind: "text", text: "x".repeat(3 * 1024 * 1024) }] }];
+  for (let n = 0; n < 4; n++) await saveChatCheckpoint({ id: `large${n}`, seq: n, state: large, updatedAt: n });
+  expect(await readChatCheckpoint("large0")).toBeUndefined();
+  expect(await readChatCheckpoint("large1")).toBeUndefined();
+  expect((await readChatCheckpoint("large3"))?.seq).toBe(3);
+  for (let n = 0; n < 20; n++) await saveChatCheckpoint({ id: `tiny${n}`, seq: n, state: emptyChat(), updatedAt: n + 10 });
+  expect((await readChatCheckpoint("tiny0"))?.seq).toBe(0);
+  expect((await readChatCheckpoint("tiny19"))?.seq).toBe(19);
+});
+
+it("never clones an oversized checkpoint into IndexedDB", async () => {
+  const state = emptyChat();
+  state.messages = [{ id: "m", role: "assistant", streaming: false, blocks: [{ kind: "text", text: "x".repeat(5 * 1024 * 1024) }] }];
+  await saveChatCheckpoint({ id: "huge", seq: 1, state, updatedAt: 1 });
+  expect(await readChatCheckpoint("huge")).toBeUndefined();
 });
 
 /** Rewrite a stored row's stamp, standing in for the checkpoint an EARLIER
@@ -37,7 +46,7 @@ it("evicts old checkpoints while retaining recent chats", async () => {
  *  about why. */
 function restamp(id: string, stamp: Record<string, unknown>): Promise<void> {
   return new Promise((resolve, reject) => {
-    const open = indexedDB.open("octiq.chat-cache", 1);
+    const open = indexedDB.open("octiq.chat-cache", 2);
     open.onerror = () => reject(open.error ?? new Error("cannot open the cache"));
     open.onsuccess = () => {
       const db = open.result;

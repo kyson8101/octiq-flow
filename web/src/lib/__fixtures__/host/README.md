@@ -223,3 +223,12 @@ OCTIQ_RECORD_FACTS=1 cargo test --manifest-path src-tauri/Cargo.toml --lib -- \
 
 Write each printed `FACT <name> {…}` JSON to its matching file, indented by two
 spaces and otherwise unchanged. Never edit these host answers by hand.
+
+## Browser summary shapes
+
+`browser_summaries.json` is generated from every snapshot fixture in this folder by
+`node web/scripts/capture-summary-fixtures.mjs`, using the current Rust
+`orchestration/summary.rs::project` directly in an isolated offline Cargo harness.
+Do not hand-edit it. The surface tables use the same handwritten status/count
+expectations for full and summary transport shapes; scoped-detail fetch lifetime
+and merging current status with full evidence are tested in orchestrationSummaryFeed.

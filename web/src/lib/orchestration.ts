@@ -649,6 +649,9 @@ export type OrchestrationNotification = {
 };
 
 export type OrchestrationSnapshot = {
+  summary?: boolean;
+  revision?: string;
+  runRevisions?: Record<string, string>;
   nativeDecisions?: NativeDecision[];
   services?: RuntimeService[];
   reports?: Record<string, TaskReport>;

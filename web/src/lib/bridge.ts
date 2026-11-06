@@ -69,6 +69,42 @@ class Bridge {
   private listeners = new Map<string, Set<(payload: never) => void>>();
   private queue: string[] = [];
   private retry = 0;
+  private chatKeys: string[] = [];
+  private selection = "[]";
+  private subscription: Promise<void> = Promise.resolve();
+  private subscriptionSupported = true;
+
+  /** Selection is socket-local. The first invoke of EVERY connection opts in
+   * before any queued command or open listener can request a transcript. */
+  private selectChats(): Promise<void> {
+    if (!this.subscriptionSupported) return Promise.resolve();
+    const result = this.invoke("chat_subscribe", { chatKeys: this.chatKeys }).then(() => {}, error => {
+      if (String(error).includes("not available on this backend")) { this.subscriptionSupported = false; return; }
+      throw error;
+    });
+    result.catch(() => {});
+    return result;
+  }
+
+  watchChats(chatKeys: string[]): Promise<void> {
+    const keys = [...new Set(chatKeys)].sort();
+    const selection = JSON.stringify(keys);
+    if (selection !== this.selection) {
+      this.chatKeys = keys; this.selection = selection;
+      if (this.socket?.readyState === WebSocket.OPEN) this.subscription = this.selectChats();
+    }
+    return this.subscription;
+  }
+
+  async chatsReady(): Promise<void> {
+    // A rapid pane switch may replace selection while its ack is in flight.
+    // Await the last replacement, never catch up under a stale selection.
+    let pending: Promise<void>;
+    do { pending = this.subscription; await pending; } while (pending !== this.subscription);
+  }
+
+  get scopedChats(): boolean { return this.subscriptionSupported; }
+
   private stateFns = new Set<(s: ConnectionState) => void>();
 
   state: ConnectionState = "connecting";
@@ -126,6 +162,8 @@ class Bridge {
 
     socket.addEventListener("open", () => {
       this.retry = 0;
+      this.subscriptionSupported = true;
+      this.subscription = this.selectChats();
       this.setState("open");
       const waiting = this.queue;
       this.queue = [];

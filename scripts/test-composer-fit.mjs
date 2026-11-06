@@ -75,6 +75,7 @@ function resultFor(request) {
     case "chat_index_list": return chats;
     case "chat_index_deleted": return [];
     case "chat_page": return { events: [], context: [], before: null };
+    case "provider_fallback_choices": return [];
     case "chat_list": case "chat_activity": case "permission_pending": case "question_pending":
     case "safety_block_pending": case "pr_repositories": case "codex_skills":
       return [];
@@ -128,6 +129,9 @@ async function open(browser, { width, height, phone = false, agents, git = false
   await context.routeWebSocket(/.*/, (socket) => socket.onMessage((raw) => {
     const request = JSON.parse(String(raw));
     if (request.t !== "invoke") return;
+    if (["chat_subscribe", "orchestration_summary", "orchestration_run_detail"].includes(request.cmd)) {
+      socket.send(JSON.stringify({ t: "reply", id: request.id, ok: false, error: `'${request.cmd}' is not available on this backend` })); return;
+    }
     socket.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: resultFor(request) }));
   }));
   const page = await context.newPage();

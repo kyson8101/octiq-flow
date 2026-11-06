@@ -1,7 +1,7 @@
 import type { Frame } from "./catchUp";
 
 export type ChatPage = { events: Frame[]; context: Frame[]; before: number | null };
-type Window = { before: number };
+type Window = { before: number | null; end?: number };
 
 /** Keep only the cursor of a partial transcript. The server already holds its
  * raw events. Retaining every live delta here doubled long chats' memory and
@@ -10,10 +10,12 @@ type Window = { before: number };
 export class ChatHistory {
   private windows = new Map<string, Window>();
   get(id: string): Window | undefined { return this.windows.get(id); }
-  hasEarlier(id: string): boolean { return this.windows.has(id); }
+  hasEarlier(id: string): boolean { return this.windows.get(id)?.before != null; }
+  isPast(id: string): boolean { return this.windows.get(id)?.end !== undefined; }
+  isPartial(id: string): boolean { return this.windows.has(id); }
   forget(id: string): void { this.windows.delete(id); }
-  set(id: string, before: number | null): void {
-    if (before === null) this.windows.delete(id);
-    else this.windows.set(id, { before });
+  set(id: string, before: number | null, end?: number): void {
+    if (before === null && end === undefined) this.windows.delete(id);
+    else this.windows.set(id, { before, ...(end !== undefined ? { end } : {}) });
   }
 }

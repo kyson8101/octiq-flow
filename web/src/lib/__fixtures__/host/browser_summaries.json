@@ -1,0 +1,3480 @@
+{
+  "auto_plan_approved.json": {
+    "attempts": [],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "autoPlan": {
+          "enabled": true,
+          "includeFull": false
+        },
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 0,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "ready": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1793109958866,
+        "id": "run_082d6ec53ceb4b00ac96f9e3f4217790",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "planApproval": {
+          "decidedAt": 1793109959094,
+          "requestedAt": 1793109958866,
+          "revisedAt": 1793109959093,
+          "revision": 3,
+          "status": "approved"
+        },
+        "rootPath": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-f84a7d82b3a5445fba6ae26d8a98afdd/repo",
+        "status": "running",
+        "updatedAt": 1793109959094,
+        "workspaceId": "workspace",
+        "workspaceMode": "worktree"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "approvedAt": 1793109959094,
+        "createdAt": 1793109959092,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_64da6924b9de4e1e9f1b0633fdf63394",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_082d6ec53ceb4b00ac96f9e3f4217790",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1793109959092
+      }
+    ]
+  },
+  "auto_plan_full_included.json": {
+    "attempts": [],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "autoPlan": {
+          "enabled": true,
+          "includeFull": true
+        },
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 0,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "ready": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1793109959516,
+        "id": "run_47f1808f4cf94860a9140049defb897a",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "planApproval": {
+          "decidedAt": 1793109959826,
+          "requestedAt": 1793109959516,
+          "revisedAt": 1793109959765,
+          "revision": 3,
+          "status": "approved"
+        },
+        "rootPath": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-f84a7d82b3a5445fba6ae26d8a98afdd/repo",
+        "status": "running",
+        "updatedAt": 1793109959826,
+        "workspaceId": "workspace",
+        "workspaceMode": "worktree"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "approvedAt": 1793109959826,
+        "createdAt": 1793109959764,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_41bb3443366944708ea344c7636df260",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_47f1808f4cf94860a9140049defb897a",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1793109959764
+      }
+    ]
+  },
+  "auto_plan_full_peer_request.json": {
+    "attempts": [],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "autoPlan": {
+          "enabled": true,
+          "held": {
+            "reason": "peerRequest",
+            "taskIds": [
+              "task_070ebcbf3c584123ad9fab7eb620d602"
+            ]
+          },
+          "includeFull": true
+        },
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 0,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 0,
+          "taskStatuses": {
+            "ready": 2
+          },
+          "tasks": 2
+        },
+        "createdAt": 1793109958188,
+        "id": "run_4dbe9fb8adb44a308ec39e73035f7e77",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "planApproval": {
+          "requestedAt": 1793109958188,
+          "revisedAt": 1793109958684,
+          "revision": 5,
+          "status": "pending"
+        },
+        "rootPath": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-f84a7d82b3a5445fba6ae26d8a98afdd/repo",
+        "status": "running",
+        "updatedAt": 1793109958682,
+        "workspaceId": "workspace",
+        "workspaceMode": "worktree"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "createdAt": 1793109958439,
+        "dependsOn": [],
+        "heldByPlan": true,
+        "id": "task_102b00d37d814850bac5eb387be8955e",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_4dbe9fb8adb44a308ec39e73035f7e77",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1793109958439
+      },
+      {
+        "createdAt": 1793109958682,
+        "dependsOn": [],
+        "heldByPlan": true,
+        "id": "task_070ebcbf3c584123ad9fab7eb620d602",
+        "peerRequest": {
+          "maxMinutes": 1,
+          "requestedAt": 1793109958683,
+          "requestedBy": {
+            "id": "peer",
+            "name": "Peer"
+          },
+          "requesterChatKey": "chat:peer"
+        },
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_4dbe9fb8adb44a308ec39e73035f7e77",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1793109958682,
+        "worker": {
+          "access": "full",
+          "agent": "claude",
+          "effort": null,
+          "model": null,
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "auto_plan_held_access.json": {
+    "attempts": [],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "autoPlan": {
+          "enabled": true,
+          "held": {
+            "reason": "access",
+            "taskIds": [
+              "task_41bb3443366944708ea344c7636df260"
+            ]
+          },
+          "includeFull": false
+        },
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 0,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 0,
+          "taskStatuses": {
+            "ready": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1793109959516,
+        "id": "run_47f1808f4cf94860a9140049defb897a",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "planApproval": {
+          "requestedAt": 1793109959516,
+          "revisedAt": 1793109959765,
+          "revision": 3,
+          "status": "pending"
+        },
+        "rootPath": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-f84a7d82b3a5445fba6ae26d8a98afdd/repo",
+        "status": "running",
+        "updatedAt": 1793109959764,
+        "workspaceId": "workspace",
+        "workspaceMode": "worktree"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "createdAt": 1793109959764,
+        "dependsOn": [],
+        "heldByPlan": true,
+        "id": "task_41bb3443366944708ea344c7636df260",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_47f1808f4cf94860a9140049defb897a",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1793109959764
+      }
+    ]
+  },
+  "card_on_gate_blocked.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "worker",
+        "createdAt": 1791762070209,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": "Waiting for a decision",
+          "lastActivityAt": 1791762070209,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "blocked"
+        },
+        "filesModified": [],
+        "id": "attempt_356dd3c89ce243b59f5f0867b1b71e23",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+        "status": "blocked",
+        "taskId": "task_5352377e65dd4275adf41bc915fee274",
+        "updatedAt": 1791762070213,
+        "workerChatKey": "chat:orch-94a400b27d5e4c91b2a7a3cdcc6beff6"
+      }
+    ],
+    "bridges": [],
+    "gates": [
+      {
+        "awaits": "coordinator",
+        "createdAt": 1791762070213,
+        "id": "gate_c760823ae2924522add79cd51bc55668",
+        "options": [],
+        "question": "",
+        "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+        "status": "open",
+        "taskId": "task_5352377e65dd4275adf41bc915fee274",
+        "updatedAt": 1791762070213
+      }
+    ],
+    "messages": [],
+    "nativeDecisions": [
+      {
+        "attemptId": "attempt_356dd3c89ce243b59f5f0867b1b71e23",
+        "awaits": "person",
+        "blockedAction": null,
+        "chatKey": "chat:orch-94a400b27d5e4c91b2a7a3cdcc6beff6",
+        "continuation": "unavailable",
+        "groupId": null,
+        "id": "64616aec-1d6e-4f0b-a622-04da9d662a47",
+        "kind": "safety",
+        "observedAt": 1791762070209,
+        "reason": "Requires a decision.",
+        "recovery": "This attempt is blocked on another open decision (a gate on its task), so nothing can continue it yet. The safety card in the main chat is still the person's to answer. Once the gate is resolved too, their decision can authorize a new turn in this attempt; it does not resume the rejected call.",
+        "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+        "status": "pending",
+        "taskId": "task_5352377e65dd4275adf41bc915fee274"
+      }
+    ],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 1,
+          "gates": 1,
+          "messages": 0,
+          "nativeDecisions": 1,
+          "notifications": 2,
+          "taskStatuses": {
+            "blocked": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791762070113,
+        "id": "run_49e84e507bae4767b49a84affdf55cc9",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "rootPath": "/tmp",
+        "status": "waiting",
+        "updatedAt": 1791762070213,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_356dd3c89ce243b59f5f0867b1b71e23",
+        "createdAt": 1791762070209,
+        "dependsOn": [],
+        "id": "task_5352377e65dd4275adf41bc915fee274",
+        "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+        "size": "medium",
+        "spec": "",
+        "status": "blocked",
+        "title": "Implement",
+        "updatedAt": 1791762070213,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "card_pending.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "worker",
+        "createdAt": 1791762070209,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": "Dispatching provider request",
+          "lastActivityAt": 1791762070209,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "queued"
+        },
+        "filesModified": [],
+        "id": "attempt_356dd3c89ce243b59f5f0867b1b71e23",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+        "status": "running",
+        "taskId": "task_5352377e65dd4275adf41bc915fee274",
+        "updatedAt": 1791762070209,
+        "workerChatKey": "chat:orch-94a400b27d5e4c91b2a7a3cdcc6beff6"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [
+      {
+        "attemptId": "attempt_356dd3c89ce243b59f5f0867b1b71e23",
+        "awaits": "person",
+        "blockedAction": null,
+        "chatKey": "chat:orch-94a400b27d5e4c91b2a7a3cdcc6beff6",
+        "continuation": "new_turn_same_attempt",
+        "groupId": null,
+        "id": "64616aec-1d6e-4f0b-a622-04da9d662a47",
+        "kind": "safety",
+        "observedAt": 1791762070209,
+        "reason": "Requires a decision.",
+        "recovery": "Use the existing safety card in the main chat. The rejected call already ended; a decision can authorize a new turn in this attempt, not resume that call.",
+        "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+        "status": "pending",
+        "taskId": "task_5352377e65dd4275adf41bc915fee274"
+      }
+    ],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 1,
+          "notifications": 1,
+          "taskStatuses": {
+            "running": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791762070113,
+        "id": "run_49e84e507bae4767b49a84affdf55cc9",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "rootPath": "/tmp",
+        "status": "running",
+        "updatedAt": 1791762070209,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_356dd3c89ce243b59f5f0867b1b71e23",
+        "createdAt": 1791762070209,
+        "dependsOn": [],
+        "id": "task_5352377e65dd4275adf41bc915fee274",
+        "runId": "run_49e84e507bae4767b49a84affdf55cc9",
+        "size": "medium",
+        "spec": "",
+        "status": "running",
+        "title": "Implement",
+        "updatedAt": 1791762070209,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "claude_refusal.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "worker",
+        "createdAt": 1791762070109,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": "Dispatching provider request",
+          "lastActivityAt": 1791762070109,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "queued"
+        },
+        "filesModified": [],
+        "id": "attempt_3f1d1fe939af45c39616c91b1dc2d8e7",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_0989952afd26490dbfcb0ed6bf94c812",
+        "status": "running",
+        "taskId": "task_0e6bee2e5d02450f82f8c49119e54234",
+        "updatedAt": 1791762070109,
+        "workerChatKey": "chat:orch-021a69a5f9f743608077e2c3cdd96f44"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [
+      {
+        "attemptId": "attempt_3f1d1fe939af45c39616c91b1dc2d8e7",
+        "awaits": "nobody",
+        "blockedAction": "eas update --branch production --message 'OTA 1.4.2'",
+        "chatKey": "chat:orch-021a69a5f9f743608077e2c3cdd96f44",
+        "continuation": "unavailable",
+        "groupId": null,
+        "id": "915835fa-262c-4fc8-9e5d-016fa636f895",
+        "kind": "safety",
+        "observedAt": 1791762070111,
+        "reason": "Claude's auto mode blocked an action: Production Deploy",
+        "recovery": "Claude's auto mode refused this call without asking anyone, and OctiqFlow cannot approve it: there is no supported way to allow one refused call before it runs. The card only records the refusal. Do not retry the call or reword it to get past the classifier. Continue another safe way, or settle the attempt blocked and name the refused command so the person can decide.",
+        "runId": "run_0989952afd26490dbfcb0ed6bf94c812",
+        "status": "pending",
+        "taskId": "task_0e6bee2e5d02450f82f8c49119e54234"
+      }
+    ],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 1,
+          "notifications": 0,
+          "taskStatuses": {
+            "running": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791762070021,
+        "id": "run_0989952afd26490dbfcb0ed6bf94c812",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "rootPath": "/tmp",
+        "status": "running",
+        "updatedAt": 1791762070109,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_3f1d1fe939af45c39616c91b1dc2d8e7",
+        "createdAt": 1791762070109,
+        "dependsOn": [],
+        "id": "task_0e6bee2e5d02450f82f8c49119e54234",
+        "runId": "run_0989952afd26490dbfcb0ed6bf94c812",
+        "size": "medium",
+        "spec": "",
+        "status": "running",
+        "title": "Implement",
+        "updatedAt": 1791762070109,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "failure_awaits_coordinator.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791878827657,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791878827658,
+          "lastProgressAt": 1791878827658,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "failed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791878827658,
+        "id": "attempt_78e5daec5b824f63ae8d6cdaed5f9095",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_587fa8b0ec704443b864caa1a9ec8805",
+        "status": "failed",
+        "taskId": "task_6e8896b439114fbd84040d24d3f65913",
+        "updatedAt": 1791878827658,
+        "workerChatKey": "chat:orch-6c5b821a6a1b40e1a4fbcbb8fbcff475"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:retry-54c74f71120e4b448374f7495940ec8d",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "failed": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791878827560,
+        "id": "run_587fa8b0ec704443b864caa1a9ec8805",
+        "maxConcurrent": 4,
+        "objective": "Ship the feature",
+        "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-aecb277f4949475c8f080a4f35f46a61",
+        "status": "failed",
+        "updatedAt": 1791878827658,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_78e5daec5b824f63ae8d6cdaed5f9095",
+        "createdAt": 1791878827657,
+        "dependsOn": [],
+        "failure": {
+          "awaits": "coordinator",
+          "kind": "failed"
+        },
+        "id": "task_6e8896b439114fbd84040d24d3f65913",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_587fa8b0ec704443b864caa1a9ec8805",
+        "size": "medium",
+        "spec": "",
+        "status": "failed",
+        "title": "Implement",
+        "updatedAt": 1791878827658,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "failure_awaits_person.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791878827657,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791878827658,
+          "lastProgressAt": 1791878827658,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "failed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791878827658,
+        "id": "attempt_78e5daec5b824f63ae8d6cdaed5f9095",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_587fa8b0ec704443b864caa1a9ec8805",
+        "status": "failed",
+        "taskId": "task_6e8896b439114fbd84040d24d3f65913",
+        "updatedAt": 1791878827658,
+        "workerChatKey": "chat:orch-6c5b821a6a1b40e1a4fbcbb8fbcff475"
+      },
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791878827660,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791878827661,
+          "lastProgressAt": 1791878827661,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "cancelled"
+        },
+        "filesModified": [],
+        "finishedAt": 1791878827661,
+        "id": "attempt_797272f309e3412aa273580ab814ff7f",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 2,
+        "retry": {
+          "after": "failed",
+          "by": "coordinator",
+          "number": 1
+        },
+        "runId": "run_587fa8b0ec704443b864caa1a9ec8805",
+        "status": "cancelled",
+        "taskId": "task_6e8896b439114fbd84040d24d3f65913",
+        "updatedAt": 1791878827661,
+        "workerChatKey": "chat:orch-254f86f781a147598f1d68b6eaf35695"
+      },
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791878827661,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791878827662,
+          "lastProgressAt": 1791878827662,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "failed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791878827662,
+        "id": "attempt_e82050cf41454ec8a6857183a108d4b6",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 3,
+        "retry": {
+          "after": "blocked",
+          "by": "coordinator",
+          "number": 2
+        },
+        "runId": "run_587fa8b0ec704443b864caa1a9ec8805",
+        "status": "failed",
+        "taskId": "task_6e8896b439114fbd84040d24d3f65913",
+        "updatedAt": 1791878827662,
+        "workerChatKey": "chat:orch-0eb1c683efcc4556b2372874b5241e02"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:retry-54c74f71120e4b448374f7495940ec8d",
+        "counts": {
+          "attempts": 3,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 3,
+          "taskStatuses": {
+            "failed": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791878827560,
+        "id": "run_587fa8b0ec704443b864caa1a9ec8805",
+        "maxConcurrent": 4,
+        "objective": "Ship the feature",
+        "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-aecb277f4949475c8f080a4f35f46a61",
+        "status": "failed",
+        "updatedAt": 1791878827662,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_e82050cf41454ec8a6857183a108d4b6",
+        "createdAt": 1791878827657,
+        "dependsOn": [],
+        "failure": {
+          "awaits": "person",
+          "because": "retries_used",
+          "kind": "failed"
+        },
+        "id": "task_6e8896b439114fbd84040d24d3f65913",
+        "retriesUsed": 2,
+        "retryLimit": 2,
+        "runId": "run_587fa8b0ec704443b864caa1a9ec8805",
+        "size": "medium",
+        "spec": "",
+        "status": "failed",
+        "title": "Implement",
+        "updatedAt": 1791878827662,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "failure_check_coordinator_gone.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791923072756,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791923072756,
+          "lastProgressAt": 1791923072756,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "completed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791923072756,
+        "id": "attempt_32d77c92d56d4ae58c23918578286b2f",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_b5b80bccbb0148fe9d044bc916448e7b",
+        "status": "completed",
+        "taskId": "task_af7390cba07a4bfb98345072d04687b6",
+        "updatedAt": 1791923072756,
+        "workerChatKey": "chat:orch-fdc3137eea9542d6b21c9224f3cc0494"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:retry-gone-c3c8028a51914c58bc1df2b854e641f9",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "completed": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791923072643,
+        "id": "run_b5b80bccbb0148fe9d044bc916448e7b",
+        "maxConcurrent": 4,
+        "objective": "Ship the feature",
+        "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-9dafebf5e98b491490441a26be0a9a66",
+        "status": "completed",
+        "updatedAt": 1791923072756,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_32d77c92d56d4ae58c23918578286b2f",
+        "createdAt": 1791923072719,
+        "dependsOn": [],
+        "failure": {
+          "awaits": "person",
+          "because": "coordinator_gone",
+          "kind": "check_failed"
+        },
+        "id": "task_af7390cba07a4bfb98345072d04687b6",
+        "kind": "review",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_b5b80bccbb0148fe9d044bc916448e7b",
+        "size": "medium",
+        "spec": "",
+        "status": "completed",
+        "title": "Implement",
+        "updatedAt": 1791923072756,
+        "verdict": "fail",
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "failure_check_retries_used.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791923069583,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791923069586,
+          "lastProgressAt": 1791923069586,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "completed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791923069586,
+        "id": "attempt_79ddea52b7654d0885a98850c0276dd0",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_31b46841e80141a6bdd032cee60cbc42",
+        "status": "completed",
+        "taskId": "task_1caf4906e7eb42c3aea055d4fba5ee3c",
+        "updatedAt": 1791923069586,
+        "workerChatKey": "chat:orch-b0664a2d2a9d4231994033e91bedf00e"
+      },
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791923069677,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791923069678,
+          "lastProgressAt": 1791923069678,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "completed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791923069678,
+        "id": "attempt_0dad7fe294a84626b3e35555bb863ada",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 2,
+        "retry": {
+          "after": "check_failed",
+          "by": "coordinator",
+          "number": 1
+        },
+        "runId": "run_31b46841e80141a6bdd032cee60cbc42",
+        "status": "completed",
+        "taskId": "task_1caf4906e7eb42c3aea055d4fba5ee3c",
+        "updatedAt": 1791923069678,
+        "workerChatKey": "chat:orch-b68b120916274fbdbc620efdbc539a90"
+      },
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791923069685,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791923069685,
+          "lastProgressAt": 1791923069685,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "completed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791923069685,
+        "id": "attempt_19248353f5434a9a994fb3a9336cb81a",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 3,
+        "retry": {
+          "after": "check_failed",
+          "by": "coordinator",
+          "number": 2
+        },
+        "runId": "run_31b46841e80141a6bdd032cee60cbc42",
+        "status": "completed",
+        "taskId": "task_1caf4906e7eb42c3aea055d4fba5ee3c",
+        "updatedAt": 1791923069685,
+        "workerChatKey": "chat:orch-598532e855944c08866c92db4f54f729"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:retry-30149a953e1349749a7f1f67733815f5",
+        "counts": {
+          "attempts": 3,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 3,
+          "taskStatuses": {
+            "completed": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791923069488,
+        "id": "run_31b46841e80141a6bdd032cee60cbc42",
+        "maxConcurrent": 4,
+        "objective": "Ship the feature",
+        "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-608c26f75d144a2da7eb9249f36fa377",
+        "status": "completed",
+        "updatedAt": 1791923069685,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_19248353f5434a9a994fb3a9336cb81a",
+        "createdAt": 1791923069565,
+        "dependsOn": [],
+        "failure": {
+          "awaits": "person",
+          "because": "retries_used",
+          "kind": "check_failed"
+        },
+        "id": "task_1caf4906e7eb42c3aea055d4fba5ee3c",
+        "kind": "review",
+        "reopens": [
+          {
+            "at": 1791923069657,
+            "noticeDelivered": true
+          },
+          {
+            "at": 1791923069679,
+            "noticeDelivered": true
+          }
+        ],
+        "retriesUsed": 2,
+        "retryLimit": 2,
+        "runId": "run_31b46841e80141a6bdd032cee60cbc42",
+        "size": "medium",
+        "spec": "",
+        "status": "completed",
+        "title": "Implement",
+        "updatedAt": 1791923069685,
+        "verdict": "fail",
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "failure_coordinator_gone.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791923070007,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791923070007,
+          "lastProgressAt": 1791923070007,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "failed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791923070007,
+        "id": "attempt_e0addaa0eae948f893b2df2be93d39a9",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_46db814285714680b9b6cd9ea21dee3c",
+        "status": "failed",
+        "taskId": "task_a0d6164a5e2b44498d30389c1ca5bd64",
+        "updatedAt": 1791923070007,
+        "workerChatKey": "chat:orch-29ed6c259f014d8db919384164981846"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:retry-gone-eba1b759aa824ae5a1473e9c9cb8dab6",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "failed": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791923069946,
+        "id": "run_46db814285714680b9b6cd9ea21dee3c",
+        "maxConcurrent": 4,
+        "objective": "Ship the feature",
+        "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-18e5bdcdcc844a32983cf5f4eaf5c8c5",
+        "status": "failed",
+        "updatedAt": 1791923070007,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_e0addaa0eae948f893b2df2be93d39a9",
+        "createdAt": 1791923070007,
+        "dependsOn": [],
+        "failure": {
+          "awaits": "person",
+          "because": "coordinator_gone",
+          "kind": "failed"
+        },
+        "id": "task_a0d6164a5e2b44498d30389c1ca5bd64",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_46db814285714680b9b6cd9ea21dee3c",
+        "size": "medium",
+        "spec": "",
+        "status": "failed",
+        "title": "Implement",
+        "updatedAt": 1791923070007,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "failure_escalated.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791878828360,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791878828361,
+          "lastProgressAt": 1791878828361,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "failed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791878828361,
+        "id": "attempt_4e0ace94a6a9472eae6c0db2e11905d2",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_be2a90cd5d354fc4910789eced24fbc0",
+        "status": "failed",
+        "taskId": "task_6b3e340158ac4b908a7268bc06992f6a",
+        "updatedAt": 1791878828361,
+        "workerChatKey": "chat:orch-b1872174629a4290b52d0f6884e043fc"
+      }
+    ],
+    "bridges": [],
+    "gates": [
+      {
+        "aboutTaskId": "task_6b3e340158ac4b908a7268bc06992f6a",
+        "awaits": "person",
+        "createdAt": 1791878828361,
+        "id": "gate_fe7b990f8b034d26be8f621f0e352b56",
+        "options": [],
+        "question": "",
+        "runId": "run_be2a90cd5d354fc4910789eced24fbc0",
+        "status": "open",
+        "updatedAt": 1791878828361
+      }
+    ],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:retry-1be5bf4ac44a4529a136262a98e83b8f",
+        "counts": {
+          "attempts": 1,
+          "gates": 1,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "failed": 1,
+            "ready": 1
+          },
+          "tasks": 2
+        },
+        "createdAt": 1791878828239,
+        "id": "run_be2a90cd5d354fc4910789eced24fbc0",
+        "maxConcurrent": 4,
+        "objective": "Ship the feature",
+        "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-9c28add5b096466da02a895edaaa31e8",
+        "status": "waiting",
+        "updatedAt": 1791878828361,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_4e0ace94a6a9472eae6c0db2e11905d2",
+        "createdAt": 1791878828301,
+        "dependsOn": [],
+        "failure": {
+          "awaits": "person",
+          "because": "escalated",
+          "gateId": "gate_fe7b990f8b034d26be8f621f0e352b56",
+          "kind": "failed"
+        },
+        "id": "task_6b3e340158ac4b908a7268bc06992f6a",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_be2a90cd5d354fc4910789eced24fbc0",
+        "size": "medium",
+        "spec": "",
+        "status": "failed",
+        "title": "Implement",
+        "updatedAt": 1791878828361,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      {
+        "createdAt": 1791878828360,
+        "dependsOn": [],
+        "id": "task_427b922271d84879be0d52c7637f04ce",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_be2a90cd5d354fc4910789eced24fbc0",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1791878828360
+      }
+    ]
+  },
+  "failure_in_completed_run.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791878826808,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791878826808,
+          "lastProgressAt": 1791878826808,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "completed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791878826808,
+        "id": "attempt_122e62a83a4b49539782804a598c4f6e",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_5a8a1e601ffd48e6ba2e99f9974f1f44",
+        "status": "completed",
+        "taskId": "task_f86e02c06b634546a34b57a16ed7d29c",
+        "updatedAt": 1791878826808,
+        "workerChatKey": "chat:orch-3f4e75e69b3e43aa89d1c9e583af9a06"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:retry-27156516a9dd43d9967d53505294e292",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "completed": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791878826663,
+        "id": "run_5a8a1e601ffd48e6ba2e99f9974f1f44",
+        "maxConcurrent": 4,
+        "objective": "Ship the feature",
+        "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-cb4f373b0bdc44b7b1d746f5a05cf962",
+        "status": "completed",
+        "updatedAt": 1791878826808,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_122e62a83a4b49539782804a598c4f6e",
+        "createdAt": 1791878826748,
+        "dependsOn": [],
+        "failure": {
+          "awaits": "coordinator",
+          "kind": "check_failed"
+        },
+        "id": "task_f86e02c06b634546a34b57a16ed7d29c",
+        "kind": "review",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_5a8a1e601ffd48e6ba2e99f9974f1f44",
+        "size": "medium",
+        "spec": "",
+        "status": "completed",
+        "title": "Implement",
+        "updatedAt": 1791878826808,
+        "verdict": "fail",
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "failure_in_stopped_run.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791878827058,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791878827058,
+          "lastProgressAt": 1791878827058,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "failed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791878827058,
+        "id": "attempt_5ffef0bed11d433c843aacc96659a301",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_d291d1016a5e4d0b99c29eadeea5069c",
+        "status": "failed",
+        "taskId": "task_594ec000a41d415985d47743ed698f4e",
+        "updatedAt": 1791878827058,
+        "workerChatKey": "chat:orch-46d1f744a0d4428fa37dfadb02633bf5"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:retry-2edbe476563c408a892376d48b6b3330",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 0,
+          "taskStatuses": {
+            "failed": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791878826953,
+        "id": "run_d291d1016a5e4d0b99c29eadeea5069c",
+        "maxConcurrent": 4,
+        "objective": "Ship the feature",
+        "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-65201adda75f4fd791b0256a94acd97b",
+        "status": "stopped",
+        "updatedAt": 1791878827058,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_5ffef0bed11d433c843aacc96659a301",
+        "createdAt": 1791878827058,
+        "dependsOn": [],
+        "failure": {
+          "awaits": "nobody",
+          "because": "run_ended",
+          "kind": "failed"
+        },
+        "id": "task_594ec000a41d415985d47743ed698f4e",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_d291d1016a5e4d0b99c29eadeea5069c",
+        "size": "medium",
+        "spec": "",
+        "status": "failed",
+        "title": "Implement",
+        "updatedAt": 1791878827058,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "failure_replaced.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791878827758,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791878827758,
+          "lastProgressAt": 1791878827758,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "failed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791878827758,
+        "id": "attempt_15f276275c2540b19411e754da5bf26b",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_968586f93a3d4de7998627e27924217f",
+        "status": "failed",
+        "taskId": "task_fa4cdf48960c4903948d717d6fb547dc",
+        "updatedAt": 1791878827758,
+        "workerChatKey": "chat:orch-dfc36a0a61bd41038a2a34829022042c"
+      },
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791878827758,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791878827758,
+          "lastProgressAt": 1791878827758,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "failed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791878827758,
+        "id": "attempt_43aadf44442048c3bc6fbab3f8d0362f",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 2,
+        "retry": {
+          "after": "failed",
+          "by": "coordinator",
+          "number": 1
+        },
+        "runId": "run_968586f93a3d4de7998627e27924217f",
+        "status": "failed",
+        "taskId": "task_fa4cdf48960c4903948d717d6fb547dc",
+        "updatedAt": 1791878827758,
+        "workerChatKey": "chat:orch-cc82f2475dc846f6aaf1b56f54065fd2"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:retry-e7b83426f2f44adc870c2936884bfdd2",
+        "counts": {
+          "attempts": 2,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 2,
+          "taskStatuses": {
+            "failed": 1,
+            "ready": 1
+          },
+          "tasks": 2
+        },
+        "createdAt": 1791878827665,
+        "id": "run_968586f93a3d4de7998627e27924217f",
+        "maxConcurrent": 4,
+        "objective": "Ship the feature",
+        "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-6a470abbc4674e518a34fadafb864197",
+        "status": "running",
+        "updatedAt": 1791878827872,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_43aadf44442048c3bc6fbab3f8d0362f",
+        "createdAt": 1791878827757,
+        "dependsOn": [],
+        "failure": {
+          "awaits": "nobody",
+          "because": "replaced",
+          "kind": "failed"
+        },
+        "id": "task_fa4cdf48960c4903948d717d6fb547dc",
+        "retriesUsed": 1,
+        "retryLimit": 2,
+        "runId": "run_968586f93a3d4de7998627e27924217f",
+        "size": "medium",
+        "spec": "",
+        "status": "failed",
+        "supersededBy": "task_a75263f6ce3f41f894fa57fffa128026",
+        "title": "Implement",
+        "updatedAt": 1791878827872,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      {
+        "createdAt": 1791878827872,
+        "dependsOn": [],
+        "id": "task_a75263f6ce3f41f894fa57fffa128026",
+        "retriesUsed": 2,
+        "retryLimit": 2,
+        "runId": "run_968586f93a3d4de7998627e27924217f",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1791878827872
+      }
+    ]
+  },
+  "failure_time_limit.json": {
+    "attempts": [
+      {
+        "access": "edits",
+        "agent": "codex",
+        "branch": "peer",
+        "createdAt": 1791923070372,
+        "cwd": "/tmp",
+        "effort": "medium",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791923070372,
+          "lastProgressAt": 1791923070372,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "failed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791923070372,
+        "id": "attempt_e63cacfe46184a5d8e774fb0a0d6a18e",
+        "isWorktree": true,
+        "model": "gpt-5.6-terra",
+        "number": 1,
+        "runId": "run_fb69748c44b24f1a9d05eb4c20b6b9ff",
+        "status": "failed",
+        "taskId": "task_9d94e72f9a1041cf97c1ed9fe6f30b6d",
+        "updatedAt": 1791923070372,
+        "workerChatKey": "chat:orch-f874f26cb2d3491faa617ed7d6d2e02e"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:lead",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "failed": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791923070330,
+        "id": "run_fb69748c44b24f1a9d05eb4c20b6b9ff",
+        "maxConcurrent": 4,
+        "objective": "Peer requests from ADA",
+        "planApproval": {
+          "decidedAt": 1791923070371,
+          "requestedAt": 1791923070330,
+          "revisedAt": 1791923070371,
+          "revision": 1,
+          "status": "approved"
+        },
+        "rootPath": "/tmp",
+        "status": "failed",
+        "updatedAt": 1791923070372,
+        "workspaceId": "workspace",
+        "workspaceMode": "mission"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_e63cacfe46184a5d8e774fb0a0d6a18e",
+        "approvedAt": 1791923070371,
+        "assignee": {
+          "id": "bo",
+          "name": "BO"
+        },
+        "createdAt": 1791923070370,
+        "dependsOn": [],
+        "failure": {
+          "awaits": "person",
+          "because": "time_limit",
+          "kind": "failed"
+        },
+        "heldByPlan": false,
+        "id": "task_9d94e72f9a1041cf97c1ed9fe6f30b6d",
+        "peerRequest": {
+          "maxMinutes": 1,
+          "requestedAt": 1791923070370,
+          "requestedBy": {
+            "id": "ada",
+            "name": "ADA"
+          },
+          "requesterChatKey": "chat:lead"
+        },
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_fb69748c44b24f1a9d05eb4c20b6b9ff",
+        "size": "medium",
+        "spec": "",
+        "status": "failed",
+        "title": "Report volume usage",
+        "updatedAt": 1791923070372,
+        "worker": {
+          "access": "edits",
+          "agent": "codex",
+          "effort": "medium",
+          "model": "gpt-5.6-terra",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "gates_open.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "worker",
+        "createdAt": 1791762070307,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": "Waiting for a decision",
+          "lastActivityAt": 1791762070307,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "blocked"
+        },
+        "filesModified": [],
+        "id": "attempt_7eb0c7f19e61423faf7139dfaa6a1e1f",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_203d00d32e01414fbad1e4d3987816d4",
+        "status": "blocked",
+        "taskId": "task_ff36110d3806419b9b71c2c87a441a27",
+        "updatedAt": 1791762070307,
+        "workerChatKey": "chat:orch-954b9b145830422c82d0955e54671e7a"
+      }
+    ],
+    "bridges": [],
+    "gates": [
+      {
+        "awaits": "coordinator",
+        "createdAt": 1791762070307,
+        "id": "gate_6ae8227501184fbca7a0ec5c0774d5d7",
+        "options": [],
+        "question": "",
+        "runId": "run_203d00d32e01414fbad1e4d3987816d4",
+        "status": "open",
+        "taskId": "task_ff36110d3806419b9b71c2c87a441a27",
+        "updatedAt": 1791762070307
+      },
+      {
+        "awaits": "person",
+        "createdAt": 1791762070309,
+        "id": "gate_71958e6407534d75ba6173987aa5dc38",
+        "options": [],
+        "question": "",
+        "runId": "run_203d00d32e01414fbad1e4d3987816d4",
+        "status": "open",
+        "updatedAt": 1791762070309
+      }
+    ],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 1,
+          "gates": 2,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "blocked": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791762070215,
+        "id": "run_203d00d32e01414fbad1e4d3987816d4",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "rootPath": "/tmp",
+        "status": "waiting",
+        "updatedAt": 1791762070309,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_7eb0c7f19e61423faf7139dfaa6a1e1f",
+        "createdAt": 1791762070307,
+        "dependsOn": [],
+        "id": "task_ff36110d3806419b9b71c2c87a441a27",
+        "runId": "run_203d00d32e01414fbad1e4d3987816d4",
+        "size": "medium",
+        "spec": "",
+        "status": "blocked",
+        "title": "Implement",
+        "updatedAt": 1791762070307,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "held_by_plan.json": {
+    "attempts": [],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 0,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 0,
+          "taskStatuses": {
+            "ready": 2
+          },
+          "tasks": 2
+        },
+        "createdAt": 1791762069277,
+        "id": "run_fd935c32a4b54375911e73d3be16e2b1",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "planApproval": {
+          "requestedAt": 1791762069501,
+          "revisedAt": 1791762069506,
+          "revision": 3,
+          "status": "pending"
+        },
+        "rootPath": "/tmp",
+        "status": "running",
+        "updatedAt": 1791762069501,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "approvedAt": 1791762069399,
+        "assignee": {
+          "id": "agent_dev",
+          "name": "Dev"
+        },
+        "createdAt": 1791762069396,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_fcc6febd24e44edd82c80384abdd6260",
+        "runId": "run_fd935c32a4b54375911e73d3be16e2b1",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Inspect only",
+        "updatedAt": 1791762069396,
+        "worker": {
+          "access": "manual",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-terra",
+          "recovery": null
+        }
+      },
+      {
+        "createdAt": 1791762069501,
+        "dependsOn": [],
+        "heldByPlan": true,
+        "id": "task_3a25925cb5b44440807619bfa5d86a34",
+        "runId": "run_fd935c32a4b54375911e73d3be16e2b1",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1791762069501
+      }
+    ]
+  },
+  "held_by_reopen.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "",
+        "createdAt": 1791762070704,
+        "cwd": "",
+        "execution": {
+          "currentOperation": "Preparing workspace",
+          "lastActivityAt": 1791762070704,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "queued"
+        },
+        "filesModified": [],
+        "id": "attempt_f4192891b1d7493484bbe6f93ac036e5",
+        "isWorktree": false,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_ac64338be37a46d9a12fbb958b524a20",
+        "status": "completed",
+        "taskId": "task_78f938c4d2e0432c838707fa9896fc4f",
+        "updatedAt": 1791762070704,
+        "workerChatKey": "chat:orch-7787fcdb70b041f38abf350efb7e986c"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:reopen-c1ef9d63aebe44dba191bde4d268fac8",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 0,
+          "taskStatuses": {
+            "ready": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791762070510,
+        "id": "run_ac64338be37a46d9a12fbb958b524a20",
+        "maxConcurrent": 4,
+        "objective": "Build feature",
+        "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-m2-reopen-7acc2236818544dfbee37de145e22a30",
+        "status": "running",
+        "updatedAt": 1791762070837,
+        "workspaceId": "project",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_f4192891b1d7493484bbe6f93ac036e5",
+        "createdAt": 1791762070703,
+        "dependsOn": [],
+        "heldByReopen": true,
+        "id": "task_78f938c4d2e0432c838707fa9896fc4f",
+        "reopens": [
+          {
+            "at": 1791762070837,
+            "noticeDelivered": false
+          }
+        ],
+        "runId": "run_ac64338be37a46d9a12fbb958b524a20",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1791762070837,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "peer_gate.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791762070393,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": "Dispatching provider request",
+          "lastActivityAt": 1791762070393,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "queued"
+        },
+        "filesModified": [],
+        "id": "attempt_254fe03c7066420ba692d54d4d8ea43c",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_0a533255dadb4fd6a981be6fb2818c63",
+        "status": "running",
+        "taskId": "task_1a968145ae4f4a11a8a74b5d13d4c57b",
+        "updatedAt": 1791762070393,
+        "workerChatKey": "chat:orch-2d43af63a89e489c826499b178908d46"
+      },
+      {
+        "access": "edits",
+        "agent": "codex",
+        "branch": "peer",
+        "createdAt": 1791762070502,
+        "cwd": "/tmp",
+        "effort": "medium",
+        "execution": {
+          "currentOperation": "Waiting for a decision",
+          "lastActivityAt": 1791762070502,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "blocked"
+        },
+        "filesModified": [],
+        "id": "attempt_34b162d3ff3c4fcbb0716913d108a50a",
+        "isWorktree": true,
+        "model": "gpt-5.6-terra",
+        "number": 1,
+        "runId": "run_0a533255dadb4fd6a981be6fb2818c63",
+        "status": "blocked",
+        "taskId": "task_c87801bbf98b4497b0a9fcc15f36cdf5",
+        "updatedAt": 1791762070502,
+        "workerChatKey": "chat:orch-d25090870c954b9f8a354537c41fcbe6"
+      }
+    ],
+    "bridges": [],
+    "gates": [
+      {
+        "awaits": "person",
+        "createdAt": 1791762070502,
+        "id": "gate_3cd75b41602248148ab1f31e6152a0a3",
+        "options": [],
+        "question": "",
+        "runId": "run_0a533255dadb4fd6a981be6fb2818c63",
+        "status": "open",
+        "taskId": "task_c87801bbf98b4497b0a9fcc15f36cdf5",
+        "updatedAt": 1791762070502
+      }
+    ],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 2,
+          "gates": 1,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 3,
+          "taskStatuses": {
+            "blocked": 1,
+            "running": 1
+          },
+          "tasks": 2
+        },
+        "createdAt": 1791762070312,
+        "id": "run_0a533255dadb4fd6a981be6fb2818c63",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "planApproval": {
+          "decidedAt": 1791762070502,
+          "requestedAt": 1791762070501,
+          "revisedAt": 1791762070501,
+          "revision": 1,
+          "status": "approved"
+        },
+        "rootPath": "/tmp",
+        "status": "waiting",
+        "updatedAt": 1791762070502,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_254fe03c7066420ba692d54d4d8ea43c",
+        "approvedAt": 1791762070502,
+        "createdAt": 1791762070392,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_1a968145ae4f4a11a8a74b5d13d4c57b",
+        "runId": "run_0a533255dadb4fd6a981be6fb2818c63",
+        "size": "medium",
+        "spec": "",
+        "status": "running",
+        "title": "Implement",
+        "updatedAt": 1791762070393,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      {
+        "activeAttemptId": "attempt_34b162d3ff3c4fcbb0716913d108a50a",
+        "approvedAt": 1791762070502,
+        "assignee": {
+          "id": "bo",
+          "name": "BO"
+        },
+        "createdAt": 1791762070501,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_c87801bbf98b4497b0a9fcc15f36cdf5",
+        "peerRequest": {
+          "maxMinutes": 30,
+          "requestedAt": 1791762070501,
+          "requestedBy": {
+            "id": "ada",
+            "name": "ADA"
+          },
+          "requesterAttemptId": "attempt_254fe03c7066420ba692d54d4d8ea43c",
+          "requesterChatKey": "chat:orch-2d43af63a89e489c826499b178908d46"
+        },
+        "runId": "run_0a533255dadb4fd6a981be6fb2818c63",
+        "size": "medium",
+        "spec": "",
+        "status": "blocked",
+        "title": "Report volume usage",
+        "updatedAt": 1791762070502,
+        "worker": {
+          "access": "edits",
+          "agent": "codex",
+          "effort": "medium",
+          "model": "gpt-5.6-terra",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "plan_after_blocked.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791768484174,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791768484174,
+          "lastProgressAt": 1791768484174,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "blocked"
+        },
+        "filesModified": [],
+        "finishedAt": 1791768484174,
+        "id": "attempt_406286945e924734bac169ebed934b11",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_51af51f53d4c47b196780063b64ef3f4",
+        "status": "blocked",
+        "taskId": "task_ca247b1ab38a4233b379f4f5717ef8a9",
+        "updatedAt": 1791768484174,
+        "workerChatKey": "chat:orch-ea3a8a6838ba4053bfc4becb2e29a455"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "blocked": 1,
+            "ready": 1
+          },
+          "tasks": 2
+        },
+        "createdAt": 1791768484095,
+        "id": "run_51af51f53d4c47b196780063b64ef3f4",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "planApproval": {
+          "requestedAt": 1791768484263,
+          "revisedAt": 1791768484263,
+          "revision": 3,
+          "status": "pending"
+        },
+        "rootPath": "/tmp",
+        "status": "running",
+        "updatedAt": 1791768484263,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_406286945e924734bac169ebed934b11",
+        "approvedAt": 1791768484174,
+        "createdAt": 1791768484173,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_ca247b1ab38a4233b379f4f5717ef8a9",
+        "runId": "run_51af51f53d4c47b196780063b64ef3f4",
+        "size": "medium",
+        "spec": "",
+        "status": "blocked",
+        "title": "Implement",
+        "updatedAt": 1791768484174,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      {
+        "createdAt": 1791768484263,
+        "dependsOn": [],
+        "heldByPlan": true,
+        "id": "task_359f49daa71640bf9ab5f605275ae701",
+        "runId": "run_51af51f53d4c47b196780063b64ef3f4",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1791768484263
+      }
+    ]
+  },
+  "plan_after_check_failed.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791768484324,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791768484324,
+          "lastProgressAt": 1791768484324,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "completed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791768484324,
+        "id": "attempt_0fe712f6e9d7409ca19fe59cc672e43d",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_a324e268107b4b92bf8bc8a7d4842a63",
+        "status": "completed",
+        "taskId": "task_65e075a8e9994e76b22950ba11172876",
+        "updatedAt": 1791768484324,
+        "workerChatKey": "chat:orch-bdd0ebeee4534a65ad3357150c5f7c38"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "completed": 1,
+            "ready": 1
+          },
+          "tasks": 2
+        },
+        "createdAt": 1791768484266,
+        "id": "run_a324e268107b4b92bf8bc8a7d4842a63",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "planApproval": {
+          "requestedAt": 1791768484384,
+          "revisedAt": 1791768484385,
+          "revision": 4,
+          "status": "pending"
+        },
+        "rootPath": "/tmp",
+        "status": "running",
+        "updatedAt": 1791768484384,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_0fe712f6e9d7409ca19fe59cc672e43d",
+        "approvedAt": 1791768484324,
+        "createdAt": 1791768484323,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_65e075a8e9994e76b22950ba11172876",
+        "kind": "review",
+        "runId": "run_a324e268107b4b92bf8bc8a7d4842a63",
+        "size": "medium",
+        "spec": "",
+        "status": "completed",
+        "title": "Implement",
+        "updatedAt": 1791768484324,
+        "verdict": "fail",
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      {
+        "createdAt": 1791768484384,
+        "dependsOn": [],
+        "heldByPlan": true,
+        "id": "task_ba0d0e864f734a66966fb2c8216b20a5",
+        "runId": "run_a324e268107b4b92bf8bc8a7d4842a63",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1791768484384
+      }
+    ]
+  },
+  "plan_after_failed.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791768483990,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791768483991,
+          "lastProgressAt": 1791768483991,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "failed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791768483991,
+        "id": "attempt_fef1f5b0c0b743758100c30079920827",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_26e50f4adff0467b8fe3772ba01ccb3e",
+        "status": "failed",
+        "taskId": "task_b37a474b8d36411d9ee121aaf06dd4e3",
+        "updatedAt": 1791768483991,
+        "workerChatKey": "chat:orch-83aab8c32bcc48548590d34d49d781db"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "failed": 1,
+            "ready": 1
+          },
+          "tasks": 2
+        },
+        "createdAt": 1791768483907,
+        "id": "run_26e50f4adff0467b8fe3772ba01ccb3e",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "planApproval": {
+          "requestedAt": 1791768484073,
+          "revisedAt": 1791768484073,
+          "revision": 3,
+          "status": "pending"
+        },
+        "rootPath": "/tmp",
+        "status": "running",
+        "updatedAt": 1791768484073,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_fef1f5b0c0b743758100c30079920827",
+        "approvedAt": 1791768483989,
+        "createdAt": 1791768483985,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_b37a474b8d36411d9ee121aaf06dd4e3",
+        "runId": "run_26e50f4adff0467b8fe3772ba01ccb3e",
+        "size": "medium",
+        "spec": "",
+        "status": "failed",
+        "title": "Implement",
+        "updatedAt": 1791768483991,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      {
+        "createdAt": 1791768484073,
+        "dependsOn": [],
+        "heldByPlan": true,
+        "id": "task_f08d500ac57f417ebc7a06c8f9a3a812",
+        "runId": "run_26e50f4adff0467b8fe3772ba01ccb3e",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1791768484073
+      }
+    ]
+  },
+  "plan_after_stopped.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791768484451,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791768484451,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "cancelled"
+        },
+        "filesModified": [],
+        "finishedAt": 1791768484451,
+        "id": "attempt_ae28c31109de48eb846f54a417789a6f",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_ed2f40f6ba9446e0884e8d12b8e1550f",
+        "status": "cancelled",
+        "taskId": "task_22dfaf811283411895e05f594fdbdda1",
+        "updatedAt": 1791768484451,
+        "workerChatKey": "chat:orch-955c45b501a24f22bb5d7ca7ac7f4ea6"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "failed": 1,
+            "ready": 1
+          },
+          "tasks": 2
+        },
+        "createdAt": 1791768484385,
+        "id": "run_ed2f40f6ba9446e0884e8d12b8e1550f",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "planApproval": {
+          "requestedAt": 1791768484537,
+          "revisedAt": 1791768484538,
+          "revision": 3,
+          "status": "pending"
+        },
+        "rootPath": "/tmp",
+        "status": "running",
+        "updatedAt": 1791768484537,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_ae28c31109de48eb846f54a417789a6f",
+        "approvedAt": 1791768484451,
+        "createdAt": 1791768484450,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_22dfaf811283411895e05f594fdbdda1",
+        "runId": "run_ed2f40f6ba9446e0884e8d12b8e1550f",
+        "size": "medium",
+        "spec": "",
+        "status": "failed",
+        "stopped": {
+          "at": 1791768484451,
+          "attemptId": "attempt_ae28c31109de48eb846f54a417789a6f",
+          "reason": "Review these instructions"
+        },
+        "title": "Implement",
+        "updatedAt": 1791768484451,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      {
+        "createdAt": 1791768484537,
+        "dependsOn": [],
+        "heldByPlan": true,
+        "id": "task_d7529275490b437e8a9aec855cd773d8",
+        "runId": "run_ed2f40f6ba9446e0884e8d12b8e1550f",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1791768484537
+      }
+    ]
+  },
+  "reopen_notice_delivered.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "",
+        "createdAt": 1791762070704,
+        "cwd": "",
+        "execution": {
+          "currentOperation": "Preparing workspace",
+          "lastActivityAt": 1791762070704,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "queued"
+        },
+        "filesModified": [],
+        "id": "attempt_f4192891b1d7493484bbe6f93ac036e5",
+        "isWorktree": false,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_ac64338be37a46d9a12fbb958b524a20",
+        "status": "completed",
+        "taskId": "task_78f938c4d2e0432c838707fa9896fc4f",
+        "updatedAt": 1791762070704,
+        "workerChatKey": "chat:orch-7787fcdb70b041f38abf350efb7e986c"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:reopen-c1ef9d63aebe44dba191bde4d268fac8",
+        "counts": {
+          "attempts": 1,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 0,
+          "taskStatuses": {
+            "ready": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791762070510,
+        "id": "run_ac64338be37a46d9a12fbb958b524a20",
+        "maxConcurrent": 4,
+        "objective": "Build feature",
+        "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-m2-reopen-7acc2236818544dfbee37de145e22a30",
+        "status": "running",
+        "updatedAt": 1791762070837,
+        "workspaceId": "project",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_f4192891b1d7493484bbe6f93ac036e5",
+        "createdAt": 1791762070703,
+        "dependsOn": [],
+        "id": "task_78f938c4d2e0432c838707fa9896fc4f",
+        "reopens": [
+          {
+            "at": 1791762070837,
+            "noticeDelivered": true
+          }
+        ],
+        "runId": "run_ac64338be37a46d9a12fbb958b524a20",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1791762070837,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "retry_executing.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791878827657,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791878827658,
+          "lastProgressAt": 1791878827658,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "failed"
+        },
+        "filesModified": [],
+        "finishedAt": 1791878827658,
+        "id": "attempt_78e5daec5b824f63ae8d6cdaed5f9095",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_587fa8b0ec704443b864caa1a9ec8805",
+        "status": "failed",
+        "taskId": "task_6e8896b439114fbd84040d24d3f65913",
+        "updatedAt": 1791878827658,
+        "workerChatKey": "chat:orch-6c5b821a6a1b40e1a4fbcbb8fbcff475"
+      },
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791878827660,
+        "cwd": "work",
+        "execution": {
+          "currentOperation": "Dispatching provider request",
+          "lastActivityAt": 1791878827660,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "queued"
+        },
+        "filesModified": [],
+        "id": "attempt_797272f309e3412aa273580ab814ff7f",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 2,
+        "retry": {
+          "after": "failed",
+          "by": "coordinator",
+          "number": 1
+        },
+        "runId": "run_587fa8b0ec704443b864caa1a9ec8805",
+        "status": "running",
+        "taskId": "task_6e8896b439114fbd84040d24d3f65913",
+        "updatedAt": 1791878827660,
+        "workerChatKey": "chat:orch-254f86f781a147598f1d68b6eaf35695"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:retry-54c74f71120e4b448374f7495940ec8d",
+        "counts": {
+          "attempts": 2,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 1,
+          "taskStatuses": {
+            "running": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1791878827560,
+        "id": "run_587fa8b0ec704443b864caa1a9ec8805",
+        "maxConcurrent": 4,
+        "objective": "Ship the feature",
+        "rootPath": "/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-retry-aecb277f4949475c8f080a4f35f46a61",
+        "status": "running",
+        "updatedAt": 1791878827660,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_797272f309e3412aa273580ab814ff7f",
+        "createdAt": 1791878827657,
+        "dependsOn": [],
+        "id": "task_6e8896b439114fbd84040d24d3f65913",
+        "retriesUsed": 1,
+        "retryLimit": 2,
+        "retrying": true,
+        "runId": "run_587fa8b0ec704443b864caa1a9ec8805",
+        "size": "medium",
+        "spec": "",
+        "status": "running",
+        "title": "Implement",
+        "updatedAt": 1791878827660,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "task_stopped.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791762069801,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": null,
+          "lastActivityAt": 1791762069801,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "cancelled"
+        },
+        "filesModified": [],
+        "finishedAt": 1791762069801,
+        "id": "attempt_50e80629f61b420c8446bccb75bf16da",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_f122742daaf44ce78066b511d0998163",
+        "status": "cancelled",
+        "taskId": "task_d60032e9aa0743109afa744386fa7f4f",
+        "updatedAt": 1791762069801,
+        "workerChatKey": "chat:orch-7cddf1dccc9644b58a73632df5fe8d47"
+      },
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791762069801,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": "Dispatching provider request",
+          "lastActivityAt": 1791762069801,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "queued"
+        },
+        "filesModified": [],
+        "id": "attempt_9fc8b7689bb04bba8dc1628f0b3108c8",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_f122742daaf44ce78066b511d0998163",
+        "status": "running",
+        "taskId": "task_fa62683afe334bf8a462ba9f61bf3afa",
+        "updatedAt": 1791762069801,
+        "workerChatKey": "chat:orch-5bf2ecfc20c94eb7b72e2aee34617a12"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 2,
+          "gates": 1,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 2,
+          "taskStatuses": {
+            "failed": 1,
+            "running": 1
+          },
+          "tasks": 2
+        },
+        "createdAt": 1791762069626,
+        "id": "run_f122742daaf44ce78066b511d0998163",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "planApproval": {
+          "decidedAt": 1791762069800,
+          "requestedAt": 1791762069626,
+          "revisedAt": 1791762069800,
+          "revision": 3,
+          "status": "approved"
+        },
+        "rootPath": "/tmp",
+        "status": "running",
+        "updatedAt": 1791762069802,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_50e80629f61b420c8446bccb75bf16da",
+        "approvedAt": 1791762069800,
+        "createdAt": 1791762069689,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_d60032e9aa0743109afa744386fa7f4f",
+        "runId": "run_f122742daaf44ce78066b511d0998163",
+        "size": "medium",
+        "spec": "",
+        "status": "failed",
+        "stopped": {
+          "at": 1791762069801,
+          "attemptId": "attempt_50e80629f61b420c8446bccb75bf16da",
+          "reason": "Not these instructions"
+        },
+        "title": "Implement",
+        "updatedAt": 1791762069801,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      {
+        "activeAttemptId": "attempt_9fc8b7689bb04bba8dc1628f0b3108c8",
+        "approvedAt": 1791762069800,
+        "createdAt": 1791762069790,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_fa62683afe334bf8a462ba9f61bf3afa",
+        "runId": "run_f122742daaf44ce78066b511d0998163",
+        "size": "medium",
+        "spec": "",
+        "status": "running",
+        "title": "Implement",
+        "updatedAt": 1791762069801,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "usage_context.json": {
+    "attempts": [
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "context": {
+          "tokens": 41000,
+          "window": 272000
+        },
+        "createdAt": 1791762069923,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": "Dispatching provider request",
+          "lastActivityAt": 1791762069923,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "queued"
+        },
+        "filesModified": [],
+        "id": "attempt_913b007245854bc3b6bfb437d577f404",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_13d4f0ce899642c78a395132c7c8cae8",
+        "status": "running",
+        "taskId": "task_d15b28722cb34b92a1fdcb8e534f29d2",
+        "updatedAt": 1791762069923,
+        "usage": {
+          "cacheWrite": 0,
+          "cachedInput": 39500,
+          "input": 41000,
+          "output": 2300,
+          "reasoning": 1100
+        },
+        "workerChatKey": "chat:orch-b5c3e19048d441b0ad4ee4775914e706"
+      },
+      {
+        "access": "auto",
+        "agent": "codex",
+        "branch": "test",
+        "createdAt": 1791762070017,
+        "cwd": "/tmp",
+        "execution": {
+          "currentOperation": "Dispatching provider request",
+          "lastActivityAt": 1791762070017,
+          "lastProgressAt": null,
+          "latestError": null,
+          "nextRetryAt": null,
+          "retryCount": 0,
+          "retryModel": null,
+          "stalledAt": null,
+          "state": "queued"
+        },
+        "filesModified": [],
+        "id": "attempt_6c7fe6e388ea4f878e670a8e6abecff1",
+        "isWorktree": true,
+        "model": "gpt-5.6-sol",
+        "number": 1,
+        "runId": "run_13d4f0ce899642c78a395132c7c8cae8",
+        "status": "running",
+        "taskId": "task_d8acc636d5524b5fa0bed436e7d06922",
+        "updatedAt": 1791762070017,
+        "workerChatKey": "chat:orch-981d086b49654594a0cd8ea9c0a3135b"
+      }
+    ],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 2,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 0,
+          "taskStatuses": {
+            "running": 2
+          },
+          "tasks": 2
+        },
+        "createdAt": 1791762069851,
+        "id": "run_13d4f0ce899642c78a395132c7c8cae8",
+        "maxConcurrent": 2,
+        "objective": "Ship the feature",
+        "rootPath": "/tmp",
+        "status": "running",
+        "updatedAt": 1791762070017,
+        "workspaceId": "workspace",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "activeAttemptId": "attempt_913b007245854bc3b6bfb437d577f404",
+        "createdAt": 1791762069923,
+        "dependsOn": [],
+        "id": "task_d15b28722cb34b92a1fdcb8e534f29d2",
+        "runId": "run_13d4f0ce899642c78a395132c7c8cae8",
+        "size": "medium",
+        "spec": "",
+        "status": "running",
+        "title": "Implement",
+        "updatedAt": 1791762069923,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      {
+        "activeAttemptId": "attempt_6c7fe6e388ea4f878e670a8e6abecff1",
+        "createdAt": 1791762070015,
+        "dependsOn": [],
+        "id": "task_d8acc636d5524b5fa0bed436e7d06922",
+        "runId": "run_13d4f0ce899642c78a395132c7c8cae8",
+        "size": "medium",
+        "spec": "",
+        "status": "running",
+        "title": "Implement",
+        "updatedAt": 1791762070017,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "workspace_choice_approved.json": {
+    "attempts": [],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 0,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 0,
+          "taskStatuses": {
+            "ready": 2
+          },
+          "tasks": 2
+        },
+        "createdAt": 1792687845843,
+        "id": "run_9291f78b34734b81b38b30be988af5aa",
+        "maxConcurrent": 4,
+        "objective": "Build feature",
+        "planApproval": {
+          "decidedAt": 1792687847531,
+          "requestedAt": 1792687846272,
+          "revisedAt": 1792687847398,
+          "revision": 4,
+          "status": "approved"
+        },
+        "rootPath": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-37dc17cab165450c92f0d78bd45cf1c0/repo",
+        "status": "running",
+        "updatedAt": 1792687847531,
+        "workspaceId": "project",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "approvedAt": 1792687847531,
+        "createdAt": 1792687846271,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_69d38ba1c9af4dfc9191eec7e2f9edfd",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_9291f78b34734b81b38b30be988af5aa",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1792687847177,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      {
+        "approvedAt": 1792687847531,
+        "createdAt": 1792687846793,
+        "dependsOn": [],
+        "heldByPlan": false,
+        "id": "task_3ca3a6b0ccce4c27bf2a1dac82ecd238",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_9291f78b34734b81b38b30be988af5aa",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1792687847398,
+        "worker": {
+          "access": "read",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "workspace_choice_only_checkout.json": {
+    "attempts": [],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 0,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 0,
+          "taskStatuses": {
+            "ready": 1
+          },
+          "tasks": 1
+        },
+        "createdAt": 1792691781429,
+        "id": "run_047a8c9f260c4ba6af05b81e13d18d3e",
+        "maxConcurrent": 3,
+        "objective": "Plain folder",
+        "planApproval": {
+          "requestedAt": 1792691781429,
+          "revisedAt": 1792691781491,
+          "revision": 3,
+          "status": "pending"
+        },
+        "rootPath": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workspace-choice-plain-288f22c7e06b466a8b2bf2880b50a010",
+        "status": "running",
+        "updatedAt": 1792691781491,
+        "workspaceId": "project",
+        "workspaceMode": "worktree"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "createdAt": 1792691781465,
+        "dependsOn": [],
+        "heldByPlan": true,
+        "id": "task_d07921e04ea1461296452d99e1c9dfb9",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_047a8c9f260c4ba6af05b81e13d18d3e",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1792691781491,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  },
+  "workspace_choice_pending.json": {
+    "attempts": [],
+    "bridges": [],
+    "gates": [],
+    "messages": [],
+    "nativeDecisions": [],
+    "notifications": [],
+    "peerAsks": [],
+    "reports": {},
+    "runs": [
+      {
+        "coordinatorChatKey": "chat:master",
+        "counts": {
+          "attempts": 0,
+          "gates": 0,
+          "messages": 0,
+          "nativeDecisions": 0,
+          "notifications": 0,
+          "taskStatuses": {
+            "ready": 2
+          },
+          "tasks": 2
+        },
+        "createdAt": 1792687845843,
+        "id": "run_9291f78b34734b81b38b30be988af5aa",
+        "maxConcurrent": 4,
+        "objective": "Build feature",
+        "planApproval": {
+          "requestedAt": 1792687846272,
+          "revisedAt": 1792687847398,
+          "revision": 4,
+          "status": "pending"
+        },
+        "rootPath": "/private/var/folders/mr/fjhr8lkn5nzdnhfy9knz04k00000gn/T/octiq-workflow-test-37dc17cab165450c92f0d78bd45cf1c0/repo",
+        "status": "running",
+        "updatedAt": 1792687847398,
+        "workspaceId": "project",
+        "workspaceMode": "auto"
+      }
+    ],
+    "services": [],
+    "summary": true,
+    "tasks": [
+      {
+        "createdAt": 1792687846271,
+        "dependsOn": [],
+        "heldByPlan": true,
+        "id": "task_69d38ba1c9af4dfc9191eec7e2f9edfd",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_9291f78b34734b81b38b30be988af5aa",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1792687847177,
+        "worker": {
+          "access": "auto",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      },
+      {
+        "createdAt": 1792687846793,
+        "dependsOn": [],
+        "heldByPlan": true,
+        "id": "task_3ca3a6b0ccce4c27bf2a1dac82ecd238",
+        "retriesUsed": 0,
+        "retryLimit": 2,
+        "runId": "run_9291f78b34734b81b38b30be988af5aa",
+        "size": "medium",
+        "spec": "",
+        "status": "ready",
+        "title": "Implement",
+        "updatedAt": 1792687847398,
+        "worker": {
+          "access": "read",
+          "agent": "codex",
+          "effort": null,
+          "model": "gpt-5.6-sol",
+          "recovery": null
+        }
+      }
+    ]
+  }
+}

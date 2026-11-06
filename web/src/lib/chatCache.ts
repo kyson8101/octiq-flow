@@ -1,3 +1,4 @@
+import { valueBytes } from "./valueBytes";
 import type { ChatState } from "./chat";
 import { BUILD_STAMP, ourBuild, type StoredStamp } from "./buildStamp";
 import { migrateMessages } from "./cacheMigration";
@@ -7,12 +8,14 @@ import { migrateMessages } from "./cacheMigration";
 export type ChatCheckpoint = { id: string; seq: number; state: ChatState; updatedAt: number };
 const DATABASE = "octiq.chat-cache";
 const TABLE = "checkpoints";
-const LIMIT = 12;
+export const CHAT_CACHE_BYTES = 16 * 1024 * 1024;
+export const CHECKPOINT_BYTES = 8 * 1024 * 1024;
+const SIZES = "sizes";
 
 /** The stamp is the cache's own business: callers hand over a checkpoint and
  *  get one back, and never see this. Shared with lib/store, which keeps the
  *  other copy of the same transcripts — see lib/buildStamp for why. */
-type StampedCheckpoint = ChatCheckpoint & StoredStamp;
+type StampedCheckpoint = ChatCheckpoint & StoredStamp & { bytes: number };
 
 // Storage is optional. A blocked/private-mode database must never prevent a
 // server read. Opening per operation also avoids holding a version upgrade open.
@@ -27,10 +30,16 @@ function database(): Promise<IDBDatabase | undefined> {
     };
     const timer = setTimeout(() => finish(), 500);
     try {
-      const request = indexedDB.open(DATABASE, 1);
+      const request = indexedDB.open(DATABASE, 2);
       request.onupgradeneeded = () => {
-        const table = request.result.createObjectStore(TABLE, { keyPath: "id" });
+        const db = request.result;
+        // Cache only: old count-capped rows can be arbitrarily large. Clear
+        // them without deserializing them; the durable record stays on server.
+        if (db.objectStoreNames.contains(TABLE)) db.deleteObjectStore(TABLE);
+        const table = db.createObjectStore(TABLE, { keyPath: "id" });
         table.createIndex("updatedAt", "updatedAt");
+        const sizes = db.createObjectStore(SIZES, { keyPath: "id" });
+        sizes.createIndex("updatedAt", "updatedAt");
       };
       request.onsuccess = () => finish(request.result);
       request.onerror = () => finish();
@@ -53,7 +62,7 @@ export async function readChatCheckpoint(id: string): Promise<ChatCheckpoint | u
       const request = db.transaction(TABLE).objectStore(TABLE).get(id);
       request.onsuccess = () => {
         const value = request.result as StampedCheckpoint | undefined;
-        const usable = value?.id === id && Number.isSafeInteger(value.seq) && value.seq >= 0
+        const usable = value?.bytes !== undefined && value.bytes <= CHECKPOINT_BYTES && value.id === id && Number.isSafeInteger(value.seq) && value.seq >= 0
           && Array.isArray(value.state?.messages);
         // The stamp is STRIPPED rather than the payload re-listed. Listing the
         // fields by hand is how the sibling store went wrong twice (see the
@@ -63,6 +72,7 @@ export async function readChatCheckpoint(id: string): Promise<ChatCheckpoint | u
         if (!usable || !kept) return finish();
         const stale = !ourBuild(kept);
         delete kept.schema;
+        delete (kept as Partial<StampedCheckpoint>).bytes;
         // A checkpoint an earlier reader wrote is carried forward, not
         // refused. Refusing it does not send the chat back to the transcript —
         // it sends it to the PAGED path, which serves only the last few turns
@@ -78,10 +88,12 @@ export async function readChatCheckpoint(id: string): Promise<ChatCheckpoint | u
 }
 
 export async function saveChatCheckpoint(checkpoint: ChatCheckpoint): Promise<void> {
+  const bytes = valueBytes(checkpoint, CHECKPOINT_BYTES);
+  if (bytes > CHECKPOINT_BYTES) { await forgetChatCheckpoint(checkpoint.id); return; }
   const db = await database();
   if (!db) return;
   try {
-    const tx = db.transaction(TABLE, "readwrite");
+    const tx = db.transaction([TABLE, SIZES], "readwrite");
     const table = tx.objectStore(TABLE);
     // Structured cloning avoids serialising large transcripts into the small,
     // synchronous localStorage quota. Keep a bounded set of recent chats.
@@ -89,13 +101,16 @@ export async function saveChatCheckpoint(checkpoint: ChatCheckpoint): Promise<vo
     // Stamped HERE rather than by the caller: three places write checkpoints,
     // and a stamp any one of them could forget is worse than no stamp at all —
     // it would read as trustworthy.
-    table.put({ ...checkpoint, ...BUILD_STAMP });
+    table.put({ ...checkpoint, ...BUILD_STAMP, bytes });
+    const sizes = tx.objectStore(SIZES);
+    sizes.put({ id: checkpoint.id, updatedAt: checkpoint.updatedAt, bytes });
     let kept = 0;
-    const cursor = table.index("updatedAt").openKeyCursor(null, "prev");
+    const cursor = sizes.index("updatedAt").openCursor(null, "prev");
     cursor.onsuccess = () => {
       const row = cursor.result;
       if (!row) return;
-      if (++kept > LIMIT) table.delete(row.primaryKey);
+      kept += row.value.bytes;
+      if (kept > CHAT_CACHE_BYTES) { table.delete(row.primaryKey); row.delete(); }
       row.continue();
     };
     await new Promise<void>((resolve) => {
@@ -110,7 +125,7 @@ export async function saveChatCheckpoint(checkpoint: ChatCheckpoint): Promise<vo
 export async function forgetChatCheckpoint(id: string): Promise<void> {
   const db = await database();
   if (!db) return;
-  try { db.transaction(TABLE, "readwrite").objectStore(TABLE).delete(id); }
+  try { const tx = db.transaction([TABLE, SIZES], "readwrite"); tx.objectStore(TABLE).delete(id); tx.objectStore(SIZES).delete(id); }
   catch { /* optional cache */ }
   finally { db.close(); }
 }

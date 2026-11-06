@@ -1,3 +1,4 @@
+import { useRunDetail, useOrchestrationSnapshot } from "../lib/useOrchestrationSnapshot";
 // Orchestration plan: the main agent's plan, laid out as the order it will run in, with
 // the three answers it can get — approve, reject, or say what to change.
 //
@@ -54,7 +55,7 @@ export const PLAN_GOES_ON = "What you approved before goes on. The rest waits fo
  *  (`lib/taskHold.planHoldsEveryStart`). */
 export const PLAN_STARTS_NOTHING = "No worker starts until you approve.";
 
-export function PlanReview({ run, tasks: allTasks, drafting, projectName, onApproved, onRequestChanges, chatHint, approved = false, surface = "panel", folds = false, startOpen = false }: {
+export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, projectName, onApproved, onRequestChanges, chatHint, approved = false, surface = "panel", folds = false, startOpen = false }: {
   run: OrchestrationRun;
   tasks: OrchestrationTask[];
   /** The main agent is still in its turn: the plan may not be finished. */
@@ -78,6 +79,10 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
   /** Draw a folded card opened: for the tests, which cannot press the control. */
   startOpen?: boolean;
 }) {
+  const summary = useOrchestrationSnapshot();
+  const detail = useRunDetail(summary, summary.summary ? inputRun.id : null);
+  const run = detail.snapshot.runs.find(r => r.id === inputRun.id) ?? inputRun;
+  const allTasks = summary.summary && detail.ready ? detail.snapshot.tasks : inputTasks;
   const autoPlan = useAutoPlan(surface === "chat" && !approved ? run.coordinatorChatKey : null);
   const [future, setFuture] = useState(false);
   const [full, setFull] = useState(false);
@@ -225,6 +230,7 @@ export function PlanReview({ run, tasks: allTasks, drafting, projectName, onAppr
     : drafting ? "The main agent is still active. Approving covers the tasks shown." : "";
   const titleId = `plan-review-title-${run.id}`;
   const errorLine = error && <p className="plan-review-error" role="alert">{error}</p>;
+  if (summary.summary && !detail.ready) return <p role="status">{detail.error ?? "Reading plan…"}</p>;
   return (
     <section className="plan-review" aria-labelledby={titleId} data-drafting={stillDrafting || undefined}
       data-compact={empty || undefined} data-updated={holding || undefined}

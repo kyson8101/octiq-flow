@@ -1,3 +1,4 @@
+import { withStreamActivity, type ChatStreamActivity } from "./lib/chatActivity";
 import { ProviderFallbackChoices } from "./components/ProviderFallback";
 // OctiqFlow v2 — the chat client.
 //
@@ -31,11 +32,12 @@ import {
 // Event/subscription callbacks must not chain old App render scopes. Pure
 // render-time readers use isolated factories below, rather than this hook.
 import { useCommittedCallback as useCallback } from "./lib/useCommittedCallback";
-import { chatPreviewState, hasLocalPrompt } from "./lib/chatRetention";
+import { chatPreviewState } from "./lib/chatRetention";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp, type Frame } from "./lib/catchUp";
 import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
-import { loadChat, loadEarlierChat } from "./lib/loadChat";
+import { valueBytes } from "./lib/valueBytes";
+import { loadChat, loadEarlierChat, CHAT_WINDOW_BYTES } from "./lib/loadChat";
 import { ChatHistory, type ChatPage } from "./lib/chatHistory";
 import {
   addUserTurn,
@@ -206,7 +208,7 @@ import { PendingActionsContext, showPendingCard, type PendingActionsView } from 
 import { isQuietWorkerRefusal, pendingByRow, pendingByTask, pendingReading, type PendingAction, type SourcesRead } from "./lib/pendingActions";
 const NO_ACTIONS: readonly PendingAction[] = [];
 import { chatPlans, seenPlans } from "./lib/chatPlans";
-import { useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
+import { RunDetailOnScreen, useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
 import { orchestrationFeed } from "./lib/orchestrationFeed";
 import { ARRIVAL_GRACE_MS, composesNewChat, stillArriving } from "./lib/arrivingChat";
 import { TaskStopContext, type TaskStopping } from "./components/ReopenedNote";
@@ -993,6 +995,7 @@ export default function App() {
   const chatsRef = useRef<Record<string, ChatState>>(chats);
   // Which conversation is on screen, readable from a callback. Deltas for it
   // are the ones that must not wait.
+  const screenChats = useRef(new Set<string>());
   const visibleRef = useRef(conversationId);
   visibleRef.current = conversationId;
   const soon = useRef<number | null>(null);
@@ -1747,14 +1750,16 @@ export default function App() {
       const read = { promise: Promise.resolve() };
       chatReads.current.set(id, read);
       const cancelled = () => chatReads.current.get(id) !== read || gone.current.has(id);
-      read.promise = (earlier ? loadEarlierChat : loadChat)({
+      read.promise = bridge.chatsReady().then(() => {
+        if (bridge.scopedChats && !screenChats.current.has(id)) return;
+        return (earlier ? loadEarlierChat : loadChat)({
         id, key, storedSeq, catchUp: catchUp.current, history: chatHistory.current,
         requestPage: (before) => bridge.invoke<ChatPage>("chat_page", { key, before }),
         getState: () => chatsRef.current[id] ?? EMPTY,
         publish: (state) => patch(id, () => state),
         request: (after) => bridge.invoke<Frame[]>("chat_since", { key, after }),
         cancelled,
-      }).catch((err: unknown) => {
+      }); }).catch((err: unknown) => {
         if (!cancelled()) catchUp.current.abandon(key);
         throw err;
       }).finally(() => {
@@ -1781,40 +1786,68 @@ export default function App() {
       setEarlierReads((prev) => ({ ...prev, [id]: { loading: false, error: String(error) } }));
     }
   }, [catchUpChat, flushChats]);
+  const loadLatestFor = useCallback(async (id: string | null) => {
+    if (!id) return;
+    await chatReads.current.get(id)?.promise;
+    const previous = chatHistory.current.get(id);
+    const previousSeq = catchUp.current.mark(keyFor(id));
+    await forgetChatCheckpoint(id);
+    catchUp.current.forget(keyFor(id)); chatHistory.current.forget(id);
+    setEarlierReads(prev => ({ ...prev, [id]: { loading: true } }));
+    try { await catchUpChat(id); flushChats(); setEarlierReads(prev => ({ ...prev, [id]: { loading: false } })); }
+    catch (error) {
+      // A failed Return to latest leaves the older window and its way back
+      // intact. Do not append live deltas across the unseen middle.
+      if (previous) {
+        chatHistory.current.set(id, previous.before, previous.end);
+        catchUp.current.forget(keyFor(id)); catchUp.current.begin(keyFor(id), previousSeq); catchUp.current.end(keyFor(id), []);
+      }
+      setEarlierReads(prev => ({ ...prev, [id]: { loading: false, error: String(error) } }));
+    }
+  }, [catchUpChat, flushChats]);
+  const loadLatest = useCallback(() => loadLatestFor(visibleRef.current), [loadLatestFor]);
+  const loadLatestBeside = useCallback(() => loadLatestFor(besideRef.current), [loadLatestFor]);
+  const trimmedAt = useRef(new Map<string, number>());
+  useEffect(() => {
+    for (const id of screenChats.current) {
+      const state = chats[id];
+      const seq = catchUp.current.mark(keyFor(id));
+      if (!state || state.busy || !seq || chatReads.current.has(id) || chatHistory.current.isPast(id) || trimmedAt.current.get(id) === seq) continue;
+      if (valueBytes(state, CHAT_WINDOW_BYTES) <= CHAT_WINDOW_BYTES) continue;
+      trimmedAt.current.set(id, seq);
+      void loadLatestFor(id);
+    }
+  }, [chats, loadLatestFor]);
   // Stable, for the memoised transcripts: each pane asks for its own chat.
   const loadEarlier = useCallback(() => loadEarlierFor(visibleRef.current), [loadEarlierFor]);
   const loadEarlierBeside = useCallback(() => loadEarlierFor(besideRef.current), [loadEarlierFor]);
 
-  // Reconnected: ask each live chat for everything that happened while we were
-  // away. Without this, closing a laptop mid-answer loses the rest of it — the
-  // agent finished perfectly well, we simply were not listening.
-  //
-  // Only chats this page HOLDS. One it does not is caught up when it is opened,
-  // and reconnecting is no reason to pull a transcript nobody is reading —
-  // on a phone that is megabytes per running chat, for a page that shows none
-  // of it.
   useEffect(() => {
-    if (conn !== "open") return;
-    const visible = visibleRef.current;
-    const shownBeside = besideRef.current;
-    const ids = new Set(runningRef.current);
-    if (visible) ids.add(visible);
-    if (shownBeside) ids.add(shownBeside);
-    for (const id of ids) {
-      if (id !== visible && id !== shownBeside && !catchUp.current.holds(keyFor(id))) continue;
-      const storedSeq = conversationsRef.current.find((c) => c.id === id)?.seq;
-      catchUpChat(id, storedSeq).catch(() => {});
-    }
-    // running is read through the ref so a chat starting mid-reconnect does not
-    // restart this.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conn, catchUpChat]);
+    let current = true;
+    const seen = new Set<string>();
+    const apply = (activity: ChatStreamActivity) => {
+      const id = activity && convOf(activity.key);
+      if (!id) return;
+      if (activity.running !== null) setRunning(before => {
+        if (before.has(id) === activity.running) return before;
+        const next = new Set(before); if (activity.running) next.add(id); else next.delete(id); return next;
+      });
+      patch(id, state => withStreamActivity(state, activity, Date.now()));
+    };
+    const off = bridge.on<ChatStreamActivity>("chat-stream-activity", activity => { seen.add(activity.key); apply(activity); });
+    if (conn === "open") bridge.invoke<Array<{ key: string; busy: boolean }>>("chat_activity").then(list => {
+      if (!current) return;
+      for (const row of list ?? []) if (!seen.has(row.key)) apply({ ...row, running: true, turnId: null, seq: null, lastActivityAt: 0, work: false });
+    }).catch(() => {});
+    return () => { current = false; off(); };
+  }, [patch, conn]);
 
   useEffect(
     () =>
       bridge.on<{ key: string; seq?: number; event: unknown }>("chat-event", (payload) => {
         const id = payload && convOf(payload.key);
         if (!id) return;
+        if (bridge.scopedChats && !screenChats.current.has(id)) return;
         // A saved question resumes from the backend, not through `send`, so no
         // browser gets the usual optimistic running mark. `turn.started` (or
         // Claude's `message_start`) is direct proof that the worker exists.
@@ -1842,7 +1875,9 @@ export default function App() {
           // in the reducer for the same reason as above: a replay is
           // history, and proves nothing about now.
           patch(id, (s) => {
-            const next = withWork(reduceChat(s, frame.event), frame.event, Date.now());
+            const past = chatHistory.current.isPast(id);
+            const folded = withWork(reduceChat(past ? { ...s, messages: [] } : s, frame.event), frame.event, Date.now());
+            const next = past ? { ...folded, messages: s.messages, agents: s.agents } : folded;
             // Tools outside a background preview have nothing to update. Do
             // not turn their no-op deltas into App renders just by re-cloning
             // an already bounded preview.
@@ -1965,7 +2000,7 @@ export default function App() {
       const undoable = pendingDelete.current;
       for (const [id, state] of Object.entries(chatsRef.current)) {
         if (undoable.has(id) || gone.current.has(id) || chatReads.current.has(id)) continue;
-        if (!catchUp.current.holds(keyFor(id)) || chatHistory.current.hasEarlier(id) || cachedStates.current.get(state) === id) continue;
+        if (!catchUp.current.holds(keyFor(id)) || chatHistory.current.isPartial(id) || cachedStates.current.get(state) === id) continue;
         cachedStates.current.set(state, id);
         void saveChatCheckpoint({ id, state, seq: catchUp.current.mark(keyFor(id)), updatedAt: Date.now() });
       }
@@ -1974,7 +2009,7 @@ export default function App() {
         let touched = false;
         const changedIds = new Set<string>();
         for (const [id, s] of Object.entries(chats)) {
-          if (undoable.has(id) || gone.current.has(id) || chatReads.current.has(id) || chatHistory.current.hasEarlier(id) || !catchUp.current.holds(keyFor(id))) continue;
+          if (undoable.has(id) || gone.current.has(id) || chatReads.current.has(id) || chatHistory.current.isPartial(id) || !catchUp.current.holds(keyFor(id))) continue;
           // A front-desk chat is never listed or saved: what the person meant
           // to start is the chat it routes them to.
           if (frontDeskChatIds.current.has(id)) continue;
@@ -2165,6 +2200,27 @@ export default function App() {
    *  only while the chat is on screen asks this. */
   const chatShown = !showingProjects && !mainPage && !runInPlace && mainShown;
   const besideChat = (besideId && chats[besideId]) || EMPTY;
+  const screenMain = chatShown ? conversationId : null;
+  const screenBeside = besideShown && !showingProjects && !mainPage && !runInPlace ? besideId : null;
+  screenChats.current = new Set([screenMain, screenBeside].filter((id): id is string => !!id));
+  // A pane switch replaces the socket selection BEFORE its catch-up starts.
+  // On reconnect bridge sends this same set as its first invoke.
+  useEffect(() => {
+    const ids = [screenMain, screenBeside].filter((id): id is string => !!id);
+    let active = true;
+    void bridge.watchChats(ids.map(keyFor)).then(async () => {
+      if (!active || conn !== "open") return;
+      for (const id of ids) {
+        if (!active) return;
+        setReading(before => ({ ...before, [id]: true }));
+        try { await catchUpChat(id, conversationsRef.current.find(c => c.id === id)?.seq); }
+        catch { /* the existing reconnect/open error surface remains */ }
+        finally { if (active) { flushChats(); setReading(before => ({ ...before, [id]: false })); } }
+      }
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [screenMain, screenBeside, conn, catchUpChat, flushChats]);
+
   // IndexedDB is the recent-chat cache. RAM holds only the two visible
   // transcripts; a background stream keeps a bounded preview instead. Do not
   // release imported/local-only words or a prompt awaiting acknowledgement.
@@ -2172,19 +2228,23 @@ export default function App() {
     const released = new Set<string>();
     let next = chatsRef.current;
     for (const [id, state] of Object.entries(next)) {
-      if (id === conversationId || id === besideId || chatReads.current.has(id)
-        || !catchUp.current.holds(keyFor(id)) || catchUp.current.mark(keyFor(id)) === 0 || hasLocalPrompt(state)) continue;
+      if (screenChats.current.has(id)) continue;
+      // Local-only imports have no durable record to read back yet.
+      if (!catchUp.current.holds(keyFor(id)) && !chatReads.current.has(id)) continue;
+      if (catchUp.current.holds(keyFor(id)) && catchUp.current.mark(keyFor(id)) === 0) continue;
+      chatReads.current.delete(id);
       if (!released.size) next = { ...next };
       released.add(id);
       catchUp.current.forget(keyFor(id));
       chatHistory.current.forget(id);
-      next[id] = chatPreviewState(state);
+      const small = chatPreviewState(state);
+      next[id] = bridge.scopedChats ? { ...small, messages: small.messages.filter(m => m.role === "user" && !m.echo && !m.takenUp && !m.queueLost) } : small;
     }
     if (!released.size) return;
     writeChats(next, true);
     setConversations(current => current.map(row => released.has(row.id) && (row.messages.length || row.seq !== undefined)
       ? { ...row, messages: [], seq: undefined } : row));
-  }, [chats, conversationId, besideId, writeChats]);
+  }, [chats, screenMain, screenBeside, writeChats]);
   // The chats whose players may go on playing in place. A playing one in any
   // other chat goes to the floating player (lib/nowPlaying), in the same
   // commit as the switch, while the press that made it still counts as the
@@ -2195,7 +2255,7 @@ export default function App() {
     for (const [id, state] of Object.entries(chats)) {
       // A page of recent history omitting a reply does not delete it. Only
       // a fully read transcript can establish that the source is gone.
-      if (!catchUp.current.holds(keyFor(id)) || chatHistory.current.hasEarlier(id)) continue;
+      if (!catchUp.current.holds(keyFor(id)) || chatHistory.current.isPartial(id)) continue;
       nowPlaying.retainReplies(id, new Set(state.messages.map((message) => message.id)));
     }
   }, [chats]);
@@ -2701,7 +2761,7 @@ export default function App() {
         const held = conversationsRef.current.find((conversation) => conversation.id === id);
         if (!held) continue;
         const finishedAt = Date.now();
-        const response = latestAgentResponse(s.messages)?.text ?? held.latestResponse;
+        const response = screenChats.current.has(id) ? latestAgentResponse(s.messages)?.text ?? held.latestResponse : held.latestResponse;
         const completed = { ...held, latestResponse: response, updatedAt: finishedAt };
         setConversations((current) => {
           const existing = current.find((conversation) => conversation.id === id);
@@ -2712,7 +2772,7 @@ export default function App() {
           saveConversations(next);
           return next;
         });
-        saveIndexEntry({
+        if (screenChats.current.has(id) && catchUp.current.holds(keyFor(id))) saveIndexEntry({
           id: completed.id,
           projectId: completed.projectId,
           title: completed.title,
@@ -2928,8 +2988,8 @@ export default function App() {
         {
           ...held,
           [c.id]: {
-            ...emptyChat(),
-            messages: c.messages,
+            ...(held[c.id] ?? emptyChat()),
+            messages: c.messages, agents: [], background: [],
             sessionId: held[c.id]?.sessionId ?? c.sessionId,
             cwd: held[c.id]?.cwd ?? c.cwd,
           },
@@ -2944,26 +3004,6 @@ export default function App() {
     //
     // Cached words stay readable while the latest events are fetched.
     setReading((prev) => ({ ...prev, [c.id]: true }));
-    catchUpChat(c.id, c.seq)
-      .catch(() => {})
-      .finally(() => {
-        // Whatever came back — the conversation, nothing at all, or a failure —
-        // the waiting is over. An empty answer falls through to the ordinary
-        // empty page, which is then the truth about this chat.
-        //
-        // The transcript goes up in the SAME commit that ends the waiting. A
-        // chat's state is otherwise drawn on the next frame, or a quarter of a
-        // second on for one that was not on screen when the read began; ending
-        // the wait first left the empty page — "What do you want to do?" — on
-        // screen for that long between "opening…" and the conversation.
-        flushChats();
-        setReading((prev) => {
-          if (!prev[c.id]) return prev;
-          const next = { ...prev };
-          delete next[c.id];
-          return next;
-        });
-      });
   }, [catchUpChat, writeChats, flushChats]);
 
   const openConversation = useCallback((c: Conversation) => {
@@ -5238,6 +5278,8 @@ export default function App() {
     return chatStrip(currentWorkflow, Date.now(), pendingHeld);
   }, [workerChat, conversationId, currentWorkflow, pendingHeld]);
   const stripShown = !!runStrip && !stripHidden(stripDismissed, runStrip.strip);
+  const stripDetailId = chatShown && stripShown ? runStrip!.run.id : null;
+  useEffect(() => stripDetailId ? orchestrationFeed.detail(stripDetailId) : undefined, [stripDetailId]);
   const hideStrip = () => {
     if (!runStrip) return;
     const next = dismissStrip(stripDismissed, runStrip.strip.signature);
@@ -5743,7 +5785,7 @@ export default function App() {
               aria-label="Resize the run column" onPointerDown={runDock.startDrag} />}
             {/* While its place is only held, the column is empty: the ledger
                 has not said what is in it, and "no missions" would be a guess. */}
-            {!holdsRun && <OrchestrationPanel embedded sharedHeading project={project} coordinatorKey={runChatKey}
+            {!holdsRun && <RunDetailOnScreen value={!showingProjects && !mainPage && (workflowSplit ? !columnShut : workflowView === "run")}><OrchestrationPanel embedded sharedHeading project={project} coordinatorKey={runChatKey}
               allowManualRun={!agentsMode}
               // Cards for the main chat and its workers render in the main
               // chat, so only there does its button carry them.
@@ -5770,7 +5812,7 @@ export default function App() {
                   {MODELS.filter((item) => item.agent !== "pi" && (!installed || installed.includes(item.agent))).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}
                 </select></label>
                 <p>Keep talking in Chat. Worker providers are independent of the main agent.</p>
-              </div>} />}
+              </div>} /></RunDetailOnScreen>}
           </div>}
           <div className="workflow-chat-surface" hidden={runInPlace} ref={setChatArea}>
           {besideId && besideConversation && !besideFits && <BesideBar showing={besideShows}
@@ -5937,6 +5979,7 @@ export default function App() {
                   <div className="chat-main">
                     {/* The agent's questions are drawn in the transcript, where
                         they were asked, in a chat the person can answer in. */}
+                    <RunDetailOnScreen value={chatShown}>
                     <ChatQuestionsContext.Provider value={chatQuestions}>
                     <TerminalRunContext.Provider value={terminalRun}>
                     <MessageList
@@ -5948,6 +5991,7 @@ export default function App() {
                       loadingEarlier={!!conversationId && !!earlierReads[conversationId]?.loading}
                       earlierError={conversationId ? earlierReads[conversationId]?.error : undefined}
                       onLoadEarlier={loadEarlier}
+                      onLoadLatest={conversationId && chatHistory.current.isPast(conversationId) ? loadLatest : undefined}
                       // Not `chat.busy`: a turn nothing is working on any more
                       // is over, whatever the record says. The strip above the
                       // prompt box is what says so.
@@ -5982,6 +6026,7 @@ export default function App() {
                     />
                     </TerminalRunContext.Provider>
                     </ChatQuestionsContext.Provider>
+                    </RunDetailOnScreen>
                     {!workerChat && (
                       <SafetyToast toast={safetyToast} onDetails={showSafetyLine} onDone={clearSafetyNotice} />
                     )}
@@ -6289,6 +6334,7 @@ export default function App() {
             loadingEarlier={!!earlierReads[besideId]?.loading}
             earlierError={earlierReads[besideId]?.error}
             onLoadEarlier={loadEarlierBeside}
+            onLoadLatest={chatHistory.current.isPast(besideId) ? loadLatestBeside : undefined}
             connected={conn === "open"}
             context={besideContext}
             waiting={chatWaits.get(besideId) ?? null}
