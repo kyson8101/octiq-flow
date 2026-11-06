@@ -53,6 +53,7 @@ mod raise_tests;
 mod reporting_tests;
 mod retention;
 pub mod retry;
+pub mod summary;
 #[cfg(test)]
 pub(crate) mod retry_tests;
 mod workspaces;
