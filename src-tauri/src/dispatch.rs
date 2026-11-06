@@ -1627,6 +1627,25 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // calls arrive through the same commands with actorChatKey injected by
         // the authenticated local hook; the browser supplies the coordinator
         // key when it resolves a visible gate or starts a run explicitly.
+        "orchestration_summary" | "orchestration_run_detail" => {
+            let run_id: Option<String> = arg(&args, "runId")?;
+            if cmd == "orchestration_run_detail" && run_id.as_deref().is_none_or(str::is_empty) {
+                return Err("orchestration_run_detail needs runId".into());
+            }
+            // Capture the invalidation token BEFORE reading. A change during
+            // this read must leave a newer event for the page to refetch by.
+            let revisions = crate::bus::orchestration_revisions();
+            let snapshot = svc
+                .orchestrations
+                .snapshot(run_id.as_deref())?
+                .with_usage(&svc.chats.usage);
+            let mut view = serde_json::to_value(snapshot).map_err(|e| e.to_string())?;
+            if cmd == "orchestration_summary" {
+                crate::orchestration::summary::project(&mut view);
+            }
+            revisions.stamp(&mut view, run_id.as_deref());
+            Ok(view)
+        }
         "orchestration_snapshot" => {
             let run_id: Option<String> = arg(&args, "runId")?;
             // An agent's read lands in its transcript and goes out to every

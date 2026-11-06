@@ -8395,6 +8395,11 @@ pub(crate) struct TestChild(Arc<Mutex<ChatSession>>);
 
 #[cfg(test)]
 impl TestChild {
+    /// Hold only this session, as a slow resume-context save can do.
+    pub(crate) fn test_hold_lock(&self) -> impl Drop + '_ {
+        self.0.lock().unwrap()
+    }
+
     /// Whether the process is still running.
     pub(crate) fn alive(&self) -> bool {
         matches!(self.0.lock().unwrap().child.try_wait(), Ok(None))
@@ -9161,6 +9166,45 @@ pub fn chat_activity_impl(manager: &ChatManager) -> Result<Vec<ChatActivity>, St
             completing: manager.completing_turn(key).is_some(),
         })
         .collect())
+}
+
+/// One socket's small background-chat update, without waiting for any chat
+/// lock, reading a process list or parsing a provider/transcript. Clone only
+/// the session Arc under the table guard; never hold both locks together.
+/// `None` means contention: the socket must defer without sending a state.
+/// A missing session is stopped/idle; poisoned locks give unknown fields.
+pub(crate) fn chat_stream_state(
+    manager: &ChatManager,
+    key: &str,
+) -> Option<crate::bus::activity::State> {
+    use std::sync::TryLockError;
+
+    let session = match manager.sessions.try_lock() {
+        Ok(sessions) => sessions.get(key).cloned(),
+        Err(TryLockError::WouldBlock) => return None,
+        Err(TryLockError::Poisoned(_)) => return Some(Default::default()),
+    };
+    let Some(session) = session else {
+        return Some(crate::bus::activity::State {
+            running: Some(false),
+            busy: Some(false),
+            turn_id: None,
+        });
+    };
+    let state = match session.try_lock() {
+        Ok(session) => crate::bus::activity::State {
+            running: Some(true),
+            busy: Some(session.busy),
+            turn_id: session.answering.clone(),
+        },
+        Err(TryLockError::WouldBlock) => return None,
+        Err(TryLockError::Poisoned(_)) => crate::bus::activity::State {
+            running: Some(true),
+            // The table proved existence, but the turn fields are unknown.
+            ..Default::default()
+        },
+    };
+    Some(state)
 }
 
 /// A transcript without an acknowledgement is not proof that a prompt is
