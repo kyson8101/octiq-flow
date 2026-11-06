@@ -134,13 +134,12 @@ it("prepends older pages and keeps both streamed and reconnected tails exactly o
   await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({
     events: [frame(3), frame(4)], context: [], before: 3,
   }) });
-  const live = options.catchUp.live("chat:a", 5, frame(5).event);
-  history.append("a", live);
+  options.catchUp.live("chat:a", 5, frame(5).event);
   options.publish(reduceChat(options.getState(), frame(5).event));
   await loadEarlierChat({ ...options, history, request: async (after) => {
-    expect(after).toBe(5);
+    expect(after).toBe(2);
     options.catchUp.live("chat:a", 7, frame(7).event);
-    return [frame(6), frame(7)];
+    return [frame(3), frame(4), frame(5), frame(6), frame(7)];
   }, requestPage: async (before) => {
     expect(before).toBe(3);
     return { events: [frame(1), frame(2)], context: [], before: null };
@@ -162,7 +161,7 @@ it("rejoins tool results to older tool calls when their page is loaded", async (
   await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({
     events: [result, frame(3)], context: [], before: 2,
   }) });
-  await loadEarlierChat({ ...options, history, request: async () => [], requestPage: async () => ({
+  await loadEarlierChat({ ...options, history, request: async () => [result, frame(3)], requestPage: async () => ({
     events: [tool], context: [], before: null,
   }) });
   expect(options.getState().messages[0].blocks[0]).toMatchObject({ kind: "tool", result: "file contents", state: "done" });
@@ -175,9 +174,9 @@ it.each([false, true])("keeps an optimistic prompt while prepending history (ech
     events: [frame(2)], context: [], before: 2,
   }) });
   options.publish(addUserTurn(options.getState(), "queued locally", [], 100, "pending"));
-  await loadEarlierChat({ ...options, history, request: async () => echo ? [{ seq: 3, event: {
+  await loadEarlierChat({ ...options, history, request: async () => [frame(2), ...(echo ? [{ seq: 3, event: {
     type: "user", uuid: "echoed", message: { content: [{ type: "text", text: "queued locally" }] },
-  } }] : [], requestPage: async () => ({ events: [frame(1)], context: [], before: null }) });
+  } }] : [])], requestPage: async () => ({ events: [frame(1)], context: [], before: null }) });
   const users = options.getState().messages.filter((m) => m.role === "user");
   expect(users).toHaveLength(1);
   expect(users[0].turnId).toBe("pending");

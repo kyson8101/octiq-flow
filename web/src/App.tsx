@@ -20,7 +20,6 @@ import { ProviderFallbackChoices } from "./components/ProviderFallback";
 import {
   lazy,
   Suspense,
-  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -29,6 +28,10 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+// Event/subscription callbacks must not chain old App render scopes. Pure
+// render-time readers use isolated factories below, rather than this hook.
+import { useCommittedCallback as useCallback } from "./lib/useCommittedCallback";
+import { chatPreviewState, hasLocalPrompt } from "./lib/chatRetention";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp, type Frame } from "./lib/catchUp";
 import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
@@ -484,6 +487,34 @@ function withJobCalls(calls: Set<string>, jobs: ReadonlyMap<string, string>): Se
   return out;
 }
 
+// Render-time readers need the current render (event callbacks use the
+// committed cell). Build them outside App so they cannot retain App's scope.
+function personaReader(agentsMode: boolean, leads: LeadRecord[], roster: TeamAgent[], assignees: Assignees) {
+  return (chatKey: string) => agentsMode ? personaFor(chatKey, leads, roster, assignees) : null;
+}
+function projectNameReader(workspaces: Workspace[], shelved: Workspace[]) {
+  const names = new Map([...workspaces, ...shelved].map(item => [item.id, item.name]));
+  return (id: string) => names.get(id);
+}
+function taskContextReader(orchestration: typeof EMPTY_ORCHESTRATION, conversations: Conversation[], workspaces: Workspace[], shelved: Workspace[]) {
+  return (id: string, chatPersona: Persona | null, model: ModelChoice) => {
+    const key = keyFor(id);
+    const attempt = orchestration.attempts
+      .filter((candidate) => candidate.workerChatKey === key)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    const task = attempt ? orchestration.tasks.find((candidate) => candidate.id === attempt.taskId) : undefined;
+    const held = conversations.find((conversation) => conversation.id === id);
+    const names = new Map([...workspaces, ...shelved].map((workspace) => [workspace.id, workspace.name]));
+    return {
+      launch: held?.launch ?? null,
+      worker: task ? { task, attempt } : null,
+      projectName: (projectId: string) => names.get(projectId),
+      persona: chatPersona,
+      runsOn: chatPersona ? `${providerFor(model.agent).name} ${model.model}` : undefined,
+    };
+  };
+}
+
 export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -508,9 +539,9 @@ export default function App() {
   /** What the address bar asked for on arrival. Read once: after this the URL
    *  follows the app, not the other way round. */
   const opened = useRef(readLocation());
-  // Every chat that is loaded or running, keyed by conversation id. Chats run
-  // in PARALLEL: switching to another one leaves this one working, and its
-  // answer lands in here whether or not you are looking at it.
+  // The visible transcripts and background status/previews, keyed by chat.
+  // Switching away leaves the agent running; its full record lives on the
+  // server and is read again on return.
   const [chats, setChats] = useState<Record<string, ChatState>>({});
   // The conversations with a live agent process behind them.
   const [running, setRunning] = useState<Set<string>>(() => new Set());
@@ -1068,7 +1099,6 @@ export default function App() {
     gone.current.add(id);
     chatReads.current.delete(id);
     chatHistory.current.forget(id);
-    cachedStates.current.delete(id);
     void forgetChatCheckpoint(id);
     catchUp.current.forget(keyFor(id));
     // Urgent whichever chat this is: a row being deleted has to leave the
@@ -1117,7 +1147,9 @@ export default function App() {
   // got nothing, and drew an empty page. See lib/catchUp.
   const catchUp = useRef(new CatchUp());
   const chatReads = useRef(new Map<string, { promise: Promise<void> }>());
-  const cachedStates = useRef(new Map<string, ChatState>());
+  // Remember that a particular object was saved without retaining the previous
+  // multi-MB object for every chat this tab has ever opened.
+  const cachedStates = useRef(new WeakMap<ChatState, string>());
   const chatHistory = useRef(new ChatHistory());
   const loadPreview = useCallback((c: Conversation, cancelled: () => boolean) =>
     readChatPreview(
@@ -1795,7 +1827,6 @@ export default function App() {
         // chat is in the air — that catch-up is about to rebuild it, and would
         // wipe anything folded on top in the meantime.
         const frames = catchUp.current.live(payload.key, payload.seq, payload.event);
-        chatHistory.current.append(id, frames);
         for (const frame of frames) {
           // Read BEFORE the fold, which is the thing that removes the bubble
           // the words are in. Here rather than in the reducer on purpose: the
@@ -1810,7 +1841,15 @@ export default function App() {
           // a checkpoint brought back (`turnClock.withWork`). Here and not
           // in the reducer for the same reason as above: a replay is
           // history, and proves nothing about now.
-          patch(id, (s) => withWork(reduceChat(s, frame.event), frame.event, Date.now()));
+          patch(id, (s) => {
+            const next = withWork(reduceChat(s, frame.event), frame.event, Date.now());
+            // Tools outside a background preview have nothing to update. Do
+            // not turn their no-op deltas into App renders just by re-cloning
+            // an already bounded preview.
+            if (next === s) return s;
+            return id !== visibleRef.current && id !== besideRef.current && !catchUp.current.holds(payload.key)
+              ? chatPreviewState(next) : next;
+          });
         }
       }),
     [patch, reclaim],
@@ -1926,8 +1965,8 @@ export default function App() {
       const undoable = pendingDelete.current;
       for (const [id, state] of Object.entries(chatsRef.current)) {
         if (undoable.has(id) || gone.current.has(id) || chatReads.current.has(id)) continue;
-        if (!catchUp.current.holds(keyFor(id)) || chatHistory.current.hasEarlier(id) || cachedStates.current.get(id) === state) continue;
-        cachedStates.current.set(id, state);
+        if (!catchUp.current.holds(keyFor(id)) || chatHistory.current.hasEarlier(id) || cachedStates.current.get(state) === id) continue;
+        cachedStates.current.set(state, id);
         void saveChatCheckpoint({ id, state, seq: catchUp.current.mark(keyFor(id)), updatedAt: Date.now() });
       }
       setConversations((prev) => {
@@ -1935,7 +1974,7 @@ export default function App() {
         let touched = false;
         const changedIds = new Set<string>();
         for (const [id, s] of Object.entries(chats)) {
-          if (undoable.has(id) || gone.current.has(id) || chatReads.current.has(id) || chatHistory.current.hasEarlier(id)) continue;
+          if (undoable.has(id) || gone.current.has(id) || chatReads.current.has(id) || chatHistory.current.hasEarlier(id) || !catchUp.current.holds(keyFor(id))) continue;
           // A front-desk chat is never listed or saved: what the person meant
           // to start is the chat it routes them to.
           if (frontDeskChatIds.current.has(id)) continue;
@@ -2126,6 +2165,26 @@ export default function App() {
    *  only while the chat is on screen asks this. */
   const chatShown = !showingProjects && !mainPage && !runInPlace && mainShown;
   const besideChat = (besideId && chats[besideId]) || EMPTY;
+  // IndexedDB is the recent-chat cache. RAM holds only the two visible
+  // transcripts; a background stream keeps a bounded preview instead. Do not
+  // release imported/local-only words or a prompt awaiting acknowledgement.
+  useEffect(() => {
+    const released = new Set<string>();
+    let next = chatsRef.current;
+    for (const [id, state] of Object.entries(next)) {
+      if (id === conversationId || id === besideId || chatReads.current.has(id)
+        || !catchUp.current.holds(keyFor(id)) || catchUp.current.mark(keyFor(id)) === 0 || hasLocalPrompt(state)) continue;
+      if (!released.size) next = { ...next };
+      released.add(id);
+      catchUp.current.forget(keyFor(id));
+      chatHistory.current.forget(id);
+      next[id] = chatPreviewState(state);
+    }
+    if (!released.size) return;
+    writeChats(next, true);
+    setConversations(current => current.map(row => released.has(row.id) && (row.messages.length || row.seq !== undefined)
+      ? { ...row, messages: [], seq: undefined } : row));
+  }, [chats, conversationId, besideId, writeChats]);
   // The chats whose players may go on playing in place. A playing one in any
   // other chat goes to the floating player (lib/nowPlaying), in the same
   // commit as the switch, while the press that made it still counts as the
@@ -2263,8 +2322,8 @@ export default function App() {
     assigneesHeld.current = keepAssignees(assigneesHeld.current, byChat);
     return assigneesHeld.current;
   }, [orchestration]);
-  const personaForChat = useCallback(
-    (chatKey: string) => (agentsMode ? personaFor(chatKey, leads, roster, workerAssignees) : null),
+  const personaForChat = useMemo(
+    () => personaReader(agentsMode, leads, roster, workerAssignees),
     [agentsMode, leads, roster, workerAssignees],
   );
   const persona = useMemo(
@@ -2281,22 +2340,8 @@ export default function App() {
   // attempt and registered persona with live host verification.
   // Keep this at the App boundary: isolated task-panel renders cannot prove
   // that the real conversation has all of those sources wired together.
-  const contextFor = useCallback((id: string, chatPersona: Persona | null, model: ModelChoice) => {
-    const key = keyFor(id);
-    const attempt = orchestration.attempts
-      .filter((candidate) => candidate.workerChatKey === key)
-      .sort((a, b) => b.createdAt - a.createdAt)[0];
-    const task = attempt ? orchestration.tasks.find((candidate) => candidate.id === attempt.taskId) : undefined;
-    const held = conversations.find((conversation) => conversation.id === id);
-    const names = new Map([...workspaces, ...shelved].map((workspace) => [workspace.id, workspace.name]));
-    return {
-      launch: held?.launch ?? null,
-      worker: task ? { task, attempt } : null,
-      projectName: (projectId: string) => names.get(projectId),
-      persona: chatPersona,
-      runsOn: chatPersona ? `${providerFor(model.agent).name} ${model.model}` : undefined,
-    };
-  }, [orchestration, conversations, workspaces, shelved]);
+  const contextFor = useMemo(() => taskContextReader(orchestration, conversations, workspaces, shelved),
+    [orchestration, conversations, workspaces, shelved]);
   const panelContext = useMemo(
     () => (conversationId ? contextFor(conversationId, persona, choice) : undefined),
     [conversationId, contextFor, persona, choice],
@@ -3793,7 +3838,6 @@ export default function App() {
         // discard every event after this as one it had already seen.
         chatReads.current.delete(id);
         chatHistory.current.forget(id);
-        cachedStates.current.delete(id);
         void forgetChatCheckpoint(id);
         catchUp.current.own(key);
         patch(id, (s) => ({ ...emptyChat(), sessionId: s.sessionId }));
@@ -4580,8 +4624,8 @@ export default function App() {
     [orchestrationState.snapshot, conversationId, workerChat],
   );
   const planDrafting = !workerChat && chat.busy && !cutOff;
-  const planProjectName = useCallback(
-    (id: string) => [...workspaces, ...shelved].find((item) => item.id === id)?.name,
+  const planProjectName = useMemo(
+    () => projectNameReader(workspaces, shelved),
     [workspaces, shelved],
   );
   // Handovers: the card asking the person to confirm, and the links between

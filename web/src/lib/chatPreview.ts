@@ -12,7 +12,9 @@ function readable(message: Message): PreviewMessage | undefined {
   return {
     id: message.id,
     speaker: message.role === "user" ? "You" : message.speaker?.name ?? "Assistant",
-    text: text.length > 420 ? `${text.slice(0, 420).trimEnd()}…` : text,
+    // Detach the snippet: a sliced V8 string can otherwise retain the full
+    // multi-MB answer after its chat's transcript has been released.
+    text: text.length > 420 ? JSON.parse(JSON.stringify(`${text.slice(0, 420).trimEnd()}…`)) as string : text,
   };
 }
 

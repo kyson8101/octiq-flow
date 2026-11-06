@@ -100,16 +100,31 @@ export function textsOf(run: OrchestrationSnapshot): Map<string, string> {
   return texts;
 }
 
+/** A closed finished run returns to the brief form. Clearing just the text
+ * cache would still leave its strings in the published snapshot. */
+function withoutTexts(snapshot: OrchestrationSnapshot, runId: string): OrchestrationSnapshot {
+  if (!snapshot.briefRuns?.includes(runId)) return snapshot;
+  const clear = <T extends { id: string; runId: string }>(list: Listed, items: T[] | undefined) => items?.map(item => {
+    if (item.runId !== runId) return item;
+    const next = { ...item };
+    for (const field of LEFT_OUT[list]) if (typeof (next as Record<string, unknown>)[field] === "string") {
+      (next as Record<string, unknown>)[field] = "";
+    }
+    return next;
+  });
+  return { ...snapshot, tasks: clear("tasks", snapshot.tasks)!, attempts: clear("attempts", snapshot.attempts)!,
+    messages: clear("messages", snapshot.messages)!, notifications: clear("notifications", snapshot.notifications) };
+}
+
 export function createOrchestrationFeed() {
   let state: OrchestrationFeedState = { snapshot: null, error: null };
-  /** Text of finished runs the panel has shown, by run, put back after every
-   *  read. A run that is active again reads whole, and its kept text goes:
-   *  when it finishes again, its text is asked for again. */
+  /** Text leased by open finished-run panels, put back after each brief read.
+   *  The last reader releases it. An active-again run reads whole instead. */
   const texts = new Map<string, Map<string, string>>();
-  const detailed = new Set<string>();
+  const detailed = new Map<string, { readers: number }>();
   const forgetActive = (snapshot: OrchestrationSnapshot) => {
     const brief = new Set(snapshot.briefRuns ?? []);
-    for (const runId of [...detailed]) {
+    for (const runId of detailed.keys()) {
       if (brief.has(runId)) continue;
       detailed.delete(runId);
       texts.delete(runId);
@@ -271,17 +286,34 @@ export function createOrchestrationFeed() {
     },
     /** Read the ledger now, e.g. after a person's action. Rejects if it fails. */
     refresh: () => ask(true),
-    /** Fill in the text a brief read left out of one finished run, once. */
+    /** Lease the long text while a run is on screen. Two panels share one
+     * read; closing the last one releases both cached and published text. */
     detail(runId: string) {
-      if (detailed.has(runId)) return;
-      detailed.add(runId);
-      bridge.invoke<OrchestrationSnapshot>("orchestration_snapshot", { runId }).then(
-        (run) => {
-          texts.set(runId, textsOf(run ?? EMPTY_ORCHESTRATION));
-          patch((snapshot) => withTexts(snapshot, texts));
-        },
-        () => detailed.delete(runId),
-      );
+      let entry = detailed.get(runId);
+      if (entry) entry.readers++;
+      else {
+        entry = { readers: 1 };
+        detailed.set(runId, entry);
+        const asked = entry;
+        bridge.invoke<OrchestrationSnapshot>("orchestration_snapshot", { runId }).then(
+          (run) => {
+            if (detailed.get(runId) !== asked) return;
+            texts.set(runId, textsOf(run ?? EMPTY_ORCHESTRATION));
+            patch((snapshot) => withTexts(snapshot, texts));
+          },
+          () => { if (detailed.get(runId) === asked) detailed.delete(runId); },
+        );
+      }
+      const held = entry;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (detailed.get(runId) !== held || --held.readers > 0) return;
+        detailed.delete(runId);
+        texts.delete(runId);
+        patch(snapshot => withoutTexts(snapshot, runId));
+      };
     },
     patch,
   };

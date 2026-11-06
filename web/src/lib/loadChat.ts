@@ -97,8 +97,7 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
   for (const frame of frames) {
     if (frame.seq > tail) next = reduceChat(next, frame.event);
   }
-  if (page) options.history?.set(id, frames, page.before);
-  else options.history?.append(id, frames);
+  if (page) options.history?.set(id, page.before);
   publish(next);
   if (!options.history?.hasEarlier(id)) {
     void saveChatCheckpoint({ id, state: next, seq: catchUp.mark(key), updatedAt: Date.now() });
@@ -110,22 +109,22 @@ export async function loadEarlierChat(options: ChatLoadOptions): Promise<void> {
   const window = history?.get(id);
   if (!window || !requestPage) return;
   const after = catchUp.begin(key);
-  const [page, tail] = await Promise.all([requestPage(window.before), request(after)]);
+  // Re-read the displayed window only on this explicit action, rather than
+  // holding its raw stream (including every token delta) for the tab's life.
+  const [page, tail] = await Promise.all([requestPage(window.before), request(window.before - 1)]);
   if (cancelled()) return;
   if (page.before !== null && page.before >= window.before) throw new Error("History cursor did not advance");
-  const events = [...page.events.filter((f) => f.seq < window.before), ...window.events];
+  const events = [...page.events.filter((f) => f.seq < window.before), ...tail];
   let next = await replayChat({ ...emptyChat(), sessionId: getState().sessionId }, page.context, 0, cancelled);
-  next = await replayChat(next, events, 0, cancelled);
+  next = await replayChat(next, events.filter((frame) => frame.seq <= after), 0, cancelled);
   next = keepPending(next, getState());
   next = await replayChat(next, tail, after, cancelled);
-  events.push(...tail);
   if (cancelled()) return;
   next = keepPending(next, getState());
   const replayedThrough = events.at(-1)?.seq ?? after;
   const live = catchUp.end(key, tail).filter((frame) => frame.seq > replayedThrough);
   for (const frame of live) next = reduceChat(next, frame.event);
-  events.push(...live);
-  history!.set(id, events, page.before);
+  history!.set(id, page.before);
   // Process exits are live status events, outside the durable transcript.
   next = { ...next, exited: getState().exited };
   publish(next);

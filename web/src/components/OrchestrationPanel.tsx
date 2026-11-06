@@ -854,7 +854,7 @@ function RunDetail({
   // whole-ledger read; showing the run is when they are asked for.
   const brief = snapshot.briefRuns?.includes(run.id) ?? false;
   useEffect(() => {
-    if (brief) orchestrationFeed.detail(run.id);
+    if (brief) return orchestrationFeed.detail(run.id);
   }, [brief, run.id]);
   // A mission's plan goes back to approval when a task changes hands, and the
   // rows are where the next change of hands, or the correction of a wrong one,

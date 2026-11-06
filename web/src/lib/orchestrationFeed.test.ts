@@ -47,6 +47,38 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("orchestration feed", () => {
+  it("leases detail text only while a panel is open and ignores a closed panel's late reply", async () => {
+    const brief = { ...ledger(), tasks: [{ id: "t1", runId: "r1", spec: "", result: "" }], briefRuns: ["r1"] } as unknown as OrchestrationSnapshot;
+    const whole = { ...brief, tasks: [{ id: "t1", runId: "r1", spec: "x".repeat(1_000_000), result: "done" }] } as unknown as OrchestrationSnapshot;
+    const feed = createOrchestrationFeed();
+    const off = feed.subscribe(() => {});
+    mock.reads[0].resolve(brief);
+    await vi.advanceTimersByTimeAsync(0);
+    const first = feed.detail("r1");
+    const second = feed.detail("r1");
+    expect(mock.reads).toHaveLength(2);
+    mock.reads[1].resolve(whole);
+    await vi.advanceTimersByTimeAsync(0);
+    first(); first();
+    expect(feed.getState().snapshot?.tasks[0].spec).toHaveLength(1_000_000);
+    second();
+    expect(feed.getState().snapshot?.tasks[0].spec).toBe("");
+    void feed.refresh();
+    mock.reads[2].resolve(brief);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(feed.getState().snapshot?.tasks[0].spec).toBe("");
+    const closed = feed.detail("r1");
+    closed();
+    const reopened = feed.detail("r1");
+    mock.reads[3].resolve(whole);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(feed.getState().snapshot?.tasks[0].spec).toBe("");
+    mock.reads[4].resolve(whole);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(feed.getState().snapshot?.tasks[0].result).toBe("done");
+    reopened(); off();
+  });
+
   it("reads the ledger once on a page load, when the socket opens", async () => {
     mock.bridge.state = "connecting";
     const feed = createOrchestrationFeed();
