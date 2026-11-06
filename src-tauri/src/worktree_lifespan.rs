@@ -107,22 +107,41 @@ pub(crate) fn remove_proven(repo: &str, path: &str, proof: &RemovalProof) -> Res
 /// Reused by task Cleanup/Abandon, mission Close/Abandon and validation.
 /// Take under lifecycle, before dropping it for the long Restore comparison.
 pub(crate) struct RemovalHold<'a> {
-    _path: crate::agent_chat::LifespanHold<'a>,
+    _paths: Vec<crate::agent_chat::LifespanHold<'a>>,
     _starts: Vec<crate::agent_chat::StartClaim<'a>>,
 }
 pub(crate) fn hold_removal<'a>(
     chats: &'a crate::agent_chat::ChatManager,
     path: &str,
 ) -> Result<RemovalHold<'a>, String> {
-    let mark = chats.hold_lifespan_checkout(path)?;
-    let mut keys = chats.lifespan_chat_keys(path)?;
+    hold_removals(chats, &[path])
+}
+/// A multi-checkout operation owns all path marks before collecting any chat
+/// keys. One stopped chat can cover several roots through cwd/extraDirs: claim
+/// that key once, and keep the complete guard across every proof and removal.
+pub(crate) fn hold_removals<'a>(
+    chats: &'a crate::agent_chat::ChatManager,
+    paths: &[&str],
+) -> Result<RemovalHold<'a>, String> {
+    let paths = paths
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let marks = paths
+        .iter()
+        .map(|path| chats.hold_lifespan_checkout(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut keys = Vec::new();
+    for path in &paths {
+        keys.extend(chats.lifespan_chat_keys(path)?);
+    }
     keys.extend(
         crate::chat_index::list()
             .into_iter()
             .filter(|c| {
                 c.cwd
                     .as_ref()
-                    .is_some_and(|cwd| Path::new(cwd).starts_with(path))
+                    .is_some_and(|cwd| paths.iter().any(|path| Path::new(cwd).starts_with(path)))
             })
             .map(|c| format!("chat:{}", c.id)),
     );
@@ -132,9 +151,11 @@ pub(crate) fn hold_removal<'a>(
         .iter()
         .map(|k| chats.claim_start(k))
         .collect::<Result<Vec<_>, _>>()?;
-    chats.require_lifespan_idle(path)?;
+    for path in paths {
+        chats.require_lifespan_idle(path)?;
+    }
     Ok(RemovalHold {
-        _path: mark,
+        _paths: marks,
         _starts: claims,
     })
 }

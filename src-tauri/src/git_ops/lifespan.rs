@@ -1,5 +1,5 @@
-//! Bounded, non-interactive Git operations for the host lifespan. No hooks,
-//! network, branch deletion, or global worktree prune.
+//! Non-interactive Git helpers with timeouts and process containment.
+//! Each caller decides its network and branch policy.
 use std::{
     io::Read,
     path::Path,

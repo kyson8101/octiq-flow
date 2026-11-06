@@ -390,10 +390,11 @@ impl OrchestrationStore {
         for key in workers_before {
             crate::agent_chat::chat_stop_impl(chats, key)?;
         }
-        let _holds = plans_before
+        let paths = plans_before
             .iter()
-            .map(|p| crate::worktree_lifespan::hold_removal(chats, &p.checkout_root))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|p| p.checkout_root.as_str())
+            .collect::<Vec<_>>();
+        let _holds = crate::worktree_lifespan::hold_removals(chats, &paths)?;
         drop(_operation);
         let proofs = plans_before
             .iter()

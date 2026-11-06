@@ -3346,8 +3346,11 @@ derived each scan, never saved; settings, pins, verified archive refs, removal
 intents and the last 50 sweeps are saved through the pinned profile.
 
 A start and a removal never both go through: take the workspace lifecycle lock,
-mark the checkout under the chat session table, claim every associated chat's
-start, then check activity. `start_session` checks the path mark under that same
+mark every checkout under the chat session table, then claim the union of
+associated chat keys once and check activity. A mission holds all these guards
+across every checkout's off-lock proof and final removal; a stopped chat whose
+cwd and extraDirs span repositories must not be claimed twice. All guards drop
+on every exit. `start_session` checks the path mark under that same
 table, including a new chat id and extra directories. Enqueue checks the same
 mark under the queue lock before acknowledgement, so a new queued turn cannot
 cross the cleanup check. Never hold the ledger

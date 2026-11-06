@@ -5628,6 +5628,146 @@ exec /usr/bin/git "$@"
         h11_preservation_cases(WorkspaceMode::Mission, true);
     }
 
+    fn m13_shared_mission_chat(abandon: bool, active: bool) {
+        let home = crate::test_dir::TestDir::new("m13-mission-profile");
+        let _profile = crate::profile::started_in(&home);
+        let (alpha, beta) = (Repo::new(), Repo::new());
+        alpha.remote();
+        beta.remote();
+        let (store, run, first) = setup(&alpha, WorkspaceMode::Mission);
+        let second = store
+            .create_task_for(
+                "chat:master",
+                run.id.clone(),
+                "Beta".into(),
+                "Second repository".into(),
+                vec![],
+                None,
+                None,
+                None,
+                Some(TaskDestination {
+                    project_id: "beta".into(),
+                    project_name: "Beta".into(),
+                    repository: beta.root.clone(),
+                }),
+            )
+            .unwrap();
+        let a = prepare(&store, &first, Access::Auto).unwrap();
+        let b = prepare(&store, &second, Access::Auto).unwrap();
+        report(&store, &a, WorkerOutcome::Completed);
+        report(&store, &b, WorkerOutcome::Completed);
+        let chats = ChatManager::default();
+        let key = "chat:m13-shared";
+        chats.test_remember_start_with_extra(key, &a.cwd, Some(vec![b.cwd.clone()]));
+        if active {
+            chats.test_launch(key);
+            chats.test_busy(key, true);
+            let error = store
+                .close_mission(&chats, "chat:master", &run.id, abandon)
+                .unwrap_err();
+            assert!(error.contains("already running"), "{error}");
+            assert!(chats.has_process(key), "cleanup must not stop this chat");
+            for path in [&a.cwd, &b.cwd] {
+                assert!(Path::new(path).is_dir());
+                assert!(chats.test_lifespan_admission(path).is_ok());
+            }
+            chats.test_end(key);
+        }
+        // No restart and no forgetting StartContext: cwd and extraDirs still
+        // refer to both roots. Both safe folders must actually be removed.
+        let closed = store
+            .close_mission(&chats, "chat:master", &run.id, abandon)
+            .unwrap();
+        assert_eq!(closed.status, RunStatus::Closed);
+        assert_eq!(closed.mission_delivery.len(), 2);
+        assert!(closed.mission_delivery.iter().all(|d| d.removed));
+        for path in [&a.cwd, &b.cwd] {
+            assert!(!Path::new(path).exists());
+            assert!(chats.test_lifespan_admission(path).is_ok());
+        }
+        assert!(chats.claim_start(key).is_ok(), "claim leaked after removal");
+    }
+
+    #[test]
+    fn m13_mission_close_removes_both_roots_of_one_stopped_chat() {
+        m13_shared_mission_chat(false, false);
+    }
+    #[test]
+    fn m13_mission_abandon_removes_both_roots_of_one_stopped_chat() {
+        m13_shared_mission_chat(true, false);
+    }
+    #[test]
+    fn m13_mission_close_keeps_both_roots_while_shared_chat_is_active() {
+        m13_shared_mission_chat(false, true);
+    }
+    #[test]
+    fn m13_mission_abandon_keeps_both_roots_while_shared_chat_is_active() {
+        m13_shared_mission_chat(true, true);
+    }
+
+    fn m13_task_and_validation_chat(abandon: bool) {
+        let home = crate::test_dir::TestDir::new("m13-task-profile");
+        let _profile = crate::profile::started_in(&home);
+        let repo = Repo::new();
+        repo.remote();
+        let (store, _, task) = setup(&repo, WorkspaceMode::Worktree);
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        let head = repo.git(&["rev-parse", "HEAD"]);
+        let validation = store
+            .create_validation(&first.worker_chat_key, &task.id, &head, vec![])
+            .unwrap();
+        report(&store, &first, WorkerOutcome::Completed);
+        let chats = ChatManager::default();
+        let key = "chat:m13-task-validation";
+        chats.test_remember_start_with_extra(key, &first.cwd, Some(vec![validation.clone()]));
+        chats.test_launch(key);
+        chats.test_busy(key, true);
+        assert!(store
+            .remove_validation(&chats, "chat:master", &task.id, &validation)
+            .unwrap_err()
+            .contains("already running"));
+        assert!(store
+            .cleanup_workspace(&chats, "chat:master", &task.id, abandon, &head)
+            .unwrap_err()
+            .contains("validation"));
+        assert!(Path::new(&validation).exists() && Path::new(&first.cwd).exists());
+        assert!(chats.has_process(key));
+        chats.test_end(key);
+        store
+            .remove_validation(&chats, "chat:master", &task.id, &validation)
+            .unwrap();
+        assert!(!Path::new(&validation).exists());
+        assert!(stored(&store, &task)
+            .workspace
+            .unwrap()
+            .validation_paths
+            .is_empty());
+        chats.test_launch(key);
+        let error = store
+            .cleanup_workspace(&chats, "chat:master", &task.id, abandon, &head)
+            .unwrap_err();
+        assert!(error.contains("already running"), "{error}");
+        assert!(Path::new(&first.cwd).exists());
+        chats.test_end(key);
+        // The previous validation claim must have dropped before task cleanup.
+        store
+            .cleanup_workspace(&chats, "chat:master", &task.id, abandon, &head)
+            .unwrap();
+        assert!(!Path::new(&first.cwd).exists());
+        for path in [&first.cwd, &validation] {
+            assert!(chats.test_lifespan_admission(path).is_ok());
+        }
+        assert!(chats.claim_start(key).is_ok());
+    }
+    #[test]
+    fn m13_task_cleanup_after_validation_releases_the_shared_stopped_chat() {
+        m13_task_and_validation_chat(false);
+    }
+    #[test]
+    fn m13_task_abandon_after_validation_releases_the_shared_stopped_chat() {
+        m13_task_and_validation_chat(true);
+    }
+
     // ---- Missions: one worktree per repository, open until closed --------
 
     fn close(store: &OrchestrationStore, run: &Run, abandon: bool) -> Result<Run, String> {

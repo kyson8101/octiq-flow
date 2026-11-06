@@ -473,6 +473,10 @@ file stamps within the same remaining 10-second budget. Stamps are checked after
 inventory; unknowns and changed evidence keep the folder. Callers hold lifecycle,
 checkout path marks and start claims, and recheck ownership, unsettled workers,
 active/queued chats and their operation-specific delivery gates before removal.
+Mission Close/Abandon first mark every checkout, then claim the union of chat
+keys once: one stopped chat may span repositories through cwd and extraDirs.
+The complete set stays held across every off-lock proof and final removal,
+and drops on every exit. A live, starting or queued chat still keeps the folders.
 
 | Path | Guard before physical removal |
 | --- | --- |

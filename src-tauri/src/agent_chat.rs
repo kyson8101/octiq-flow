@@ -8184,6 +8184,15 @@ impl ChatManager {
     /// The start settings a launched chat would have remembered, with a
     /// conversation id, so a stand-in can ask the way a real agent does.
     pub(crate) fn test_remember_start(&self, key: &str, cwd: &str) {
+        self.test_remember_start_with_extra(key, cwd, None);
+    }
+
+    pub(crate) fn test_remember_start_with_extra(
+        &self,
+        key: &str,
+        cwd: &str,
+        extra_dirs: Option<Vec<String>>,
+    ) {
         self.starts.lock().unwrap().insert(
             key.to_string(),
             StartContext {
@@ -8192,7 +8201,7 @@ impl ChatManager {
                 agent: ChatAgent::Claude,
                 model: Some("sonnet".into()),
                 access: Some(Access::Auto),
-                extra_dirs: None,
+                extra_dirs,
                 env: None,
                 effort: None,
                 lite: None,
@@ -12722,6 +12731,71 @@ mod start_claim_tests {
         // A one-shot process being replaced is as good as running.
         manager.handoffs.lock().unwrap().insert(key.to_string());
         assert!(manager.claim_start(key).is_err());
+    }
+
+    #[test]
+    fn m13_batch_removal_keeps_start_and_queue_guards_and_releases_every_refusal() {
+        let dir = crate::test_dir::TestDir::new("m13-batch-holds").canonicalized();
+        let a = dir.join("a").to_string_lossy().into_owned();
+        let b = dir.join("b").to_string_lossy().into_owned();
+        for starting in [true, false] {
+            let manager = ChatManager::default();
+            let key = "chat:m13-shared";
+            manager.test_remember_start_with_extra(key, &a, Some(vec![b.clone()]));
+            let claim = starting.then(|| manager.claim_start(key).unwrap());
+            if !starting {
+                manager
+                    .queue_turn(
+                        key,
+                        QueuedTurn {
+                            text: "keep this input".into(),
+                            images: vec![],
+                            turn_id: None,
+                            appended_turn_ids: vec![],
+                            recorded: true,
+                            context: Some(QueueContext {
+                                cwd: a.clone(),
+                                agent: ChatAgent::Codex,
+                                model: None,
+                                access: None,
+                                extra_dirs: Some(vec![b.clone()]),
+                                env: None,
+                                effort: None,
+                                lite: None,
+                            }),
+                        },
+                    )
+                    .unwrap();
+            }
+            let error = crate::worktree_lifespan::hold_removals(&manager, &[&a, &b])
+                .err()
+                .expect("starting/queued chat must refuse the entire batch");
+            assert!(
+                error.contains(if starting {
+                    "already running"
+                } else {
+                    "queued turn"
+                }),
+                "{error}"
+            );
+            for path in [&a, &b] {
+                assert!(manager.test_lifespan_admission(path).is_ok());
+            }
+            drop(claim);
+            manager.forget_queued_turns(key);
+            let held = crate::worktree_lifespan::hold_removals(&manager, &[&a, &b, &a])
+                .expect("one claim for the shared stopped chat");
+            for path in [&a, &b] {
+                assert!(manager.test_lifespan_admission(path).is_err());
+                assert!(manager.test_lifespan_queue(path).is_err());
+            }
+            assert!(manager.claim_start(key).is_err());
+            drop(held);
+            assert!(manager.claim_start(key).is_ok());
+            for path in [&a, &b] {
+                assert!(manager.test_lifespan_admission(path).is_ok());
+            }
+        }
     }
 }
 
