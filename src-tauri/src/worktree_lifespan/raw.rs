@@ -806,26 +806,37 @@ mod tests {
         r.git(&["add", ".gitattributes"]);
         r.git(&["commit", "-m", "clean filter path"]);
         let escaped = r.dir.join("escaped-clean-child");
+        let began = r.dir.join("clean-filter-started");
         let script = format!(
-            "(sleep 3; echo escaped > '{}') & wait; cat",
+            "echo started > '{}'; (sleep 5; echo escaped > '{}') & wait; cat",
+            began.to_string_lossy().replace('\\', "/"),
             escaped.to_string_lossy().replace('\\', "/")
         );
         r.git(&["config", "filter.hung.clean", &script]);
-        fs::write(
-            Path::new(&r.root).join("source.txt"),
-            "unique changed text\n",
-        )
-        .unwrap();
+        let file = Path::new(&r.root).join("source.txt");
+        // A size change is enough for Git to say M WITHOUT running clean.
+        // Keep the original bytes and force the stat-cache miss, as in the
+        // reviewer's repro, so the watchdog must contain an actual filter.
+        fs::write(&file, "original\n").unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+            )
+            .unwrap();
         let start = Instant::now();
         let error = git::git_bounded(
             &r.root,
             &["status", "--porcelain=v1"],
-            Duration::from_secs(1),
+            Duration::from_secs(3),
         )
         .unwrap_err();
         assert!(error.contains("timed out"), "{error}");
-        assert!(start.elapsed() < Duration::from_secs(2));
-        std::thread::sleep(Duration::from_millis(3500));
+        assert!(start.elapsed() < Duration::from_secs(4));
+        assert!(began.exists(), "the clean filter never started");
+        std::thread::sleep(Duration::from_millis(5500));
         assert!(
             !escaped.exists(),
             "clean filter descendant escaped bounded Git"
