@@ -7,6 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) mod process;
+
 // Every Git read while lifecycle is held shares the same final deadline.
 // Nested helpers cannot silently restart a fixed 15-second timeout.
 thread_local! {
@@ -54,17 +56,17 @@ fn command_io(
 ) -> Result<Vec<u8>, String> {
     let timeout = remaining(timeout)?;
     let start = Instant::now();
-    crate::proc::no_console(cmd);
-    let mut child = cmd
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    // One owner contains Git and every filter descendant on every return,
+    // including timeout after the direct child exits with pipes still open.
+    let mut process = process::Process::spawn(cmd)?;
+    let child = &mut process.child;
     if let Some(input) = input {
         let mut stdin = child.stdin.take().ok_or("Missing command input")?;
         std::thread::spawn(move || {
@@ -90,16 +92,12 @@ fn command_io(
     let err = reader(stderr, 32 * 1024 * 1024);
     let status = loop {
         if start.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
             return Err("Command timed out; nothing is assumed about its outcome.".into());
         }
         match child.try_wait() {
             Ok(Some(s)) => break s,
             Ok(None) => std::thread::sleep(Duration::from_millis(2)),
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
                 return Err(e.to_string());
             }
         }

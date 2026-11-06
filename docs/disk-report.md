@@ -164,7 +164,7 @@ Every failing check is explained in `note`. Ledger-managed checkouts say
 wins over a personal-media worktree label: the group remains review; personal
 media still has no cleanup action. Ignored output is
 measured using `git status --ignored --porcelain=v1 -z` and walk sizes, not file
-contents, and every worktree effect/script warns that ignored output is removed.
+contents. The downloaded script prints each worktree but skips its removal; only the host can recheck the preservation proof and lifecycle guards.
 
 Unix uses one bounded `lsof -nP -F0n` pass for cwd and open files. If unavailable,
 failed, timed out or empty, usage is unknown: worktrees remain review and temp
@@ -213,8 +213,11 @@ The pure script generator takes `is_windows` explicitly. Bash scripts are named
 prints all selections and requires exactly lowercase `yes`, preserving input
 whitespace (`IFS= read` / raw `Read-Host` with case-sensitive `-ceq`). PowerShell
 text starts with a UTF-8 BOM so Windows PowerShell 5.1 preserves Unicode paths. All paths/labels are
-quoted as data. Tool/Docker commands are fixed host strings. Worktrees use only
-`git -C <repo> worktree remove <path>`, without force. `rm`/`rmOlderThan` print
+quoted as data. Tool/Docker commands are fixed host strings. Each worktree gets
+a skip line naming host Cleanup/lifespan or a verified Archive as its removal
+route. The script emits no `git worktree remove`: it cannot hold lifecycle,
+path and start guards or recheck full-path Restore proof, `config.worktree`
+and at-stake ignored inventory. `rm`/`rmOlderThan` print
 `Skipped (no tool command): <path>` unless `allowRm` was explicitly selected.
 With it enabled, rm uses `rm -rf --` / PowerShell LiteralPath; age cleanup deletes
 only old regular files, prunes memory directories and explicit excludes, never

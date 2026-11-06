@@ -373,9 +373,46 @@ impl OrchestrationStore {
         abandon: bool,
     ) -> Result<Run, String> {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
+        let (plans_before, workers_before) = {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            let run = coordinator(&inner.data, run_id, actor)?;
+            (
+                closable_plans(&inner.data, run, abandon)?,
+                inner
+                    .data
+                    .attempts
+                    .values()
+                    .filter(|a| a.run_id == run_id)
+                    .map(|a| a.worker_chat_key.clone())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        for key in workers_before {
+            crate::agent_chat::chat_stop_impl(chats, key)?;
+        }
+        let _holds = plans_before
+            .iter()
+            .map(|p| crate::worktree_lifespan::hold_removal(chats, &p.checkout_root))
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(_operation);
+        let proofs = plans_before
+            .iter()
+            .map(|p| crate::worktree_lifespan::validation_removal_proof(&p.checkout_root))
+            .collect::<Result<Vec<_>, _>>()?;
+        let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
         let (run, plans, workers) = self.mutate(|data| {
             let run = coordinator(data, run_id, actor)?.clone();
             let plans = closable_plans(data, &run, abandon)?;
+            if serde_json::to_value(&plans).map_err(|e| e.to_string())?
+                != serde_json::to_value(&plans_before).map_err(|e| e.to_string())?
+            {
+                return Err(
+                    "Mission ownership changed during Restore comparison; folders kept.".into(),
+                );
+            }
+            for plan in &plans {
+                chats.require_lifespan_idle(&plan.checkout_root)?;
+            }
             let workers: Vec<String> = data
                 .attempts
                 .values()
@@ -400,7 +437,7 @@ impl OrchestrationStore {
                 crate::agent_chat::chat_stop_impl(chats, key.clone())?;
             }
             let mut done = Vec::new();
-            for plan in &plans {
+            for (plan, proof) in plans.iter().zip(&proofs) {
                 chats.require_checkout_idle(&plan.checkout_root, plan.is_managed_worktree())?;
                 let mut delivery = delivery_of(&run, plan)?;
                 if delivery.evidence.dirty {
@@ -429,7 +466,8 @@ impl OrchestrationStore {
                 // Close/Abandon still verify its kept head and remain the
                 // person's decision; neither needs to resurrect a clean tree.
                 if delivery.swept_at.is_none() || Path::new(&plan.checkout_root).exists() {
-                    workflow::cleanup(plan, &delivery.evidence.head_sha)?;
+                    chats.require_lifespan_idle(&plan.checkout_root)?;
+                    workflow::cleanup_verified(plan, &delivery.evidence.head_sha, proof.as_ref())?;
                 }
                 delivery.removed = true;
                 if delivery.merged {

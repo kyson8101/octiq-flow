@@ -39,13 +39,10 @@ pub(super) fn generate(items: &[&Item], windows: bool, allow_rm: bool) -> String
                 s.push_str(command);
                 s.push('\n');
             }
-            Some(Action::Worktree { repo, path }) => {
-                s.push_str(&echo("Warning: .gitignore-ignored output that exists only in this worktree is deleted too."));
-                s.push_str(&format!(
-                    "git -C {} worktree remove {}\n",
-                    quote(repo, windows),
-                    quote(path, windows)
-                ));
+            Some(Action::Worktree { .. }) => {
+                // A downloaded/offline script cannot hold host lifecycle or
+                // revalidate Restore proof, pins, starts and ownership at use.
+                s.push_str(&echo("Skipped worktree: use host Cleanup or worktree lifespan with Restore proof, or confirmed Archive. The folder and ignored output are kept."));
             }
             Some(Action::Rm { path }) if allow_rm => {
                 if windows {

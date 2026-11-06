@@ -4,6 +4,73 @@ use super::*;
 use crate::git_ops::workflow::{self, DeliveryEvidence, WorkspaceMode, WorkspacePlan};
 use crate::paths::Canonical;
 
+fn cleanup_ready(
+    data: &Stored,
+    task: &Task,
+    ws: &TaskWorkspace,
+    abandon: bool,
+) -> Result<(), String> {
+    if data
+        .attempts
+        .values()
+        .any(|a| a.task_id == task.id.as_str() && attempt_is_unsettled(data, a))
+    {
+        return Err("Stop or settle every worker before cleanup.".into());
+    }
+    if data
+        .gates
+        .values()
+        .any(|g| g.task_id.as_deref() == Some(task.id.as_str()) && g.status == GateStatus::Open)
+    {
+        return Err("Resolve the open decision before cleanup.".into());
+    }
+    for other in data.attempts.values().filter(|a| {
+        a.task_id != task.id.as_str() && attempt_is_unsettled(data, a) && !a.cwd.is_empty()
+    }) {
+        if workflow::leases_clash(
+            &workflow::held_checkout(&other.cwd),
+            attempt_in_managed_worktree(data, other),
+            &ws.plan.checkout_root,
+            true,
+        ) {
+            return Err("Another task is still using this checkout.".into());
+        }
+    }
+    if abandon
+        && data.tasks.values().any(|t| {
+            t.depends_on.iter().any(|id| id == task.id.as_str()) && t.active_attempt_id.is_some()
+        })
+    {
+        return Err("A dependent task already started. Preserve this workspace until that work is resolved.".into());
+    }
+    if data
+        .tasks
+        .values()
+        .filter(|t| t.id != task.id.as_str())
+        .any(|t| {
+            t.workspace.as_ref().is_some_and(|other| {
+                other.state != WorkspaceState::Cleaned
+                    && other.swept_at.is_none()
+                    && workflow::leases_clash(
+                        &other.plan.checkout_root,
+                        other.plan.is_managed_worktree(),
+                        &ws.plan.checkout_root,
+                        true,
+                    )
+            })
+        })
+    {
+        return Err("Another task retains this checkout. Preserve it until all workspace owners are resolved.".into());
+    }
+    if !abandon && task.status != TaskStatus::Completed {
+        return Err("Complete the task or explicitly abandon it before cleanup.".into());
+    }
+    if !ws.validation_paths.is_empty() {
+        return Err("Remove the task's validation worktrees before cleanup.".into());
+    }
+    Ok(())
+}
+
 /// An orchestration worker writing in the checkout a chat works in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WriterBeside {
@@ -1241,25 +1308,7 @@ impl OrchestrationStore {
         if !ws.validation_paths.iter().any(|p| p == path) {
             return Err("This task does not own that validation workspace.".into());
         }
-        let _marked = chats.hold_lifespan_checkout(path)?;
-        let mut keys = chats.lifespan_chat_keys(path)?;
-        keys.extend(
-            crate::chat_index::list()
-                .into_iter()
-                .filter(|c| {
-                    c.cwd
-                        .as_ref()
-                        .is_some_and(|cwd| Path::new(cwd).starts_with(path))
-                })
-                .map(|c| format!("chat:{}", c.id)),
-        );
-        keys.sort();
-        keys.dedup();
-        let _claims = keys
-            .iter()
-            .map(|k| chats.claim_start(k))
-            .collect::<Result<Vec<_>, _>>()?;
-        chats.require_lifespan_idle(path)?;
+        let _held = crate::worktree_lifespan::hold_removal(chats, path)?;
         drop(_operation);
         let proof = crate::worktree_lifespan::validation_removal_proof(path)?;
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
@@ -1581,7 +1630,7 @@ impl OrchestrationStore {
         expected_head: &str,
     ) -> Result<Task, String> {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
-        let (run, task) = self.owned_task(actor, task_id)?;
+        let (_, task) = self.owned_task(actor, task_id)?;
         let ws = task
             .workspace
             .as_ref()
@@ -1601,38 +1650,44 @@ impl OrchestrationStore {
                     .into(),
             );
         }
-        self.mutate(|data| {
-            if data
+        let workers = {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            cleanup_ready(&inner.data, &task, ws, abandon)?;
+            inner
+                .data
                 .attempts
                 .values()
-                .any(|a| a.task_id == task_id && attempt_is_unsettled(data, a))
-            {
-                return Err("Stop or settle every worker before cleanup.".into());
-            }
-            if data
-                .gates
-                .values()
-                .any(|g| g.task_id.as_deref() == Some(task_id) && g.status == GateStatus::Open)
-            {
-                return Err("Resolve the open decision before cleanup.".into());
-            }
-            for other in data.attempts.values().filter(|a| a.task_id != task_id && attempt_is_unsettled(data, a) && !a.cwd.is_empty()) {
-                if workflow::leases_clash(&workflow::held_checkout(&other.cwd), attempt_in_managed_worktree(data, other), &ws.plan.checkout_root, true) {
-                    return Err("Another task is still using this checkout.".into());
-                }
-            }
-            if abandon && data.tasks.values().any(|t| t.depends_on.iter().any(|id| id == task_id) && t.active_attempt_id.is_some()) {
-                return Err("A dependent task already started. Preserve this workspace until that work is resolved.".into());
-            }
-            if data.tasks.values().filter(|t| t.id != task_id).any(|t| t.workspace.as_ref().is_some_and(|other| other.state != WorkspaceState::Cleaned && other.swept_at.is_none() && workflow::leases_clash(&other.plan.checkout_root, other.plan.is_managed_worktree(), &ws.plan.checkout_root, true))) {
-                return Err("Another task retains this checkout. Preserve it until all workspace owners are resolved.".into());
-            }
-            if !abandon && task.status != TaskStatus::Completed {
-                return Err("Complete the task or explicitly abandon it before cleanup.".into());
-            }
-            if !ws.validation_paths.is_empty() {
-                return Err("Remove the task's validation worktrees before cleanup.".into());
-            }
+                .filter(|a| a.task_id == task_id)
+                .map(|a| a.worker_chat_key.clone())
+                .collect::<Vec<_>>()
+        };
+        for key in workers {
+            crate::agent_chat::chat_stop_impl(chats, key)?;
+        }
+        // Retain the exact checkout while content is proved outside lifecycle.
+        // Abandon promises preservation too; it has no discard exception.
+        let original_plan = ws.plan.clone();
+        let _held = crate::worktree_lifespan::hold_removal(chats, &original_plan.checkout_root)?;
+        drop(_operation);
+        let proof =
+            crate::worktree_lifespan::validation_removal_proof(&original_plan.checkout_root)?;
+        let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
+        let (run, task) = self.owned_task(actor, task_id)?;
+        let ws = task
+            .workspace
+            .as_ref()
+            .ok_or("Workspace disappeared during proof; folder kept.")?;
+        if serde_json::to_value(&ws.plan).map_err(|e| e.to_string())?
+            != serde_json::to_value(&original_plan).map_err(|e| e.to_string())?
+            || ws.state == WorkspaceState::Cleaned
+        {
+            return Err(
+                "Workspace ownership changed during Restore comparison; folder kept.".into(),
+            );
+        }
+        chats.require_lifespan_idle(&ws.plan.checkout_root)?;
+        self.mutate(|data| {
+            cleanup_ready(data, &task, ws, abandon)?;
             data.tasks
                 .get_mut(task_id)
                 .unwrap()
@@ -1716,7 +1771,8 @@ impl OrchestrationStore {
                 Ok(())
             })?;
             if !swept {
-                workflow::cleanup(&ws.plan, &evidence.head_sha)?;
+                chats.require_lifespan_idle(&ws.plan.checkout_root)?;
+                workflow::cleanup_verified(&ws.plan, &evidence.head_sha, proof.as_ref())?;
             }
             Ok(evidence)
         })();
@@ -5420,6 +5476,158 @@ exec /usr/bin/git "$@"
             .contains("read-only work"));
         assert_eq!(repo.git(&["status", "--porcelain"]), "");
     }
+    fn h11_preservation_cases(mode: WorkspaceMode, abandon: bool) {
+        for case in ["stat-cache", "ident", "config", "ignored"] {
+            let repo = Repo::new();
+            repo.commit(&repo.root, ".gitattributes", "id.txt ident\n");
+            repo.commit(&repo.root, "id.txt", "$Id$\n");
+            repo.commit(&repo.root, ".gitignore", "source/\n");
+            repo.remote();
+            let (store, run, task) = setup(&repo, mode);
+            let first = prepare(&store, &task, Access::Auto).unwrap();
+            report(&store, &first, WorkerOutcome::Completed);
+            let head = repo.git(&["rev-parse", "HEAD"]);
+            let target = Path::new(&first.cwd).join("source.txt");
+            let admin =
+                crate::git_ops::lifespan::text(&first.cwd, &["rev-parse", "--absolute-git-dir"])
+                    .unwrap();
+            let ignored = Path::new(&first.cwd).join("source/private.txt");
+            match case {
+                "stat-cache" => {
+                    crate::git_ops::lifespan::text(
+                        &first.cwd,
+                        &["config", "core.trustctime", "false"],
+                    )
+                    .unwrap();
+                    crate::git_ops::lifespan::text(
+                        &first.cwd,
+                        &["config", "core.checkStat", "minimal"],
+                    )
+                    .unwrap();
+                    let old =
+                        std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .open(&target)
+                        .unwrap()
+                        .set_times(fs::FileTimes::new().set_modified(old))
+                        .unwrap();
+                    crate::git_ops::lifespan::text(&first.cwd, &["update-index", "--refresh"])
+                        .unwrap();
+                    fs::write(&target, "authored\n").unwrap();
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .open(&target)
+                        .unwrap()
+                        .set_times(fs::FileTimes::new().set_modified(old))
+                        .unwrap();
+                }
+                "ident" => {
+                    fs::write(
+                        Path::new(&first.cwd).join("id.txt"),
+                        "$Id: Unique authored note $\n",
+                    )
+                    .unwrap();
+                    crate::git_ops::lifespan::text(&first.cwd, &["add", "id.txt"]).unwrap();
+                }
+                "config" => fs::write(
+                    Path::new(&admin).join("config.worktree"),
+                    "# unique worktree settings\n",
+                )
+                .unwrap(),
+                "ignored" => {
+                    crate::profile::make_dir(ignored.parent().unwrap()).unwrap();
+                    fs::write(&ignored, "unique ignored original").unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                crate::git_ops::lifespan::text(&first.cwd, &["status", "--porcelain=v1"])
+                    .unwrap()
+                    .is_empty(),
+                "{case}"
+            );
+            let remove = || -> Result<(), String> {
+                if mode == WorkspaceMode::Mission {
+                    store
+                        .close_mission(&ChatManager::default(), "chat:master", &run.id, abandon)
+                        .map(|_| ())
+                } else {
+                    store
+                        .cleanup_workspace(
+                            &ChatManager::default(),
+                            "chat:master",
+                            &task.id,
+                            abandon,
+                            &head,
+                        )
+                        .map(|_| ())
+                }
+            };
+            let error = remove().unwrap_err();
+            assert!(
+                Path::new(&first.cwd).exists(),
+                "{mode:?} {abandon} {case}: {error}"
+            );
+            match case {
+                "stat-cache" => assert_eq!(fs::read_to_string(&target).unwrap(), "authored\n"),
+                "ident" => assert_eq!(
+                    fs::read_to_string(Path::new(&first.cwd).join("id.txt")).unwrap(),
+                    "$Id: Unique authored note $\n"
+                ),
+                "config" => assert!(
+                    fs::read_to_string(Path::new(&admin).join("config.worktree"))
+                        .unwrap()
+                        .contains("unique worktree")
+                ),
+                "ignored" => assert_eq!(
+                    fs::read_to_string(&ignored).unwrap(),
+                    "unique ignored original"
+                ),
+                _ => unreachable!(),
+            }
+            // Only fixture-owned adversarial bytes are replaced with an actual
+            // Restore. The same endpoint must then really remove the control.
+            match case {
+                "stat-cache" | "ident" => {
+                    let name = if case == "ident" {
+                        "id.txt"
+                    } else {
+                        "source.txt"
+                    };
+                    fs::remove_file(Path::new(&first.cwd).join(name)).unwrap();
+                    crate::git_ops::lifespan::text(
+                        &first.cwd,
+                        &["checkout-index", "-f", "--", name],
+                    )
+                    .unwrap();
+                    crate::git_ops::lifespan::text(&first.cwd, &["add", name]).unwrap();
+                }
+                "config" => fs::remove_file(Path::new(&admin).join("config.worktree")).unwrap(),
+                "ignored" => fs::remove_file(&ignored).unwrap(),
+                _ => unreachable!(),
+            }
+            remove().unwrap_or_else(|e| panic!("safe control {mode:?} {abandon} {case}: {e}"));
+            assert!(!Path::new(&first.cwd).exists());
+        }
+    }
+    #[test]
+    fn h11_task_cleanup_preserves_raw_config_and_ignored_data() {
+        h11_preservation_cases(WorkspaceMode::Worktree, false);
+    }
+    #[test]
+    fn h11_task_abandon_preserves_raw_config_and_ignored_data() {
+        h11_preservation_cases(WorkspaceMode::Worktree, true);
+    }
+    #[test]
+    fn h11_mission_close_preserves_raw_config_and_ignored_data() {
+        h11_preservation_cases(WorkspaceMode::Mission, false);
+    }
+    #[test]
+    fn h11_mission_abandon_preserves_raw_config_and_ignored_data() {
+        h11_preservation_cases(WorkspaceMode::Mission, true);
+    }
+
     // ---- Missions: one worktree per repository, open until closed --------
 
     fn close(store: &OrchestrationStore, run: &Run, abandon: bool) -> Result<Run, String> {

@@ -206,7 +206,7 @@ fn config_path(root: &str, timeout: Duration) -> Result<PathBuf, String> {
     }
     Ok(admin.join("config.worktree"))
 }
-fn require_recreatable_config(root: &str, timeout: Duration) -> Result<(), String> {
+pub(super) fn require_recreatable_config(root: &str, timeout: Duration) -> Result<(), String> {
     let path = config_path(root, timeout)?;
     match fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -262,7 +262,7 @@ fn mode_matches(mode: &str, m: &fs::Metadata, is_windows: bool, symlinks: bool) 
             m.is_file() && !redirect(m) && (is_windows || executable(m) == (mode == "100755"))
         }
         "120000" => {
-            m.file_type().is_symlink()
+            (symlinks && m.file_type().is_symlink())
                 || (!symlinks && m.is_file() && !redirect(m) && (is_windows || !executable(m)))
         }
         _ => false, // A gitlink with anything on disk is never proven.
@@ -406,18 +406,12 @@ fn verify_with_budget(
         .unwrap_or(true);
     let mut filtered = Vec::new();
     let mut links = Vec::new();
+    let mut exact_paths = Vec::new();
     let mut bytes = 0u64;
     for (name, (mode, oid)) in entries {
         remaining()?;
         if hidden_only && !hidden.contains(&name) {
             continue;
-        }
-        // Batch splits oid from the path on whitespace. Never silently carry
-        // a different filter path when Git strips leading whitespace.
-        if name.as_bytes().first().is_some_and(u8::is_ascii_whitespace) {
-            return Err(format!(
-                "Batch cannot carry the leading-whitespace filter path {name:?}; folder kept."
-            ));
         }
         let p = Path::new(root).join(&name);
         let m = match fs::symlink_metadata(&p) {
@@ -465,8 +459,20 @@ fn verify_with_budget(
         };
         if entry.raw {
             links.push(entry);
+        } else if entry
+            .name
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            exact_paths.push(entry);
         } else {
             filtered.push(entry);
+        }
+    }
+    for entry in exact_paths {
+        if let Some(name) = single_path(root, reference, entry, remaining()?)? {
+            return Ok(Proof::mismatch(&name, &hidden));
         }
     }
     for (entries, filters) in [(filtered, true), (links, false)] {
@@ -478,6 +484,95 @@ fn verify_with_budget(
         }
     }
     Ok(Proof::default())
+}
+
+// Batch strips leading path whitespace. An argv --path= and <ref>:<path>
+// preserve it exactly; EOF frames one filtered object, under the SAME budget,
+// streaming comparison and descendant-killing owner as the ordinary batch.
+fn single_path(
+    root: &str,
+    reference: &str,
+    entry: Entry,
+    timeout: Duration,
+) -> Result<Option<String>, String> {
+    let started = Instant::now();
+    let attr = format!("--attr-source={reference}");
+    let path = format!("--path={}", entry.name);
+    let object = format!("{reference}:{}", entry.name);
+    let mut cmd = git::git_command(root, &[&attr, "cat-file", "--filters", &path, &object]);
+    cmd.env("GIT_ATTR_SOURCE", reference)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut process = git::process::Process::spawn(&mut cmd)?;
+    let mut out = process
+        .child
+        .stdout
+        .take()
+        .ok_or("Missing filtered stdout")?;
+    let errors = process
+        .child
+        .stderr
+        .take()
+        .ok_or("Missing filtered stderr")?;
+    let (err_tx, err_rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut data = Vec::new();
+        let result = errors.take(65537).read_to_end(&mut data);
+        let _ = err_tx.send((result.is_ok(), data));
+    });
+    let root = root.to_owned();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = (|| -> Result<Option<String>, String> {
+            let mut disk = open_regular(&Path::new(&root).join(&entry.name))?;
+            let mut left = entry.len;
+            let (mut actual, mut expected) = ([0u8; 65536], [0u8; 65536]);
+            while left > 0 {
+                let n = out
+                    .read(&mut actual[..left.min(65536) as usize])
+                    .map_err(|e| e.to_string())?;
+                if n == 0
+                    || disk.read_exact(&mut expected[..n]).is_err()
+                    || actual[..n] != expected[..n]
+                {
+                    return Ok(Some(entry.name));
+                }
+                left -= n as u64;
+            }
+            if out.read(&mut actual[..1]).map_err(|e| e.to_string())? != 0
+                || disk.read(&mut expected[..1]).map_err(|e| e.to_string())? != 0
+            {
+                return Ok(Some(entry.name));
+            }
+            Ok(None)
+        })();
+        let _ = tx.send(result);
+    });
+    let result = rx
+        .recv_timeout(timeout.saturating_sub(started.elapsed()))
+        .map_err(|_| bound())??;
+    if result.is_some() {
+        return Ok(result);
+    }
+    let (ok, errors) = err_rx
+        .recv_timeout(timeout.saturating_sub(started.elapsed()))
+        .map_err(|_| bound())?;
+    loop {
+        if let Some(status) = process.child.try_wait().map_err(|e| e.to_string())? {
+            if !status.success() || !ok || !errors.is_empty() {
+                return Err(format!(
+                    "Exact-path Restore filter failed: {}; folder kept.",
+                    String::from_utf8_lossy(&errors)
+                ));
+            }
+            return Ok(None);
+        }
+        if started.elapsed() >= timeout {
+            return Err(bound());
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
 }
 
 // --batch --filters reports the ORIGINAL blob size even for converted output
@@ -504,7 +599,10 @@ fn batch(
     // The recognized global option also makes unsupported Git fail explicitly,
     // rather than silently ignoring an unfamiliar GIT_ATTR_SOURCE variable.
     cmd.env("GIT_ATTR_SOURCE", reference);
-    let mut process = BatchProcess::spawn(&mut cmd)?;
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut process = git::process::Process::spawn(&mut cmd)?;
     let mut input = process.child.stdin.take().ok_or("Missing batch stdin")?;
     let output = process.child.stdout.take().ok_or("Missing batch stdout")?;
     let errors = process.child.stderr.take().ok_or("Missing batch stderr")?;
@@ -613,91 +711,6 @@ fn batch(
     result
 }
 
-/// Own the child AND its filter descendants from spawn to every exit path.
-struct BatchProcess {
-    child: std::process::Child,
-    #[cfg(windows)]
-    job: *mut std::ffi::c_void,
-}
-impl BatchProcess {
-    fn spawn(cmd: &mut std::process::Command) -> Result<Self, String> {
-        use std::process::Stdio;
-        crate::proc::no_console(cmd);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000004);
-        } // suspended, no console
-        #[allow(unused_mut)] // Windows may kill a suspended child on job setup failure.
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::AsRawHandle;
-            let job = unsafe { win_batch::CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-            if job.is_null()
-                || unsafe { win_batch::AssignProcessToJobObject(job, child.as_raw_handle()) } == 0
-                || unsafe { win_batch::NtResumeProcess(child.as_raw_handle()) } < 0
-            {
-                let error = std::io::Error::last_os_error().to_string();
-                let _ = child.kill();
-                let _ = child.wait();
-                if !job.is_null() {
-                    unsafe {
-                        win_batch::TerminateJobObject(job, 1);
-                        win_batch::CloseHandle(job);
-                    }
-                }
-                return Err(format!(
-                    "Cannot contain Restore filter process: {error}; folder kept."
-                ));
-            }
-            return Ok(Self { child, job });
-        }
-        #[cfg(not(windows))]
-        Ok(Self { child })
-    }
-}
-impl Drop for BatchProcess {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
-        }
-        #[cfg(windows)]
-        unsafe {
-            win_batch::TerminateJobObject(self.job, 1);
-            win_batch::CloseHandle(self.job);
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-#[cfg(windows)]
-mod win_batch {
-    use std::ffi::c_void;
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        pub fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> *mut c_void;
-        pub fn AssignProcessToJobObject(job: *mut c_void, process: *mut c_void) -> i32;
-        pub fn TerminateJobObject(job: *mut c_void, exit_code: u32) -> i32;
-        pub fn CloseHandle(handle: *mut c_void) -> i32;
-    }
-    #[link(name = "ntdll")]
-    unsafe extern "system" {
-        pub fn NtResumeProcess(process: *mut c_void) -> i32;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,6 +793,85 @@ mod tests {
         assert!(
             !escaped.exists(),
             "a descendant escaped the filter watchdog"
+        );
+    }
+    #[test]
+    fn m11_clean_filter_descendants_are_killed_by_bounded_status() {
+        let r = Repo::new();
+        fs::write(
+            Path::new(&r.root).join(".gitattributes"),
+            "source.txt filter=hung\n",
+        )
+        .unwrap();
+        r.git(&["add", ".gitattributes"]);
+        r.git(&["commit", "-m", "clean filter path"]);
+        let escaped = r.dir.join("escaped-clean-child");
+        let script = format!(
+            "(sleep 3; echo escaped > '{}') & wait; cat",
+            escaped.to_string_lossy().replace('\\', "/")
+        );
+        r.git(&["config", "filter.hung.clean", &script]);
+        fs::write(
+            Path::new(&r.root).join("source.txt"),
+            "unique changed text\n",
+        )
+        .unwrap();
+        let start = Instant::now();
+        let error = git::git_bounded(
+            &r.root,
+            &["status", "--porcelain=v1"],
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(start.elapsed() < Duration::from_secs(2));
+        std::thread::sleep(Duration::from_millis(3500));
+        assert!(
+            !escaped.exists(),
+            "clean filter descendant escaped bounded Git"
+        );
+        r.git(&["config", "filter.hung.clean", "cat"]);
+        assert!(git::git_bounded(
+            &r.root,
+            &["status", "--porcelain=v1"],
+            Duration::from_secs(5)
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn m12_exact_path_filter_obeys_the_shared_deadline_and_tree_kill() {
+        let r = Repo::new();
+        fs::write(Path::new(&r.root).join(" leading path"), "text\n").unwrap();
+        fs::write(Path::new(&r.root).join(".gitattributes"), "* filter=hung\n").unwrap();
+        r.git(&["add", "."]);
+        r.git(&["commit", "-m", "leading filter path"]);
+        let escaped = r.dir.join("escaped-exact-child");
+        let script = format!(
+            "(sleep 3; echo escaped > '{}') & wait; cat",
+            escaped.to_string_lossy().replace('\\', "/")
+        );
+        r.git(&["config", "filter.hung.smudge", &script]);
+        let error = verify_with_budget(
+            &r.root,
+            "HEAD",
+            false,
+            cfg!(windows),
+            false,
+            Duration::from_secs(1),
+            LIMIT,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("bound"), "{error}");
+        std::thread::sleep(Duration::from_millis(3500));
+        assert!(!escaped.exists(), "exact-path filter descendant escaped");
+        r.git(&["config", "filter.hung.smudge", "cat"]);
+        assert_eq!(
+            verify(&r.root, "HEAD", false, cfg!(windows))
+                .unwrap()
+                .unrestorable,
+            0
         );
     }
 }

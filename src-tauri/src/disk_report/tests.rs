@@ -373,7 +373,8 @@ fn scripts_quote_all_platforms_and_gate_rm() {
         assert!(!off.contains("--force"));
         let on = script::generate(&[&r.items[0], &w, &old], windows, true);
         assert!(on.contains("ignored output"));
-        assert!(on.contains("worktree remove"));
+        assert!(!on.contains("worktree remove"));
+        assert!(on.contains("Skipped worktree"));
         if windows {
             assert!(on.contains("quote'' and"));
             assert!(on.contains("-LiteralPath"));
@@ -1090,4 +1091,60 @@ fn powershell_confirmation_requires_literal_yes_on_real_windows() {
         );
         assert_eq!(target.exists(), answer != "yes", "answer={answer:?}");
     }
+}
+
+#[test]
+fn generated_worktree_script_keeps_originals_when_run_for_real() {
+    use std::io::Write;
+    let repo = crate::git_ops::workflow::tests::Repo::new();
+    repo.commit(&repo.root, ".gitignore", "source/\n");
+    let work = repo.dir.join("linked");
+    repo.git(&["worktree", "add", "--detach", work.to_str().unwrap()]);
+    crate::profile::make_dir(&work.join("source")).unwrap();
+    fs::write(work.join("source/private.txt"), "unique ignored original").unwrap();
+    let mut r = report(&repo.dir, 1);
+    let item = &mut r.items[0];
+    item.path = work.to_string_lossy().into_owned();
+    item.action = Some(Action::Worktree {
+        repo: repo.root.clone(),
+        path: item.path.clone(),
+    });
+    let windows = cfg!(windows);
+    let script_text = script::generate(&[item], windows, false);
+    let script_path = repo.dir.join(if windows {
+        "download.ps1"
+    } else {
+        "download.sh"
+    });
+    fs::write(&script_path, &script_text).unwrap();
+    let mut command = if windows {
+        let mut cmd = std::process::Command::new("powershell.exe");
+        cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+        cmd
+    } else {
+        std::process::Command::new("bash")
+    };
+    let mut child = command
+        .arg(&script_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"yes\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        work.is_dir(),
+        "downloaded script bypassed the host removal proof"
+    );
+    assert_eq!(
+        fs::read_to_string(work.join("source/private.txt")).unwrap(),
+        "unique ignored original"
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Skipped worktree"));
 }

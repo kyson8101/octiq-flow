@@ -3426,14 +3426,58 @@ Abandoned and name the count. Status overrides `status.showUntrackedFiles=all`,
 `core.fsmonitor=false`, `core.untrackedCache=false`, `--untracked-files=all`,
 and `--ignore-submodules=none`.
 
+
+### Removal paths and their guards
+
+Only a confirmed **Archive** may remove a folder whose live bytes differ from
+Restore. **Abandon is not a discard exception**: both task Abandon and mission
+Abandon keep the folder and explain any failed proof. Their clean/published
+promises include raw contents, effective types and at-stake ignored files.
+
+All non-Archive physical removals enter `worktree_lifespan::remove_proven`.
+They prepare a full-path `RemovalProof` outside workspace lifecycle and recheck
+HEAD, no-follow checkout/common-repository identity, non-empty/unknown
+`config.worktree`, at-stake ignored inventory, profile availability and final
+file stamps within the same remaining 10-second budget. Stamps are checked after
+inventory; unknowns and changed evidence keep the folder. Callers hold lifecycle,
+checkout path marks and start claims, and recheck ownership, unsettled workers,
+active/queued chats and their operation-specific delivery gates before removal.
+
+| Path | Guard before physical removal |
+| --- | --- |
+| Automatic ordinary chat / task / mission / validation lifespan | `operate_progress` verifies policy, pins, idle/activity, known usage and ownership, then the shared `remove_proven` door |
+| Per-task Cleanup | `cleanup_workspace` rechecks coordinator, task/workspace identity, leases, gates, other owners and merge/expected HEAD; `cleanup_verified` enters the shared door |
+| Per-task Abandon | Same task guards and shared door; unpublished commits keep the folder; no discard bypass |
+| Mission Close | `close_mission` rechecks the complete mission plan set, workers, gates and merge; each `cleanup_verified` enters the shared door |
+| Mission Abandon | Same mission guards and shared door, with the existing published-commit gate; no discard bypass |
+| Explicit validation removal | `remove_validation` rechecks allocation ownership and activity; `remove_validation_verified` requires detached HEAD, then enters the shared door |
+| Confirmed Archive then remove | Its own lifecycle/path/start/usage/pin guards, exact preview hash including ignored inventory, verified archive ref/tree and full captured-tree disk/type proof, config guard and final stamps; only this path calls force removal |
+| Disk report downloaded cleanup script | Prints and skips each worktree: an offline script cannot hold the host guards; use host Cleanup/lifespan or confirmed Archive |
+
+Build stripping removes only individually proven rebuildable subtrees, never the
+worktree root. Reconciliation records already absent folders without deleting
+anything. Restore/recovery prepares an absent folder and may prune stale Git
+administrative registrations; it never removes an existing worktree folder.
+Other `worktree remove` / whole-worktree `remove_dir_all` occurrences in Rust
+are disposable `cfg(test)` fixtures, not product cleanup paths.
+
+Mode `120000` restores as a symlink only when effective `core.symlinks=true`;
+otherwise it restores as a non-executable regular file containing the link text.
+An existing symlink under `false` is a type mismatch even when its target bytes
+match. Leading-whitespace filter paths use bounded single-object
+`cat-file --filters --path=<path> <ref>:<path>` with exact argv and EOF framing,
+under the same aggregate 2 GiB / 120-second proof budget. Normal paths retain
+the streaming batch. Every bounded Git command, including status/ignored clean
+filters, raw batches and single-object calls, owns a Unix process group or a
+Windows Job Object from spawn; every exit path kills remaining descendants.
+
 Every removal other than a confirmed Archive proves **every tracked path**
 against the kept ref's tree; attributes, autocrlf and hidden bits never select
 which paths get compared. For regular files compare raw disk bytes with what
 `cat-file --filters` would write, covering ident and all other conversions.
 `--attr-source` / `GIT_ATTR_SOURCE` binds attributes to the kept ref, including sparse omissions. Git below 2.41 or an unparseable version keeps the
 folder: an unknown environment variable alone is never evidence of support.
-A non-empty `config.worktree` keeps automatic, validation and confirmed Archive
-removal: Restore does not recreate those settings, so they were not proven.
+A non-empty `config.worktree` keeps every removal, including confirmed Archive: Restore does not recreate those settings, so they were not proven.
 Do not interpret keys. Read without redirects; unreadable/unexpected keeps,
 empty/absent proceeds. Include its presence and metadata in final file stamps.
 Mode-120000 entries use the raw blob, including regular-file checkouts under
@@ -3453,7 +3497,7 @@ read exactly the disk length, then require the framing LF and a random nonce's
 missing-object response at that exact offset. Never scan for a later marker;
 first mismatch stops/kills the batch and names the path (at least 1 file).
 Input is one file request/response at a time; spaces/newlines use NUL input,
-while leading-whitespace paths are kept rather than misparsed. Oversized or
+while leading-whitespace filter paths use an exact single-object call. Oversized or
 hung filters cannot grow a whole-output buffer: a deadline kills the child
 and descendants (Unix process group; Windows suspended launch into a Job
 Object before resume). Metadata output retains its 32 MiB cap.

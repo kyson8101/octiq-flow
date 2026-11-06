@@ -46,39 +46,97 @@ pub(crate) fn require_no_at_stake_ignored(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Explicit validation cleanup prepares this outside workspace lifecycle too.
-/// The final door rechecks task ownership and checkout identity, then validates
-/// these stamps and the shared ignored inventory while holding lifecycle.
-pub(crate) struct ValidationRemovalProof {
+/// Every non-Archive removal prepares this outside workspace lifecycle. The
+/// caller holds lifecycle plus path/start marks at the final removal door.
+pub(crate) struct RemovalProof {
     stamps: raw::Stamps,
     head: String,
 }
-pub(crate) fn validation_removal_proof(
-    path: &str,
-) -> Result<Option<ValidationRemovalProof>, String> {
+pub(crate) fn validation_removal_proof(path: &str) -> Result<Option<RemovalProof>, String> {
     match fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.to_string()),
         _ => {}
     }
+    require_unprotected(Path::new(path))?;
     real_dir(Path::new(path))?;
+    raw::require_recreatable_config(path, Duration::from_secs(10))?;
     let stamps = raw::Stamps::capture(path)?;
     let head = git::text(path, &["rev-parse", "HEAD"])?;
     let proof = raw::verify(path, &head, false, cfg!(windows))?;
     if proof.unrestorable > 0 {
         return Err(proof.reason());
     }
-    Ok(Some(ValidationRemovalProof { stamps, head }))
+    Ok(Some(RemovalProof { stamps, head }))
 }
-pub(crate) fn verify_validation_removal(
-    path: &str,
-    proof: &ValidationRemovalProof,
-) -> Result<(), String> {
+pub(crate) fn verify_validation_removal(path: &str, proof: &RemovalProof) -> Result<(), String> {
+    require_unprotected(Path::new(path))?;
+    real_dir(Path::new(path))?;
+    raw::require_recreatable_config(path, git::remaining(Duration::from_secs(10))?)?;
     if git::text(path, &["rev-parse", "HEAD"])? != proof.head {
-        return Err("Validation HEAD changed during comparison; folder kept.".into());
+        return Err("Removal HEAD changed during comparison; folder kept.".into());
     }
-    proof.stamps.verify(path)?;
-    require_no_at_stake_ignored(path)
+    require_no_at_stake_ignored(path)?;
+    proof.stamps.verify(path)
+}
+/// Sole non-Archive physical removal door. Lifecycle and path/start guards are
+/// held by the caller; every call consumes an off-lock, full-path Restore proof.
+pub(crate) fn remove_proven(repo: &str, path: &str, proof: &RemovalProof) -> Result<(), String> {
+    let _budget = git::FinalBudget::start();
+    crate::profile::available()?;
+    require_unprotected(Path::new(path))?;
+    real_dir(Path::new(path))?;
+    raw::require_recreatable_config(path, git::remaining(Duration::from_secs(10))?)?;
+    let root = git::text(path, &["rev-parse", "--show-toplevel"])?;
+    let common = git::text(
+        path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    real_dir(Path::new(repo))?;
+    if Path::new(&root) != Path::new(path)
+        || Path::new(&common).parent() != Some(Path::new(repo))
+        || Path::new(path) == Path::new(repo)
+    {
+        return Err("Removal checkout path or repository changed; folder kept.".into());
+    }
+    verify_validation_removal(path, proof)?;
+    crate::profile::available()?;
+    git::remaining(Duration::from_secs(10))?;
+    git::remove(repo, path, false)
+}
+/// Reused by task Cleanup/Abandon, mission Close/Abandon and validation.
+/// Take under lifecycle, before dropping it for the long Restore comparison.
+pub(crate) struct RemovalHold<'a> {
+    _path: crate::agent_chat::LifespanHold<'a>,
+    _starts: Vec<crate::agent_chat::StartClaim<'a>>,
+}
+pub(crate) fn hold_removal<'a>(
+    chats: &'a crate::agent_chat::ChatManager,
+    path: &str,
+) -> Result<RemovalHold<'a>, String> {
+    let mark = chats.hold_lifespan_checkout(path)?;
+    let mut keys = chats.lifespan_chat_keys(path)?;
+    keys.extend(
+        crate::chat_index::list()
+            .into_iter()
+            .filter(|c| {
+                c.cwd
+                    .as_ref()
+                    .is_some_and(|cwd| Path::new(cwd).starts_with(path))
+            })
+            .map(|c| format!("chat:{}", c.id)),
+    );
+    keys.sort();
+    keys.dedup();
+    let claims = keys
+        .iter()
+        .map(|k| chats.claim_start(k))
+        .collect::<Result<Vec<_>, _>>()?;
+    chats.require_lifespan_idle(path)?;
+    Ok(RemovalHold {
+        _path: mark,
+        _starts: claims,
+    })
 }
 
 const DAY: i64 = 86_400_000;
@@ -1748,7 +1806,6 @@ fn operate_progress(
         {
             let final_usage = (checks.usage)();
             let _lifecycle = hold_lifecycle(svc)?;
-            let final_started = std::time::Instant::now();
             final_ready(svc, store, &a, preview, &final_usage)?;
             let mut cache = store.inner.lock().map_err(|e| e.to_string())?;
             store.load(&mut cache)?;
@@ -1756,20 +1813,14 @@ fn operate_progress(
                 return Ok(None);
             }
             crate::profile::available()?;
-            let ignored = ignored::bounded(&preview.path, final_budget(final_started)?, 100_000)
-                .map_err(|e| {
-                    format!("Ignored-file inventory is unavailable; the folder was kept: {e}")
-                })?;
-            if ignored.files > 0 {
-                return Err(format!(
-                    "{} at-stake ignored files arrived before removal; the folder was kept.",
-                    ignored.files
-                ));
-            }
-            stamps.verify(&preview.path)?;
-            crate::profile::available()?;
-            final_budget(final_started)?;
-            git::remove(&preview.repo, &preview.path, false)?;
+            remove_proven(
+                &preview.repo,
+                &preview.path,
+                &RemovalProof {
+                    stamps,
+                    head: observed.item.head.clone(),
+                },
+            )?;
         }
         let _lifecycle = hold_lifecycle(svc)?;
         svc.orchestrations

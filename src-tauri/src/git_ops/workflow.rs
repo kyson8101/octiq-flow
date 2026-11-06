@@ -79,23 +79,10 @@ pub struct DeliveryEvidence {
 }
 
 fn git(root: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
-        // A read (a plan preview's `git status` above all) must not refresh
-        // the index behind a person's back; mutations go through run_git_mut.
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-        .map_err(|e| format!("Could not run Git: {e}"))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .trim_end()
-        .to_string())
+    // All workflow reads, including Cleanup's status/remote proof, share the
+    // lifespan watchdog and process-tree containment. Mutation helpers stay
+    // separate, except removal which has its single proven door.
+    super::lifespan::text(root, args)
 }
 
 pub fn checkout_identity(path: &str) -> Result<String, String> {
@@ -527,38 +514,37 @@ pub fn inspect(plan: &WorkspacePlan, check_remote: bool) -> Result<DeliveryEvide
         }
         // gh resolves the repo from this checkout. A PR for a different head is
         // evidence about older work, never cleanup permission for this HEAD.
-        if let Ok(output) = Command::new("gh")
-            .args([
-                "pr",
-                "view",
-                &plan.branch,
-                "--json",
-                "url,state,headRefOid,baseRefName,reviewDecision",
-            ])
-            .current_dir(&plan.cwd)
-            .env("GH_PROMPT_DISABLED", "1")
-            .output()
-        {
-            if output.status.success() {
-                if let Ok(pr) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
-                    if pr["headRefOid"].as_str() == Some(&result.head_sha)
-                        && pr["baseRefName"].as_str() == Some(&plan.base_branch)
-                    {
-                        result.pull_request = pr["url"].as_str().map(str::to_owned);
-                        result.review_state = pr["reviewDecision"]
-                            .as_str()
-                            .filter(|s| !s.is_empty())
-                            .map(str::to_owned);
-                        result.merged = pr["state"].as_str() == Some("MERGED");
-                        // A matching PR proves the commit was published even if
-                        // GitHub deleted the branch after a squash merge.
-                        result.pushed |= result.merged;
-                    } else {
-                        result.notes.push(
-                            "The PR head or base differs from this workspace; merge is unverified."
-                                .into(),
-                        );
-                    }
+        if let Ok(output) = super::lifespan::command(
+            Command::new("gh")
+                .args([
+                    "pr",
+                    "view",
+                    &plan.branch,
+                    "--json",
+                    "url,state,headRefOid,baseRefName,reviewDecision",
+                ])
+                .current_dir(&plan.cwd)
+                .env("GH_PROMPT_DISABLED", "1"),
+            std::time::Duration::from_secs(15),
+        ) {
+            if let Ok(pr) = serde_json::from_slice::<serde_json::Value>(&output) {
+                if pr["headRefOid"].as_str() == Some(&result.head_sha)
+                    && pr["baseRefName"].as_str() == Some(&plan.base_branch)
+                {
+                    result.pull_request = pr["url"].as_str().map(str::to_owned);
+                    result.review_state = pr["reviewDecision"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned);
+                    result.merged = pr["state"].as_str() == Some("MERGED");
+                    // A matching PR proves the commit was published even if
+                    // GitHub deleted the branch after a squash merge.
+                    result.pushed |= result.merged;
+                } else {
+                    result.notes.push(
+                        "The PR head or base differs from this workspace; merge is unverified."
+                            .into(),
+                    );
                 }
             }
         }
@@ -642,33 +628,47 @@ pub fn delete_merged_branch(plan: &WorkspacePlan) -> Result<bool, String> {
     if Path::new(&plan.checkout_root).exists() {
         return Err("Remove the mission's worktree before its branch.".into());
     }
-    Ok(run_git_mut(
-        &plan.repository_root,
-        &["branch", "-d", &plan.branch],
-        false,
-    )
-    .is_ok())
+    Ok(super::lifespan::git(&plan.repository_root, &["branch", "-d", &plan.branch]).is_ok())
 }
 
+#[cfg(test)]
 pub fn cleanup(plan: &WorkspacePlan, expected_head: &str) -> Result<(), String> {
+    let proof = crate::worktree_lifespan::validation_removal_proof(&plan.checkout_root)?;
+    cleanup_verified(plan, expected_head, proof.as_ref())
+}
+pub(crate) fn cleanup_verified(
+    plan: &WorkspacePlan,
+    expected_head: &str,
+    proof: Option<&crate::worktree_lifespan::RemovalProof>,
+) -> Result<(), String> {
     if !plan.managed || !plan.mode.is_worktree() {
         return Err(
             "Current checkout and adopted workspaces are never removed automatically.".into(),
         );
     }
-    verify(plan)?;
-    let evidence = inspect(plan, false)?;
-    if evidence.dirty || evidence.head_sha != expected_head {
+    let _budget = super::lifespan::FinalBudget::start();
+    let branch = super::lifespan::text(&plan.checkout_root, &["symbolic-ref", "--short", "HEAD"])?;
+    if branch != plan.branch {
+        return Err("The assigned workspace branch changed; folder kept.".into());
+    }
+    let head = super::lifespan::text(&plan.checkout_root, &["rev-parse", "HEAD"])?;
+    let status = super::lifespan::git(
+        &plan.checkout_root,
+        &[
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
+    )?;
+    if !status.is_empty() || head != expected_head {
         return Err("Workspace changed during cleanup checks. Refresh and try again.".into());
     }
-    // No --force: Git also checks untracked files, locked worktrees and
-    // submodules. Keep branches and all published history available.
-    run_git_mut(
+    crate::worktree_lifespan::remove_proven(
         &plan.repository_root,
-        &["worktree", "remove", &plan.checkout_root],
-        false,
-    )?;
-    Ok(())
+        &plan.checkout_root,
+        proof.ok_or("Workspace appeared during Restore comparison; folder kept.")?,
+    )
 }
 
 /// Detached validation checkout for a committed patch range. The source tree,
@@ -739,37 +739,12 @@ pub fn remove_validation(plan: &WorkspacePlan, path: &str) -> Result<(), String>
 pub(crate) fn remove_validation_verified(
     plan: &WorkspacePlan,
     path: &str,
-    proof: Option<&crate::worktree_lifespan::ValidationRemovalProof>,
+    proof: Option<&crate::worktree_lifespan::RemovalProof>,
 ) -> Result<(), String> {
-    let started = std::time::Instant::now();
     if !Path::new(path).exists() {
-        // Removing an already absent path needs no filesystem mutation. The
-        // caller only removes its own recorded allocation.
         return Ok(());
     }
     let _budget = super::lifespan::FinalBudget::start();
-    let root = super::lifespan::text(path, &["rev-parse", "--show-toplevel"])?;
-    if Path::new(&root)
-        .canonical()
-        .map_err(|e| e.to_string())?
-        .to_string_lossy()
-        != path
-    {
-        return Err("Validation checkout path changed.".into());
-    }
-    let common = super::lifespan::text(
-        path,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?;
-    if Path::new(&common)
-        .parent()
-        .ok_or("Missing common Git parent")?
-        .canonical()
-        .map_err(|e| e.to_string())?
-        != Path::new(&plan.repository_root)
-    {
-        return Err("Validation checkout belongs to a different repository.".into());
-    }
     // --symbolic-full-name prints a ref for symbolic HEAD and HEAD for a
     // detached checkout; read failure is distinct from the detached result.
     let head = super::lifespan::text(path, &["rev-parse", "--symbolic-full-name", "HEAD"])?;
@@ -778,15 +753,11 @@ pub(crate) fn remove_validation_verified(
             "Validation checkout now has a branch. Preserve it manually before removal.".into(),
         );
     }
-    crate::worktree_lifespan::verify_validation_removal(
+    crate::worktree_lifespan::remove_proven(
+        &plan.repository_root,
         path,
         proof.ok_or("Validation folder appeared during comparison; it was kept.")?,
-    )?;
-    if started.elapsed() >= std::time::Duration::from_secs(10) {
-        return Err("Validation final checks reached their 10 second bound; folder kept.".into());
-    }
-    super::lifespan::remove(&plan.repository_root, path, false)?;
-    Ok(())
+    )
 }
 
 #[cfg(test)]

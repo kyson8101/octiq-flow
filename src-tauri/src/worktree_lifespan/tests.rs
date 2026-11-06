@@ -2498,6 +2498,13 @@ fn raw_symlink_blob_and_core_symlinks_false_are_proven_without_smudge() {
         0
     );
     git::text(&r.work, &["config", "core.symlinks", "false"]).unwrap();
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, false)
+            .unwrap()
+            .unrestorable,
+        1,
+        "an existing link is not the regular file Restore would write"
+    );
     fs::remove_file(Path::new(&r.work).join("sym link")).unwrap();
     r.write("sym link", "target id");
     assert_eq!(
@@ -2802,4 +2809,72 @@ fn config_worktree_redirect_special_and_unreadable_are_not_opened_as_settings() 
     assert!(raw::verify(&r.work, "HEAD", false, false).is_err());
     fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
     assert_eq!(fs::read(&outside).unwrap(), b"");
+}
+
+#[cfg(unix)]
+#[test]
+fn h10_symlink_type_mismatch_keeps_automatic_and_validation_folders() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    std::os::unix::fs::symlink("tracked", Path::new(&r.work).join("link")).unwrap();
+    git::text(&r.work, &["add", "link"]).unwrap();
+    git::text(&r.work, &["commit", "-m", "symlink type"]).unwrap();
+    git::text(&r.work, &["config", "core.symlinks", "false"]).unwrap();
+    r.age(30);
+    assert!(git::git(&r.work, &["status", "--porcelain"])
+        .unwrap()
+        .is_empty());
+    assert!(validation_removal_proof(&r.work).is_err());
+    let svc = r.services(30);
+    let store = Store::default();
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(!gone(&r.work));
+    assert!(fs::symlink_metadata(Path::new(&r.work).join("link"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    // A real Restore under false writes a regular link-text file; prove and
+    // actually remove that positive control, including cache invalidation.
+    r.recheckout();
+    assert!(fs::symlink_metadata(Path::new(&r.work).join("link"))
+        .unwrap()
+        .is_file());
+    assert!(validation_removal_proof(&r.work).unwrap().is_some());
+    r.age(30);
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(gone(&r.work));
+}
+
+#[test]
+fn m12_leading_space_paths_are_exactly_filtered_and_really_removed() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    let r = Repo::new();
+    r.write(" leading path", "one\r\ntwo\r\n");
+    r.write(".gitattributes", "* text eol=crlf\n");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "leading filter path"]).unwrap();
+    r.recheckout();
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
+        0
+    );
+    // A mismatch in the same exact argv path is not hidden by framing.
+    r.write(" leading path", "unique authored text");
+    assert_eq!(
+        raw::verify(&r.work, "HEAD", false, cfg!(windows))
+            .unwrap()
+            .unrestorable,
+        1
+    );
+    r.recheckout();
+    r.age(30);
+    git::text(&r.work, &["add", "."]).unwrap();
+    let svc = r.services(30);
+    let store = Store::default();
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(gone(&r.work), "clean leading path must reach real removal");
 }
