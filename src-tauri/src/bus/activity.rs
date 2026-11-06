@@ -171,6 +171,90 @@ mod tests {
         }
     }
 
+    // Exercise the real socket reader and Feed together. Release the held
+    // lock even if the reader blocks, so a regression fails instead of hanging.
+    fn contended_chat_lock(table: bool) {
+        use crate::agent_chat::{chat_stream_state, ChatManager};
+        use std::sync::{mpsc, Arc};
+
+        let manager = Arc::new(ChatManager::default());
+        let key = "chat:activity-test";
+        let child = manager.test_hold(key, crate::agent_chat::ChatAgent::Claude, true);
+        let now = Instant::now();
+        let mut existing = Feed::default();
+        existing.observe(
+            &frame(1, json!({"type":"user"})),
+            chat_stream_state(&manager, key),
+            now,
+            100,
+        );
+        manager.test_busy(key, false);
+        let table_guard = table.then(|| manager.test_hold_table());
+        let session_guard = (!table).then(|| child.test_hold_lock());
+        let reader = manager.clone();
+        let (done, completed) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let state = chat_stream_state(&reader, key);
+            let read = serde_json::to_value(&state).unwrap();
+            let mut fresh = Feed::default();
+            let observed = fresh.observe(
+                &frame(2, json!({"type":"assistant"})),
+                state.clone(),
+                now,
+                200,
+            );
+            let existing_wires =
+                existing.flush(now + KEEP + GAP, |key| chat_stream_state(&reader, key));
+            let fresh_wires = fresh.flush(now + KEEP + GAP, |key| chat_stream_state(&reader, key));
+            // A failed session read must not leave the table held either.
+            if !table {
+                drop(reader.test_hold_table());
+            }
+            done.send(()).unwrap();
+            (read, observed, existing_wires, fresh_wires, existing, fresh)
+        });
+        let immediate = completed.recv_timeout(Duration::from_secs(2)).is_ok();
+        drop(session_guard);
+        drop(table_guard);
+        let (read, observed, old_wires, new_wires, mut existing, mut fresh) =
+            thread.join().unwrap();
+        let recovered = existing.flush(now + KEEP + GAP, |key| chat_stream_state(&manager, key));
+        let first = fresh.flush(now + KEEP + GAP, |key| chat_stream_state(&manager, key));
+        manager.test_end(key);
+
+        assert!(immediate, "the socket reader waited for a held chat lock");
+        assert_eq!(
+            read,
+            Value::Null,
+            "contention means not read, not unknown state"
+        );
+        assert!(observed.is_none());
+        assert!(old_wires.is_empty());
+        assert!(new_wires.is_empty());
+        for wires in [recovered, first.clone()] {
+            assert_eq!(wires.len(), 1, "retry must send the real state");
+            let payload = serde_json::from_str::<Value>(&wires[0]).unwrap()["payload"].clone();
+            assert_eq!(payload["running"], true);
+            assert_eq!(payload["busy"], false);
+        }
+        let payload = serde_json::from_str::<Value>(&first[0]).unwrap()["payload"].clone();
+        assert_eq!(payload["seq"], 2);
+        assert_eq!(
+            payload["work"], true,
+            "retain omitted work until a readable state"
+        );
+    }
+
+    #[test]
+    fn held_session_lock_defers_activity_until_the_next_readable_flush() {
+        contended_chat_lock(false);
+    }
+
+    #[test]
+    fn held_table_lock_defers_activity_until_the_next_readable_flush() {
+        contended_chat_lock(true);
+    }
+
     #[test]
     fn a_burst_keeps_work_and_flushes_its_last_sequence_once() {
         let mut feed = Feed::default();

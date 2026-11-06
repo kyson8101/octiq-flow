@@ -8395,6 +8395,11 @@ pub(crate) struct TestChild(Arc<Mutex<ChatSession>>);
 
 #[cfg(test)]
 impl TestChild {
+    /// Hold only this session, as a slow resume-context save can do.
+    pub(crate) fn test_hold_lock(&self) -> impl Drop + '_ {
+        self.0.lock().unwrap()
+    }
+
     /// Whether the process is still running.
     pub(crate) fn alive(&self) -> bool {
         matches!(self.0.lock().unwrap().child.try_wait(), Ok(None))
