@@ -11,8 +11,10 @@ const KEEP: Duration = Duration::from_secs(60);
 #[derive(Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
-    /// Null if the session lock could not be read; never guessed.
+    /// Null only when a poisoned table prevents reading session existence.
+    /// Contention defers the whole update instead of sending null fields.
     pub running: Option<bool>,
+    /// Null if a poisoned table/session prevents reading the turn state.
     pub busy: Option<bool>,
     pub turn_id: Option<String>,
 }
@@ -36,7 +38,7 @@ impl Activity {
 
 struct Window {
     latest: Activity,
-    sent: State,
+    sent: Option<State>,
     sent_at: Instant,
     seen_at: Instant,
     pending: bool,
@@ -51,7 +53,7 @@ impl Feed {
     pub fn observe(
         &mut self,
         event: &Event,
-        state: State,
+        state: Option<State>,
         now: Instant,
         at: i64,
     ) -> Option<String> {
@@ -59,14 +61,18 @@ impl Feed {
         let incoming = Activity {
             key: key.clone(),
             seq: event.seq,
-            state: state.clone(),
+            // Internal placeholder only: no update can be sent until a
+            // successful read supplies the host's current state.
+            state: state.clone().unwrap_or_default(),
             last_activity_at: at,
             work: event.work,
         };
         let Some(window) = self.0.get_mut(key) else {
-            let wire = incoming.wire();
+            let wire = state.as_ref().map(|_| incoming.wire());
             let mut latest = incoming;
-            latest.work = false;
+            if wire.is_some() {
+                latest.work = false;
+            }
             self.0.insert(
                 key.clone(),
                 Window {
@@ -74,17 +80,19 @@ impl Feed {
                     sent: state,
                     sent_at: now,
                     seen_at: now,
-                    pending: false,
+                    pending: wire.is_none(),
                 },
             );
-            return Some(wire);
+            return wire;
         };
         let work = window.latest.work || incoming.work;
         window.latest = incoming;
         window.latest.work = work;
         window.seen_at = now;
         window.pending = true;
-        if window.sent != state || now.duration_since(window.sent_at) >= GAP {
+        // Keep seq/work/at, but neither emit nor change sent on contention.
+        let state = state?;
+        if window.sent.as_ref() != Some(&state) || now.duration_since(window.sent_at) >= GAP {
             Some(send(window, now))
         } else {
             None
@@ -94,12 +102,20 @@ impl Feed {
     /// Flush the trailing window even when no next frame arrives. Also read
     /// the final busy state: a provider's last frame can be emitted just
     /// before its session records turn_ended, and must not leave a busy dot.
-    pub fn flush(&mut self, now: Instant, mut state: impl FnMut(&str) -> State) -> Vec<String> {
+    /// A contended read (`None`) leaves the entry, pending work and last sent
+    /// state intact for the next tick, even if the quiet-entry TTL elapsed.
+    pub fn flush(
+        &mut self,
+        now: Instant,
+        mut state: impl FnMut(&str) -> Option<State>,
+    ) -> Vec<String> {
         let mut wires = Vec::new();
         self.0.retain(|key, window| {
-            let current = state(key);
+            let Some(current) = state(key) else {
+                return true;
+            };
             window.latest.state = current.clone();
-            if window.sent != current
+            if window.sent.as_ref() != Some(&current)
                 || (window.pending && now.duration_since(window.sent_at) >= GAP)
             {
                 wires.push(send(window, now));
@@ -112,7 +128,7 @@ impl Feed {
 
 fn send(window: &mut Window, now: Instant) -> String {
     let wire = window.latest.wire();
-    window.sent = window.latest.state.clone();
+    window.sent = Some(window.latest.state.clone());
     window.latest.work = false;
     window.sent_at = now;
     window.pending = false;
@@ -256,38 +272,85 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_session_is_read_as_stopped_and_idle() {
+        let manager = crate::agent_chat::ChatManager::default();
+        let state = crate::agent_chat::chat_stream_state(&manager, "chat:missing");
+        assert!(
+            state.is_some(),
+            "missing is a readable state, not contention"
+        );
+        let state = serde_json::to_value(state).unwrap();
+        assert_eq!(state, json!({"running":false,"busy":false,"turnId":null}));
+    }
+
+    #[test]
+    fn a_contended_observation_keeps_sent_and_coalesces_its_work() {
+        let mut feed = Feed::default();
+        let now = Instant::now();
+        feed.observe(
+            &frame(1, json!({"type":"user"})),
+            Some(busy(true)),
+            now,
+            100,
+        );
+        for (seq, event) in [
+            (2, json!({"type":"assistant"})),
+            (3, json!({"type":"result"})),
+        ] {
+            assert!(feed.observe(&frame(seq, event), None, now, 200).is_none());
+        }
+        assert!(feed.flush(now + GAP, |_| None).is_empty());
+        let window = &feed.0["chat:activity-test"];
+        assert!(window.sent.as_ref() == Some(&busy(true)));
+        assert_eq!(window.sent_at, now);
+        assert!(window.pending);
+        let wires = feed.flush(now + GAP, |_| Some(busy(true)));
+        assert_eq!(wires.len(), 1);
+        let payload = serde_json::from_str::<Value>(&wires[0]).unwrap()["payload"].clone();
+        assert_eq!(payload["seq"], 3);
+        assert_eq!(payload["lastActivityAt"], 200);
+        assert_eq!(payload["work"], true);
+        assert!(feed.flush(now + GAP + GAP, |_| Some(busy(true))).is_empty());
+    }
+
+    #[test]
     fn a_burst_keeps_work_and_flushes_its_last_sequence_once() {
         let mut feed = Feed::default();
         let now = Instant::now();
         assert!(feed
-            .observe(&frame(1, json!({"type":"user"})), busy(true), now, 100)
+            .observe(
+                &frame(1, json!({"type":"user"})),
+                Some(busy(true)),
+                now,
+                100
+            )
             .is_some());
         for seq in 2..100 {
             assert!(feed
                 .observe(
                     &frame(seq, json!({"type":"assistant"})),
-                    busy(true),
+                    Some(busy(true)),
                     now + Duration::from_millis(100),
                     200
                 )
                 .is_none());
         }
         assert!(feed
-            .flush(now + Duration::from_millis(999), |_| busy(true))
+            .flush(now + Duration::from_millis(999), |_| Some(busy(true)))
             .is_empty());
-        let wires = feed.flush(now + GAP, |_| busy(true));
+        let wires = feed.flush(now + GAP, |_| Some(busy(true)));
         assert_eq!(wires.len(), 1);
         let p: Value = serde_json::from_str(&wires[0]).unwrap();
         assert_eq!(p["payload"]["seq"], 99);
         assert_eq!(p["payload"]["work"], true);
         assert_eq!(p["payload"]["lastActivityAt"], 200);
-        assert!(feed.flush(now + GAP + GAP, |_| busy(true)).is_empty());
+        assert!(feed.flush(now + GAP + GAP, |_| Some(busy(true))).is_empty());
         assert_eq!(
-            feed.flush(now + GAP + GAP, |_| busy(false)).len(),
+            feed.flush(now + GAP + GAP, |_| Some(busy(false))).len(),
             1,
             "a final busy flip without another stream frame is still sent"
         );
-        feed.flush(now + KEEP + GAP, |_| busy(false));
+        feed.flush(now + KEEP + GAP, |_| Some(busy(false)));
         assert!(feed.0.is_empty());
     }
 
@@ -295,11 +358,11 @@ mod tests {
     fn busy_or_turn_changes_are_sent_without_waiting_for_the_window() {
         let mut feed = Feed::default();
         let now = Instant::now();
-        feed.observe(&frame(1, json!({"type":"user"})), busy(true), now, 1);
+        feed.observe(&frame(1, json!({"type":"user"})), Some(busy(true)), now, 1);
         let wire = feed
             .observe(
                 &frame(2, json!({"type":"result"})),
-                busy(false),
+                Some(busy(false)),
                 now + Duration::from_millis(1),
                 2,
             )
@@ -313,7 +376,7 @@ mod tests {
         assert!(feed
             .observe(
                 &frame(3, json!({"type":"turn.started"})),
-                next,
+                Some(next),
                 now + Duration::from_millis(2),
                 3
             )
