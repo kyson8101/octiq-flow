@@ -215,6 +215,34 @@ mod tests {
     use serde_json::Value;
 
     #[test]
+    fn subscriptions_are_opt_in_and_keep_status_global() {
+        let own = Event::new("chat-event", json!({"key":"chat:one", "event":{"delta":"text"}}));
+        let other = Event::new("chat-event", json!({"key":"chat:two", "event":{"delta":"text"}}));
+        let mut subscriptions = ChatSubscriptions::default();
+        assert!(subscriptions.accepts(&own));
+        assert!(subscriptions.accepts(&other), "old pages keep every frame");
+        subscriptions.replace(vec!["chat:one".into()]).unwrap();
+        assert!(subscriptions.accepts(&own));
+        assert!(!subscriptions.accepts(&other));
+        for kind in ["chat-status", "chat-task", "chat-index-changed", "chat-completed", "permission-ask", "safety-blocked", "user-question", "orchestration-changed", "pty-output"] {
+            assert!(subscriptions.accepts(&Event::new(kind, json!({"key":"chat:two"}))), "{kind} must remain global");
+        }
+        subscriptions.replace(vec![]).unwrap();
+        assert!(!subscriptions.accepts(&own));
+        assert!(ChatSubscriptions::default().accepts(&own), "a new socket starts in legacy mode; resubscribe on reconnect");
+    }
+
+    #[test]
+    fn an_invalid_subscription_does_not_replace_the_current_selection() {
+        let mut subscriptions = ChatSubscriptions::default();
+        subscriptions.replace(vec!["chat:one".into(), "chat:one".into()]).unwrap();
+        assert!(subscriptions.replace(vec!["x".repeat(513)]).is_err());
+        assert!(subscriptions.replace((0..65).map(|i| format!("chat:{i}")).collect()).is_err());
+        assert!(subscriptions.accepts(&Event::new("chat-event", json!({"key":"chat:one"}))));
+        assert!(!subscriptions.accepts(&Event::new("chat-event", json!({"key":"chat:two"}))));
+    }
+
+    #[test]
     fn an_event_reaches_a_subscriber_as_a_wire_frame() {
         let mut rx = events().subscribe();
         emit("pty-output", json!({ "id": "t1", "chunk": "hello" }));
