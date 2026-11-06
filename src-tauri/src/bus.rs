@@ -1,48 +1,170 @@
-//! One place every event leaves the backend.
+//! Shared event frames for browser sockets, with opt-in per-chat routing.
 //!
-//! Events used to go out through `AppHandle::emit`, which tied every producer
-//! to a running Tauri app — and therefore to a window. That is the single
-//! reason this backend could not run headless: `pty.rs` and `agent_chat.rs` do
-//! not need a GUI to do their work, only to announce it.
-//!
-//! So the channel lives here instead, in process-global state, and anyone who
-//! wants events subscribes:
-//!
-//! ```text
-//!   pty.rs / agent_chat.rs / file_watch.rs
-//!            │  bus::emit("pty-output", …)
-//!            ▼
-//!        ┌───────────┐
-//!        │    bus    │
-//!        └─────┬─────┘
-//!      ┌───────┴────────┐
-//!      ▼                ▼
-//!  desktop sink     broadcast ──► every attached browser
-//!  (set by the app,
-//!   absent headless)
-//! ```
-//!
-//! The desktop sink is optional and set once at startup by the Tauri app. With
-//! no app there is simply no sink, and events go only to the sockets — which is
-//! exactly what a headless server needs.
+//! Producers serialize once. Each socket chooses its live chats; legacy
+//! sockets still get the complete stream. Small status/card/index events
+//! stay global, and unopened chats get coalesced activity without text.
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::broadcast;
+
+pub mod activity;
 
 /// Frames a slow client may fall behind by before it starts losing them. A
 /// streaming PTY produces a lot; this is a couple of seconds of it.
 const EVENT_BACKLOG: usize = 512;
 
 /// The fan-out to attached clients. One per process, created on first use.
-static EVENTS: OnceLock<broadcast::Sender<String>> = OnceLock::new();
+static EVENTS: OnceLock<broadcast::Sender<Arc<Event>>> = OnceLock::new();
+
+/// Serialize once, route without parsing a provider's (possibly huge) JSON
+/// again for every socket. Broadcast receivers share the bytes until send.
+pub struct Event {
+    wire: String,
+    chat_key: Option<String>,
+    seq: Option<u64>,
+    work: bool,
+    /// Opt-in pages need execution status, never lastProgress/tool bodies.
+    compact: Option<String>,
+}
+
+impl Event {
+    pub fn chat_key(&self) -> &str {
+        self.chat_key.as_deref().unwrap_or_default()
+    }
+    fn new(event: &str, payload: Value) -> Self {
+        let chat_key = (event == "chat-event")
+            .then(|| payload["key"].as_str().map(str::to_owned))
+            .flatten();
+        let seq = payload["seq"].as_u64();
+        let work = chat_key.is_some() && activity::sign_of_work(&payload["event"]);
+        let compact =
+            (event == "orchestration-changed" && payload["execution"].is_object()).then(|| {
+                let mut small = payload.clone();
+                crate::orchestration::summary::compact_execution(&mut small["execution"]);
+                json!({"t":"event", "event":event, "payload":small}).to_string()
+            });
+        Self {
+            wire: json!({"t":"event", "event":event, "payload":payload}).to_string(),
+            chat_key,
+            seq,
+            work,
+            compact,
+        }
+    }
+}
+
+impl Deref for Event {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.wire
+    }
+}
+
+impl std::fmt::Display for Event {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.wire)
+    }
+}
+
+/// None is deliberately different from an empty subscription: old pages
+/// have never sent the command and must still receive the original frames.
+#[derive(Default)]
+pub struct ChatSubscriptions(Option<BTreeSet<String>>);
+
+impl ChatSubscriptions {
+    pub fn replace(&mut self, keys: Vec<String>) -> Result<Vec<String>, String> {
+        if keys.len() > 64 || keys.iter().any(|key| key.is_empty() || key.len() > 512) {
+            return Err(
+                "chat_subscribe accepts at most 64 nonempty chat keys, each at most 512 bytes"
+                    .into(),
+            );
+        }
+        let keys: BTreeSet<_> = keys.into_iter().collect();
+        let result = keys.iter().cloned().collect();
+        self.0 = Some(keys);
+        Ok(result)
+    }
+
+    pub fn accepts(&self, event: &Event) -> bool {
+        self.0
+            .as_ref()
+            .is_none_or(|keys| event.chat_key.as_ref().is_none_or(|key| keys.contains(key)))
+    }
+
+    pub fn wire<'a>(&self, event: &'a Event) -> Option<&'a str> {
+        if !self.accepts(event) {
+            return None;
+        }
+        if self.0.is_some() {
+            if let Some(compact) = &event.compact {
+                return Some(compact);
+            }
+        }
+        Some(&event.wire)
+    }
+}
+
+#[derive(Default)]
+struct Revisions {
+    sequence: u64,
+    runs: BTreeMap<String, u64>,
+}
+static REVISIONS: Mutex<Revisions> = Mutex::new(Revisions {
+    sequence: 0,
+    runs: BTreeMap::new(),
+});
+static EPOCH: OnceLock<String> = OnceLock::new();
+
+fn revision(sequence: u64) -> String {
+    format!(
+        "{}:{sequence}",
+        EPOCH.get_or_init(|| uuid::Uuid::new_v4().simple().to_string())
+    )
+}
+
+/// Read-time invalidation tokens, never saved into the ledger or accepted
+/// from an agent. A new server has a new epoch, even before its first change.
+pub struct RevisionRead {
+    global: String,
+    runs: BTreeMap<String, String>,
+}
+
+pub fn orchestration_revisions() -> RevisionRead {
+    let revisions = REVISIONS.lock().unwrap_or_else(|e| e.into_inner());
+    RevisionRead {
+        global: revision(revisions.sequence),
+        runs: revisions
+            .runs
+            .iter()
+            .map(|(key, seq)| (key.clone(), revision(*seq)))
+            .collect(),
+    }
+}
+
+impl RevisionRead {
+    pub fn stamp(&self, view: &mut Value, run_id: Option<&str>) {
+        let token = |id: &str| self.runs.get(id).cloned().unwrap_or_else(|| revision(0));
+        view["revision"] = json!(run_id.map(token).unwrap_or_else(|| self.global.clone()));
+        let mut selected = BTreeMap::new();
+        for run in view["runs"].as_array_mut().into_iter().flatten() {
+            if let Some(id) = run["id"].as_str().map(str::to_owned) {
+                let rev = token(&id);
+                run["revision"] = json!(rev);
+                selected.insert(id, rev);
+            }
+        }
+        view["runRevisions"] = json!(selected);
+    }
+}
 
 /// How many browsers are attached. Lives here rather than in the web server's
-/// state because `pty.rs` needs the answer and has no business knowing whether
-/// a Tauri app exists — it only wants to know whether anyone is watching.
+/// state because `pty.rs` only needs to know whether anyone is watching.
 static CLIENTS: AtomicUsize = AtomicUsize::new(0);
 
 /// When a browser was last attached. `None` until the first one arrives.
@@ -120,15 +242,26 @@ pub async fn once_unwatched(grace: Duration) {
 }
 
 /// The channel to subscribe to for the event stream.
-pub fn events() -> &'static broadcast::Sender<String> {
+pub fn events() -> &'static broadcast::Sender<Arc<Event>> {
     EVENTS.get_or_init(|| broadcast::channel(EVENT_BACKLOG).0)
 }
 
 /// Announce something to everyone listening.
 pub fn emit<S: Serialize>(event: &str, payload: S) {
-    let Ok(value) = serde_json::to_value(&payload) else {
+    let Ok(mut value) = serde_json::to_value(&payload) else {
         return;
     };
+    // Both ordinary changes and execution patches pass this door. Advance
+    // even with no browser attached, so a reconnect's summary has a token.
+    if event == "orchestration-changed" {
+        if let Some(run) = value["runId"].as_str().map(str::to_owned) {
+            let mut revisions = REVISIONS.lock().unwrap_or_else(|e| e.into_inner());
+            revisions.sequence += 1;
+            let seq = revisions.sequence;
+            revisions.runs.insert(run, seq);
+            value["revision"] = json!(revision(seq));
+        }
+    }
     #[cfg(test)]
     tap::hear(event, &value);
     let tx = events();
@@ -136,10 +269,7 @@ pub fn emit<S: Serialize>(event: &str, payload: S) {
     if tx.receiver_count() == 0 {
         return;
     }
-    let frame = json!({ "t": "event", "event": event, "payload": value });
-    if let Ok(text) = serde_json::to_string(&frame) {
-        let _ = tx.send(text);
-    }
+    let _ = tx.send(Arc::new(Event::new(event, value)));
 }
 
 /// How a test reads back what was emitted about one thing, in order.
@@ -215,29 +345,101 @@ mod tests {
     use serde_json::Value;
 
     #[test]
+    fn legacy_wire_is_unchanged_and_opt_in_execution_is_small() {
+        let payload = json!({"key":"chat:legacy", "seq":9, "event":{"text":"x".repeat(100_000)}});
+        let event = Event::new("chat-event", payload.clone());
+        let legacy = ChatSubscriptions::default();
+        assert_eq!(
+            legacy.wire(&event).unwrap(),
+            json!({"t":"event","event":"chat-event","payload":payload}).to_string()
+        );
+        let mut selected = ChatSubscriptions::default();
+        selected.replace(vec![]).unwrap();
+        assert!(selected.wire(&event).is_none());
+        let payload = json!({"runId":"r","revision":"epoch:1","change":"worker_execution","execution":{"state":"waiting_tool","lastProgress":"x".repeat(100_000),"pendingTools":{"t":"x".repeat(100_000)}}});
+        let event = Event::new("orchestration-changed", payload.clone());
+        assert_eq!(
+            serde_json::from_str::<Value>(legacy.wire(&event).unwrap()).unwrap()["payload"],
+            payload
+        );
+        let wire = selected.wire(&event).unwrap();
+        assert!(wire.len() < 512);
+        let value: Value = serde_json::from_str(wire).unwrap();
+        assert_eq!(value["payload"]["execution"]["state"], "waiting_tool");
+        assert_eq!(value["payload"]["revision"], "epoch:1");
+    }
+
+    #[test]
+    fn changed_events_and_reads_share_per_run_revision_tokens() {
+        let id = "bus-revision-test-run";
+        let tap = tap::Tap::on(id);
+        emit("orchestration-changed", json!({"runId":id,"change":"task"}));
+        let mut view = json!({"runs":[{"id":id},{"id":"bus-unrelated-run"}]});
+        orchestration_revisions().stamp(&mut view, Some(id));
+        let first = view["revision"].clone();
+        assert_eq!(tap.heard().last().unwrap().1["revision"], first);
+        assert_eq!(view["runs"][0]["revision"], first);
+        let unrelated = view["runs"][1]["revision"].clone();
+        emit(
+            "orchestration-changed",
+            json!({"runId":id,"change":"worker_execution","execution":{"state":"executing"}}),
+        );
+        orchestration_revisions().stamp(&mut view, Some(id));
+        assert_ne!(view["revision"], first);
+        assert_eq!(view["runs"][1]["revision"], unrelated);
+        assert_eq!(view["revision"], tap.heard().last().unwrap().1["revision"]);
+    }
+
+    #[test]
     fn subscriptions_are_opt_in_and_keep_status_global() {
-        let own = Event::new("chat-event", json!({"key":"chat:one", "event":{"delta":"text"}}));
-        let other = Event::new("chat-event", json!({"key":"chat:two", "event":{"delta":"text"}}));
+        let own = Event::new(
+            "chat-event",
+            json!({"key":"chat:one", "event":{"delta":"text"}}),
+        );
+        let other = Event::new(
+            "chat-event",
+            json!({"key":"chat:two", "event":{"delta":"text"}}),
+        );
         let mut subscriptions = ChatSubscriptions::default();
         assert!(subscriptions.accepts(&own));
         assert!(subscriptions.accepts(&other), "old pages keep every frame");
         subscriptions.replace(vec!["chat:one".into()]).unwrap();
         assert!(subscriptions.accepts(&own));
         assert!(!subscriptions.accepts(&other));
-        for kind in ["chat-status", "chat-task", "chat-index-changed", "chat-completed", "permission-ask", "safety-blocked", "user-question", "orchestration-changed", "pty-output"] {
-            assert!(subscriptions.accepts(&Event::new(kind, json!({"key":"chat:two"}))), "{kind} must remain global");
+        for kind in [
+            "chat-status",
+            "chat-task",
+            "chat-index-changed",
+            "chat-completed",
+            "permission-ask",
+            "safety-blocked",
+            "user-question",
+            "orchestration-changed",
+            "pty-output",
+        ] {
+            assert!(
+                subscriptions.accepts(&Event::new(kind, json!({"key":"chat:two"}))),
+                "{kind} must remain global"
+            );
         }
         subscriptions.replace(vec![]).unwrap();
         assert!(!subscriptions.accepts(&own));
-        assert!(ChatSubscriptions::default().accepts(&own), "a new socket starts in legacy mode; resubscribe on reconnect");
+        assert!(
+            ChatSubscriptions::default().accepts(&own),
+            "a new socket starts in legacy mode; resubscribe on reconnect"
+        );
     }
 
     #[test]
     fn an_invalid_subscription_does_not_replace_the_current_selection() {
         let mut subscriptions = ChatSubscriptions::default();
-        subscriptions.replace(vec!["chat:one".into(), "chat:one".into()]).unwrap();
+        subscriptions
+            .replace(vec!["chat:one".into(), "chat:one".into()])
+            .unwrap();
         assert!(subscriptions.replace(vec!["x".repeat(513)]).is_err());
-        assert!(subscriptions.replace((0..65).map(|i| format!("chat:{i}")).collect()).is_err());
+        assert!(subscriptions
+            .replace((0..65).map(|i| format!("chat:{i}")).collect())
+            .is_err());
         assert!(subscriptions.accepts(&Event::new("chat-event", json!({"key":"chat:one"}))));
         assert!(!subscriptions.accepts(&Event::new("chat-event", json!({"key":"chat:two"}))));
     }

@@ -53,9 +53,9 @@ mod raise_tests;
 mod reporting_tests;
 mod retention;
 pub mod retry;
-pub mod summary;
 #[cfg(test)]
 pub(crate) mod retry_tests;
+pub mod summary;
 mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
 pub use destination::TaskDestination;

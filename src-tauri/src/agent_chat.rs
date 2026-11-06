@@ -9163,6 +9163,32 @@ pub fn chat_activity_impl(manager: &ChatManager) -> Result<Vec<ChatActivity>, St
         .collect())
 }
 
+/// One socket's small background-chat update, without a process-list read or
+/// a provider/transcript parse. No session lock is held across socket I/O.
+pub(crate) fn chat_stream_state(manager: &ChatManager, key: &str) -> crate::bus::activity::State {
+    let Ok(sessions) = manager.sessions.lock() else {
+        return Default::default();
+    };
+    let Some(session) = sessions.get(key) else {
+        return crate::bus::activity::State {
+            running: Some(false),
+            busy: Some(false),
+            turn_id: None,
+        };
+    };
+    let Ok(session) = session.lock() else {
+        return crate::bus::activity::State {
+            running: Some(true),
+            ..Default::default()
+        };
+    };
+    crate::bus::activity::State {
+        running: Some(true),
+        busy: Some(session.busy),
+        turn_id: session.answering.clone(),
+    }
+}
+
 /// A transcript without an acknowledgement is not proof that a prompt is
 /// still queued: queues are held in memory and do not survive a server restart.
 #[derive(Serialize)]

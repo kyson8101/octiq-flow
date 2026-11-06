@@ -2610,28 +2610,60 @@ async fn client(ctx: Ctx, socket: WebSocket) {
 
     let (sink, mut stream) = socket.split();
     let sink = Arc::new(tokio::sync::Mutex::new(sink));
+    let subscriptions = Arc::new(std::sync::RwLock::new(
+        crate::bus::ChatSubscriptions::default(),
+    ));
 
     // Events -> this browser.
     let out = sink.clone();
+    let wanted = subscriptions.clone();
+    let chats = ctx.services.chats.clone();
     let pump = tokio::spawn(async move {
+        let mut activity = crate::bus::activity::Feed::default();
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
         loop {
-            match events.recv().await {
+            let wires = tokio::select! {
+              _ = tick.tick() => activity.flush(std::time::Instant::now(), |key| crate::agent_chat::chat_stream_state(&chats, key)),
+              event = events.recv() => match event {
                 Ok(text) => {
-                    if out
-                        .lock()
-                        .await
-                        .send(Message::Text(text.into()))
-                        .await
-                        .is_err()
-                    {
-                        break;
+                    // Select while holding the same sink the subscription
+                    // acknowledgement uses. A frame chosen under an older
+                    // selection cannot be written after that acknowledgement.
+                    let mut sink = out.lock().await;
+                    let wire = wanted
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .wire(&text)
+                        .map(str::to_owned);
+                    let wire = if let Some(wire) = wire { Some(wire) }
+                    else {
+                        let key = text.chat_key();
+                        let state = crate::agent_chat::chat_stream_state(&chats, key);
+                        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis().min(i64::MAX as u128) as i64;
+                        activity.observe(&text, state, std::time::Instant::now(), at)
+                    };
+                    if let Some(wire) = wire {
+                        if sink.send(Message::Text(wire.into())).await.is_err() { return; }
                     }
+                    continue;
                 }
                 // Lagged: this client fell behind the backlog. Its terminals
                 // will look like they skipped output, which is better than
                 // holding up every other client — carry on from the newest.
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => break,
+              }
+            };
+            for wire in wires {
+                if out
+                    .lock()
+                    .await
+                    .send(Message::Text(wire.into()))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
             }
         }
     });
@@ -2654,6 +2686,36 @@ async fn client(ctx: Ctx, socket: WebSocket) {
             .unwrap_or_default()
             .to_string();
         let args = frame.get("args").cloned().unwrap_or(Value::Null);
+
+        // This belongs to the socket, not dispatch, a chat or an MCP hook.
+        // Apply in incoming order before accepting another invoke. In
+        // particular, subscribe then chat_since must not race a spawned task
+        // that changes the subscription only after catch-up has completed.
+        if cmd == "chat_subscribe" {
+            let mut out = sink.lock().await;
+            let result = serde_json::from_value::<Vec<String>>(args["chatKeys"].clone())
+                .map_err(|_| "chat_subscribe needs a chatKeys array of strings".to_string())
+                .and_then(|keys| {
+                    subscriptions
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .replace(keys)
+                })
+                .map(|keys| json!({"chatKeys":keys}));
+            let reply = reply_frame(
+                id,
+                crate::dispatch::Told {
+                    result,
+                    unsaved: Vec::new(),
+                },
+            );
+            if let Ok(text) = serde_json::to_string(&reply) {
+                if out.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
+            continue;
+        }
 
         // Each request runs on its own task: a slow command must not hold up
         // the keystrokes queued behind it.
@@ -5234,6 +5296,72 @@ mod tests {
             return Err(refused);
         }
         run_command(ctx, cmd.to_string(), args).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn browser_summary_and_run_detail_keep_the_old_snapshot_intact() {
+        use crate::orchestration::tests::{run, running_worker};
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let r = run(&store);
+        let a = running_worker(&store, &r);
+        let other = run(&store);
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let (ctx, _base) = test_server(chats, store).await;
+        let args = json!({"runId":r.id});
+        let old = socket_invoke(&ctx, "orchestration_snapshot", args.clone())
+            .await
+            .unwrap();
+        let small = socket_invoke(&ctx, "orchestration_summary", args.clone())
+            .await
+            .unwrap();
+        let detail = socket_invoke(&ctx, "orchestration_run_detail", args.clone())
+            .await
+            .unwrap();
+        assert_eq!(small["summary"], true);
+        assert_eq!(small["runs"].as_array().unwrap().len(), 1);
+        assert_eq!(small["runs"][0]["id"], r.id);
+        assert_eq!(small["attempts"][0]["id"], a.id);
+        assert_eq!(
+            small["tasks"][0]["heldByPlan"],
+            old["tasks"][0]["heldByPlan"]
+        );
+        assert_eq!(
+            small["tasks"][0]["retryLimit"],
+            old["tasks"][0]["retryLimit"]
+        );
+        assert_eq!(small["tasks"][0]["spec"], "");
+        assert_eq!(detail["tasks"], old["tasks"]);
+        assert_eq!(detail["attempts"], old["attempts"]);
+        assert_eq!(small["revision"], detail["revision"]);
+        assert!(old.get("revision").is_none());
+        assert!(old.get("summary").is_none());
+        assert!(!old["tasks"][0]["spec"].as_str().unwrap().is_empty());
+        let all = socket_invoke(&ctx, "orchestration_summary", json!({}))
+            .await
+            .unwrap();
+        assert!(all["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|run| run["id"] == other.id));
+        assert!(socket_invoke(&ctx, "orchestration_run_detail", json!({}))
+            .await
+            .is_err());
+        for action in [
+            "summary",
+            "run_detail",
+            "chat_subscribe",
+            "orchestration_summary",
+            "orchestration_run_detail",
+        ] {
+            assert_eq!(orchestration_hook_command(action), None);
+        }
+        assert_eq!(
+            socket_invoke(&ctx, "orchestration_snapshot", args)
+                .await
+                .unwrap(),
+            old
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
