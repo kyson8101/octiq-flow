@@ -309,6 +309,10 @@ export type Message = {
   queueLost?: boolean;
   /** Transport delivery is distinct from the provider starting its reply. */
   delivery?: "sending" | "queued" | "starting" | "dispatched" | "failed" | "unknown";
+  /** Queue sync found no entry for a sending prompt in a live process.
+   * This preserves its legacy live-echo eligibility, not an acknowledgement:
+   * its delivery stays unknown until the provider actually echoes it. */
+  queueUnconfirmedSend?: boolean;
   /** Local action feedback, never evidence that a message was delivered. */
   queueAction?: "start" | "cancel";
   queueError?: string;
@@ -1794,13 +1798,17 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
       // The optimistic bubble from pressing send, not yet claimed by an echo.
       const echoedTurnId = asStr(e.octiq_user_turn_id);
       // Older hosts did not stamp echoes. Only a live event during a single
-      // dispatch can acknowledge by words; queued/failed/unknown prompts and
+      // dispatch can acknowledge by words. Queue sync can demote that same
+      // sending prompt to unknown before its echo arrives; retain that narrow
+      // candidate provenance. Other unknown/queued/failed prompts and
       // concurrent dispatches supply no such evidence. `isReplay` is a CLI
       // envelope flag, not transport provenance: even ordinary user envelopes
       // read from a checkpoint tail or history are historical.
       const dispatching = !echoedTurnId && source === "live" && state.busy
         ? state.messages.filter(m => m.role === "user" && !m.echo && !m.takenUp && !m.queueLost
-          && (m.delivery === "sending" || m.delivery === "dispatched" || (!m.turnId && m.delivery === undefined)))
+          && (m.delivery === "sending" || m.delivery === "dispatched"
+            || (m.delivery === "unknown" && m.queueUnconfirmedSend)
+            || (!m.turnId && m.delivery === undefined)))
         : [];
       const legacy = dispatching.length === 1 ? dispatching[0] : undefined;
       const mine = state.messages
@@ -1826,7 +1834,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
         return {
           ...state,
           messages: state.messages.map((m) =>
-            m === mine ? { ...m, echo: uuid, delivery: "dispatched", queueLost: undefined, queueAction: undefined, queueError: undefined, ...(ran ? { ranSkill: ran } : {}) } : m,
+            m === mine ? { ...m, echo: uuid, delivery: "dispatched", queueUnconfirmedSend: undefined, queueLost: undefined, queueAction: undefined, queueError: undefined, ...(ran ? { ranSkill: ran } : {}) } : m,
           ),
         };
       }

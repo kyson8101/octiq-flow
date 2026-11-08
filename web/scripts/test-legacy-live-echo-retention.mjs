@@ -74,21 +74,11 @@ try{
   const prompt='continue';const box=page.locator('textarea').first();
   await box.fill(prompt);await box.press('Enter');
   while(!pendingSends.length)await page.waitForTimeout(5);
-  if(scenario==='two-quick-identical'){
-    await box.fill(prompt);await box.press('Enter');
-    for(let n=0;n<200&&pendingSends.length<2;n++)await page.waitForTimeout(5);
-    assert.equal(pendingSends.length,2,'both quick sends reached older host');
-  }
   const reply=send=>send.ws.send(JSON.stringify({t:'reply',id:send.call.id,ok:true,result:null}));
   if(scenario!=='normal-before-rpc'){for(const send of pendingSends)reply(send);await page.waitForTimeout(100);}
-  if(scenario==='codex-picked-up'){
-    socket.send(JSON.stringify({t:'event',event:'chat-event',payload:{key:'chat:memory-0',seq:5,event:{type:'turn.started',octiq_user_turn_id:pendingSends[0].call.args.turnId}}}));
-    await page.waitForTimeout(60);
-  }
   const host=(uuid,seq)=>socket.send(JSON.stringify({t:'event',event:'chat-event',payload:{key:'chat:memory-0',seq,event:{type:'user',uuid,...(replay?{isReplay:true,parent_tool_use_id:null}:{}),message:{content:[{type:'text',text:prompt}]}}}}));
   const preEcho=await page.evaluate(inspect);
-  host('legacy-native-1',scenario==='codex-picked-up'?7:6);
-  if(scenario==='two-quick-identical')host('legacy-native-2',6);
+  host('legacy-native-1',6);
   if(scenario==='normal-before-rpc'){await page.waitForTimeout(60);reply(pendingSends[0]);}
   await page.waitForTimeout(1000);
   const active=await page.evaluate(inspect);const users=active.stateMessages.find(s=>s.id==='memory-0').messages.filter(m=>m.role==='user'&&m.text.includes(prompt));
@@ -104,7 +94,7 @@ try{
   assert.equal(kept.length,0,'release retains no acknowledged local prompt');
   assert.equal(pendingSends.length,1,'never resend to reconcile');
   if(scenario==='normal-after-rpc') assert.equal(preEcho.stateMessages.find(s=>s.id==='memory-0').messages.find(m=>m.turnId===pendingSends[0].call.args.turnId).delivery,'unknown','real post-RPC syncQueue ran before echo');
-  console.log(JSON.stringify({case:scenario,width,replay,sends:pendingSends.length,local:locals.length,retainedAfterRelease:kept.length,legacyNormalPass,restore,preEcho:preEcho.stateMessages.find(s=>s.id==='memory-0')?.messages.filter(m=>m.turnId===pendingSends[0].call.args.turnId),users,errors}));
+  results.push({case:scenario,width,replay,sends:pendingSends.length,local:locals.length,retainedAfterRelease:kept.length,legacyNormalPass,restore,preEcho:preEcho.stateMessages.find(s=>s.id==='memory-0')?.messages.filter(m=>m.turnId===pendingSends[0].call.args.turnId),users,errors});
   await context.close();
 
  }

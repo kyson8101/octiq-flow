@@ -174,3 +174,25 @@ node web/scripts/test-unstamped-echo-retention.mjs
 ```
 
 Sanitized results and source hashes are recorded in `browser-memory-unstamped-echo.json`; raw evidence is under `/tmp/octiq-h1c-fix/`. These checks use disposable desktop Brave, including a 390px viewport. Real phone, Safari/WebKit, tunnel, endurance and a new RSS/heap ceiling remain untested. No push, deployment or restart is part of this repair; feedback `9c3b3024` remains for the independent review to settle.
+
+
+## Legacy live echo queue-order repair (H1-d, 2026-11-08)
+
+The review of `106dfe3` found that a successful older-host send was confirmed only when its unstamped live echo beat the RPC response. App's post-send `syncQueue` changed the optimistic `sending` prompt to `unknown` when the persistent process was live but its queue was empty. The H1-c live filter then excluded that same prompt. This left two bubbles, Restore and retained local content even after the provider acknowledged it.
+
+Queue reconciliation now preserves that transition's provenance in `queueUnconfirmedSend`. Delivery remains `unknown`, with the original words, attachments and Restore, until actual acknowledgement. The existing unique, busy, live-only fallback includes this specific queue-demoted candidate. Other unknown prompts remain excluded. A known queue entry, a non-live queue snapshot or a send failure removes eligibility; echoed, picked-up and lost prompts remain excluded. Two concurrent candidates still cannot be matched by words. No timer or delayed matching was added.
+
+This preserves H1-c's historical boundary instead of treating RPC success or queue absence as a provider acknowledgement. Checkpoint tails, page context, Load earlier, catch-up and buffered overlap remain historical even when the prompt carries this provenance. Host-stamped reconciliation remains identity-based.
+
+Regression-only commit `5d8acb7` fails six of 52 unstamped-echo cases on exact `106dfe3` in a host-created validation checkout: both envelopes of RPC-before-echo, buffered live after queue sync and retained-content growth. The production-App regression also fails on the reviewer's exact `106dfe3` build after RPC success. `test-legacy-live-echo-retention.mjs` preserves that older-host contract (no `chat_page` or subscription capability; working `chat_since` and `chat_queue_state`) and the reviewer's echo timing. It asserts both RPC/echo orders at 1280px and 390px with ordinary and `isReplay` envelopes, including the actual post-RPC `unknown` state before the live echo.
+
+The independent actual-module legacy control reproduces ten 200KB sends retaining one to ten locals (2,002,111 serialized bytes at ten) on `106dfe3`, for both envelopes. With this repair, every iteration retains zero locals and two serialized bytes. The independent historical matrix passes 40 cases: the previous 30 plus ten queue-demoted unknown cases across all five replay paths. Stamped lifecycles (12), legacy guards (16) and stamped growth (ten) also pass.
+
+```sh
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+PLAYWRIGHT_EXECUTABLE_PATH=/absolute/path/to/Brave \
+OCTIQ_TEST_DIST=/absolute/path/to/isolated/client/dist \
+node web/scripts/test-legacy-live-echo-retention.mjs
+```
+
+Raw evidence is under `/tmp/octiq-h1d-fix/`. These are disposable desktop Brave and module checks, including a 390px viewport; real phone, Safari/WebKit, tunnel, endurance and a new RSS/heap ceiling remain untested. No push, deployment or restart is part of this repair.

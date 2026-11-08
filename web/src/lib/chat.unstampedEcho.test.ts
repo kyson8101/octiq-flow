@@ -174,7 +174,9 @@ for (const replay of [false, true]) {
 
   it(`excludes queue-demoted unknown after pickup, queue ownership, disconnect or send failure (isReplay=${replay})`, () => {
     const unknown = syncLiveQueue(local());
+    const lost = local(); lost.messages[0].queueLost = true;
     const variants = [
+      syncLiveQueue(lost),
       reduceChat(unknown, { type: "turn.started", octiq_user_turn_id: "new" }),
       reconcileQueueSnapshot(unknown, unknown, { live: true, queuedTurnIds: ["new"] }),
       reconcileQueueSnapshot(unknown, unknown, { live: false, queuedTurnIds: [] }),

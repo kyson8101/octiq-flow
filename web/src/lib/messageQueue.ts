@@ -115,6 +115,6 @@ export function unconfirmedSend(
     ...state,
     busy: running ? state.busy : false,
     messages: state.messages.map((m) => m.turnId === turnId && !m.echo && !m.takenUp
-      ? { ...m, delivery: "unknown", queueError: String((error as Error)?.message ?? error) } : m),
+      ? { ...m, delivery: "unknown", queueUnconfirmedSend: undefined, queueError: String((error as Error)?.message ?? error) } : m),
   };
 }

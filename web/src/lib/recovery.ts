@@ -45,7 +45,13 @@ export function reconcileUnsentMessages(chat: ChatState, queue: ChatQueueState):
   let changed = false;
   const messages = chat.messages.map((message) => {
     if (message.role !== "user" || !message.turnId || message.echo || message.takenUp) return message;
-    if ((message.delivery === "failed" || message.delivery === "unknown") && !isQueued(message)) return message;
+    if ((message.delivery === "failed" || message.delivery === "unknown") && !isQueued(message)) {
+      if (!queue.live && message.queueUnconfirmedSend) {
+        changed = true;
+        return { ...message, queueUnconfirmedSend: undefined };
+      }
+      return message;
+    }
     if (message.delivery === "dispatched" && !isQueued(message)) {
       if (queue.live) return message;
       changed = true;
@@ -55,7 +61,13 @@ export function reconcileUnsentMessages(chat: ChatState, queue: ChatQueueState):
     const lost = delivery === "failed";
     if (!!message.queueLost === lost && message.delivery === delivery) return message;
     changed = true;
-    return { ...message, delivery, queueLost: lost || undefined } as typeof message;
+    return { ...message, delivery, queueLost: lost || undefined,
+      // App excludes in-flight RPCs from queue snapshots. A successful send
+      // on an older host can therefore be absent here before its unstamped
+      // echo arrives. Preserve exactly its previous sending eligibility;
+      // queue absence still does not acknowledge or release the prompt.
+      queueUnconfirmedSend: (delivery === "unknown" && message.delivery === "sending" && !message.queueLost) || undefined,
+    } as typeof message;
   });
   return changed ? { ...chat, messages } : chat;
 }
