@@ -414,6 +414,33 @@ fn shared_writers(snapshot: &Snapshot, run: &Run) -> BTreeSet<String> {
         .collect()
 }
 
+impl OrchestrationStore {
+    fn dispatchable_runs(&self) -> Result<Vec<(String, String)>, String> {
+        self.capture_native_decisions()?;
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        let mut runs: Vec<_> = inner
+            .data
+            .runs
+            .values()
+            .filter(|run| {
+                run.worker_defaults.is_some()
+                    && matches!(
+                        run.status,
+                        RunStatus::Planning | RunStatus::Running | RunStatus::Waiting
+                    )
+            })
+            .collect();
+        runs.sort_by_key(|run| std::cmp::Reverse(run.updated_at));
+        Ok(runs
+            .into_iter()
+            .map(|run| (run.id.clone(), run.coordinator_chat_key.clone()))
+            .collect())
+    }
+}
+
 pub fn start_scheduler(
     store: Arc<OrchestrationStore>,
     chats: Arc<ChatManager>,
@@ -446,22 +473,12 @@ pub fn start_scheduler(
         if let Err(error) = store.propose_missing_workspaces() {
             eprintln!("orchestration: workspace planning failed: {error}");
         }
-        let Ok(snapshot) = store.snapshot(None) else {
+        let Ok(runs) = store.dispatchable_runs() else {
             continue;
         };
-        for run in snapshot.runs.iter().filter(|r| {
-            r.worker_defaults.is_some()
-                && matches!(
-                    r.status,
-                    RunStatus::Planning | RunStatus::Running | RunStatus::Waiting
-                )
-        }) {
-            if let Err(error) = store.dispatch_ready(
-                chats.clone(),
-                &workspaces,
-                &run.coordinator_chat_key,
-                &run.id,
-            ) {
+        for (run, coordinator) in runs {
+            if let Err(error) = store.dispatch_ready(chats.clone(), &workspaces, &coordinator, &run)
+            {
                 eprintln!("orchestration: ready-wave scheduling failed: {error}");
             }
         }
@@ -471,6 +488,58 @@ pub fn start_scheduler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polling_keeps_live_run_order_and_observes_a_stop_on_its_next_read() {
+        let store = OrchestrationStore::default();
+        let seed = super::super::tests::run(&store);
+        {
+            let mut inner = store.inner.lock().unwrap();
+            inner.data.runs.clear();
+            for (id, status, automatic, updated) in [
+                ("planning", RunStatus::Planning, true, 1),
+                ("running", RunStatus::Running, true, 3),
+                ("waiting", RunStatus::Waiting, true, 2),
+                ("manual", RunStatus::Running, false, 9),
+                ("stopped", RunStatus::Stopped, true, 10),
+                ("completed", RunStatus::Completed, true, 11),
+                ("failed", RunStatus::Failed, true, 12),
+                ("closed", RunStatus::Closed, true, 13),
+            ] {
+                let mut run = seed.clone();
+                run.id = id.into();
+                run.status = status;
+                run.updated_at = updated;
+                run.worker_defaults = automatic.then(|| WorkerDefaults {
+                    agent: None,
+                    model: None,
+                    effort: None,
+                    recovery: None,
+                    access: Access::Read,
+                });
+                inner.data.runs.insert(id.into(), run);
+            }
+        }
+        let ids = || {
+            store
+                .dispatchable_runs()
+                .unwrap()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(), ["running", "waiting", "planning"]);
+        store
+            .inner
+            .lock()
+            .unwrap()
+            .data
+            .runs
+            .get_mut("running")
+            .unwrap()
+            .status = RunStatus::Stopped;
+        assert_eq!(ids(), ["waiting", "planning"]);
+    }
 
     #[test]
     fn chosen_effort_uses_codex_model_cache_and_provider_vocabularies() {

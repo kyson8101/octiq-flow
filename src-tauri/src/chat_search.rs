@@ -2,45 +2,39 @@
 //!
 //! The small chat index knows titles and the latest response; the actual words
 //! live in one append-only JSONL transcript per chat. Search keeps a compact,
-//! incremental cache beside those transcripts. A transcript is parsed again
-//! only when its size or modified time changes, so typing a longer query does
-//! not repeatedly walk the archive.
+//! incremental cache beside those transcripts. Each chat has its own on-disk
+//! segment, read and dropped in turn. No corpus, token index or lowercase copy
+//! stays resident between queries. A changed transcript rebuilds only its segment.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::chat_index::ChatMeta;
 use crate::workspaces::WorkspaceState;
 
-const SEARCH_INDEX_VERSION: u32 = 2;
+const SEGMENT_VERSION: u32 = 1;
+const SEGMENT_FOLDER: &str = "search-chats-v1";
 const SEARCH_CHUNK_CHARS: usize = 1_200;
 const SEARCH_CHUNK_OVERLAP: usize = 120;
 const EXCERPT_CHARS: usize = 220;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct SearchCache {
-    version: u32,
-    #[serde(default)]
-    chats: HashMap<String, CachedChat>,
-}
-
-impl SearchCache {
-    fn empty() -> Self {
-        Self {
-            version: SEARCH_INDEX_VERSION,
-            chats: HashMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A disposable derivative of one transcript. The legacy search-index.json is
+/// deliberately left alone: older servers and the MCP search still read it.
+/// Missing/corrupt/new-version segments rebuild from the canonical transcript;
+/// an interrupted rebuild cannot replace either that transcript or the legacy
+/// cache. A failed cache write only means the next query tries again.
+#[derive(Debug, Serialize, Deserialize)]
 struct CachedChat {
+    #[serde(default = "segment_version")]
+    version: u32,
     stamp: String,
     #[serde(default)]
     documents: Vec<SearchDocument>,
@@ -51,28 +45,167 @@ struct SearchDocument {
     speaker: String,
     role: String,
     text: String,
-    /// Persisted for compatibility with the agent-facing conversation search,
-    /// which uses the same cache file and builds an inverted index from these.
-    #[serde(default)]
-    tokens: Vec<String>,
-    /// Runtime-only normalized text. Keeping it here avoids allocating one
-    /// lowercase copy of every transcript chunk for every keystroke.
-    #[serde(skip)]
-    lower: String,
 }
 
-impl SearchDocument {
-    fn hydrate(&mut self) {
-        self.lower = one_line(&self.text).to_lowercase();
+// Only a bounded candidate filter stays resident. A negative answer skips the
+// segment, while a positive answer always runs the original substring search.
+const FILTER_WORDS: usize = 256;
+const FILTER_LIMIT: usize = 4096;
+const FILTER_FILE_LIMIT: u64 = 32 * 1024 * 1024;
+
+fn segment_version() -> u32 {
+    SEGMENT_VERSION
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct Filters {
+    #[serde(default)]
+    chats: HashMap<String, CandidateFilter>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CandidateFilter {
+    stamp: String,
+    bits: Vec<u64>,
+}
+
+impl CandidateFilter {
+    fn positions(chars: &[char]) -> [usize; 2] {
+        let mut hash = chars.len() as u64;
+        for ch in chars {
+            hash = (hash ^ *ch as u64).wrapping_mul(1099511628211);
+        }
+        // Separate non-ASCII grams from the common ASCII startup vocabulary.
+        let offset = usize::from(chars.iter().any(|ch| !ch.is_ascii())) * FILTER_WORDS * 32;
+        let mask = FILTER_WORDS * 32 - 1;
+        [
+            offset + (hash as usize & mask),
+            offset + ((hash >> 23) as usize & mask),
+        ]
+    }
+
+    fn new(chat: &CachedChat) -> Self {
+        let mut filter = Self {
+            stamp: chat.stamp.clone(),
+            bits: vec![0; FILTER_WORDS],
+        };
+        for document in &chat.documents {
+            let chars: Vec<_> = document.text.to_lowercase().chars().collect();
+            for size in [2, 3] {
+                for gram in chars.windows(size) {
+                    for bit in Self::positions(gram) {
+                        filter.bits[bit / 64] |= 1 << (bit % 64);
+                    }
+                }
+            }
+        }
+        filter
+    }
+
+    fn may_match(&self, words: &[String]) -> bool {
+        if self.bits.len() != FILTER_WORDS {
+            return true;
+        }
+        words.iter().all(|word| {
+            let chars: Vec<_> = word.chars().collect();
+            let size = chars.len().min(3);
+            size < 2
+                || chars.windows(size).all(|gram| {
+                    Self::positions(gram)
+                        .iter()
+                        .all(|bit| self.bits[bit / 64] & (1 << (bit % 64)) != 0)
+                })
+        })
     }
 }
 
 struct SearchState {
     root: PathBuf,
-    cache: SearchCache,
+    filters: Filters,
+    legacy_checked: bool,
+}
+static SEARCH_STATE: Mutex<Option<SearchState>> = Mutex::new(None);
+
+fn load_filters(root: &Path) -> Result<Filters, String> {
+    let path = root.join("search-filters-v1.json");
+    // Bound the serialized input as well as the resident map.
+    let oversized = fs::metadata(&path).is_ok_and(|m| m.len() > FILTER_FILE_LIMIT);
+    crate::profile::available()?;
+    if oversized {
+        return Ok(Filters::default());
+    }
+    let raw = match crate::profile::read(&path, |e| e.to_string()) {
+        Ok(raw) => raw,
+        Err(_) => {
+            crate::profile::available()?;
+            None
+        }
+    };
+    Ok(raw
+        .filter(|bytes| bytes.len() as u64 <= FILTER_FILE_LIMIT)
+        .and_then(|bytes| serde_json::from_slice::<Filters>(&bytes).ok())
+        .filter(|f| {
+            f.chats.len() <= FILTER_LIMIT
+                && f.chats.keys().all(|id| id.len() <= 512)
+                && f.chats
+                    .values()
+                    .all(|f| f.bits.len() == FILTER_WORDS && f.stamp.len() <= 128)
+        })
+        .unwrap_or_default())
 }
 
-static SEARCH_STATE: Mutex<Option<SearchState>> = Mutex::new(None);
+fn remember_filter(filters: &mut Filters, id: &str, chat: &CachedChat) -> bool {
+    if id.len() <= 512
+        && chat.stamp.len() <= 128
+        && (filters.chats.len() < FILTER_LIMIT || filters.chats.contains_key(id))
+    {
+        filters
+            .chats
+            .insert(id.to_owned(), CandidateFilter::new(chat));
+        true
+    } else {
+        false
+    }
+}
+
+/// Preserve the valid legacy cache's exact text/speaker/role before switching
+/// storage. Unknown token fields are skipped, not allocated. The old file is
+/// never edited, and an incomplete publication leaves no completion marker.
+fn migrate_legacy(root: &Path, filters: &mut Filters) -> Result<bool, String> {
+    let marker = root.join(SEGMENT_FOLDER).join("legacy-v2-imported");
+    if crate::profile::read(&marker, |e| e.to_string())?.is_some() {
+        return Ok(false);
+    }
+    #[derive(Deserialize)]
+    struct Legacy {
+        version: u32,
+        #[serde(default)]
+        chats: HashMap<String, CachedChat>,
+    }
+    let Some(raw) = crate::profile::read(&root.join("search-index.json"), |e| e.to_string())?
+    else {
+        return Ok(false);
+    };
+    let Ok(legacy) = serde_json::from_slice::<Legacy>(&raw) else {
+        return Ok(false);
+    };
+    drop(raw);
+    if legacy.version != 2 {
+        return Ok(false);
+    }
+    for (id, mut chat) in legacy.chats {
+        chat.version = SEGMENT_VERSION;
+        for document in &mut chat.documents {
+            document.text = one_line(&document.text);
+        }
+        save_segment(&segment_path(root, &id), &chat)?;
+        remember_filter(filters, &id, &chat);
+    }
+    save_json(&root.join("search-filters-v1.json"), filters)?;
+    crate::profile::make_dir(marker.parent().unwrap())?;
+    fs::write(marker, b"2").map_err(|e| e.to_string())?;
+    Ok(true)
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,45 +259,120 @@ pub fn search(
     let mut guard = SEARCH_STATE.lock().map_err(|e| e.to_string())?;
     if guard.as_ref().is_none_or(|state| state.root != root) {
         *guard = Some(SearchState {
-            cache: load_cache(&root),
             root: root.clone(),
+            filters: load_filters(&root)?,
+            legacy_checked: false,
         });
     }
-    let state = guard.as_mut().expect("search state initialized");
-    refresh_cache(state, &chats);
+    let state = guard.as_mut().expect("search state");
+    // Cache failures do not refuse a source read, but a missing/replaced
+    // profile always does. A migration is retried until its marker is saved.
+    if !state.legacy_checked {
+        match migrate_legacy(&root, &mut state.filters) {
+            Ok(_) => state.legacy_checked = true,
+            Err(_) => {
+                crate::profile::available()?;
+            }
+        }
+    }
+    let active: HashSet<_> = chats.iter().map(|meta| meta.id.as_str()).collect();
+    let before = state.filters.chats.len();
+    state
+        .filters
+        .chats
+        .retain(|id, _| active.contains(id.as_str()));
+    let mut changed = before != state.filters.chats.len();
 
-    let mut matches: Vec<(usize, i64, ChatSearchHit)> = Vec::new();
-    for meta in chats {
+    let limit = limit.unwrap_or(50).clamp(1, 50);
+    let mut matches = Vec::new();
+    // Metadata is cheap and can outrank every document. Establish that floor
+    // before loading segments; then a chat whose best possible document cannot
+    // enter the result page needs no archive read at all.
+    for (order, meta) in chats.iter().enumerate() {
         let project = workspace_names
             .get(&meta.project_id)
             .map(String::as_str)
             .unwrap_or("Unknown project");
-        let documents = state
-            .cache
-            .chats
-            .get(&meta.id)
-            .map(|chat| chat.documents.as_slice())
-            .unwrap_or_default();
-        let Some(best) = best_match(&meta, project, documents, &query_lower, &words) else {
-            continue;
-        };
-        matches.push((
-            best.score,
-            meta.updated_at,
-            ChatSearchHit {
-                id: meta.id,
-                excerpt: best.excerpt,
-                speaker: best.speaker,
-                role: best.role,
-            },
-        ));
+        if let Some(best) = best_match(meta, project, &[], &query_lower, &words) {
+            keep_hit(&mut matches, meta, order, best, limit);
+        }
     }
-    matches.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
-    Ok(matches
-        .into_iter()
-        .take(limit.unwrap_or(50).clamp(1, 50))
-        .map(|(_, _, hit)| hit)
-        .collect())
+    let document_max = 20 + words.len() * 4 + 80;
+    for (order, meta) in chats.iter().enumerate() {
+        if matches
+            .iter()
+            .any(|hit| hit.2 == order && hit.0 > document_max)
+        {
+            continue;
+        }
+        if matches.len() == limit
+            && matches.last().is_some_and(|last| {
+                last.0 > document_max
+                    || (last.0 == document_max
+                        && (last.1 > meta.updated_at
+                            || (last.1 == meta.updated_at && last.2 < order)))
+            })
+        {
+            continue;
+        }
+        let project = workspace_names
+            .get(&meta.project_id)
+            .map(String::as_str)
+            .unwrap_or("Unknown project");
+        let documents = match crate::transcript::path_for(&format!("chat:{}", meta.id)) {
+            Some(path) => {
+                let stamp = transcript_stamp(&path);
+                let filter = state
+                    .filters
+                    .chats
+                    .get(&meta.id)
+                    .filter(|filter| stamp.as_deref() == Some(filter.stamp.as_str()));
+                if filter.is_some_and(|filter| !filter.may_match(&words)) {
+                    Vec::new()
+                } else {
+                    let chat = cached_chat(&root, &meta.id, &path)?;
+                    if stamp.as_deref() == Some(chat.stamp.as_str()) && filter.is_none() {
+                        changed |= remember_filter(&mut state.filters, &meta.id, &chat);
+                    }
+                    chat.documents
+                }
+            }
+            None => Vec::new(),
+        };
+        if let Some(best) = best_match(meta, project, &documents, &query_lower, &words) {
+            keep_hit(&mut matches, meta, order, best, limit);
+        }
+    }
+    if changed {
+        let _ = save_json(&root.join("search-filters-v1.json"), &state.filters);
+    }
+    crate::profile::available()?;
+    Ok(matches.into_iter().map(|(_, _, _, hit)| hit).collect())
+}
+
+type RankedHit = (usize, i64, usize, ChatSearchHit);
+
+fn keep_hit(
+    matches: &mut Vec<RankedHit>,
+    meta: &ChatMeta,
+    order: usize,
+    best: BestMatch,
+    limit: usize,
+) {
+    matches.retain(|entry| entry.2 != order);
+    matches.push((
+        best.score,
+        meta.updated_at,
+        order,
+        ChatSearchHit {
+            id: meta.id.clone(),
+            excerpt: best.excerpt,
+            speaker: best.speaker,
+            role: best.role,
+        },
+    ));
+    matches.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+    matches.truncate(limit);
 }
 
 fn best_match(
@@ -176,7 +384,8 @@ fn best_match(
 ) -> Option<BestMatch> {
     let mut best = None;
     for document in documents {
-        let score = search_score(&document.lower, query, words, 1);
+        // Segment text is already whitespace-normalized by entry_chunks.
+        let score = search_score(&document.text.to_lowercase(), query, words, 1);
         if score == 0
             || best
                 .as_ref()
@@ -190,6 +399,11 @@ fn best_match(
             speaker: document.speaker.clone(),
             role: document.role.clone(),
         });
+        // No later document can beat an exact phrase. Metadata below can
+        // still win by weight; equal document scores keep the first excerpt.
+        if score == 20 + words.len() * 4 + 80 {
+            break;
+        }
     }
 
     let metadata = [
@@ -219,79 +433,88 @@ fn best_match(
     best
 }
 
-fn refresh_cache(state: &mut SearchState, chats: &[ChatMeta]) {
-    let active: HashSet<&str> = chats.iter().map(|chat| chat.id.as_str()).collect();
-    let before = state.cache.chats.len();
-    state
-        .cache
-        .chats
-        .retain(|id, _| active.contains(id.as_str()));
-    let mut changed = state.cache.chats.len() != before;
-
-    for chat in chats {
-        let key = format!("chat:{}", chat.id);
-        let Some(path) = crate::transcript::path_for(&key) else {
-            changed |= state.cache.chats.remove(&chat.id).is_some();
-            continue;
-        };
-        let Some(stamp) = transcript_stamp(&path) else {
-            changed |= state.cache.chats.remove(&chat.id).is_some();
-            continue;
-        };
-        if state
-            .cache
-            .chats
-            .get(&chat.id)
-            .is_some_and(|cached| cached.stamp == stamp)
-        {
-            continue;
-        }
-        if let Ok(documents) = index_transcript(&path) {
-            state
-                .cache
-                .chats
-                .insert(chat.id.clone(), CachedChat { stamp, documents });
-            changed = true;
-        }
-    }
-    if changed {
-        save_cache(&state.root, &state.cache);
-    }
+fn segment_path(root: &Path, id: &str) -> PathBuf {
+    // IDs are untrusted strings, never paths; hashing also bounds filename size.
+    root.join(SEGMENT_FOLDER)
+        .join(format!("{:x}.json", Sha256::digest(id.as_bytes())))
 }
 
-fn cache_path(root: &Path) -> PathBuf {
-    root.join("search-index.json")
+#[cfg(test)]
+fn documents_for_chat(
+    root: &Path,
+    id: &str,
+    transcript: &Path,
+) -> Result<Vec<SearchDocument>, String> {
+    cached_chat(root, id, transcript).map(|chat| chat.documents)
 }
 
-fn load_cache(root: &Path) -> SearchCache {
-    let path = cache_path(root);
-    let mut cache = fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<SearchCache>(&raw).ok())
-        .filter(|cache| cache.version == SEARCH_INDEX_VERSION)
-        .unwrap_or_else(SearchCache::empty);
-    for chat in cache.chats.values_mut() {
-        for document in &mut chat.documents {
-            document.hydrate();
+fn cached_chat(root: &Path, id: &str, transcript: &Path) -> Result<CachedChat, String> {
+    let target = segment_path(root, id);
+    let raw = match crate::profile::read(&target, |error| error.to_string()) {
+        Ok(raw) => raw,
+        Err(_) => {
+            crate::profile::available()?;
+            None
         }
-    }
-    cache
-}
-
-fn save_cache(root: &Path, cache: &SearchCache) {
-    let Ok(raw) = serde_json::to_vec(cache) else {
-        return;
     };
-    // `root` was found when the search state was made: it is asked again
-    // here whether it is still in the folder the server started with.
-    if crate::profile::make_dir(root).is_err() {
-        return;
+    let mut cached = raw
+        .and_then(|bytes| serde_json::from_slice::<CachedChat>(&bytes).ok())
+        .filter(|cached| cached.version == SEGMENT_VERSION);
+    let Some(stamp) = transcript_stamp(transcript) else {
+        return Ok(CachedChat {
+            version: SEGMENT_VERSION,
+            stamp: String::new(),
+            documents: Vec::new(),
+        });
+    };
+    if cached.as_ref().is_some_and(|cached| cached.stamp == stamp) {
+        return Ok(cached.take().expect("matching segment"));
     }
-    let target = cache_path(root);
-    let temp = root.join(format!("search-index.{}.tmp", std::process::id()));
-    if fs::write(&temp, raw).is_ok() {
-        let _ = fs::rename(&temp, target);
+    let documents = match index_transcript(transcript) {
+        Ok(documents) => documents,
+        // A temporary transcript read failure keeps the last good derivative.
+        Err(_) => {
+            return Ok(cached.unwrap_or(CachedChat {
+                version: SEGMENT_VERSION,
+                stamp: String::new(),
+                documents: Vec::new(),
+            }))
+        }
+    };
+    let rebuilt = CachedChat {
+        version: SEGMENT_VERSION,
+        stamp,
+        documents,
+    };
+    // A growing or cleared record is searched as read, but never certified with
+    // the pre-read stamp. The next query rebuilds it from the new record.
+    if transcript_stamp(transcript).as_ref() == Some(&rebuilt.stamp) {
+        let _ = save_segment(&target, &rebuilt);
     }
+    Ok(rebuilt)
+}
+
+fn save_segment(target: &Path, cached: &CachedChat) -> Result<(), String> {
+    save_json(target, cached)
+}
+
+fn save_json(target: &Path, cached: &impl Serialize) -> Result<(), String> {
+    let root = target.parent().ok_or("Search segment needs a folder")?;
+    crate::profile::make_dir(root)?;
+    let temp = root.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let file = File::create(&temp).map_err(|e| e.to_string())?;
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer(&mut writer, cached).map_err(|e| e.to_string())?;
+        writer.flush().map_err(|e| e.to_string())?;
+        drop(writer);
+        crate::profile::available()?;
+        fs::rename(&temp, target).map_err(|e| e.to_string())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
 }
 
 fn transcript_stamp(path: &Path) -> Option<String> {
@@ -319,18 +542,14 @@ fn index_transcript(path: &Path) -> Result<Vec<SearchDocument>, String> {
         };
         for entry in conversation_entries(&event) {
             for text in entry_chunks(&entry.text) {
-                let tokens = lexical_tokens(&text);
-                if tokens.is_empty() {
+                if !text.chars().any(char::is_alphanumeric) {
                     continue;
                 }
-                let mut document = SearchDocument {
+                let document = SearchDocument {
                     speaker: entry.speaker.clone(),
                     role: entry.role.clone(),
                     text,
-                    tokens,
-                    lower: String::new(),
                 };
-                document.hydrate();
                 documents.push(document);
             }
         }
@@ -463,33 +682,6 @@ fn search_words(value: &str) -> Vec<String> {
     alphanumeric_runs(value)
 }
 
-fn lexical_tokens(value: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut seen = HashSet::new();
-    for run in alphanumeric_runs(value) {
-        if run.chars().all(|ch| ch.is_ascii_alphanumeric()) {
-            if seen.insert(run.clone()) {
-                tokens.push(run);
-            }
-            continue;
-        }
-        let chars: Vec<char> = run.chars().collect();
-        if chars.len() == 1 {
-            if seen.insert(run.clone()) {
-                tokens.push(run);
-            }
-            continue;
-        }
-        for pair in chars.windows(2) {
-            let token: String = pair.iter().collect();
-            if seen.insert(token.clone()) {
-                tokens.push(token);
-            }
-        }
-    }
-    tokens
-}
-
 fn alphanumeric_runs(value: &str) -> Vec<String> {
     let mut runs = Vec::new();
     let mut current = String::new();
@@ -544,6 +736,262 @@ fn one_line(value: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn record(path: &Path, text: &str) {
+        fs::write(
+            path,
+            format!("{}\n", json!({"type":"user","message":{"content":text}})),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn bounded_result_pruning_and_filters_equal_an_unpruned_corpus_scan() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let root = crate::profile::profile_dir().join("chats");
+        crate::profile::make_dir(&root).unwrap();
+        for n in 0..64 {
+            let id = format!("pruning-{n}");
+            let title = ["memory", "内存", "profile", "other"][n % 4];
+            let latest = if n % 3 == 0 {
+                "memory profile"
+            } else {
+                "other words"
+            };
+            let meta: ChatMeta = serde_json::from_value(json!({
+                "id":id,"projectId":"p","title":title,
+                "latestResponse":latest,
+                "createdAt":n,"updatedAt":n % 7
+            }))
+            .unwrap();
+            crate::chat_index::upsert(meta).unwrap();
+            let path = crate::transcript::path_for(&format!("chat:{id}")).unwrap();
+            record(
+                &path,
+                [
+                    "memory profile 内存",
+                    "memory x y",
+                    "other words",
+                    "人物内存",
+                    "profile details",
+                ][n % 5],
+            );
+        }
+        let workspaces = crate::workspaces::WorkspaceState::with_projects(Vec::new());
+        for query in [
+            "memory",
+            "profile",
+            "内存",
+            "x y",
+            "other",
+            "absent-zz",
+            "me",
+        ] {
+            for limit in [1, 3, 50] {
+                let words = search_words(query);
+                let mut full = Vec::new();
+                for meta in crate::chat_index::list() {
+                    let path = crate::transcript::path_for(&format!("chat:{}", meta.id)).unwrap();
+                    let documents = index_transcript(&path).unwrap();
+                    if let Some(best) =
+                        best_match(&meta, "Unknown project", &documents, query, &words)
+                    {
+                        full.push((
+                            best.score,
+                            meta.updated_at,
+                            ChatSearchHit {
+                                id: meta.id,
+                                excerpt: best.excerpt,
+                                speaker: best.speaker,
+                                role: best.role,
+                            },
+                        ));
+                    }
+                }
+                full.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+                let expected: Vec<_> = full
+                    .into_iter()
+                    .take(limit)
+                    .map(|(_, _, hit)| hit)
+                    .collect();
+                let actual = search(&workspaces, query.into(), Some(limit)).unwrap();
+                assert_eq!(
+                    serde_json::to_value(actual).unwrap(),
+                    serde_json::to_value(expected).unwrap(),
+                    "query={query}, limit={limit}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn candidate_filters_never_drop_ascii_or_unicode_substring_matches() {
+        let text = "Mixed Memory PROFILE 内存和人物 𠮷野家 Straße İSTANBUL Key";
+        let chat = CachedChat {
+            version: SEGMENT_VERSION,
+            stamp: "s".into(),
+            documents: vec![SearchDocument {
+                speaker: "You".into(),
+                role: "user".into(),
+                text: text.into(),
+            }],
+        };
+        let filter = CandidateFilter::new(&chat);
+        let lower = text.to_lowercase();
+        let chars: Vec<_> = lower.chars().collect();
+        for size in 1..=8 {
+            for substring in chars.windows(size) {
+                let query: String = substring.iter().collect();
+                let words = search_words(&query);
+                assert!(filter.may_match(&words), "false negative for {query:?}");
+            }
+        }
+        let empty = CandidateFilter {
+            stamp: "s".into(),
+            bits: vec![0; FILTER_WORDS],
+        };
+        assert!(!empty.may_match(&["missing".into()]));
+        assert!(empty.may_match(&["x".into()]));
+        assert!(CandidateFilter {
+            stamp: "s".into(),
+            bits: Vec::new()
+        }
+        .may_match(&["memory".into()]));
+    }
+
+    #[test]
+    fn importing_legacy_cache_preserves_speakers_and_leaves_the_original_bytes() {
+        let root = crate::test_dir::TestDir::new("search-legacy-import");
+        let transcript = root.join("record.jsonl");
+        record(&transcript, "memory 内存");
+        let legacy = root.join("search-index.json");
+        let raw = serde_json::to_vec(&json!({"version":2,"chats":{"record":{
+            "stamp":transcript_stamp(&transcript).unwrap(),"documents":[{
+                "speaker":"User","role":"user","text":"memory   内存","tokens":["memory","内存"]
+            }]
+        }}}))
+        .unwrap();
+        fs::write(&legacy, &raw).unwrap();
+        let mut filters = Filters::default();
+        assert!(migrate_legacy(&root, &mut filters).unwrap());
+        let documents = documents_for_chat(&root, "record", &transcript).unwrap();
+        assert_eq!(documents[0].speaker, "User");
+        assert_eq!(documents[0].text, "memory 内存");
+        assert_eq!(fs::read(&legacy).unwrap(), raw);
+        assert!(filters.chats["record"].may_match(&["内存".into()]));
+        assert!(!migrate_legacy(&root, &mut filters).unwrap());
+        // A corrupt filter index is only a cache miss, never negative evidence.
+        fs::write(root.join("search-filters-v1.json"), b"{partial").unwrap();
+        assert!(load_filters(&root).unwrap().chats.is_empty());
+    }
+
+    #[test]
+    fn candidate_filter_admission_has_a_hard_resident_bound() {
+        let chat = CachedChat {
+            version: SEGMENT_VERSION,
+            stamp: "s".into(),
+            documents: Vec::new(),
+        };
+        let mut filters = Filters::default();
+        for n in 0..FILTER_LIMIT {
+            assert!(remember_filter(&mut filters, &n.to_string(), &chat));
+        }
+        assert!(!remember_filter(&mut filters, "overflow", &chat));
+        assert_eq!(filters.chats.len(), FILTER_LIMIT);
+        assert!(remember_filter(&mut filters, "0", &chat));
+        assert_eq!(filters.chats.len(), FILTER_LIMIT);
+    }
+
+    #[test]
+    fn segments_refresh_independently_and_leave_the_legacy_cache_intact() {
+        let root = crate::test_dir::TestDir::new("search-segments");
+        let a = root.join("a.jsonl");
+        let b = root.join("b.jsonl");
+        let legacy = root.join("search-index.json");
+        fs::write(&legacy, b"legacy cache kept for older readers").unwrap();
+        record(&a, "first zebra");
+        record(&b, "second heron");
+        assert_eq!(
+            documents_for_chat(&root, "a", &a).unwrap()[0].text,
+            "first zebra"
+        );
+        documents_for_chat(&root, "b", &b).unwrap();
+        let untouched = fs::read(segment_path(&root, "b")).unwrap();
+        record(&a, "a newer and longer zebra");
+        assert_eq!(
+            documents_for_chat(&root, "a", &a).unwrap()[0].text,
+            "a newer and longer zebra"
+        );
+        assert_eq!(fs::read(segment_path(&root, "b")).unwrap(), untouched);
+        assert_eq!(
+            fs::read(legacy).unwrap(),
+            b"legacy cache kept for older readers"
+        );
+        // A hot read reuses a valid derivative without rebuilding its record.
+        let target = segment_path(&root, "a");
+        let mut segment: CachedChat = serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+        segment.documents[0].text = "cached zebra".into();
+        save_segment(&target, &segment).unwrap();
+        assert_eq!(
+            documents_for_chat(&root, "a", &a).unwrap()[0].text,
+            "cached zebra"
+        );
+    }
+
+    #[test]
+    fn corrupt_segments_and_failed_cache_writes_do_not_lose_searchable_text() {
+        let root = crate::test_dir::TestDir::new("search-segment-recovery");
+        let transcript = root.join("record.jsonl");
+        record(&transcript, "the heron returned");
+        let target = segment_path(&root, "../arbitrary/id");
+        assert_eq!(target.parent().unwrap(), root.join(SEGMENT_FOLDER));
+        // A folder cannot be created here. Search still answers from its source.
+        fs::write(root.join(SEGMENT_FOLDER), b"cache not writable").unwrap();
+        assert_eq!(
+            documents_for_chat(&root, "../arbitrary/id", &transcript).unwrap()[0].text,
+            "the heron returned"
+        );
+        fs::remove_file(root.join(SEGMENT_FOLDER)).unwrap();
+        crate::profile::make_dir(target.parent().unwrap()).unwrap();
+        fs::write(&target, b"{part of an interrupted cache").unwrap();
+        assert_eq!(
+            documents_for_chat(&root, "../arbitrary/id", &transcript).unwrap()[0].text,
+            "the heron returned"
+        );
+        let segment: CachedChat = serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+        assert_eq!(segment.version, SEGMENT_VERSION);
+        assert_eq!(fs::read_dir(target.parent().unwrap()).unwrap().count(), 1);
+        fs::remove_file(&transcript).unwrap();
+        assert!(documents_for_chat(&root, "../arbitrary/id", &transcript)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn search_segments_never_default_or_write_into_a_missing_or_replaced_profile() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let root = crate::profile::profile_dir().join("chats");
+        crate::profile::make_dir(&root).unwrap();
+        let transcript = root.join("record.jsonl");
+        record(&transcript, "kept words");
+        documents_for_chat(&root, "record", &transcript).unwrap();
+        home.move_away();
+        let missing = documents_for_chat(&root, "record", &transcript).unwrap_err();
+        assert!(missing.contains("not available right now"), "{missing}");
+        assert!(!home.profile().exists());
+        home.move_back();
+        assert_eq!(
+            documents_for_chat(&root, "record", &transcript).unwrap()[0].text,
+            "kept words"
+        );
+        home.replace();
+        let replaced = documents_for_chat(&root, "record", &transcript).unwrap_err();
+        assert!(replaced.contains("not the folder"), "{replaced}");
+        assert!(!root.join(SEGMENT_FOLDER).exists());
+        home.move_back();
+    }
 
     #[test]
     fn extracts_user_and_provider_assistant_messages_without_tool_noise() {

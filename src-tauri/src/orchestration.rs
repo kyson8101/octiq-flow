@@ -1482,6 +1482,17 @@ impl OrchestrationStore {
     }
 
     pub fn snapshot(&self, run_id: Option<&str>) -> Result<Snapshot, String> {
+        self.snapshot_in(run_id, None, true)
+    }
+
+    /// Background monitoring reads only the runs it can act on and never
+    /// reads task reports. The full public snapshot keeps its old contract.
+    fn snapshot_in(
+        &self,
+        run_id: Option<&str>,
+        wanted: Option<&BTreeSet<String>>,
+        reports: bool,
+    ) -> Result<Snapshot, String> {
         self.capture_native_decisions()?;
         let inner = self.inner.lock().map_err(|error| error.to_string())?;
         if let Some(error) = &inner.load_error {
@@ -1492,6 +1503,7 @@ impl OrchestrationStore {
             .runs
             .values()
             .filter(|run| run_id.is_none_or(|id| run.id == id))
+            .filter(|run| wanted.is_none_or(|ids| ids.contains(&run.id)))
             .cloned()
             .collect();
         runs.sort_by_key(|run| std::cmp::Reverse(run.updated_at));
@@ -1629,12 +1641,14 @@ impl OrchestrationStore {
         };
         drop(inner);
         lifecycle::refresh_decision_views(&mut snapshot);
-        snapshot.reports = crate::chat_task::reports_for_chat_keys(
-            snapshot
-                .attempts
-                .iter()
-                .map(|attempt| attempt.worker_chat_key.as_str()),
-        );
+        if reports {
+            snapshot.reports = crate::chat_task::reports_for_chat_keys(
+                snapshot
+                    .attempts
+                    .iter()
+                    .map(|attempt| attempt.worker_chat_key.as_str()),
+            );
+        }
         Ok(snapshot)
     }
 
