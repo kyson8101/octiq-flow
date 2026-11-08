@@ -47,6 +47,23 @@ it("ignores an older IndexedDB snapshot when localStorage has a newer copy", asy
   expect(options.getState()).toBe(newer);
 });
 
+it("keeps local words, attachments and queue state while a released chat seeds from IndexedDB and replays", async () => {
+  const saved = await replayChat(emptyChat(), [frame(1)], 0, () => false);
+  await saveChatCheckpoint({ id: "a", seq: 1, state: saved, updatedAt: 1 });
+  const options = setup();
+  const local = addUserTurn(emptyChat(), "only in this tab", [], 10, "local");
+  const prompt = { ...local.messages[0], delivery: "queued" as const, queueError: "retry later",
+    attachments: [{ path: "/fixture/image.png", name: "image.png", isImage: true }] };
+  options.publish({ ...local, messages: [prompt] });
+  let finish!: (frames: Frame[]) => void;
+  const request = vi.fn(() => new Promise<Frame[]>(resolve => { finish = resolve; }));
+  const loading = loadChat({ ...options, request });
+  await vi.waitFor(() => expect(request).toHaveBeenCalledWith(1));
+  expect(options.getState().messages.at(-1)).toEqual(prompt);
+  finish([frame(2)]); await loading;
+  expect(options.getState().messages.at(-1)).toEqual(prompt);
+});
+
 it("does not resurrect a chat cleared or deleted during download", async () => {
   const options = setup();
   let cancelled = false;

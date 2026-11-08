@@ -9,11 +9,68 @@ vi.mock("./bridge", () => ({ bridge: {
 import { createOrchestrationFeed } from "./orchestrationSummaryFeed";
 import { EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "./orchestration";
 import { detailedRun } from "./useOrchestrationSnapshot";
+import { useRunDetail } from "./useOrchestrationSnapshot";
+import { orchestrationFeed } from "./orchestrationFeed";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 const summary = (id = "r", status = "running"): OrchestrationSnapshot => ({ ...EMPTY_ORCHESTRATION, summary: true, revision: "epoch:1", runRevisions: { [id]: "epoch:1" }, runs: [{ id, status, coordinatorChatKey: "chat:main" }], tasks: [{ id: `t-${id}`, runId: id, status: "running", spec: "" }], attempts: [{ id: `a-${id}`, runId: id, taskId: `t-${id}`, workerChatKey: "chat:w", execution: { state: "executing" }, filesModified: [] }] } as unknown as OrchestrationSnapshot);
 const emit = (kind: string, payload: unknown) => { for (const fn of [...(mock.handlers.get(kind) ?? [])]) fn(payload as never); };
 const tick = () => vi.advanceTimersByTimeAsync(1100);
 beforeEach(() => { vi.useFakeTimers(); mock.state = "open"; mock.handlers.clear(); mock.states.clear(); mock.reads = []; });
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+function readDetail(small: OrchestrationSnapshot, details: ReadonlyMap<string, OrchestrationSnapshot>) {
+  vi.spyOn(orchestrationFeed, "getState").mockReturnValue({ snapshot: small, error: null, details });
+  let shown!: ReturnType<typeof useRunDetail>;
+  function Probe() { shown = useRunDetail(small, "r"); return null; }
+  renderToStaticMarkup(createElement(Probe));
+  return shown;
+}
+
+it.each(["summary-first", "detail-first"])("waits for the same run revision in both reads: %s", order => {
+  const old = summary();
+  old.runs[0].planApproval = { status: "pending", requestedAt: 1, revision: 1 };
+  const next = structuredClone(old);
+  next.runRevisions = { r: "epoch:2" };
+  next.runs[0].planApproval!.revision = 2;
+  const small = order === "summary-first" ? next : old;
+  const full = { ...(order === "summary-first" ? old : next), summary: false };
+  expect(readDetail(small, new Map([["r", full]])).ready).toBe(false);
+  expect(readDetail(next, new Map([["r", { ...next, summary: false }]])).ready).toBe(true);
+});
+
+it("does not restore absent summary state at any nesting level", () => {
+  const small = summary(); small.tasks[0].status = "ready";
+  const full = structuredClone(small);
+  Object.assign(full.tasks[0], { failure: { awaits: "person" }, heldByReopen: true, retrying: true, spec: "Brief", result: "Evidence" });
+  Object.assign(full.attempts[0].execution!, { nextRetryAt: 100, latestError: { message: "old" }, lastProgress: "Evidence" });
+  const shown = detailedRun(small, full, "r");
+  expect(shown.tasks[0]).not.toHaveProperty("failure");
+  expect(shown.tasks[0]).not.toHaveProperty("heldByReopen");
+  expect(shown.tasks[0]).not.toHaveProperty("retrying");
+  expect(shown.tasks[0]).toMatchObject({ spec: "Brief", result: "Evidence" });
+  expect(shown.attempts[0].execution).not.toHaveProperty("nextRetryAt");
+  expect(shown.attempts[0].execution).not.toHaveProperty("latestError");
+});
+
+it("withdraws invalidated detail, discards an invalidated in-flight reply and stays unready after failed refetch", async () => {
+  const feed = createOrchestrationFeed(); const off = feed.subscribe(() => {});
+  mock.reads[0].resolve(summary()); await tick();
+  const release = feed.detail("r");
+  mock.reads[1].resolve({ ...summary(), summary: false }); await tick();
+  const change = () => emit("orchestration-changed", { runId: "r", revision: "epoch:2" });
+  change(); expect(feed.getState().details?.has("r")).toBe(false);
+  await tick();
+  const first = mock.reads.filter(r => r.cmd === "orchestration_run_detail").at(-1)!;
+  change(); first.resolve({ ...summary(), summary: false });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(feed.getState().details?.has("r")).toBe(false);
+  await tick();
+  mock.reads.filter(r => r.cmd === "orchestration_run_detail").at(-1)!.reject(new Error("offline")); await tick();
+  expect(feed.getState().detailErrors?.get("r")).toContain("offline");
+  expect(readDetail(summary(), feed.getState().details!)).toMatchObject({ ready: false });
+  release(); off();
+});
 it("whole-app readers receive only summary, with per-run invalidation and a follow-up for in-flight changes", async () => {
   const feed = createOrchestrationFeed(); const off = feed.subscribe(() => {});
   expect(mock.reads.map(r => r.cmd)).toEqual(["orchestration_summary"]);
