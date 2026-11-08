@@ -52,8 +52,9 @@ import { waitsOnPerson } from "./handover";
 import { mainChatId, type OrchestrationSnapshot } from "./orchestration";
 import { ledgerWaits, type LedgerWaits, type Waiting } from "./runWaits";
 import type { Question } from "./question";
+import { cleanupResult, type CleanupCard } from "./workspaceCleanup";
 
-export type PendingActionKind = "permission" | "safety" | "outage" | "question" | "delivery" | "gate" | "failure" | "plan" | "handover";
+export type PendingActionKind = "permission" | "safety" | "outage" | "question" | "delivery" | "gate" | "failure" | "plan" | "handover" | "cleanup";
 
 export type PendingAction = {
   /** The host's own identity for it, prefixed by kind: stable across reloads
@@ -78,10 +79,10 @@ export type PendingAction = {
 };
 
 /** What can say that a chat waits on the person, each filled by one request
- *  to the host: the four card lists `useChatRequests` asks for on every
+ *  to the host: the card lists `useChatRequests` asks for on every
  *  connection, and the ledger (`orchestrationFeed`), which holds a plan
  *  awaiting approval. Handovers are not here: none parks a chat. */
-export const WAIT_SOURCES = ["permission_pending", "access_request_pending", "question_pending", "safety_block_pending", "orchestration_snapshot"] as const;
+export const WAIT_SOURCES = ["permission_pending", "access_request_pending", "question_pending", "safety_block_pending", "orchestration_workspace_cleanup_request_pending", "orchestration_snapshot"] as const;
 export type WaitSource = (typeof WAIT_SOURCES)[number];
 
 /** Where one source's request stands for this connection: asked and not
@@ -165,6 +166,7 @@ export type PendingActionInput = {
    *  waits on the person's click like a permission card, and is badged as
    *  one, under its own key. */
   accessRequests?: Requests;
+  cleanupRequests?: Readonly<Record<string, readonly CleanupCard[] | undefined>>;
   /** Handovers an agent asked for: waiting on the person's confirm, or on
    *  their Try again / Give up after a start that failed. */
   handovers?: readonly { id: string; sourceChatKey: string; status: string; error?: string; kind?: string }[];
@@ -174,7 +176,7 @@ export type PendingActionInput = {
   late?: boolean;
 };
 
-const ORDER: Record<PendingActionKind, number> = { permission: 0, safety: 1, outage: 2, question: 3, delivery: 4, gate: 5, failure: 6, plan: 7, handover: 8 };
+const ORDER: Record<PendingActionKind, number> = { permission: 0, safety: 1, outage: 2, question: 3, delivery: 4, gate: 5, failure: 6, plan: 7, handover: 8, cleanup: 9 };
 
 const chatId = (chatKey: string | undefined) => chatKey?.startsWith("chat:") ? chatKey.slice(5) || null : null;
 
@@ -234,6 +236,9 @@ export function heldCards(input: PendingActionInput): PendingAction[] {
   requests("safety", input.safetyBlocks);
   for (const [conversationId, list] of Object.entries(input.accessRequests ?? {})) {
     for (const item of list ?? []) if (item?.id) request("permission", item.id, conversationId, "access");
+  }
+  for (const [conversationId, list] of Object.entries(input.cleanupRequests ?? {})) {
+    for (const item of list ?? []) if (item?.id && !cleanupResult(item)) request("cleanup", item.id, conversationId);
   }
   for (const [conversationId, list] of Object.entries(input.questions ?? {})) {
     // The main chat draws its workers' permission and safety cards, but
@@ -327,6 +332,7 @@ const LABEL: Record<PendingActionKind, string> = {
   failure: "Failed · your decision",
   plan: "Plan approval",
   handover: "Handover to confirm",
+  cleanup: "Cleanup approval",
 };
 
 const NOUN: Record<PendingActionKind, [string, string]> = {
@@ -339,6 +345,7 @@ const NOUN: Record<PendingActionKind, [string, string]> = {
   failure: ["failed task to decide", "failed tasks to decide"],
   plan: ["plan to approve", "plans to approve"],
   handover: ["handover to confirm", "handovers to confirm"],
+  cleanup: ["cleanup batch to approve", "cleanup batches to approve"],
 };
 
 /** What colour a badge is. Colour is state, and these are three states:
@@ -351,7 +358,7 @@ const NOUN: Record<PendingActionKind, [string, string]> = {
 export type PendingTone = "decide" | "warn" | "danger";
 
 const TONE: Record<PendingActionKind, PendingTone> = {
-  permission: "decide", question: "decide", gate: "decide", plan: "decide", handover: "decide",
+  permission: "decide", question: "decide", gate: "decide", plan: "decide", handover: "decide", cleanup: "decide",
   safety: "warn", outage: "warn", delivery: "warn",
   failure: "danger",
 };

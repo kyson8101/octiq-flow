@@ -4,7 +4,7 @@ use super::*;
 use crate::git_ops::workflow::{self, DeliveryEvidence, WorkspaceMode, WorkspacePlan};
 use crate::paths::Canonical;
 
-fn cleanup_ready(
+pub(super) fn cleanup_ready(
     data: &Stored,
     task: &Task,
     ws: &TaskWorkspace,
@@ -1629,12 +1629,30 @@ impl OrchestrationStore {
         abandon: bool,
         expected_head: &str,
     ) -> Result<Task, String> {
+        self.cleanup_workspace_expected(chats, actor, task_id, abandon, expected_head, None)
+    }
+
+    pub(super) fn cleanup_workspace_expected(
+        &self,
+        chats: &ChatManager,
+        actor: &str,
+        task_id: &str,
+        abandon: bool,
+        expected_head: &str,
+        expected_plan: Option<&WorkspacePlan>,
+    ) -> Result<Task, String> {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
         let (_, task) = self.owned_task(actor, task_id)?;
         let ws = task
             .workspace
             .as_ref()
             .ok_or("This task has no workspace.")?;
+        if let Some(expected) = expected_plan {
+            super::cleanup_request::same_plan(expected, &ws.plan)?;
+            if ws.state != WorkspaceState::Retained || ws.abandoned {
+                return Err("Workspace state changed since the approved card; folder kept.".into());
+            }
+        }
         if ws.state == WorkspaceState::Cleaned {
             return Ok(task);
         }

@@ -132,3 +132,19 @@ test("message_send discloses its UTF-8 byte body limit", async () => {
   const tool = listed.tools.find(tool => tool.name === "orchestration_message_send");
   assert.match(tool.description, /20,000 UTF-8 bytes/);
 });
+
+
+test("batch cleanup is a coordinator proposal, never a socket answer tool", async () => {
+  const name = "orchestration_workspace_cleanup_request";
+  for (const [kind, env, flags] of KINDS) {
+    const { tools } = await ask("tools/list", env, flags);
+    const offered = tools.find(tool => tool.name === name);
+    assert.equal(Boolean(offered), !kind.includes("worker") && !kind.includes("front desk"), kind);
+    assert.ok(!tools.some(tool => tool.name === name + "_answer"));
+    if (offered) {
+      assert.deepEqual(Object.keys(offered.inputSchema.properties), ["runId"]);
+      assert.match(offered.description, /removes nothing/);
+      assert.match(offered.description, /host notification/);
+    }
+  }
+});

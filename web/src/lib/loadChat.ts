@@ -1,9 +1,9 @@
 import { valueBytes } from "./valueBytes";
-import { emptyChat, reduceChat, type ChatState } from "./chat";
+import { emptyChat, reduceChat, type ChatState, type Message } from "./chat";
 import { type CatchUp, type Frame } from "./catchUp";
 import { readChatCheckpoint, saveChatCheckpoint } from "./chatCache";
 import { replayChat } from "./replayChat";
-import { type ChatHistory, type ChatPage } from "./chatHistory";
+import { type ChatHistory, type ChatPage, type HistorySlice } from "./chatHistory";
 import { restoredTurn } from "./turnClock";
 import { withLocalPrompts } from "./chatRetention";
 
@@ -45,6 +45,8 @@ export type ChatLoadOptions = {
   cancelled: () => boolean;
   history?: ChatHistory;
   requestPage?: (before: number | null) => Promise<ChatPage>;
+  /** Let native touch/momentum scrolling finish before changing its content. */
+  beforePrepend?: () => Promise<void>;
 };
 
 export async function loadChat(options: ChatLoadOptions): Promise<void> {
@@ -118,7 +120,7 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
   for (const frame of frames) {
     if (frame.seq > tail) next = reduceChat(next, frame.event);
   }
-  if (page) options.history?.set(id, page.before);
+  if (page) options.history?.set(id, page.before, undefined, [historySlice(next, page.events.at(-1)?.seq ?? 0)]);
   const live = getState();
   if (live.busy && next.busy && live.turnStartedAt !== undefined) next = { ...next, turnStartedAt: live.turnStartedAt, turnWaits: live.turnWaits, activityTurnId: live.activityTurnId };
   publish(next);
@@ -127,11 +129,44 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
   }
 }
 
-/** Raw replay windows are bounded too. Explicit earlier reads may slide the
+/** Reduced history windows are bounded too. Explicit earlier reads may slide the
  * newest turns out; the UI then offers Return to latest. Whole turns stay whole,
- * so one indivisible oversized turn can exceed this target (server contract). */
+ * so the incoming page and its adjacent visible page may exceed this target:
+ * evicting the reader's anchor to meet a soft target would itself be a jump. */
 export const CHAT_WINDOW_BYTES = 8 * 1024 * 1024;
 export const CHAT_WINDOW_PAGES = 12;
+
+function historySlice(state: ChatState, end: number): HistorySlice {
+  return { ids: state.messages.map(m => m.id), agentIds: state.agents.map(a => a.id),
+    outcomeIds: Object.keys(state.pendingOutcomes ?? {}), notices: state.notices.length, end };
+}
+
+// Immutable message bodies are measured once; walking a window subsequently
+// copies only references. Weak keys do not keep evicted pages alive.
+const messageSizes = new WeakMap<object, number>();
+function messageBytes(message: object): number {
+  let bytes = messageSizes.get(message);
+  if (bytes === undefined) { bytes = valueBytes(message); messageSizes.set(message, bytes); }
+  return bytes;
+}
+
+/** Join by host identity only. Replaying an old "continue" against a new local
+ * prompt would confirm it by text on legacy records. Historical replay stays
+ * separate, and only identified overlap can adopt local metadata. */
+function prependMessages(older: Message[], current: Message[]): Message[] {
+  const known = new Map<string, Message>();
+  const keys = (m: Message) => [`message:${m.id}`, ...[m.turnId, ...(m.sourceTurnIds ?? [])].filter(Boolean).map(id => `turn:${id}`)];
+  for (const message of current) for (const key of keys(message)) known.set(key, message);
+  const replaced = new Set<Message>();
+  const prefix = older.map(message => {
+    const match = keys(message).map(key => known.get(key)).find(Boolean);
+    if (!match) return message;
+    replaced.add(match);
+    if (message.role !== "user" || match.role !== "user") return match;
+    return withLocalPrompts({ ...emptyChat(), messages: [message] }, { ...emptyChat(), messages: [match] }).messages[0];
+  });
+  return [...prefix, ...current.filter(message => !replaced.has(message))];
+}
 
 export async function loadEarlierChat(options: ChatLoadOptions): Promise<void> {
   const { id, key, catchUp, getState, publish, cancelled, history, requestPage } = options;
@@ -142,47 +177,94 @@ export async function loadEarlierChat(options: ChatLoadOptions): Promise<void> {
   const page = await requestPage(window.before);
   if (cancelled()) return;
   if (page.before !== null && page.before >= window.before) throw new Error("History cursor did not advance");
-  // Walk only the displayed window in bounded pages, never chat_since(oldest).
-  const newer: ChatPage[] = [];
-  let contiguous = false;
-  let downloaded = 0;
-  let cursor: number | null = window.end !== undefined ? window.end + 1 : null;
-  for (let n = 0; n < CHAT_WINDOW_PAGES; n++) {
-    const part = await requestPage(cursor);
-    if (cancelled()) return;
-    downloaded += valueBytes(part);
-    if (downloaded > CHAT_WINDOW_BYTES) break;
-    newer.unshift(part);
-    if (part.before === null || part.before <= window.before) { contiguous = true; break; }
-    if (cursor !== null && part.before >= cursor) throw new Error("History cursor did not advance");
-    cursor = part.before;
-  }
-  let bytes = valueBytes(page);
-  const tail: Frame[] = [];
-  let end = page.events.at(-1)?.seq ?? window.before - 1;
-  let slid = !contiguous;
-  for (const part of contiguous ? newer : []) {
-    const frames = part.events.filter(f => f.seq >= window.before! && f.seq <= (window.end ?? Infinity));
-    if (!frames.length) continue;
-    const size = valueBytes(frames);
-    if (bytes + size > CHAT_WINDOW_BYTES) { slid = true; break; }
-    bytes += size; tail.push(...frames); end = frames.at(-1)!.seq;
-  }
-  const events = [...page.events, ...tail];
-  let next = await replayChat({ ...emptyChat(), sessionId: current.sessionId, cwd: current.cwd }, page.context, 0, cancelled);
-  next = await replayChat(next, events.filter(f => f.seq <= after), 0, cancelled);
-  next = pendingAfterReplay(next, getState(), [...page.context, ...events.filter(f => f.seq <= after)]);
-  next = await replayChat(next, events, after, cancelled);
+  let older = await replayChat({ ...emptyChat(), sessionId: current.sessionId, cwd: current.cwd }, page.context, 0, cancelled);
+  older = await replayChat(older, page.events, 0, cancelled);
   if (cancelled()) return;
-  next = pendingAfterReplay(next, getState(), events);
-  const live = catchUp.end(key, []).filter(f => f.seq > end);
-  const past = slid || window.end !== undefined;
-  if (!past) for (const frame of live) next = reduceChat(next, frame.event);
-  // An old turn's end is history, not the host's current busy/clock facts.
-  const now = getState();
-  if (past) next = { ...next, busy: now.busy, turnStartedAt: now.turnStartedAt, turnWaits: now.turnWaits, background: now.background };
-  history!.set(id, page.before, past ? end : undefined);
-  next = { ...next, exited: now.exited };
+  // Some old provider records have no native message id. The reducer's local
+  // m0/u0 fallback belongs to this page, not another independently read page.
+  const existingIds = new Set(current.messages.map(m => m.id));
+  const nativeIds = new Set([...page.context, ...page.events].flatMap(({ event }) => {
+    const e = event as { uuid?: string; message?: { id?: string }; item?: { id?: string } };
+    return [e?.uuid, e?.message?.id, e?.item?.id].filter(Boolean);
+  }));
+  older = { ...older, messages: older.messages.map(m => existingIds.has(m.id) && !nativeIds.has(m.id) && !m.echo && !m.turnId && /^(?:[mu]|writer-|recovered-|compact-|local-)\d+$/.test(m.id)
+    ? { ...m, id: `history:${page.events[0]?.seq}:${m.id}` } : m) };
+
+  // The server supplies whole turns. For legacy split tool calls, read only
+  // the adjoining page's results, never the already displayed window.
+  const unresolved = new Set(older.messages.flatMap(m => m.blocks.flatMap(b => b.kind === "tool" && b.result === undefined ? [b.id] : [])));
+  const slices = history!.slices(id);
+  if (unresolved.size) {
+    const boundary = await requestPage((slices[0]?.end ?? after) + 1);
+    if (cancelled()) return;
+    const results = boundary.events.filter(({ event }) => {
+      const e = event as { type?: string; message?: { content?: { type?: string; tool_use_id?: string }[] } };
+      return e?.type === "user" && Array.isArray(e.message?.content) && e.message.content.some(b => b?.type === "tool_result" && unresolved.has(b.tool_use_id ?? ""));
+    });
+    older = await replayChat(older, results, 0, cancelled);
+  }
+
+  // One bounded recent page covers a reconnect race; live events remain held
+  // until commit. An unseen gap cannot be silently skipped or downloaded whole.
+  const recent = window.end === undefined ? await requestPage(null) : undefined;
+  if (cancelled()) return;
+  if (recent?.before != null && recent.before > after + 1) throw new Error("Recent messages moved beyond this window. Reopen the chat to read the latest messages.");
+  await options.beforePrepend?.();
+  if (cancelled()) return;
+  let now = getState();
+  const live = catchUp.end(key, recent?.events ?? []);
+  if (window.end === undefined) for (const frame of live) now = reduceChat(now, frame.event);
+
+  // Only the few unconfirmed local prompts need delivery facts from the older
+  // page. All confirmed messages and runtime/clock facts remain untouched.
+  const locals = now.messages.filter(m => m.role === "user" && !m.echo && !m.takenUp);
+  const reconciled = pendingAfterReplay({ ...now, messages: locals }, { ...now, messages: locals }, [...page.context, ...page.events]);
+  const localById = new Map(reconciled.messages.map(m => [m.id, m]));
+  const localIds = new Set(locals.map(m => m.id));
+  const messages = prependMessages(older.messages, now.messages.filter(m => !localIds.has(m.id) || localById.has(m.id)).map(m => localById.get(m.id) ?? m));
+  // Reconciled echoes can have the browser's id instead of the native uuid.
+  const prefixIds = messages.slice(0, older.messages.length).map(m => m.id);
+  const prior: HistorySlice[] = slices.length ? slices.map(slice => ({ ...slice, ids: [...slice.ids], agentIds: [...(slice.agentIds ?? [])], outcomeIds: [...(slice.outcomeIds ?? [])] }))
+    : [historySlice(current, window.end ?? after)];
+  const accounted = new Set(prior.flatMap(slice => slice.ids));
+  const prefix = new Set(prefixIds);
+  prior[prior.length - 1].ids.push(...messages.filter(m => !prefix.has(m.id) && !accounted.has(m.id)).map(m => m.id));
+  const accountedAgents = new Set(prior.flatMap(slice => slice.agentIds ?? []));
+  prior[prior.length - 1].agentIds!.push(...now.agents.filter(a => !accountedAgents.has(a.id)).map(a => a.id));
+  const accountedOutcomes = new Set(prior.flatMap(slice => slice.outcomeIds ?? []));
+  prior[prior.length - 1].outcomeIds!.push(...Object.keys(now.pendingOutcomes ?? {}).filter(id => !accountedOutcomes.has(id)));
+  prior[prior.length - 1].notices = (prior.at(-1)!.notices ?? 0) + Math.max(0, now.notices.length - prior.reduce((n, slice) => n + (slice.notices ?? 0), 0));
+  if (window.end === undefined) prior[prior.length - 1].end = catchUp.mark(key);
+  const candidates = [{ ...historySlice(older, page.events.at(-1)?.seq ?? window.before - 1), ids: prefixIds }, ...prior];
+  const byId = new Map(messages.map(m => [m.id, m]));
+  const allAgents = new Map([...older.agents, ...now.agents].map(a => [a.id, a]));
+  const allNotices = [...older.notices, ...now.notices];
+  const allOutcomes = { ...older.pendingOutcomes, ...now.pendingOutcomes };
+  const kept: HistorySlice[] = [];
+  let bytes = 0, notice = 0;
+  for (const slice of candidates) {
+    let size = slice.ids.reduce((sum, id) => sum + (byId.has(id) ? messageBytes(byId.get(id)!) : 0), 0);
+    size += (slice.agentIds ?? []).reduce((sum, id) => sum + (allAgents.has(id) ? messageBytes(allAgents.get(id)!) : 0), 0);
+    size += (slice.outcomeIds ?? []).reduce((sum, id) => sum + (allOutcomes[id] ? messageBytes(allOutcomes[id]) : 0), 0);
+    for (let n = 0; n < (slice.notices ?? 0); n++) size += valueBytes(allNotices[notice++]);
+    if (kept.length >= CHAT_WINDOW_PAGES || (kept.length >= 2 && bytes + size > CHAT_WINDOW_BYTES)) break;
+    bytes += size; kept.push(slice);
+  }
+  const slid = kept.length < candidates.length;
+  const keep = new Set(kept.flatMap(slice => slice.ids));
+  const retained = messages.filter(m => keep.has(m.id) || (m.role === "user" && !m.echo && !m.takenUp));
+  const agentIds = new Set(kept.flatMap(slice => slice.agentIds ?? []));
+  const agents = [...older.agents.filter(a => !now.agents.some(b => b.id === a.id)), ...now.agents]
+    .filter(a => agentIds.has(a.id));
+  // The two-page soft exception is an explicit history window too. Freeze its
+  // end so App's latest-stream trim cannot immediately discard the requested
+  // page and anchor just because neither indivisible page could be evicted.
+  const past = slid || window.end !== undefined || bytes > CHAT_WINDOW_BYTES;
+  history!.set(id, page.before, past ? kept.at(-1)!.end : undefined, kept);
+  const outcomeIds = new Set(kept.flatMap(slice => slice.outcomeIds ?? []));
+  const outcomes = Object.fromEntries(Object.entries(allOutcomes).filter(([id]) => outcomeIds.has(id)));
+  const next = { ...now, messages: retained, agents, pendingOutcomes: Object.keys(outcomes).length ? outcomes : undefined,
+    notices: allNotices.slice(0, kept.reduce((n, slice) => n + (slice.notices ?? 0), 0)) };
   publish(next);
   if (!history!.isPartial(id)) void saveChatCheckpoint({ id, state: next, seq: catchUp.mark(key), updatedAt: Date.now() });
 }

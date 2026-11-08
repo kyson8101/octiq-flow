@@ -33,6 +33,7 @@ pub mod auto_plan;
 pub mod automation;
 pub mod bridge;
 pub mod brief;
+pub mod cleanup_request;
 pub mod consent;
 pub mod destination;
 #[cfg(test)]
@@ -1127,6 +1128,7 @@ pub struct OrchestrationStore {
     path: Option<PathBuf>,
     inner: Mutex<Inner>,
     workspace_ops: Mutex<()>,
+    cleanup_requests: Mutex<BTreeMap<String, cleanup_request::Pending>>,
     auto_plan_delivery: Mutex<()>,
     /// Coordinator chats whose transcript gave no receipt for a reopen's
     /// notice: how often in a row, and when it is next worth asking
@@ -1281,6 +1283,7 @@ impl Default for OrchestrationStore {
             path: None,
             inner: Mutex::new(Inner::default()),
             workspace_ops: Mutex::new(()),
+            cleanup_requests: Mutex::default(),
             auto_plan_delivery: Mutex::new(()),
             reopen_waits: Mutex::default(),
             listed_chats: Mutex::default(),
@@ -1336,6 +1339,7 @@ impl OrchestrationStore {
             path: Some(path),
             inner: Mutex::new(inner),
             workspace_ops: Mutex::new(()),
+            cleanup_requests: Mutex::default(),
             auto_plan_delivery: Mutex::new(()),
             reopen_waits: Mutex::default(),
             listed_chats: Mutex::default(),

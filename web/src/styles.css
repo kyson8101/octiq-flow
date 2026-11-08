@@ -1910,8 +1910,30 @@ body {
   transform: scale(0.94);
 }
 
+/* The loaded bottom of a past window is not the live tail. Words, in the
+   same zero-height overlay, keep that distinction visible without moving
+   the transcript or composer. A phone-sized target at every pointer type. */
+.jump.jump-latest, .app.focus-mode .jump.jump-latest {
+  width: auto;
+  max-width: calc(100% - 32px);
+  height: auto;
+  min-height: 44px;
+  min-width: 44px;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  line-height: 18px;
+  transition: opacity 160ms ease-out, transform 160ms ease-out,
+    visibility 0s linear 160ms, background 160ms ease-out, border-color 160ms ease-out;
+}
+.jump.jump-latest.is-on { transition-delay: 0s; }
+.jump-latest svg { flex-shrink: 0; }
+.jump-latest:disabled { cursor: wait; }
+
 @media (prefers-reduced-motion: reduce) {
-  .jump {
+  .jump, .jump.jump-latest, .app.focus-mode .jump.jump-latest {
     transition:
       opacity 1ms linear,
       visibility 0s linear 1ms;

@@ -1760,6 +1760,10 @@ const ORCHESTRATION_HOOK_ACTIONS: &[(&str, &str)] = &[
     ("peer_request", "orchestration_peer_request"),
     ("service_register", "orchestration_service_register"),
     ("workspace_refresh", "orchestration_workspace_refresh"),
+    (
+        "workspace_cleanup_request",
+        "orchestration_workspace_cleanup_request",
+    ),
     // Read-only: where the mission's branches stand. Closing is the person's.
     ("mission_refresh", "orchestration_mission_refresh"),
     // The coordinator's reopen, held to the task's automatic retries. NOT
@@ -1817,6 +1821,9 @@ async fn orchestration_handler(
     if let Some(refused) = seat_refusal(command, &caller) {
         return hook_failed(StatusCode::BAD_REQUEST, refused);
     }
+    if command == "orchestration_workspace_cleanup_request" {
+        return workspace_cleanup_request(&ctx, caller, request.args).await;
+    }
     let actor = caller.chat_key;
     let mut args = match request.args {
         Value::Object(args) => args,
@@ -1866,16 +1873,118 @@ async fn orchestration_handler(
     }
 }
 
+/// Keep the HookCaller through all scope checks. Codex must return before
+/// its MCP deadline; the host-held card outlives this call and its result is
+/// delivered through the durable orchestration inbox.
+async fn workspace_cleanup_request(ctx: &Ctx, caller: HookCaller, args: Value) -> Response {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Ask {
+        run_id: Option<String>,
+    }
+    let ask: Ask = match serde_json::from_value(args) {
+        Ok(ask) => ask,
+        Err(error) => return hook_failed(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    // Do the cheap durable authorization before detaching a slow refresh.
+    let runs = match ctx
+        .services
+        .orchestrations
+        .cleanup_request_runs(&caller.chat_key, ask.run_id.as_deref())
+    {
+        Ok(runs) => runs,
+        Err(error) => return hook_failed(StatusCode::BAD_REQUEST, error),
+    };
+    let services = ctx.services.clone();
+    let within = services
+        .chats
+        .access_standing(&caller.chat_key)
+        .and_then(|standing| {
+            if standing.agent == crate::agent_provider::AgentKind::Codex {
+                None
+            } else {
+                crate::access_request::wait_for(standing)
+            }
+        });
+    let actor = caller.chat_key;
+    let background_actor = actor.clone();
+    let background_services = services.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut preparing = tokio::task::spawn_blocking(move || {
+        services.orchestrations.request_workspace_cleanup(
+            &services.chats,
+            &actor,
+            ask.run_id.as_deref(),
+            within.map(|_| tx),
+        )
+    });
+    // Refresh and Restore comparisons themselves can exceed one MCP minute
+    // for a large batch. Finish them in the host and tell the coordinator
+    // when the card is actually up; never claim it exists before that.
+    let prepared = match tokio::time::timeout(std::time::Duration::from_secs(40), &mut preparing)
+        .await
+    {
+        Ok(prepared) => prepared,
+        Err(_) => {
+            drop(rx);
+            tokio::spawn(async move {
+                let prepared = preparing.await;
+                let body = match prepared {
+                    Ok(Ok(Some(card))) => format!("The workspace cleanup card {} is now up for the person's decision. Nothing has been removed. Its result will arrive as a host notification.", card.id),
+                    Ok(Ok(None)) => "No finished workspaces are eligible for Cleanup or mission Close. No card was created.".into(),
+                    Ok(Err(error)) => format!("The workspace cleanup proposal failed; nothing was removed: {error}"),
+                    Err(error) => format!("The workspace cleanup proposal did not finish; nothing was removed: {error}"),
+                };
+                let store = background_services.orchestrations.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    store.cleanup_notice(
+                        &background_actor,
+                        &runs[0].id,
+                        format!("cleanup-prepared:{}", uuid::Uuid::new_v4()),
+                        body,
+                    )
+                })
+                .await;
+            });
+            return axum::Json(json!({"result": {"status":"preparing",
+                "text":"The host is still refreshing delivery and checking the batch. Nothing has been removed and no approval was granted. End this turn; a host notification will say when the card is ready, or why there is no card. Do not repeat this request."
+            }})).into_response();
+        }
+    };
+    let asked = match prepared {
+        Ok(Ok(Some(asked))) => asked,
+        Ok(Ok(None)) => return axum::Json(json!({"result": {
+            "status": "empty", "text": "No finished workspaces are eligible for Cleanup or mission Close. No card was created."
+        }})).into_response(),
+        Ok(Err(error)) => return hook_failed(StatusCode::BAD_REQUEST, error),
+        Err(error) => return hook_failed(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    if let Some(within) = within {
+        if let Ok(Ok(result)) = tokio::time::timeout(within, rx).await {
+            return axum::Json(json!({"result": {"status": "settled", "result": result}}))
+                .into_response();
+        }
+    }
+    axum::Json(json!({"result": {"status": "pending", "request": asked,
+        "text": "The batch cleanup card is up. Nothing has been removed. End this turn; the person's decision and each item's removed/kept result arrive as a host notification turn. Do not request another batch while this card is pending."
+    }})).into_response()
+}
+
 /// The peer tools speak for the chat's registered agent (its lead, or the
 /// agent its task was handed to), so only the chat's own process may call
 /// them: a room seat's capability proves the chat, not that identity.
 const PEER_COMMANDS: &[&str] = &["orchestration_peer_ask", "orchestration_peer_request"];
 
 fn seat_refusal(command: &str, caller: &HookCaller) -> Option<crate::outcome::Refusal> {
-    (PEER_COMMANDS.contains(&command) && caller.session_key != caller.chat_key).then(|| {
+    ((PEER_COMMANDS.contains(&command) || command == "orchestration_workspace_cleanup_request")
+        && caller.session_key != caller.chat_key).then(|| {
         crate::outcome::Refusal::new(
             crate::outcome::ReasonClass::ScopeRefused,
-            "Only the chat's own agent can ask a teammate or hand one work. An additional agent in a room has no team of its own here.",
+            if command == "orchestration_workspace_cleanup_request" {
+                "Only the chat's own agent may request cleanup as coordinator. An additional agent in a room cannot speak as the coordinator."
+            } else {
+                "Only the chat's own agent can ask a teammate or hand one work. An additional agent in a room has no team of its own here."
+            },
         )
     })
 }
@@ -2621,6 +2730,7 @@ async fn job_handler(
 /// has commands of their own for the same decisions; letting it run these
 /// would record a lead's acceptance or approval that no lead gave.
 const CHAT_ONLY_COMMANDS: &[&str] = &[
+    "orchestration_workspace_cleanup_request",
     "orchestration_task_accept_in_chat",
     "orchestration_plan_approve_in_chat",
     // Both record a coordinator as their author: a settled attempt's
@@ -3604,6 +3714,93 @@ mod tests {
         );
         assert!(crate::transcript::since(&victim, 0).is_empty());
         chats.test_end(&worker);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cleanup_request_hook_keeps_coordinator_identity_and_has_no_answer_door() {
+        let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let lead = format!("chat:cleanup-lead-{}", uuid::Uuid::new_v4().simple());
+        let other = format!("chat:cleanup-other-{}", uuid::Uuid::new_v4().simple());
+        let worker = format!("chat:orch-cleanup-{}", uuid::Uuid::new_v4().simple());
+        let seat_key = format!("{lead}#2");
+        let cap = chats.test_launch(&lead);
+        let other_cap = chats.test_launch(&other);
+        let worker_cap = chats.test_launch(&worker);
+        let seat_cap = chats.test_launch_in(&seat_key, &lead);
+        let repo = crate::git_ops::workflow::tests::Repo::new();
+        let run = store
+            .create_run_with_mode(
+                lead.clone(),
+                "Hook fixture".into(),
+                "p".into(),
+                repo.root.clone(),
+                None,
+                crate::git_ops::workflow::WorkspaceMode::Worktree,
+            )
+            .unwrap();
+        let (_ctx, base) = test_server(chats.clone(), store.clone()).await;
+        let body = |chat: &str, session: &str, action: &str| {
+            json!({
+                "chatKey":chat, "sessionKey":session, "action":action, "args":{"runId":run.id}
+            })
+        };
+        let (status, answer) = post_hook(
+            &base,
+            "orchestration",
+            None,
+            Some(&cap),
+            body(&lead, &lead, "workspace_cleanup_request"),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(answer["result"]["status"], "empty");
+        for (chat, session, capability, reason) in [
+            (&lead, &seat_key, &seat_cap, "coordinator"),
+            (&other, &other, &other_cap, "coordinator"),
+            (&worker, &worker, &worker_cap, "read-only"),
+        ] {
+            let (status, answer) = post_hook(
+                &base,
+                "orchestration",
+                None,
+                Some(capability),
+                body(chat, session, "workspace_cleanup_request"),
+            )
+            .await;
+            assert_eq!(status, 400, "{answer}");
+            assert!(
+                answer["error"]
+                    .as_str()
+                    .unwrap()
+                    .to_lowercase()
+                    .contains(reason),
+                "{answer}"
+            );
+        }
+        for action in [
+            "workspace_cleanup_request_answer",
+            "orchestration_workspace_cleanup_request_answer",
+        ] {
+            let (status, answer) = post_hook(
+                &base,
+                "orchestration",
+                None,
+                Some(&cap),
+                json!({"chatKey":lead,"action":action,"args":{"id":"forged","approve":true}}),
+            )
+            .await;
+            assert_eq!(status, 400, "{answer}");
+            assert!(answer["error"]
+                .as_str()
+                .unwrap()
+                .contains("Unknown orchestration action"));
+        }
+        assert!(socket_refusal("orchestration_workspace_cleanup_request").is_some());
+        assert!(store.cleanup_request_pending().unwrap().is_empty());
+        for key in [&lead, &other, &worker, &seat_key] {
+            chats.test_end(key);
+        }
     }
 
     /// An access request can only ask: the level is the chat's own until the
@@ -5422,6 +5619,10 @@ mod tests {
                 "orchestration",
                 json!({ "chatKey": "chat:desk", "action": "run_create", "args": {} }),
             ),
+            (
+                "orchestration",
+                json!({ "chatKey": "chat:desk", "action": "workspace_cleanup_request", "args": {} }),
+            ),
             // A front desk has no team to ask or hand work to.
             (
                 "orchestration",
@@ -5937,6 +6138,8 @@ mod tests {
         // changes the level or settles the card.
         "chat_set_access",
         "access_request_answer",
+        "orchestration_workspace_cleanup_request_pending",
+        "orchestration_workspace_cleanup_request_answer",
     ];
 
     #[test]
@@ -6110,11 +6313,12 @@ mod tests {
             );
             assert!(seat_refusal(command, &own).is_none(), "{action}");
         }
-        // Everything else a seat could do before, it still can.
-        for (_, command) in ORCHESTRATION_HOOK_ACTIONS
-            .iter()
-            .filter(|(_, command)| !PEER_COMMANDS.contains(command))
-        {
+        // Existing non-identity actions remain available to seats. The new
+        // coordinator cleanup proposal has its own seat refusal above.
+        for (_, command) in ORCHESTRATION_HOOK_ACTIONS.iter().filter(|(_, command)| {
+            !PEER_COMMANDS.contains(command)
+                && *command != "orchestration_workspace_cleanup_request"
+        }) {
             assert!(seat_refusal(command, &seat).is_none(), "{command}");
         }
     }

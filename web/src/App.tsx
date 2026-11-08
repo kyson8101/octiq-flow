@@ -860,7 +860,7 @@ export default function App() {
   const [railShut, setRailShut] = useState(() => localStorage.getItem(RAIL_KEY) === "1");
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
-  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks, reread: rereadLists, read: listsRead, late: listsLate } =
+  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, cleanupRequests, answerCleanup, refillSafetyBlocks, reread: rereadLists, read: listsRead, late: listsLate } =
     useChatRequests(conn, (...args) => announceOnce(...args));
   const [choice, setChoice] = useState<ModelChoice>(
     () => modelFromId(recall(CHOICE_KEY)) ?? MODELS[0],
@@ -1720,7 +1720,7 @@ export default function App() {
    *  thousands of events, and a state update each was the difference between
    *  opening and appearing to hang. */
   const catchUpChat = useCallback(
-    (id: string, storedSeq?: number, earlier = false): Promise<void> => {
+    (id: string, storedSeq?: number, earlier = false, beforePrepend?: () => Promise<void>): Promise<void> => {
       const existing = chatReads.current.get(id);
       if (existing) return existing.promise;
       const key = keyFor(id);
@@ -1735,7 +1735,7 @@ export default function App() {
         getState: () => chatsRef.current[id] ?? EMPTY,
         publish: (state) => patch(id, () => state),
         request: (after) => bridge.invoke<Frame[]>("chat_since", { key, after }),
-        cancelled,
+        cancelled, beforePrepend,
       }); }).catch((err: unknown) => {
         if (!cancelled()) catchUp.current.abandon(key);
         throw err;
@@ -1747,14 +1747,14 @@ export default function App() {
     [patch],
   );
 
-  const loadEarlierFor = useCallback(async (id: string | null) => {
+  const loadEarlierFor = useCallback(async (id: string | null, beforePrepend?: () => Promise<void>) => {
     if (!id || !chatHistory.current.hasEarlier(id)) return;
     setEarlierReads((prev) => ({ ...prev, [id]: { loading: true } }));
     try {
       // A reconnect may already be filling the newest tail. Let it commit
       // before beginning a backwards page against the same window.
       await chatReads.current.get(id)?.promise;
-      if (!gone.current.has(id)) await catchUpChat(id, undefined, true);
+      if (!gone.current.has(id)) await catchUpChat(id, undefined, true, beforePrepend);
       // The history cursor has already advanced. Commit its matching messages
       // with the loading state, rather than leaving them in the next-frame queue.
       flushChats();
@@ -1765,20 +1765,29 @@ export default function App() {
   }, [catchUpChat, flushChats]);
   const loadLatestFor = useCallback(async (id: string | null) => {
     if (!id) return;
-    await chatReads.current.get(id)?.promise;
-    const previous = chatHistory.current.get(id);
-    const previousSeq = catchUp.current.mark(keyFor(id));
-    await forgetChatCheckpoint(id);
-    catchUp.current.forget(keyFor(id)); chatHistory.current.forget(id);
-    setEarlierReads(prev => ({ ...prev, [id]: { loading: true } }));
-    try { await catchUpChat(id); flushChats(); setEarlierReads(prev => ({ ...prev, [id]: { loading: false } })); }
-    catch (error) {
-      // A failed Return to latest leaves the older window and its way back
-      // intact. Do not append live deltas across the unseen middle.
-      if (previous) {
-        chatHistory.current.set(id, previous.before, previous.end);
-        catchUp.current.forget(keyFor(id)); catchUp.current.begin(keyFor(id), previousSeq); catchUp.current.end(keyFor(id), []);
+    try {
+      // Waiting on a reconnect is part of this request too: its rejection
+      // must leave the same usable retry/error control as a fresh read's.
+      await chatReads.current.get(id)?.promise;
+      const previous = chatHistory.current.get(id);
+      const previousSlices = [...chatHistory.current.slices(id)];
+      const previousSeq = catchUp.current.mark(keyFor(id));
+      await forgetChatCheckpoint(id);
+      catchUp.current.forget(keyFor(id)); chatHistory.current.forget(id);
+      setEarlierReads(prev => ({ ...prev, [id]: { loading: true } }));
+      try { await catchUpChat(id); }
+      catch (error) {
+        // A failed Return to latest leaves the older window and its way back
+        // intact. Do not append live deltas across the unseen middle.
+        if (previous) {
+          chatHistory.current.set(id, previous.before, previous.end, previousSlices);
+          catchUp.current.forget(keyFor(id)); catchUp.current.begin(keyFor(id), previousSeq); catchUp.current.end(keyFor(id), []);
+        }
+        throw error;
       }
+      flushChats();
+      setEarlierReads(prev => ({ ...prev, [id]: { loading: false } }));
+    } catch (error) {
       setEarlierReads(prev => ({ ...prev, [id]: { loading: false, error: String(error) } }));
     }
   }, [catchUpChat, flushChats]);
@@ -1796,8 +1805,8 @@ export default function App() {
     }
   }, [chats, loadLatestFor]);
   // Stable, for the memoised transcripts: each pane asks for its own chat.
-  const loadEarlier = useCallback(() => loadEarlierFor(visibleRef.current), [loadEarlierFor]);
-  const loadEarlierBeside = useCallback(() => loadEarlierFor(besideRef.current), [loadEarlierFor]);
+  const loadEarlier = useCallback((ready?: () => Promise<void>) => loadEarlierFor(visibleRef.current, ready), [loadEarlierFor]);
+  const loadEarlierBeside = useCallback((ready?: () => Promise<void>) => loadEarlierFor(besideRef.current, ready), [loadEarlierFor]);
 
   useEffect(() => {
     let current = true;
@@ -5111,8 +5120,8 @@ export default function App() {
     [listsRead, ledgerRead, ledgerFailed],
   );
   const pendingRead = useMemo(
-    () => pendingReading({ orchestration, parents: chatParents, asks, safetyBlocks, questions, accessRequests, handovers, sources: waitSources, late: listsLate }),
-    [orchestration, chatParents, asks, safetyBlocks, questions, accessRequests, handovers, waitSources, listsLate],
+    () => pendingReading({ orchestration, parents: chatParents, asks, safetyBlocks, questions, accessRequests, cleanupRequests, handovers, sources: waitSources, late: listsLate }),
+    [orchestration, chatParents, asks, safetyBlocks, questions, accessRequests, cleanupRequests, handovers, waitSources, listsLate],
   );
   const pendingList = pendingRead.actions;
   const pendingHeld = pendingRead.held;
@@ -6108,6 +6117,8 @@ export default function App() {
               onContinue={(message, options) => send(message, [], options)}
               accessRequests={accessHere}
               onAccessAnswer={answerAccess}
+              cleanupRequests={cleanupRequests[conversationId] ?? []}
+              onCleanupAnswer={answerCleanup}
             />
           )}
 

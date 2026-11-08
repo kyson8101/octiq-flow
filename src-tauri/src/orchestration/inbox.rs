@@ -248,10 +248,14 @@ fn valid(data: &Stored, n: &Notification) -> bool {
     let Some(run) = data.runs.get(&n.run_id) else {
         return false;
     };
-    // A first plan rejection stops the run in the same transaction that
-    // creates its one host continuation. That decision receipt is the sole
-    // notification allowed to cross the stopped-run boundary.
-    if run.status == RunStatus::Stopped && n.kind != "plan_rejected" {
+    // These are receipts of the person's decisions, not permission to
+    // restart stopped work. Cleanup can concern finished worktrees of a
+    // stopped run too; its result must still reach that coordinator.
+    let cleanup_receipt = n.kind == "workspace_cleanup"
+        && n.from_chat_key == "host"
+        && n.target_chat_key == run.coordinator_chat_key
+        && (n.source.starts_with("cleanup-result:") || n.source.starts_with("cleanup-prepared:"));
+    if run.status == RunStatus::Stopped && n.kind != "plan_rejected" && !cleanup_receipt {
         return false;
     }
     // Queued before its run settled, or by a build that still sent them.

@@ -1,0 +1,1770 @@
+{
+  "baselineCommit": "f70f90e6363d8996bedfadc839c51581f4e10248",
+  "date": "2026-11-08",
+  "fixture": {
+    "turns": 1200,
+    "toolResultBytesPerTurn": 65536,
+    "eventsPerTurn": 4,
+    "pageTurns": [
+      3,
+      18
+    ],
+    "pressesPerCase": 16,
+    "responseDelayMs": 80
+  },
+  "sourceSha256": {
+    "web/src/App.tsx": "66eafa5266b01c4e0d5f15a536144c85787ee1f46a0d1e5e17617565b32e711d",
+    "web/src/components/MessageList.tsx": "d7ee21c834f8cc682c31963279e32719042e85a625ff7987446df745f39c9a3c",
+    "web/src/components/TaskChatPane.tsx": "08b82807851573ade15804d046b4de133d1c9899711b1e2cfecf010c588c2b3d",
+    "web/src/lib/loadChat.ts": "d79d39cec81bc7b443723b40cce68aef498b8ca7196a9a3ef1091b2dd49d8d32",
+    "web/src/lib/chatHistory.ts": "746d8d13988d51322d074849afa50f0288c218f40a8f674bfe0bbba0f73f3c15",
+    "web/src/lib/loadChat.test.ts": "a5375a57aa1a7d6ea0b17efd43571dd986efec2a5e0592870e3ce9e80df872ab",
+    "web/src/lib/chatHistory.test.ts": "431584ef83cb18990dd130e2bfa04769e4fe97fb2583a78654624b11f308ec70",
+    "web/scripts/test-load-earlier.mjs": "a432618a9be17bf58b585a7c36bd5de202942db1c7304a052d1b55484afd5ed7"
+  },
+  "productionBundle": {
+    "name": "index-CWH_yZ3a.js",
+    "sha256": "5187f31dc9ffdc21c0369e91441cf06c1df9db54a400f88ffb379aee772f6230"
+  },
+  "checks": {
+    "vitestFiles": 336,
+    "vitestTests": 4593,
+    "targetedCases": 46,
+    "tsc": true,
+    "build": true,
+    "baselineRegressionRedCases": 4,
+    "oversizedAdjacentPageRed": true
+  },
+  "limits": [
+    "No real iPhone or Safari touch compositor acceptance",
+    "No tunnel or live production traffic",
+    "WebKit heap unavailable (null)",
+    "Heap is post-GC V8 used heap, not peak allocation or RSS",
+    "Continued gesture is a deterministic DOM/frame sequence",
+    "Two adjacent indivisible pages may exceed the 8 MiB soft target to retain the visible anchor"
+  ],
+  "confirmedEchoCases": [
+    {
+      "case": "confirmed-echo-release-reopen-history",
+      "width": 1280,
+      "replay": false,
+      "visibleCopies": 1,
+      "confirmed": 1,
+      "retainedLocals": 0,
+      "pendingSends": 1,
+      "errors": []
+    },
+    {
+      "case": "confirmed-echo-release-reopen-history",
+      "width": 390,
+      "replay": false,
+      "visibleCopies": 1,
+      "confirmed": 1,
+      "retainedLocals": 0,
+      "pendingSends": 1,
+      "errors": []
+    },
+    {
+      "case": "confirmed-echo-release-reopen-history",
+      "width": 1280,
+      "replay": true,
+      "visibleCopies": 1,
+      "confirmed": 1,
+      "retainedLocals": 0,
+      "pendingSends": 1,
+      "errors": []
+    },
+    {
+      "case": "confirmed-echo-release-reopen-history",
+      "width": 390,
+      "replay": true,
+      "visibleCopies": 1,
+      "confirmed": 1,
+      "retainedLocals": 0,
+      "pendingSends": 1,
+      "errors": []
+    }
+  ],
+  "results": [
+    {
+      "engine": "chromium",
+      "browserVersion": "156.0.8078.48",
+      "width": 1280,
+      "baseline": true,
+      "pageTurns": 3,
+      "initialHeap": 8709780,
+      "samples": [
+        {
+          "mode": "button",
+          "elapsedMs": 419,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 10094368
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 452,
+          "driftPx": 0.25,
+          "pageReads": 3,
+          "wireBytes": 609147,
+          "heap": 10921740
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 458,
+          "driftPx": 0,
+          "pageReads": 4,
+          "wireBytes": 812196,
+          "heap": 11643464
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 608,
+          "driftPx": 0.25,
+          "pageReads": 5,
+          "wireBytes": 1015245,
+          "heap": 12181672
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 632,
+          "driftPx": 0.25,
+          "pageReads": 6,
+          "wireBytes": 1218294,
+          "heap": 12753252
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 741,
+          "driftPx": 0.25,
+          "pageReads": 7,
+          "wireBytes": 1421343,
+          "heap": 13333296
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 867,
+          "driftPx": 0.25,
+          "pageReads": 8,
+          "wireBytes": 1624392,
+          "heap": 13915272
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1019,
+          "driftPx": 0.25,
+          "pageReads": 9,
+          "wireBytes": 1827441,
+          "heap": 14544692
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1054,
+          "driftPx": 0.25,
+          "pageReads": 10,
+          "wireBytes": 2030490,
+          "heap": 15173772
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 1128,
+          "driftPx": 0.25,
+          "pageReads": 11,
+          "wireBytes": 2233539,
+          "heap": 15748244
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1308,
+          "driftPx": 0.25,
+          "pageReads": 12,
+          "wireBytes": 2436588,
+          "heap": 16306912
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1459,
+          "driftPx": 0.25,
+          "pageReads": 13,
+          "wireBytes": 2639637,
+          "heap": 16955604
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 1517,
+          "driftPx": null,
+          "pageReads": 13,
+          "wireBytes": 2639637,
+          "heap": 13177712
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 280,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 11023616
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 419,
+          "driftPx": 0,
+          "pageReads": 3,
+          "wireBytes": 609147,
+          "heap": 11586712
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 572,
+          "driftPx": 0.25,
+          "pageReads": 4,
+          "wireBytes": 812196,
+          "heap": 12141412
+        }
+      ],
+      "lateLayoutDriftPx": 0,
+      "errors": []
+    },
+    {
+      "engine": "chromium",
+      "browserVersion": "156.0.8078.48",
+      "width": 390,
+      "baseline": true,
+      "pageTurns": 3,
+      "initialHeap": 8736672,
+      "samples": [
+        {
+          "mode": "button",
+          "elapsedMs": 253,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 10065808
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 450,
+          "driftPx": 0.25,
+          "pageReads": 3,
+          "wireBytes": 609147,
+          "heap": 10870888
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 415,
+          "driftPx": 0.25,
+          "pageReads": 4,
+          "wireBytes": 812196,
+          "heap": 11548492
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 543,
+          "driftPx": 0.25,
+          "pageReads": 5,
+          "wireBytes": 1015245,
+          "heap": 12106572
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 726,
+          "driftPx": 0.25,
+          "pageReads": 6,
+          "wireBytes": 1218294,
+          "heap": 12696688
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 684,
+          "driftPx": 0.25,
+          "pageReads": 7,
+          "wireBytes": 1421343,
+          "heap": 13286268
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 820,
+          "driftPx": 0.25,
+          "pageReads": 8,
+          "wireBytes": 1624392,
+          "heap": 13893440
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 883,
+          "driftPx": 0.25,
+          "pageReads": 9,
+          "wireBytes": 1827441,
+          "heap": 14498260
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1006,
+          "driftPx": 0.25,
+          "pageReads": 10,
+          "wireBytes": 2030490,
+          "heap": 15120680
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 1216,
+          "driftPx": 0.25,
+          "pageReads": 11,
+          "wireBytes": 2233539,
+          "heap": 15699176
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1200,
+          "driftPx": 0.25,
+          "pageReads": 12,
+          "wireBytes": 2436588,
+          "heap": 16253064
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1377,
+          "driftPx": 0.25,
+          "pageReads": 13,
+          "wireBytes": 2639637,
+          "heap": 16904108
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 1280,
+          "driftPx": null,
+          "pageReads": 13,
+          "wireBytes": 2639637,
+          "heap": 13183424
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 230,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 10960100
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 324,
+          "driftPx": 0.25,
+          "pageReads": 3,
+          "wireBytes": 609147,
+          "heap": 11531884
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 422,
+          "driftPx": 0.25,
+          "pageReads": 4,
+          "wireBytes": 812196,
+          "heap": 12083068
+        }
+      ],
+      "lateLayoutDriftPx": 0,
+      "errors": []
+    },
+    {
+      "engine": "webkit",
+      "browserVersion": "26.6",
+      "width": 1280,
+      "baseline": true,
+      "pageTurns": 3,
+      "initialHeap": null,
+      "samples": [
+        {
+          "mode": "button",
+          "elapsedMs": 330,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 593,
+          "driftPx": 0.25,
+          "pageReads": 3,
+          "wireBytes": 609147,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 608,
+          "driftPx": 0,
+          "pageReads": 4,
+          "wireBytes": 812196,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 599,
+          "driftPx": 0.25,
+          "pageReads": 5,
+          "wireBytes": 1015245,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 967,
+          "driftPx": 0.25,
+          "pageReads": 6,
+          "wireBytes": 1218294,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1001,
+          "driftPx": -5,
+          "pageReads": 7,
+          "wireBytes": 1421343,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 1055,
+          "driftPx": 0.25,
+          "pageReads": 8,
+          "wireBytes": 1624392,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 952,
+          "driftPx": 0.25,
+          "pageReads": 9,
+          "wireBytes": 1827441,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1285,
+          "driftPx": 0.25,
+          "pageReads": 10,
+          "wireBytes": 2030490,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 1369,
+          "driftPx": 0.25,
+          "pageReads": 11,
+          "wireBytes": 2233539,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1393,
+          "driftPx": 0.25,
+          "pageReads": 12,
+          "wireBytes": 2436588,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1592,
+          "driftPx": 0.25,
+          "pageReads": 13,
+          "wireBytes": 2639637,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 1372,
+          "driftPx": null,
+          "pageReads": 13,
+          "wireBytes": 2639637,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 230,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 594,
+          "driftPx": 0,
+          "pageReads": 3,
+          "wireBytes": 609147,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 548,
+          "driftPx": 0.25,
+          "pageReads": 4,
+          "wireBytes": 812196,
+          "heap": null
+        }
+      ],
+      "lateLayoutDriftPx": 0,
+      "errors": []
+    },
+    {
+      "engine": "webkit",
+      "browserVersion": "26.6",
+      "width": 390,
+      "baseline": true,
+      "pageTurns": 3,
+      "initialHeap": null,
+      "samples": [
+        {
+          "mode": "button",
+          "elapsedMs": 393,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 601,
+          "driftPx": 0.25,
+          "pageReads": 3,
+          "wireBytes": 609147,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 596,
+          "driftPx": 0,
+          "pageReads": 4,
+          "wireBytes": 812196,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 633,
+          "driftPx": 0.25,
+          "pageReads": 5,
+          "wireBytes": 1015245,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 952,
+          "driftPx": 0.25,
+          "pageReads": 6,
+          "wireBytes": 1218294,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 993,
+          "driftPx": 0,
+          "pageReads": 7,
+          "wireBytes": 1421343,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 968,
+          "driftPx": 0.25,
+          "pageReads": 8,
+          "wireBytes": 1624392,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1033,
+          "driftPx": 0.25,
+          "pageReads": 9,
+          "wireBytes": 1827441,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1039,
+          "driftPx": -5,
+          "pageReads": 10,
+          "wireBytes": 2030490,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 1297,
+          "driftPx": 0.25,
+          "pageReads": 11,
+          "wireBytes": 2233539,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1298,
+          "driftPx": 0.25,
+          "pageReads": 12,
+          "wireBytes": 2436588,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1310,
+          "driftPx": 0.25,
+          "pageReads": 13,
+          "wireBytes": 2639637,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 1468,
+          "driftPx": null,
+          "pageReads": 13,
+          "wireBytes": 2639637,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 227,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 588,
+          "driftPx": 0,
+          "pageReads": 3,
+          "wireBytes": 609147,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 498,
+          "driftPx": 0.25,
+          "pageReads": 4,
+          "wireBytes": 812196,
+          "heap": null
+        }
+      ],
+      "lateLayoutDriftPx": 0,
+      "errors": []
+    },
+    {
+      "engine": "chromium",
+      "browserVersion": "156.0.8078.48",
+      "width": 1280,
+      "baseline": false,
+      "pageTurns": 3,
+      "initialHeap": 8568936,
+      "samples": [
+        {
+          "mode": "button",
+          "elapsedMs": 281,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 9916876
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 465,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 10439852
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 866,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 10846240
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 235,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 11248408
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 638,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 11615916
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1123,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 11981572
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 363,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 12386796
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 810,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 12774004
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1108,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 13175952
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 421,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 13595888
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 629,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 13927420
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 898,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 14186908
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 271,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": 14466324
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 599,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": 14487132
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1078,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": 14529468
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 434,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": 14602684
+        }
+      ],
+      "lateLayoutDriftPx": 0,
+      "errors": []
+    },
+    {
+      "engine": "chromium",
+      "browserVersion": "156.0.8078.48",
+      "width": 390,
+      "baseline": false,
+      "pageTurns": 3,
+      "initialHeap": 8514036,
+      "samples": [
+        {
+          "mode": "button",
+          "elapsedMs": 525,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 9867016
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 942,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 10346440
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 995,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 10777456
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 448,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 11170324
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 698,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 11537564
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1049,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 11928764
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 353,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 12305976
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 628,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 12715756
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1011,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 13124928
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 328,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 13494624
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 666,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 13852628
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1281,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": 14114752
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 212,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": 14374652
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 682,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": 14409264
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1221,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": 14440528
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 369,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": 14450320
+        }
+      ],
+      "lateLayoutDriftPx": 0,
+      "errors": []
+    },
+    {
+      "engine": "webkit",
+      "browserVersion": "26.6",
+      "width": 1280,
+      "baseline": false,
+      "pageTurns": 3,
+      "initialHeap": null,
+      "samples": [
+        {
+          "mode": "button",
+          "elapsedMs": 481,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1411,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2113,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 540,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1425,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2590,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 601,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1415,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2469,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 606,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1466,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2414,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 524,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1225,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2255,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 237,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": null
+        }
+      ],
+      "lateLayoutDriftPx": 0,
+      "errors": []
+    },
+    {
+      "engine": "webkit",
+      "browserVersion": "26.6",
+      "width": 390,
+      "baseline": false,
+      "pageTurns": 3,
+      "initialHeap": null,
+      "samples": [
+        {
+          "mode": "button",
+          "elapsedMs": 411,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1386,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2139,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 491,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1356,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1402,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 607,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1419,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2041,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 617,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1342,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1739,
+          "driftPx": 0.25,
+          "pageReads": 2,
+          "wireBytes": 406098,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 224,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1410,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2473,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 198,
+          "driftPx": 0.25,
+          "pageReads": 1,
+          "wireBytes": 203049,
+          "heap": null
+        }
+      ],
+      "lateLayoutDriftPx": 0,
+      "errors": []
+    },
+    {
+      "engine": "chromium",
+      "browserVersion": "156.0.8078.48",
+      "width": 1280,
+      "baseline": false,
+      "pageTurns": 18,
+      "initialHeap": 9762976,
+      "samples": [
+        {
+          "mode": "button",
+          "elapsedMs": 79,
+          "driftPx": -0.5,
+          "pageReads": 0,
+          "wireBytes": 0,
+          "heap": 10759760
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 770,
+          "driftPx": -0.5,
+          "pageReads": 0,
+          "wireBytes": 0,
+          "heap": 11049428
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1189,
+          "driftPx": -0.5,
+          "pageReads": 2,
+          "wireBytes": 2436198,
+          "heap": 13284272
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 514,
+          "driftPx": -0.5,
+          "pageReads": 2,
+          "wireBytes": 2436198,
+          "heap": 15520036
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1383,
+          "driftPx": -0.5,
+          "pageReads": 2,
+          "wireBytes": 2436198,
+          "heap": 16918956
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1733,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18278760
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 636,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18504336
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 506,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18476288
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 929,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18526424
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 537,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18572676
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 574,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18588136
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 969,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18565100
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 418,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1217971,
+          "heap": 18571108
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 695,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1217955,
+          "heap": 18664020
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1503,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1217955,
+          "heap": 18671888
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 761,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1217955,
+          "heap": 18693408
+        }
+      ],
+      "lateLayoutDriftPx": 0,
+      "errors": []
+    },
+    {
+      "engine": "chromium",
+      "browserVersion": "156.0.8078.48",
+      "width": 390,
+      "baseline": false,
+      "pageTurns": 18,
+      "initialHeap": 9739688,
+      "samples": [
+        {
+          "mode": "button",
+          "elapsedMs": 119,
+          "driftPx": -0.5,
+          "pageReads": 0,
+          "wireBytes": 0,
+          "heap": 10737280
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 752,
+          "driftPx": -0.5,
+          "pageReads": 0,
+          "wireBytes": 0,
+          "heap": 11017340
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1685,
+          "driftPx": -0.5,
+          "pageReads": 2,
+          "wireBytes": 2436198,
+          "heap": 13226748
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 740,
+          "driftPx": -0.5,
+          "pageReads": 2,
+          "wireBytes": 2436198,
+          "heap": 15405364
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1141,
+          "driftPx": -0.5,
+          "pageReads": 2,
+          "wireBytes": 2436198,
+          "heap": 16849180
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 739,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18219688
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 445,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18344404
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 796,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18374548
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1140,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18436020
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 407,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18579276
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 952,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18493640
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 990,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": 18643956
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 307,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1217971,
+          "heap": 18567860
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 677,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1217955,
+          "heap": 18549764
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1067,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1217955,
+          "heap": 18847384
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 297,
+          "driftPx": -0.5,
+          "pageReads": 1,
+          "wireBytes": 1217955,
+          "heap": 18929552
+        }
+      ],
+      "lateLayoutDriftPx": 0,
+      "errors": []
+    },
+    {
+      "engine": "webkit",
+      "browserVersion": "26.6",
+      "width": 1280,
+      "baseline": false,
+      "pageTurns": 18,
+      "initialHeap": null,
+      "samples": [
+        {
+          "mode": "button",
+          "elapsedMs": 41,
+          "driftPx": 0.5,
+          "pageReads": 0,
+          "wireBytes": 0,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1469,
+          "driftPx": 0.5,
+          "pageReads": 0,
+          "wireBytes": 0,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1383,
+          "driftPx": 0.5,
+          "pageReads": 2,
+          "wireBytes": 2436198,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 611,
+          "driftPx": 0.5,
+          "pageReads": 2,
+          "wireBytes": 2436198,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1370,
+          "driftPx": 0.5,
+          "pageReads": 2,
+          "wireBytes": 2436198,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2497,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 592,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1370,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1367,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 578,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1411,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2504,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 234,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1217971,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1339,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1217955,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2151,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1217955,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 212,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1217955,
+          "heap": null
+        }
+      ],
+      "lateLayoutDriftPx": 0,
+      "errors": []
+    },
+    {
+      "engine": "webkit",
+      "browserVersion": "26.6",
+      "width": 390,
+      "baseline": false,
+      "pageTurns": 18,
+      "initialHeap": null,
+      "samples": [
+        {
+          "mode": "button",
+          "elapsedMs": 27,
+          "driftPx": 0.5,
+          "pageReads": 0,
+          "wireBytes": 0,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1317,
+          "driftPx": 0.5,
+          "pageReads": 0,
+          "wireBytes": 0,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2462,
+          "driftPx": 0.5,
+          "pageReads": 2,
+          "wireBytes": 2436198,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 544,
+          "driftPx": 0.5,
+          "pageReads": 2,
+          "wireBytes": 2436198,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1362,
+          "driftPx": 0.5,
+          "pageReads": 2,
+          "wireBytes": 2436198,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2033,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 538,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1378,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1330,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 226,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1342,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 2436,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1218099,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 235,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1217971,
+          "heap": null
+        },
+        {
+          "mode": "scroll",
+          "elapsedMs": 1291,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1217955,
+          "heap": null
+        },
+        {
+          "mode": "momentum",
+          "elapsedMs": 1309,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1217955,
+          "heap": null
+        },
+        {
+          "mode": "button",
+          "elapsedMs": 526,
+          "driftPx": 0.5,
+          "pageReads": 1,
+          "wireBytes": 1217955,
+          "heap": null
+        }
+      ],
+      "lateLayoutDriftPx": 0,
+      "errors": []
+    }
+  ]
+}

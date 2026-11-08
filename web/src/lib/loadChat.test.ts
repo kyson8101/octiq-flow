@@ -3,7 +3,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { addUserTurn, emptyChat, reduceChat, type ChatState } from "./chat";
 import { CatchUp, type Frame } from "./catchUp";
 import { readChatCheckpoint, saveChatCheckpoint } from "./chatCache";
-import { loadChat, loadEarlierChat } from "./loadChat";
+import { loadChat, loadEarlierChat, CHAT_WINDOW_BYTES, CHAT_WINDOW_PAGES } from "./loadChat";
+import { valueBytes } from "./valueBytes";
+import * as chatReducer from "./chat";
 import { replayChat } from "./replayChat";
 import { ChatHistory } from "./chatHistory";
 
@@ -261,18 +263,154 @@ it("a long offline gap resets to the recent page without downloading the whole m
   expect(options.catchUp.mark("chat:a")).toBe(100000);
 });
 
-it("slides a byte-full history window backwards without caching it as a complete record", async () => {
+it("keeps the adjacent visible page while sliding a byte-full window backwards", async () => {
   const options = setup(); const history = new ChatHistory();
   const big = (seq: number, length: number): Frame => ({ seq, event: { type: "assistant", message: { id: `m${seq}`, content: [{ type: "text", text: "x".repeat(length) }] } } });
   const latest = big(30, 3 * 1024 * 1024), older = big(20, 2 * 1024 * 1024);
   await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({ events: [latest], context: [], before: 30 }) });
   const request = vi.fn(async () => { throw new Error("unbounded tail"); });
   await loadEarlierChat({ ...options, history, request, requestPage: async before => before === 30
-    ? { events: [older], context: [], before: null }
+    ? { events: [older], context: [], before: 20 }
+    : { events: [latest], context: [], before: 30 } });
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m20", "m30"]);
+  // Two indivisible pages can exceed the target; dropping the visible m30
+  // would lose the scroll anchor. The next prepend can evict that newest page.
+  await loadEarlierChat({ ...options, history, request, requestPage: async before => before === 20
+    ? { events: [big(10, 2 * 1024 * 1024)], context: [], before: null }
     : { events: [latest], context: [], before: 30 } });
   expect(request).not.toHaveBeenCalled();
-  expect(options.getState().messages.map(m => m.id)).toEqual(["m20"]);
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m10", "m20"]);
   expect(history.isPast("a")).toBe(true); expect(history.isPartial("a")).toBe(true);
   expect(history.hasEarlier("a")).toBe(false);
   expect(await readChatCheckpoint("a")).toBeUndefined();
+});
+
+it.each([20, null])("protects an oversized earlier page from automatic latest trimming (before=%s)", async before => {
+  const options = setup(), history = new ChatHistory();
+  const latest = { events: [frame(30)], context: [], before: 30 };
+  const request = vi.fn(async () => { throw new Error("unbounded tail"); });
+  await loadChat({ ...options, history, request, requestPage: async () => latest });
+  const anchor = options.getState().messages[0];
+  const requestPage = vi.fn(async (cursor: number | null) => cursor === null ? latest : {
+    before, context: [], events: [
+      { seq: 20, event: { type: "assistant", message: { id: "large", content: [{ type: "tool_use", id: "read", name: "Read", input: {} }] } } },
+      { seq: 21, event: { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "read", content: "x".repeat(6 * 1024 * 1024) }] } } },
+    ],
+  });
+  await loadEarlierChat({ ...options, history, request, requestPage });
+  expect(valueBytes(options.getState())).toBeGreaterThan(CHAT_WINDOW_BYTES);
+  expect(options.getState().messages.map(m => m.id)).toEqual(["large", "m30"]);
+  expect(options.getState().messages[1]).toBe(anchor);
+  expect(requestPage).toHaveBeenCalledTimes(2);
+  // App's automatic trim skips past windows. Even without an evicted page,
+  // the soft exception must keep that guard until Return to latest resets it.
+  expect(history.isPast("a")).toBe(true);
+  expect(history.get("a")?.end).toBe(30);
+  expect(history.isPartial("a")).toBe(true);
+  expect(await readChatCheckpoint("a")).toBeUndefined();
+  history.forget("a"); options.catchUp.forget("chat:a");
+  await loadChat({ ...options, history, request, requestPage: async () => latest });
+  expect(history.isPast("a")).toBe(false);
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m30"]);
+  expect(valueBytes(options.getState())).toBeLessThan(CHAT_WINDOW_BYTES);
+  expect(request).not.toHaveBeenCalled();
+});
+
+it("does only per-page replay/download work and shares already reduced message bodies", async () => {
+  const options = setup(), history = new ChatHistory();
+  const requestPage = vi.fn(async (before: number | null) => {
+    const end = before === null ? 1000 : before - 1;
+    return { events: [frame(end - 1), frame(end)], context: [], before: end - 1 };
+  });
+  await loadChat({ ...options, history, request: async () => [], requestPage });
+  const reducer = vi.spyOn(chatReducer, "reduceChat");
+  for (let n = 0; n < 20; n++) {
+    const previous = options.getState().messages;
+    requestPage.mockClear(); reducer.mockClear();
+    await loadEarlierChat({ ...options, history, request: async () => { throw new Error("unbounded tail"); }, requestPage });
+    // An old implementation re-downloaded and reduced every loaded page here.
+    expect(requestPage.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(reducer.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(options.getState().messages[2]).toBe(previous[0]);
+    expect(history.slices("a").length).toBeLessThanOrEqual(CHAT_WINDOW_PAGES);
+    expect(options.getState().messages.length).toBeLessThanOrEqual(CHAT_WINDOW_PAGES * 2);
+  }
+  expect(history.isPast("a")).toBe(true);
+  reducer.mockRestore();
+});
+
+it("waits to publish until scrolling settles and keeps live events held meanwhile", async () => {
+  const options = setup(), history = new ChatHistory();
+  await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({ events: [frame(3)], context: [], before: 3 }) });
+  let ready!: () => void;
+  const beforePrepend = vi.fn(() => new Promise<void>(resolve => { ready = resolve; }));
+  const loading = loadEarlierChat({ ...options, history, beforePrepend, request: async () => [],
+    requestPage: async before => before === 3 ? { events: [frame(2)], context: [], before: 2 } : { events: [frame(3)], context: [], before: 3 } });
+  await vi.waitFor(() => expect(beforePrepend).toHaveBeenCalledOnce());
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m3"]);
+  expect(options.catchUp.live("chat:a", 4, frame(4).event)).toEqual([]);
+  ready(); await loading;
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m2", "m3", "m4"]);
+});
+
+it("never text-confirms a new local turn against a different older stamped identity", async () => {
+  const options = setup(), history = new ChatHistory();
+  await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({ events: [frame(3)], context: [], before: 3 }) });
+  options.publish(addUserTurn(options.getState(), "continue", [], 100, "new-local"));
+  const prompt = options.getState().messages.at(-1);
+  await loadEarlierChat({ ...options, history, request: async () => [], requestPage: async before => before === 3
+    ? { events: [{ seq: 2, event: { type: "user", uuid: "old-echo", octiq_user_turn_id: "old-local", message: { content: [{ type: "text", text: "continue" }] } } }], context: [], before: 2 }
+    : { events: [frame(3)], context: [], before: 3 } });
+  expect(options.getState().messages.find(m => m.turnId === "new-local")).toBe(prompt);
+  expect(prompt?.echo).toBeUndefined();
+  expect(options.getState().messages.filter(m => m.role === "user")).toHaveLength(2);
+});
+
+it("does not advance the older cursor or publish if cancelled while waiting for the viewport", async () => {
+  const options = setup(), history = new ChatHistory();
+  await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({ events: [frame(3)], context: [], before: 3 }) });
+  const original = options.getState(); let cancelled = false;
+  await loadEarlierChat({ ...options, history, cancelled: () => cancelled, beforePrepend: async () => { cancelled = true; }, request: async () => [],
+    requestPage: async before => before === 3 ? { events: [frame(2)], context: [], before: 2 } : { events: [frame(3)], context: [], before: 3 } });
+  expect(options.getState()).toBe(original);
+  expect(history.get("a")?.before).toBe(3);
+});
+
+it.each(["anonymous-assistant", "compaction"])("keeps distinct page-local fallback ids (%s)", async kind => {
+  const options = setup(), history = new ChatHistory();
+  const event = (text: string) => kind === "compaction"
+    ? { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: text } }
+    : { type: "assistant", message: { content: [{ type: "text", text }] } };
+  await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({ events: [{ seq: 3, event: event("newer") }], context: [], before: 3 }) });
+  const previous = options.getState().messages[0];
+  await loadEarlierChat({ ...options, history, request: async () => [], requestPage: async before => before === 3
+    ? { events: [{ seq: 2, event: event("older") }], context: [], before: 2 }
+    : { events: [{ seq: 3, event: event("newer") }], context: [], before: 3 } });
+  expect(options.getState().messages).toHaveLength(2);
+  expect(options.getState().messages[1]).toBe(previous);
+  expect(options.getState().messages[0].id).not.toBe(previous.id);
+});
+
+it("applies an identified dismissal to a retained local prompt without replaying old messages", async () => {
+  const options = setup(), history = new ChatHistory();
+  await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({ events: [frame(3)], context: [], before: 3 }) });
+  options.publish(addUserTurn(options.getState(), "local", [], 100, "dismissed"));
+  await loadEarlierChat({ ...options, history, request: async () => [], requestPage: async before => before === 3
+    ? { events: [{ seq: 2, event: { type: "octiq_user_turn_dismissed", uuid: "dismissed" } }], context: [], before: 2 }
+    : { events: [frame(3)], context: [], before: 3 } });
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m3"]);
+});
+
+it("evicts historical agent and unmatched outcome projections with their page", async () => {
+  const options = setup(), history = new ChatHistory();
+  const page = (start: number) => ({ context: [], before: start, events: [frame(start),
+    { seq: start + 1, event: { type: "system", subtype: "task_started", task_id: `agent-${start}`, task_type: "local_agent" } },
+    { seq: start + 2, event: { type: "octiq_tool_outcome", tool_use_id: `missing-${start}`, octiq_outcome: { origin: "octiqflow", reasonClass: "approval-expired", severity: "warning" } } },
+  ] });
+  const requestPage = async (before: number | null) => page(before === null ? 1000 : before - 3);
+  await loadChat({ ...options, history, request: async () => [], requestPage: async () => page(1000) });
+  for (let n = 0; n < 20; n++) await loadEarlierChat({ ...options, history, request: async () => [], requestPage });
+  expect(options.getState().agents).toHaveLength(CHAT_WINDOW_PAGES);
+  expect(Object.keys(options.getState().pendingOutcomes ?? {})).toHaveLength(CHAT_WINDOW_PAGES);
+  expect(options.getState().agents.some(a => a.id === "agent-1000")).toBe(false);
 });

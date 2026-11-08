@@ -21,6 +21,13 @@ use std::{
 mod ignored;
 mod raw;
 
+/// The same at-stake inventory used by every removal; unknown is never zero.
+pub(crate) fn at_stake_ignored_count(path: &str) -> Option<u64> {
+    ignored::inventory(path)
+        .ok()
+        .map(|inventory| inventory.files)
+}
+
 /// Validation cleanup also uses Git's non-force removal, which still deletes
 /// ignored files. Keep unknown/original data until an explicit archive flow.
 pub(crate) fn require_no_at_stake_ignored(path: &str) -> Result<(), String> {

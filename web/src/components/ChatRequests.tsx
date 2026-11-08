@@ -5,6 +5,8 @@ import { SafetyBlock, type Continue, type SafetyBlockNotice } from "./SafetyBloc
 import { useLateKeys } from "../lib/useArrival";
 import { Arrive } from "./Arrive";
 import "./PendingActionBadge.css";
+import { WorkspaceCleanupCard, type AnswerCleanup } from "./WorkspaceCleanupCard";
+import type { CleanupCard } from "../lib/workspaceCleanup";
 
 /** Keep each request mounted under its own identity while new requests arrive.
  *  Each card carries the pending-action keys (lib/pendingActions) it answers,
@@ -14,7 +16,7 @@ import "./PendingActionBadge.css";
  *  asked (`components/InlineQuestions`). */
 export function ChatRequests({
   asks, safetyBlocks, onPermissionAnswered, onSafetyAnswered,
-  onContinue, accessRequests = [], onAccessAnswer, scope = "", agent,
+  onContinue, accessRequests = [], onAccessAnswer, cleanupRequests = [], onCleanupAnswer, scope = "", agent,
 }: {
   asks: Ask[];
   safetyBlocks: SafetyBlockNotice[];
@@ -25,6 +27,8 @@ export function ChatRequests({
    *  Antigravity refusal makes. Drawn only with a way to answer them. */
   accessRequests?: AccessRequest[];
   onAccessAnswer?: AnswerAccess;
+  cleanupRequests?: CleanupCard[];
+  onCleanupAnswer?: AnswerCleanup;
   /** The chat these belong to. A card that turns up after its chat was drawn
    *  comes in (`components/Arrive`); one already waiting when the chat opens,
    *  or when you come back to it, is drawn in place. */
@@ -36,6 +40,7 @@ export function ChatRequests({
     ...asks.map((ask) => `permission:${ask.id}`),
     ...shownAccess.map((request) => `access:${request.id}`),
     ...safetyBlocks.map((block) => `safety:${block.id}`),
+    ...cleanupRequests.map((card) => `cleanup:${card.id}`),
   ]);
   return (
     <>
@@ -58,6 +63,13 @@ export function ChatRequests({
         <Arrive key={block.id} late={late.has(`safety:${block.id}`)}>
           <div className="pending-target" data-pending-keys={`safety:${block.id}`}>
             <SafetyBlock block={block} onContinue={onContinue} onAnswered={onSafetyAnswered} />
+          </div>
+        </Arrive>
+      ))}
+      {onCleanupAnswer && cleanupRequests.map((card) => (
+        <Arrive key={card.id} late={late.has(`cleanup:${card.id}`)}>
+          <div className="pending-target" data-pending-keys={`cleanup:${card.id}`}>
+            <WorkspaceCleanupCard card={card} onAnswer={onCleanupAnswer} />
           </div>
         </Arrive>
       ))}

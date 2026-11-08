@@ -13,15 +13,17 @@ import { readTwice } from "./listRead";
 import { SILENT_MS, type SourceRead, type WaitSource } from "./pendingActions";
 
 import { PendingRequests, requestConversation, type PendingRequest, type RequestState } from "./pendingRequests";
+import { applyCleanupEvent, cleanupAsk, type CleanupCard, type CleanupEvent, type CleanupSettled } from "./workspaceCleanup";
 type Announce = (key: string, kind: NoticeKind, id: string, detail: string) => void;
 
 /** The card lists this hook asks for, and where each request stands for the
- *  connection (`pendingActions.wholeOf`). The ledger is the fifth source of
+ *  connection (`pendingActions.wholeOf`). The ledger is another source of
  *  what waits and is read elsewhere (`orchestrationFeed`). */
 type ListSource = Exclude<WaitSource, "orchestration_snapshot">;
 export type ListsRead = Readonly<Record<ListSource, SourceRead>>;
 const ASKED: ListsRead = {
   permission_pending: "asked", access_request_pending: "asked", question_pending: "asked", safety_block_pending: "asked",
+  orchestration_workspace_cleanup_request_pending: "asked",
 };
 
 /** Whether a request failed because the host has no such command: an older
@@ -46,10 +48,12 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
   const safety = usePendingRequests<SafetyBlockNotice>();
   const prompts = usePendingRequests<Question>();
   const raises = usePendingRequests<AccessRequest>();
+  const cleanups = usePendingRequests<CleanupCard>();
   const { items: asks, setItems: setAsks } = permissions;
   const { items: safetyBlocks, setItems: setSafetyBlocks } = safety;
   const { items: questions, setItems: setQuestions } = prompts;
   const { items: accessRequests, setItems: setAccessRequests } = raises;
+  const { items: cleanupRequests } = cleanups;
   const notice = useRef(announce);
   notice.current = announce;
   // Whether each list has answered for this connection. Before the first
@@ -124,6 +128,7 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
         return [...(list ?? [])];
       }),
       refill(raises, "access_request_pending"),
+      refill(cleanups, "orchestration_workspace_cleanup_request_pending"),
     ];
     return () => {
       clearTimeout(silent);
@@ -190,7 +195,15 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
       if (!gone?.id) return;
       raises.publish(raises.store.remove(gone.id));
     });
+    const offCleanup = bridge.on<CleanupEvent>("orchestration-workspace-cleanup-request", (event) => {
+      if (event.state === "appeared") {
+        const id = requestConversation(event.request);
+        if (id) notice.current(event.id, "permission", id, cleanupAsk(event.request));
+      }
+      cleanups.publish(applyCleanupEvent(cleanups.store, event));
+    });
     return () => {
+      offCleanup();
       offRaise();
       offRaiseGone();
       offAsk();
@@ -230,8 +243,15 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
    *  asked, with its one retry and its own five minutes. */
   const reread = useCallback(() => setRound((n) => n + 1), []);
 
+  const { store: cleanupStore, publish: publishCleanup } = cleanups;
+  const answerCleanup = useCallback(async (card: CleanupCard, approve: boolean) => {
+    const result = await bridge.invoke<CleanupSettled>("orchestration_workspace_cleanup_request_answer", { id: card.id, approve });
+    publishCleanup(applyCleanupEvent(cleanupStore, { state: "settled", id: card.id, chatKey: card.chatKey, result }));
+  }, [cleanupStore, publishCleanup]);
+
   return {
     asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks, reread,
+    cleanupRequests, answerCleanup,
     /** Whether each list has answered for this connection, and whether one
      *  has been silent too long: what `pendingActions.wholeOf` reads. */
     read, late,
