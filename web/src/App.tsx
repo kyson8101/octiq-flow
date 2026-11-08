@@ -1788,7 +1788,6 @@ export default function App() {
   }, [catchUpChat, flushChats]);
   const loadLatestFor = useCallback(async (id: string | null) => {
     if (!id) return;
-    setEarlierReads(prev => ({ ...prev, [id]: { loading: true } }));
     try {
       // Waiting on a reconnect is part of this request too: its rejection
       // must leave the same usable retry/error control as a fresh read's.
@@ -1798,6 +1797,7 @@ export default function App() {
       const previousSeq = catchUp.current.mark(keyFor(id));
       await forgetChatCheckpoint(id);
       catchUp.current.forget(keyFor(id)); chatHistory.current.forget(id);
+      setEarlierReads(prev => ({ ...prev, [id]: { loading: true } }));
       try { await catchUpChat(id); }
       catch (error) {
         // A failed Return to latest leaves the older window and its way back
