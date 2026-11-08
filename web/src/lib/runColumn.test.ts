@@ -160,3 +160,9 @@ describe("a chat that was drawn without the column", () => {
     expect(columnAtFirstPaint(read, { chatId: "lead", column: true, ledgerRead: true, runs: 3 })).toBe(read);
   });
 });
+
+it("keeps a historical-only column shut when its identity arrives after first paint", () => {
+  const first=columnAtFirstPaint(NO_FIRST_PAINT,{chatId:"lead",column:false,ledgerRead:false,runs:0});
+  const history=columnAtFirstPaint(first,{chatId:"lead",column:true,ledgerRead:true,runs:0,history:true});
+  expect(columnHeldShut(history)).toBe(true);
+});

@@ -3,6 +3,98 @@
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Membership only, never a second reading of waits. The page supplies the
+/// chat identities from its one held-card reading. Historical panels opt in
+/// within their visible scope; full run detail remains unchanged.
+pub fn select(
+    view: &mut Value,
+    include_ended: bool,
+    held_chats: &[String],
+    coordinator: Option<&str>,
+    workspace: Option<&str>,
+) {
+    // Routing identity outlives a run's visibility: old worker cards still
+    // belong to their coordinator, and workers must not become sidebar roots.
+    let coordinators: BTreeMap<_, _> = view["runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            Some((
+                r["id"].as_str()?.to_owned(),
+                r["coordinatorChatKey"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    view["runCoordinators"] = json!(coordinators.values().collect::<BTreeSet<_>>());
+    let parents: BTreeMap<_, _> = view["attempts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| {
+            Some((
+                a["workerChatKey"]
+                    .as_str()?
+                    .trim_start_matches("chat:")
+                    .to_owned(),
+                coordinators
+                    .get(a["runId"].as_str()?)?
+                    .trim_start_matches("chat:")
+                    .to_owned(),
+            ))
+        })
+        .collect();
+    view["workerParents"] = json!(parents);
+    let held_runs: BTreeSet<String> = view["attempts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| {
+            a["workerChatKey"]
+                .as_str()
+                .is_some_and(|key| held_chats.iter().any(|held| held == key))
+        })
+        .filter_map(|a| a["runId"].as_str().map(str::to_owned))
+        .collect();
+    let ids: BTreeSet<String> = view["runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| {
+            coordinator.is_none_or(|key| r["coordinatorChatKey"] == key)
+                && workspace.is_none_or(|id| r["workspaceId"] == id)
+        })
+        .filter(|r| {
+            include_ended
+                || (r["archivedAt"].is_null()
+                    && r["status"] != "closed"
+                    && r["status"] != "stopped")
+                || r["id"].as_str().is_some_and(|id| held_runs.contains(id))
+        })
+        .filter_map(|r| r["id"].as_str().map(str::to_owned))
+        .collect();
+    for list in [
+        "runs",
+        "tasks",
+        "attempts",
+        "gates",
+        "nativeDecisions",
+        "messages",
+        "notifications",
+        "services",
+        "bridges",
+        "peerAsks",
+    ] {
+        if let Some(rows) = view[list].as_array_mut() {
+            rows.retain(|row| {
+                row[if list == "runs" { "id" } else { "runId" }]
+                    .as_str()
+                    .is_some_and(|id| ids.contains(id))
+            });
+        }
+    }
+}
+
 /// Project a host-derived snapshot, never a stored ledger. Keep the same
 /// arrays so runWaits/runProgress remain the single reading on every surface.
 /// Empty text here means "ask for detail", never an edit of the saved text.
@@ -329,6 +421,37 @@ fn items<'a>(value: &'a mut Value, field: &str) -> impl Iterator<Item = &'a mut 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn global_selection_drops_history_but_keeps_held_chat_candidates_and_routing() {
+        let original = json!({
+            "runs":[{"id":"live","status":"running","workspaceId":"p","coordinatorChatKey":"chat:main"},
+                {"id":"stopped","status":"stopped","workspaceId":"p","coordinatorChatKey":"chat:main"},
+                {"id":"closed","status":"closed","workspaceId":"q","coordinatorChatKey":"chat:other"},
+                {"id":"archived","status":"completed","archivedAt":1,"workspaceId":"p","coordinatorChatKey":"chat:main"}],
+            "tasks":[{"id":"t","runId":"stopped"}],
+            "attempts":[{"id":"a","runId":"stopped","workerChatKey":"chat:worker"}],
+            "gates":[{"id":"g","runId":"stopped","status":"open","awaits":"person"}],
+            "reports":{"chat:worker":{"steps":[]}},"messages":[{"runId":"closed"}]
+        });
+        let mut view = original.clone();
+        select(&mut view, false, &[], None, None);
+        project(&mut view);
+        assert_eq!(view["runs"].as_array().unwrap().len(), 1);
+        assert_eq!(view["runs"][0]["id"], "live");
+        assert!(view["tasks"].as_array().unwrap().is_empty());
+        assert!(view["gates"].as_array().unwrap().is_empty());
+        assert!(view["reports"].as_object().unwrap().is_empty());
+        assert_eq!(view["workerParents"]["worker"], "main");
+        let mut held = original.clone();
+        select(&mut held, false, &["chat:worker".into()], None, None);
+        assert_eq!(held["runs"].as_array().unwrap().len(), 2);
+        assert_eq!(held["tasks"][0]["id"], "t");
+        let mut history = original;
+        select(&mut history, true, &[], Some("chat:main"), Some("p"));
+        assert_eq!(history["runs"].as_array().unwrap().len(), 3);
+        assert!(history["messages"].as_array().unwrap().is_empty());
+    }
 
     #[test]
     #[ignore = "read-only measurement of a separately captured real wire snapshot"]

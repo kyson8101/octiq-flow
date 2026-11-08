@@ -119,3 +119,8 @@ describe("TasksButton", () => {
     expect(html).not.toContain("tasks-toggle-owed");
   });
 });
+
+it("names unloaded history without calling it a new mission",()=>{
+ const html=renderToStaticMarkup(<ChatWorkflowBar unified history snapshot={EMPTY_ORCHESTRATION} orchestrated view="chat" onView={()=>{}}/>);
+ expect(html).toContain('>Missions</h1>');expect(html).not.toContain('New mission');
+});

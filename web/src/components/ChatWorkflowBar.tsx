@@ -15,11 +15,13 @@ const HELD_TITLE = String.fromCharCode(160);
  *  Progress and approvals stay in the task details. A chat with no run draws
  *  nothing here; the agent decides how to work, and a run exists only once
  *  one is explicitly started. */
-export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPending = false, split = false, unified = false, selectedRun, onBackToMain, onOpenBeside, besideTitle = "this task", readOnly = false, held = false }: {
+export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPending = false, split = false, unified = false, selectedRun, onBackToMain, onOpenBeside, besideTitle = "this task", readOnly = false, held = false, history = false }: {
   /** The ledger has not been read yet and the page is holding this chat's
    *  run column (`lib/runColumn`): the line holds its place too, with no
    *  title in it, so the run's arrival fills it in rather than adding it. */
   held?: boolean;
+  /** Historical membership is known; its selected title is read on demand. */
+  history?: boolean;
   snapshot: OrchestrationSnapshot; orchestrated: boolean; view: "chat" | "run";
   onView: (view: "chat" | "run") => void;
   pendingApprovals?: number;
@@ -55,7 +57,7 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPend
     {onOpenBeside && <OpenBesideButton className="is-bar" title={besideTitle} onClick={onOpenBeside} />}
     {held && !run
       ? <div className="workflow-heading" aria-hidden="true"><h1 className="workflow-title">{HELD_TITLE}</h1></div>
-      : <RunTitle text={run?.objective ?? "New mission"} />}
+      : <RunTitle text={run?.objective ?? (history ? "Missions" : "New mission")} />}
     {readOnly && <ReadOnlyBadge className="workflow-read-only" />}
   </>;
   const nav = views ? <nav className="chat-workflow-bar" aria-label="Chat workflow">

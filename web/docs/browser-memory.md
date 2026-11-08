@@ -202,3 +202,7 @@ Disposable production Brave passes all eight strict legacy-live cases and all ei
 The original fixed-200ms stamped growth probe does **not** pass in this environment: two fix runs read an echo before it arrived (iterations four and one); an unchanged `106dfe3` production control fails the same way on iteration one. No further fix rerun or product delay was added. The independent reviewer's existing convergence probe passes all 40 sends on each version, with one confirmed copy, zero retained locals and two serialized background-message bytes at every release. Observed acknowledgement latency is baseline median 348.91 / max 922.26ms versus fix median 235.75 / max 556.36ms; these are fixture observations, not a speed claim or a 200ms guarantee. Sanitized results, source hashes and every non-green attempt are recorded in `browser-memory-legacy-live-echo.json`.
 
 Raw evidence is under `/tmp/octiq-h1d-fix/`. These are disposable desktop Brave and module checks, including a 390px viewport; real phone, Safari/WebKit, tunnel, endurance and a new RSS/heap ceiling remain untested. No push, deployment or restart is part of this repair.
+
+## Installation-sized follow-up (2026-11-08)
+
+[Historical runs, index deltas and reports](browser-memory-install.md) records the 20-minute and 18-switch measurements, compatibility guards, artifact hashes and validation limits for the next memory reduction.

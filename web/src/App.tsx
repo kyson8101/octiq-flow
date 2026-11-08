@@ -71,6 +71,7 @@ import {
   type DeletedIndexEntry,
   type IndexEntry,
 } from "./lib/chatIndex";
+import { chatIndexFeed, type IndexReading } from "./lib/chatIndexFeed";
 import { isChatDone } from "./lib/chatFilter";
 import { isUnread } from "./lib/unread";
 import { recall, remember } from "./lib/remember";
@@ -776,7 +777,8 @@ export default function App() {
   const runChatKey = workerChat ? (coordinatorId ? keyFor(coordinatorId) : null) : conversationId ? keyFor(conversationId) : null;
   const runWorkflow = useMemo(() => workerChat ? chatSnapshot(orchestration, runChatKey) : currentWorkflow,
     [workerChat, orchestration, runChatKey, currentWorkflow]);
-  const workflowVisible = orchestrated || runWorkflow.runs.length > 0 || holdsRun;
+  const hasRunHistory = !!runChatKey && !!orchestration.runCoordinators?.includes(runChatKey);
+  const workflowVisible = orchestrated || runWorkflow.runs.length > 0 || holdsRun || hasRunHistory;
   const workflowSplit = roomToSplit && !focusMode && workflowVisible;
   // Put away from the top bar's Tasks button: the room is there, but the chat
   // takes all of it. See TASKS_KEY.
@@ -791,7 +793,7 @@ export default function App() {
   // started while the chat is open opens it as before.
   const firstPaint = useRef<ColumnAtFirstPaint>(NO_FIRST_PAINT);
   firstPaint.current = columnAtFirstPaint(firstPaint.current, {
-    chatId: conversationId, column: workflowVisible, ledgerRead, runs: runWorkflow.runs.length,
+    chatId: conversationId, column: workflowVisible, ledgerRead, runs: runWorkflow.runs.length, history: hasRunHistory,
   });
   const [lateOpened, setLateOpened] = useState<string | null>(null);
   const lateShut = columnHeldShut(firstPaint.current) && lateOpened !== conversationId && !runOpened[workflowKey];
@@ -805,6 +807,7 @@ export default function App() {
   const displayedRunId = displayedRuns[displayedRunKey];
   const displayedRun = displayedRunId === null ? null
     : runWorkflow.runs.find((run) => run.id === displayedRunId)
+      ?? orchestrationState.details?.get(displayedRunId ?? "")?.runs.find(run => run.id === displayedRunId)
       ?? runWorkflow.runs.find((run) => run.archivedAt == null) ?? runWorkflow.runs[0];
   // The coordinator the ledger names for this worker's own run. The chat tree
   // walks to the top-most head, which for a delegated run is not the chat
@@ -813,8 +816,9 @@ export default function App() {
     if (!workerChat || !conversationId) return null;
     const key = keyFor(conversationId);
     const runId = orchestration.attempts.find((attempt) => attempt.workerChatKey === key)?.runId;
-    return orchestration.runs.find((run) => run.id === runId)?.coordinatorChatKey ?? null;
-  }, [workerChat, conversationId, orchestration]);
+    return orchestration.runs.find((run) => run.id === runId)?.coordinatorChatKey
+      ?? (chatParents.has(conversationId) ? keyFor(chatParents.get(conversationId)!) : null);
+  }, [workerChat, conversationId, orchestration, chatParents]);
   const workerRequestIds = useMemo(() => conversationId && !workerChat
     ? [...chatParents.keys()].filter((id) => mainChatId(id, chatParents) === conversationId)
     : [], [conversationId, workerChat, chatParents]);
@@ -1240,7 +1244,7 @@ export default function App() {
     const chat = await resolveNotificationConversation(
       { conversationId: id, projectId: meta.current[id]?.projectId ?? null },
       list,
-      () => bridge.invoke<IndexEntry[]>("chat_index_list"),
+      () => chatIndexFeed.forChat(id),
     ).catch(() => null);
     const noticeProjectId = chat?.projectId ?? meta.current[id]?.projectId ?? null;
     const notice = noticeFor({
@@ -1425,19 +1429,15 @@ export default function App() {
   // closed early, leaves a chat this browser has and the server does not.
   // The browser's own chats are now kept, and the next save re-offers them to
   // the index.
-  const refreshIndex = useCallback(() => {
-    // Trash is a second view of the same server-side index. Read both views as
-    // one refresh so a row found in Trash can never be folded back in from an
-    // active-list reply that raced the delete.
-    Promise.all([
-      bridge.invoke<IndexEntry[]>("chat_index_list"),
-      bridge.invoke<DeletedIndexEntry[]>("chat_index_deleted"),
-    ])
-      .then(([answer, deleted]) => {
+  const refreshIndex = useCallback((reading: IndexReading) => {
+    const { entries: answer, deleted, partial, removed } = reading;
+    {
         setIndexReady(true);
         const buriedOnServer = deleted ?? [];
-        setDeletedChats(buriedOnServer);
-        const serverDeleted = new Set(buriedOnServer.map((chat) => chat.id));
+        setDeletedChats(before => partial
+          ? [...before.filter(row => !removed.includes(row.id) && !answer.some(entry => entry.id === row.id)), ...buriedOnServer]
+          : buriedOnServer);
+        const serverDeleted = new Set([...removed, ...buriedOnServer.map((chat) => chat.id)]);
         // Unlike an empty active list, an explicit Trash row is authoritative.
         // This matters when the last remaining chat was deleted on another
         // device: the active answer is empty, but it is not "no news".
@@ -1498,7 +1498,7 @@ export default function App() {
           ...leavingRef.current,
           ...gone.current,
         ]);
-        saveIndexEntries(indexBackfill(conversationsRef.current, answer, excluded));
+        if (!partial) saveIndexEntries(indexBackfill(conversationsRef.current, answer, excluded));
         const remote = answer.filter(
           (row) => !serverDeleted.has(row.id) && !gravestones.has(row.id),
         );
@@ -1528,7 +1528,7 @@ export default function App() {
           // brief collapse before React unmounts it. Do not let the index
           // answer cut that visual transition short.
           if (
-            c.synced &&
+            !partial && c.synced &&
             !known.has(c.id) &&
             !serverDeleted.has(c.id) &&
             !leavingRef.current.has(c.id)
@@ -1565,7 +1565,7 @@ export default function App() {
           // Dropped when the server HAS listed them before, because then the
           // list is authoritative and the chat was deleted on another device.
           const mine = local.filter(
-            (c) => !known.has(c.id) && (!c.synced || leavingRef.current.has(c.id)),
+            (c) => !known.has(c.id) && (partial || !c.synced || leavingRef.current.has(c.id)),
           );
           const all = [...merged, ...mine];
           // Most answers say exactly what this page already holds — a
@@ -1577,35 +1577,12 @@ export default function App() {
           saveConversations(all);
           return all;
         });
-      })
-      .catch(() => {});
+    }
   }, [forgetLocally]);
 
-  // Asked for on every CONNECT rather than once on load, and again the moment
-  // the server says the list has changed.
-  //
-  // Once on load was the whole of it, and it made the sidebar a snapshot: a
-  // chat started on the phone — or deleted on it — reached the laptop at the
-  // next reload and not before. A connect covers the device that was asleep
-  // while the change happened; the event covers the one that was watching.
-  useEffect(() => {
-    if (conn !== "open") return;
-    refreshIndex();
-  }, [conn, refreshIndex]);
-
-  useEffect(() => {
-    // Coalesced: a save and its neighbours arrive in a burst, and the answer to
-    // all of them is the same one list.
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const off = bridge.on("chat-index-changed", () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(refreshIndex, 250);
-    });
-    return () => {
-      off();
-      if (timer) clearTimeout(timer);
-    };
-  }, [refreshIndex]);
+  // The one connection read and changed rows share the same tombstone,
+  // generation, unsynced-local and deletion-animation rules above.
+  useEffect(() => chatIndexFeed.subscribe(refreshIndex), [refreshIndex]);
 
   // A chat can arrive from another device for a project this page has never
   // heard of, because the project was made over there too. The row would then
@@ -3379,7 +3356,7 @@ export default function App() {
     void resolveNotificationConversation(
       target,
       conversations,
-      () => bridge.invoke<IndexEntry[]>("chat_index_list"),
+      () => chatIndexFeed.forChat(target.conversationId),
     ).then((found) => {
       if (!current) return;
       setPendingNotification((pending) =>
@@ -5139,6 +5116,12 @@ export default function App() {
   );
   const pendingList = pendingRead.actions;
   const pendingHeld = pendingRead.held;
+  // Cards can name a historical worker before its run has been requested.
+  // Keep identity selection independent of task lookup; runWaits stays the
+  // sole reader that decides whether the run actually waits on the person.
+  const heldChatKeys = [...new Set(pendingList.flatMap(action => action.chatId ? [keyFor(action.chatId)] : []))].sort().join(" ");
+  useEffect(() => orchestrationFeed.holdChats(heldChatKeys ? heldChatKeys.split(" ") : []), [heldChatKeys]);
+
   // A chat that waits on the person is parked on a card, so it is not drawn
   // as running (`lib/chatWait`): its clock stops, its line says it waits, and
   // its row draws no working mark. Read off the one list above, never off
@@ -5764,7 +5747,7 @@ export default function App() {
           <div className={`chat-app-surface ${entryClass(identity)}`} hidden={!!mainPage}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
           {(!workerChat || workflowVisible) && <ChatWorkflowBar snapshot={runWorkflow} orchestrated={workflowVisible} view={workflowView} focusMode={focusMode} split={workflowSplit}
-            unified={workflowVisible} selectedRun={displayedRun} worker={workerChat} held={holdsRun}
+            unified={workflowVisible} selectedRun={displayedRun} history={hasRunHistory} worker={workerChat} held={holdsRun}
             // One way back at a time: while the run panel is on screen its
             // Main agent chat button is that way, so the bar does not repeat it.
             onBackToMain={workerChat && (workerCoordinatorKey ?? runChatKey) && !(workflowVisible && (runSplit || workflowView === "run"))

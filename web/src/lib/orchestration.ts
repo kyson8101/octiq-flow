@@ -650,6 +650,9 @@ export type OrchestrationNotification = {
 
 export type OrchestrationSnapshot = {
   summary?: boolean;
+  /** Lightweight routing for workers whose historical run is not loaded. */
+  workerParents?: Record<string, string>;
+  runCoordinators?: string[];
   revision?: string;
   runRevisions?: Record<string, string>;
   nativeDecisions?: NativeDecision[];
@@ -732,7 +735,7 @@ export const EMPTY_ORCHESTRATION: OrchestrationSnapshot = {
 /** The ledger is authoritative, including completed and retried workers. */
 export function workerChatParents(snapshot: OrchestrationSnapshot): ReadonlyMap<string, string> {
   const coordinators = new Map(snapshot.runs.map((run) => [run.id, run.coordinatorChatKey]));
-  const parents = new Map<string, string>();
+  const parents = new Map<string, string>(Object.entries(snapshot.workerParents ?? {}));
   for (const attempt of snapshot.attempts) {
     const parent = coordinators.get(attempt.runId);
     if (!parent?.startsWith("chat:") || !attempt.workerChatKey.startsWith("chat:")) continue;
