@@ -602,6 +602,56 @@ pub fn compact_records(manager: &crate::agent_chat::ChatManager) {
     }
 }
 
+/// Probe both production compaction doors with a real, coalescible record.
+/// An owed line must protect its own life at entry and at publication.
+#[cfg(test)]
+pub(crate) fn assert_debt_blocks_compaction(
+    manager: &crate::agent_chat::ChatManager,
+    key: &str,
+    debt: &str,
+) {
+    let path = crate::transcript::path_for(key).unwrap();
+    for _ in 0..2 {
+        crate::transcript::append(key, &serde_json::json!({"type":"octiq_compacted","into":1}))
+            .unwrap();
+    }
+    let before = std::fs::read(&path).unwrap();
+    let seen = crate::transcript::generation(key);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // Contention is fail-closed, but is not proof that THIS debt was checked.
+    loop {
+        let error = manager
+            .claim_record(&path)
+            .err()
+            .expect("debt must refuse migration");
+        if !error.contains("busy") || std::time::Instant::now() >= deadline {
+            assert!(error.contains(debt), "expected {debt}: {error}");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    compact_chat(manager, key);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    loop {
+        let error = crate::transcript::rewrite_numbered_guarded(
+            &path,
+            |_, _| None,
+            true,
+            || manager.claim_record(&path).map_err(std::io::Error::other),
+        )
+        .expect_err("publication must refuse the same debt")
+        .to_string();
+        if !error.contains("busy") || std::time::Instant::now() >= deadline {
+            assert!(error.contains(debt), "expected {debt}: {error}");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(crate::transcript::generation(key), seen);
+    assert!(!path.with_extension("jsonl.compact-backup").exists());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,6 +772,7 @@ mod tests {
         assert!(manager.questions.take_tool(&id).unwrap().is_some());
         crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(false));
         assert!(manager.questions.owes_notes());
+        assert_debt_blocks_compaction(&manager, &key, "answered line still owed");
         assert!(manager.claim_record(&path).is_err());
         let seen = crate::transcript::generation(&key);
         compact_chat(&manager, &key);

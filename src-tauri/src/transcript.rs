@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -261,48 +261,49 @@ fn folds_case(folder: &Path) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Generation {
     record: PathBuf,
-    number: u64,
+    number: Arc<u64>,
 }
 
-/// How far each record has moved on, by its identity.
+/// Lives currently observed by a receipt/debt holder. The table owns only
+/// weak references: a token keeps its own life known for as long as needed.
+/// Removing an unobserved entry proves nothing about history, but there is
+/// then no token left that could mistake that removal for `Held::Moved`.
 ///
-/// A record's number is a stamp from one counter shared by all of them, so
-/// it only ever rises and no two moves share one. That is what lets the
-/// table be bounded: past `GENERATIONS_KEPT` the older half is dropped and
-/// `floor` becomes the highest stamp dropped, which every record not in
-/// the table then reads as. A record never reads a number it had before a
-/// move, so a token held from before one is never honoured again; the cost
-/// of a drop is that a token for a record that did not move may be refused
-/// once, and its holder looks again.
+/// The old bounded move log raised a global floor when full. That made even
+/// an untouched record's token read as Moved, paying unrelated answer debts.
+/// Live tokens must never be evicted to meet a bookkeeping capacity.
 #[derive(Default)]
 struct Generations {
-    moved: HashMap<PathBuf, u64>,
-    /// The last stamp given.
+    observed: HashMap<PathBuf, Weak<u64>>,
     last: u64,
-    /// What a record not in `moved` reads as.
-    floor: u64,
+    /// Sweep once per batch of new entries, even if many lives are pinned.
+    sweep_at: usize,
 }
 
-/// How many moved records are remembered before the older half is dropped.
-/// A record costs its path, about 150 bytes; a server that clears or
-/// deletes a chat a minute for a week stays under this.
+/// Maximum unobserved bookkeeping between sweeps, in addition to live tokens.
 const GENERATIONS_KEPT: usize = 16_384;
 
 impl Generations {
-    fn number(&self, record: &Path) -> u64 {
-        self.moved.get(record).copied().unwrap_or(self.floor)
+    fn number(&mut self, record: &Path, kept: usize) -> Arc<u64> {
+        if let Some(life) = self.observed.get(record).and_then(Weak::upgrade) {
+            return life;
+        }
+        if self.observed.len() >= self.sweep_at.max(kept) {
+            self.observed.retain(|_, life| life.strong_count() != 0);
+            self.observed.shrink_to(self.observed.len().max(kept));
+            self.sweep_at = self.observed.len() + kept;
+        }
+        self.last += 1;
+        let life = Arc::new(self.last);
+        self.observed
+            .insert(record.to_path_buf(), Arc::downgrade(&life));
+        life
     }
 
-    fn move_on(&mut self, record: &Path, kept: usize) {
-        self.last += 1;
-        self.moved.insert(record.to_path_buf(), self.last);
-        if self.moved.len() > kept {
-            let mut stamps: Vec<u64> = self.moved.values().copied().collect();
-            stamps.sort_unstable();
-            let cut = stamps[stamps.len() / 2];
-            self.moved.retain(|_, stamp| *stamp > cut);
-            self.floor = cut;
-        }
+    fn move_on(&mut self, record: &Path) {
+        // Only an actual record mutation calls this. Old tokens retain their
+        // old life; any new capture gets a different one under the append lock.
+        self.observed.remove(record);
     }
 }
 
@@ -326,12 +327,12 @@ fn is_host_event(line: &[u8]) -> bool {
 }
 
 fn generation_of(_appending: &Appending, record: &Path) -> Generation {
-    let generations = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut generations = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
     Generation {
         record: record.to_path_buf(),
         number: generations
-            .as_ref()
-            .map_or(0, |generations| generations.number(record)),
+            .get_or_insert_with(Generations::default)
+            .number(record, GENERATIONS_KEPT),
     }
 }
 
@@ -341,7 +342,7 @@ fn next_generation(_appending: &Appending, record: &Path) {
     let mut generations = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
     generations
         .get_or_insert_with(Generations::default)
-        .move_on(record, GENERATIONS_KEPT);
+        .move_on(record);
 }
 
 /// Which record `key` has now, to be handed to `confirm_synced` with what
@@ -3103,44 +3104,37 @@ mod tests {
         forget(&key);
     }
 
-    /// Review of bf9d8cd, finding 6: every record ever forgotten kept an
-    /// entry for good. The table is bounded, and dropping an entry never
-    /// gives its record back a number it had before: a token from before a
-    /// move stays refused, however many other records move after it.
+    /// Capacity is not a history mutation. Live debt tokens remain known,
+    /// including more live tokens than the housekeeping batch size.
     #[test]
-    fn the_table_of_moved_records_is_bounded_and_never_hands_back_an_old_number() {
+    fn generation_capacity_never_moves_live_tokens_and_dead_bookkeeping_is_bounded() {
         let record = |n: usize| PathBuf::from(format!("/chats/chat_{n}.jsonl"));
         let mut table = Generations::default();
-        let untouched = table.number(&record(9_999));
-        let before: Vec<u64> = (0..40).map(|n| table.number(&record(n))).collect();
-        for n in 0..40 {
-            table.move_on(&record(n), 8);
-            assert!(table.moved.len() <= 8, "{} kept", table.moved.len());
+        let held: Vec<_> = (0..40).map(|n| table.number(&record(n), 8)).collect();
+        for n in 40..1_040 {
+            drop(table.number(&record(n), 8));
+            assert!(table.observed.len() <= held.len() + 8);
         }
-        for (n, old) in before.iter().enumerate() {
-            assert_ne!(
-                table.number(&record(n)),
-                *old,
-                "record {n} reads as never moved"
-            );
+        for (n, old) in held.iter().enumerate() {
+            assert_eq!(table.number(&record(n), 8), *old, "untouched life {n}");
         }
-        // Each record, moved again, reads a number it never had.
-        let mut had: Vec<Vec<u64>> = (0..40).map(|n| vec![table.number(&record(n))]).collect();
-        for round in 0..3 {
-            for n in 0..40 {
-                table.move_on(&record(n), 8);
-                let now = table.number(&record(n));
-                assert!(
-                    !had[n].contains(&now),
-                    "round {round}, record {n}: {now} again"
-                );
-                had[n].push(now);
-            }
+        // Real moves remain observable after any amount of unrelated churn.
+        table.move_on(&record(0));
+        for n in 1_040..2_040 {
+            drop(table.number(&record(n), 8));
+            table.move_on(&record(n));
         }
-        // The cost of a drop, and the whole of it: a record that never
-        // moved no longer reads as it did, so its token is asked for again.
-        assert_ne!(table.number(&record(9_999)), untouched);
-        assert!(table.floor <= table.last);
+        assert_ne!(table.number(&record(0), 8), held[0]);
+        assert_eq!(table.number(&record(1), 8), held[1]);
+        drop(held);
+        for n in 2_040..3_040 {
+            drop(table.number(&record(n), 8));
+        }
+        assert!(table.observed.len() <= 8);
+        eprintln!(
+            "generation bookkeeping after churn: {} entries, no floor",
+            table.observed.len()
+        );
     }
 
     /// The same for a record that is not there yet when it is asked about:

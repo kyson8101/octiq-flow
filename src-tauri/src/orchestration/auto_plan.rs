@@ -997,6 +997,14 @@ mod tests {
             1
         );
         let record = crate::transcript::key_record_claim("chat:master").unwrap();
+        let mut manager = crate::agent_chat::ChatManager::default();
+        manager.orchestrations =
+            std::sync::Arc::new(OrchestrationStore::load(dir.0.join("ledger.json")));
+        crate::record_trim::assert_debt_blocks_compaction(
+            &manager,
+            "chat:master",
+            "auto-plan approval notice",
+        );
         assert!(restarted.record_quiet(&record).is_err());
         restarted.deliver_auto_plan_notices().unwrap();
         restarted.deliver_auto_plan_notices().unwrap();

@@ -931,6 +931,105 @@ mod tests {
             .collect()
     }
 
+    // Exercise the real permission failure, QuestionStore debt and storage
+    // publication doors at the production generation-table boundary.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn answered_debt_survives_16384_and_16385_other_storage_moves() {
+        use crate::transcript::{self, Held};
+        use std::os::unix::fs::PermissionsExt;
+        let home = crate::test_dir::TestDir::new("answered-capacity");
+        let _profile = crate::profile::started_in(&home);
+        let store = QuestionStore::load(home.join("questions.json"));
+        let chat = "chat:answered-capacity-victim";
+        transcript::append(chat, &serde_json::json!({"type":"user","text":"keep"})).unwrap();
+        let file = transcript::path_for(chat).unwrap();
+        let original = std::fs::read(&file).unwrap();
+        let seen = transcript::generation(chat).unwrap();
+        let (id, _rx) = store.insert(test_origin(chat), questions()).unwrap();
+        store.answer(&answers(&store)).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(store.take_tool(&id).unwrap().is_some());
+        assert!(store.owes_notes(), "permission failure must leave a debt");
+        assert_eq!(transcript::receipt(chat, &seen), Held::Unconfirmed);
+        // Control: without other moves it retries successfully after repair.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        store.notes_due_now();
+        store.settle_notes().unwrap();
+        assert!(!store.owes_notes());
+        assert_eq!(transcript::of_type(chat, ANSWERED).len(), 1);
+        // A second answered fact is owed in the same untouched history.
+        let (id, _rx) = store.insert(test_origin(chat), questions()).unwrap();
+        store.answer(&answers(&store)).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o400)).unwrap();
+        store.take_tool(&id).unwrap().unwrap();
+        assert!(store.owes_notes());
+        let before = std::fs::read(&file).unwrap();
+        assert!(before.starts_with(&original));
+        for n in 1..=16_385 {
+            let other = format!("chat:answered-capacity-other-{n}");
+            let path = transcript::path_for(&other).unwrap();
+            std::fs::write(
+                &path,
+                concat!(
+                    "{\"type\":\"octiq_compacted\",\"into\":1}\n",
+                    "{\"type\":\"octiq_compacted\",\"into\":1}\n"
+                ),
+            )
+            .unwrap();
+            assert!(transcript::rewrite_numbered(&path, |_, _| None, true).unwrap());
+            if n >= 16_384 {
+                assert_eq!(std::fs::read(&file).unwrap(), before);
+                let held = transcript::receipt(chat, &seen);
+                store.notes_due_now();
+                let retry = store.settle_notes();
+                eprintln!(
+                    "other moves={n}: receipt={held:?}, debt={}, retry={retry:?}",
+                    store.owes_notes()
+                );
+                assert_eq!(
+                    held,
+                    Held::Unconfirmed,
+                    "capacity is not a history change at {n}"
+                );
+                assert!(retry.is_err());
+                assert!(store.owes_notes());
+            }
+        }
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        store.notes_due_now();
+        store.settle_notes().unwrap();
+        assert!(!store.owes_notes());
+        store.settle_notes().unwrap();
+        assert_eq!(transcript::of_type(chat, ANSWERED).len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn real_clear_after_answered_debt_never_writes_into_new_history() {
+        use crate::transcript;
+        use std::os::unix::fs::PermissionsExt;
+        let home = crate::test_dir::TestDir::new("answered-real-clear");
+        let _profile = crate::profile::started_in(&home);
+        let store = QuestionStore::load(home.join("questions.json"));
+        let chat = "chat:answered-real-clear";
+        transcript::append(chat, &serde_json::json!({"type":"user","text":"old"})).unwrap();
+        let file = transcript::path_for(chat).unwrap();
+        let (id, _rx) = store.insert(test_origin(chat), questions()).unwrap();
+        store.answer(&answers(&store)).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o400)).unwrap();
+        store.take_tool(&id).unwrap().unwrap();
+        assert!(store.owes_notes());
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        transcript::forget(chat);
+        transcript::append(chat, &serde_json::json!({"type":"user","text":"new"})).unwrap();
+        store.notes_due_now();
+        store.settle_notes().unwrap();
+        assert!(!store.owes_notes());
+        assert!(transcript::of_type(chat, ANSWERED).is_empty());
+        assert_eq!(transcript::since(chat, 0).len(), 1);
+    }
+
     #[tokio::test]
     async fn offline_questions_survive_restart_and_a_late_answer() {
         let path = path();

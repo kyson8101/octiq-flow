@@ -3761,6 +3761,24 @@ exec /usr/bin/git "$@"
         }
     }
 
+    #[test]
+    fn an_owed_reopen_notice_blocks_storage_publication() {
+        let home = crate::test_dir::TestDir::new("storage-reopen-debt");
+        let _profile = crate::profile::started_in(&home);
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(true));
+        let reopened = work.reopen(&task, "New instructions");
+        crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(false));
+        assert!(!reopened.unwrap().reopens[0].notice_delivered);
+        let mut manager = crate::agent_chat::ChatManager::default();
+        manager.orchestrations = std::sync::Arc::new(OrchestrationStore::load(
+            work.dir.0.join("orchestrations.json"),
+        ));
+        crate::record_trim::assert_debt_blocks_compaction(&manager, &work.key, "reopen notice");
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+    }
+
     /// Review of 931b5f0, H5, the reviewer's probe: the coordinator's
     /// transcript cannot be written when a task is reopened. The reopen is
     /// on record, and its task does not start: the person is shown every

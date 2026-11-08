@@ -885,7 +885,10 @@ the `user-question` events, `question_answer_batch`, `question_cancel`,
   while the owed pass read the record put the old answer into the new
   history), and what is owed is dropped only on `Held::Confirmed`, or on
   `Held::Moved` for a history that is gone, never because the line can be
-  read back (review 2b, N1 and N2).
+  read back (review 2b, N1 and N2). Capacity eviction is not a history
+  change: live `Generation` tokens pin their record life, and bookkeeping
+  may discard only lives no token observes. Never refresh a debt's token
+  to get past an unknown or cleared history (memory review H1).
 - **The page draws a delivered question from that line**
   (`question.readQuestionAnswered`, `questionBlock.placeAnswered`,
   `AnsweredInline`). The reducer keeps it as one transcript item for a

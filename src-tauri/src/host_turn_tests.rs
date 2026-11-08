@@ -274,6 +274,11 @@ fn unsent_record_debt_refuses_compaction_until_the_line_is_settled() {
     assert!(!profile.exists());
     std::fs::rename(&away, &profile).unwrap();
     assert!(record.manager.owes_unsent());
+    crate::record_trim::assert_debt_blocks_compaction(
+        &record.manager,
+        &record.key,
+        "not-sent line",
+    );
     assert!(record.manager.claim_record(&path).is_err());
     record.manager.settle_unsent().unwrap();
     assert!(!record.manager.owes_unsent());

@@ -1208,6 +1208,8 @@ mod tests {
             .insert(key.into(), Status::Saved);
         fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
         assert!(quiet().is_err());
+        let manager = crate::agent_chat::ChatManager::default();
+        crate::record_trim::assert_debt_blocks_compaction(&manager, key, "memory activity line");
         let event = json!({"type": EVENT,"id":"activity","status":"saved"});
         crate::transcript::append_synced(key, &event).unwrap();
         let entry = ledger.entries.get_mut("activity").unwrap();
@@ -1217,6 +1219,11 @@ mod tests {
         assert!(quiet().is_ok());
         crate::transcript::forget(key);
         assert!(quiet().is_err());
+        crate::record_trim::assert_debt_blocks_compaction(
+            &manager,
+            key,
+            "recovered memory activity line",
+        );
         crate::transcript::append_synced(key, &event).unwrap();
         assert!(quiet().is_ok());
         fs::write(&ledger_path, "torn ledger").unwrap();

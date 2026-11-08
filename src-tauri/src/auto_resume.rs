@@ -976,7 +976,10 @@ mod tests {
 
     #[test]
     fn manual_cancel_marks_only_not_yet_dispatched_work() {
-        let store = Store::default();
+        let home = crate::test_dir::TestDir::new("storage-auto-resume-debt");
+        let _profile = crate::profile::started_in(&home);
+        let manager = crate::agent_chat::ChatManager::default();
+        let store = &manager.auto_resumes;
         let entry = store
             .schedule("chat:one", 2_000, start(AgentKind::Claude), 1_000)
             .unwrap()
@@ -989,10 +992,20 @@ mod tests {
         assert_eq!(store.cancelled().unwrap().len(), 1);
         let record = crate::transcript::key_record_claim("chat:one").unwrap();
         assert!(store.record_quiet(&record).is_err());
+        crate::record_trim::assert_debt_blocks_compaction(
+            &manager,
+            "chat:one",
+            "auto-resume cancellation",
+        );
         store.finish(&cancelled).unwrap();
         assert!(store.record_quiet(&record).is_ok());
         store.state.lock().unwrap().owed = true;
         assert!(store.record_quiet(&record).is_err());
+        crate::record_trim::assert_debt_blocks_compaction(
+            &manager,
+            "chat:one",
+            "auto-resume cancellation",
+        );
         store.state.lock().unwrap().owed = false;
         assert!(store.record_quiet(&record).is_ok());
 

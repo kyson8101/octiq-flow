@@ -147,5 +147,36 @@ stopped at both publication boundaries.
 All production `generation`/`confirm_synced`/`Held::Moved` consumers are in the
 first four rows or the transcript's own mutation/receipt functions. Existing
 receipts still invalidate on a migration; no history token is silently renewed.
+
+Generation bookkeeping retains a weak reference for each observed record life;
+a receipt/debt token owns that life until it is dropped. Batch cleanup removes
+only entries with no live tokens, never a global generation floor. Thus 16,385
+unrelated rewrites cannot invalidate an untouched record's debt. Each batch of
+16,384 table growth discards expired weak entries and shrinks capacity; lives
+still observed at the last sweep remain until a later sweep or a real mutation.
+Live debt knowledge is never evicted to enforce that housekeeping batch size.
+A storage rewrite still moves the life because it replaces the physical file:
+logical content/seq equivalence alone is not the old file's durability receipt.
+Both compaction entry and publication reject every owed-debt category above.
+Only actual record mutation or a current-file synced receipt settles a debt;
+no caller retakes a fresh token to bypass a clear.
+
+The H1 regression uses a real `QuestionStore`, a mode-0400 victim file and
+actual storage backup/fsync/rename/readback for other records in a scratch
+profile. Measurements before/after the fix:
+
+| Other storage moves | Before: receipt / debt | After: receipt / debt |
+| --- | --- | --- |
+| 16,384 | Unconfirmed / owed | Unconfirmed / owed |
+| 16,385 | Moved / incorrectly paid | Unconfirmed / owed |
+
+Restoring mode 0600 writes the owed answer once (two total answered facts,
+including the no-migration control). A real clear after the permission failure
+writes zero old answers into the new history. All six debt-category tests
+reject both compaction entry and publication without changing bytes or life.
+Full Rust default-thread suite: 2,112 lib + 31 binary passed, 23 ignored,
+zero failures; `cargo fmt --check` passes. This is Unix permission/lifecycle
+validation, not a Windows runtime or process RSS measurement.
+
 The captured wire-adapter check tolerates only decimal parser ULP differences
 for noninteger numbers; reducer output and sequence comparisons remain exact.
