@@ -3,7 +3,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { addUserTurn, emptyChat, reduceChat, type ChatState } from "./chat";
 import { CatchUp, type Frame } from "./catchUp";
 import { readChatCheckpoint, saveChatCheckpoint } from "./chatCache";
-import { loadChat, loadEarlierChat, CHAT_WINDOW_PAGES } from "./loadChat";
+import { loadChat, loadEarlierChat, CHAT_WINDOW_BYTES, CHAT_WINDOW_PAGES } from "./loadChat";
+import { valueBytes } from "./valueBytes";
 import * as chatReducer from "./chat";
 import { replayChat } from "./replayChat";
 import { ChatHistory } from "./chatHistory";
@@ -282,6 +283,37 @@ it("keeps the adjacent visible page while sliding a byte-full window backwards",
   expect(history.isPast("a")).toBe(true); expect(history.isPartial("a")).toBe(true);
   expect(history.hasEarlier("a")).toBe(false);
   expect(await readChatCheckpoint("a")).toBeUndefined();
+});
+
+it.each([20, null])("protects an oversized earlier page from automatic latest trimming (before=%s)", async before => {
+  const options = setup(), history = new ChatHistory();
+  const latest = { events: [frame(30)], context: [], before: 30 };
+  const request = vi.fn(async () => { throw new Error("unbounded tail"); });
+  await loadChat({ ...options, history, request, requestPage: async () => latest });
+  const anchor = options.getState().messages[0];
+  const requestPage = vi.fn(async (cursor: number | null) => cursor === null ? latest : {
+    before, context: [], events: [
+      { seq: 20, event: { type: "assistant", message: { id: "large", content: [{ type: "tool_use", id: "read", name: "Read", input: {} }] } } },
+      { seq: 21, event: { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "read", content: "x".repeat(6 * 1024 * 1024) }] } } },
+    ],
+  });
+  await loadEarlierChat({ ...options, history, request, requestPage });
+  expect(valueBytes(options.getState())).toBeGreaterThan(CHAT_WINDOW_BYTES);
+  expect(options.getState().messages.map(m => m.id)).toEqual(["large", "m30"]);
+  expect(options.getState().messages[1]).toBe(anchor);
+  expect(requestPage).toHaveBeenCalledTimes(2);
+  // App's automatic trim skips past windows. Even without an evicted page,
+  // the soft exception must keep that guard until Return to latest resets it.
+  expect(history.isPast("a")).toBe(true);
+  expect(history.get("a")?.end).toBe(30);
+  expect(history.isPartial("a")).toBe(true);
+  expect(await readChatCheckpoint("a")).toBeUndefined();
+  history.forget("a"); options.catchUp.forget("chat:a");
+  await loadChat({ ...options, history, request, requestPage: async () => latest });
+  expect(history.isPast("a")).toBe(false);
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m30"]);
+  expect(valueBytes(options.getState())).toBeLessThan(CHAT_WINDOW_BYTES);
+  expect(request).not.toHaveBeenCalled();
 });
 
 it("does only per-page replay/download work and shares already reduced message bodies", async () => {
