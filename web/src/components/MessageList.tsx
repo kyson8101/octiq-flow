@@ -1622,7 +1622,7 @@ const MessageListBody = function MessageList({
 
   /** Travel to the bottom over `GLIDE_MS` rather than arriving there. The frame
    *  math, and why the target is re-read every frame, is in `glideAt`. */
-  const glideToBottom = () => {
+  const glideToBottom = (travelMs?: number) => {
     const el = scrollerRef.current;
     if (!el) return;
     stopGlide();
@@ -1647,7 +1647,7 @@ const MessageListBody = function MessageList({
     if (from !== el.scrollTop) el.scrollTop = from;
 
     const t0 = performance.now();
-    const duration = el.closest(".focus-mode") ? 440 : GLIDE_MS;
+    const duration = travelMs ?? (el.closest(".focus-mode") ? 440 : GLIDE_MS);
     const step = (now: number) => {
       const p = (now - t0) / duration;
       el.scrollTop = glideAt(from, el.scrollHeight - el.clientHeight, p);
@@ -1666,7 +1666,7 @@ const MessageListBody = function MessageList({
   /** The jump button. Going back to the bottom is also a decision to FOLLOW
    *  again — a reader who has caught up wants the next reply to arrive under
    *  them, not to have to press this after every turn. */
-  const jumpToBottom = () => {
+  const jumpToBottom = (travelMs?: number) => {
     stick.current = true;
     setAway(false);
     // Said now rather than left to the scroll events the glide produces: this
@@ -1676,7 +1676,7 @@ const MessageListBody = function MessageList({
     prependAnchor.current = null;
     if (conv.current) pending.current = { id: conv.current, at: null };
     flushPlace();
-    glideToBottom();
+    glideToBottom(travelMs);
   };
 
   // A past window ends before the live tail. Its bottom is not "caught up",
@@ -1690,7 +1690,7 @@ const MessageListBody = function MessageList({
     latestRequested.current = null;
     // A failed read leaves onLoadLatest in place; a chat switch belongs to
     // that chat's restore effect. Only a successful, explicit return follows.
-    if (requested.id === conversationId && !onLoadLatest) jumpToBottom();
+    if (requested.id === conversationId && !onLoadLatest) jumpToBottom(180);
   }, [conversationId, loadingEarlier, onLoadLatest]);
 
   useEffect(() => {
