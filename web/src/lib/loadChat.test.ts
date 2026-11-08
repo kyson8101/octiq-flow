@@ -3,7 +3,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { addUserTurn, emptyChat, reduceChat, type ChatState } from "./chat";
 import { CatchUp, type Frame } from "./catchUp";
 import { readChatCheckpoint, saveChatCheckpoint } from "./chatCache";
-import { loadChat, loadEarlierChat } from "./loadChat";
+import { loadChat, loadEarlierChat, CHAT_WINDOW_PAGES } from "./loadChat";
+import * as chatReducer from "./chat";
 import { replayChat } from "./replayChat";
 import { ChatHistory } from "./chatHistory";
 
@@ -275,4 +276,89 @@ it("slides a byte-full history window backwards without caching it as a complete
   expect(history.isPast("a")).toBe(true); expect(history.isPartial("a")).toBe(true);
   expect(history.hasEarlier("a")).toBe(false);
   expect(await readChatCheckpoint("a")).toBeUndefined();
+});
+
+it("does only per-page replay/download work and shares already reduced message bodies", async () => {
+  const options = setup(), history = new ChatHistory();
+  const requestPage = vi.fn(async (before: number | null) => {
+    const end = before === null ? 1000 : before - 1;
+    return { events: [frame(end - 1), frame(end)], context: [], before: end - 1 };
+  });
+  await loadChat({ ...options, history, request: async () => [], requestPage });
+  const reducer = vi.spyOn(chatReducer, "reduceChat");
+  for (let n = 0; n < 20; n++) {
+    const previous = options.getState().messages;
+    requestPage.mockClear(); reducer.mockClear();
+    await loadEarlierChat({ ...options, history, request: async () => { throw new Error("unbounded tail"); }, requestPage });
+    // An old implementation re-downloaded and reduced every loaded page here.
+    expect(requestPage.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(reducer.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(options.getState().messages[2]).toBe(previous[0]);
+    expect(history.slices("a").length).toBeLessThanOrEqual(CHAT_WINDOW_PAGES);
+    expect(options.getState().messages.length).toBeLessThanOrEqual(CHAT_WINDOW_PAGES * 2);
+  }
+  expect(history.isPast("a")).toBe(true);
+  reducer.mockRestore();
+});
+
+it("waits to publish until scrolling settles and keeps live events held meanwhile", async () => {
+  const options = setup(), history = new ChatHistory();
+  await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({ events: [frame(3)], context: [], before: 3 }) });
+  let ready!: () => void;
+  const beforePrepend = vi.fn(() => new Promise<void>(resolve => { ready = resolve; }));
+  const loading = loadEarlierChat({ ...options, history, beforePrepend, request: async () => [],
+    requestPage: async before => before === 3 ? { events: [frame(2)], context: [], before: 2 } : { events: [frame(3)], context: [], before: 3 } });
+  await vi.waitFor(() => expect(beforePrepend).toHaveBeenCalledOnce());
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m3"]);
+  expect(options.catchUp.live("chat:a", 4, frame(4).event)).toEqual([]);
+  ready(); await loading;
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m2", "m3", "m4"]);
+});
+
+it("never text-confirms a new local turn against a different older stamped identity", async () => {
+  const options = setup(), history = new ChatHistory();
+  await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({ events: [frame(3)], context: [], before: 3 }) });
+  options.publish(addUserTurn(options.getState(), "continue", [], 100, "new-local"));
+  const prompt = options.getState().messages.at(-1);
+  await loadEarlierChat({ ...options, history, request: async () => [], requestPage: async before => before === 3
+    ? { events: [{ seq: 2, event: { type: "user", uuid: "old-echo", octiq_user_turn_id: "old-local", message: { content: [{ type: "text", text: "continue" }] } } }], context: [], before: 2 }
+    : { events: [frame(3)], context: [], before: 3 } });
+  expect(options.getState().messages.find(m => m.turnId === "new-local")).toBe(prompt);
+  expect(prompt?.echo).toBeUndefined();
+  expect(options.getState().messages.filter(m => m.role === "user")).toHaveLength(2);
+});
+
+it("does not advance the older cursor or publish if cancelled while waiting for the viewport", async () => {
+  const options = setup(), history = new ChatHistory();
+  await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({ events: [frame(3)], context: [], before: 3 }) });
+  const original = options.getState(); let cancelled = false;
+  await loadEarlierChat({ ...options, history, cancelled: () => cancelled, beforePrepend: async () => { cancelled = true; }, request: async () => [],
+    requestPage: async before => before === 3 ? { events: [frame(2)], context: [], before: 2 } : { events: [frame(3)], context: [], before: 3 } });
+  expect(options.getState()).toBe(original);
+  expect(history.get("a")?.before).toBe(3);
+});
+
+it.each(["anonymous-assistant", "compaction"])("keeps distinct page-local fallback ids (%s)", async kind => {
+  const options = setup(), history = new ChatHistory();
+  const event = (text: string) => kind === "compaction"
+    ? { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: text } }
+    : { type: "assistant", message: { content: [{ type: "text", text }] } };
+  await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({ events: [{ seq: 3, event: event("newer") }], context: [], before: 3 }) });
+  const previous = options.getState().messages[0];
+  await loadEarlierChat({ ...options, history, request: async () => [], requestPage: async before => before === 3
+    ? { events: [{ seq: 2, event: event("older") }], context: [], before: 2 }
+    : { events: [{ seq: 3, event: event("newer") }], context: [], before: 3 } });
+  expect(options.getState().messages).toHaveLength(2);
+  expect(options.getState().messages[1]).toBe(previous);
+  expect(options.getState().messages[0].id).not.toBe(previous.id);
+});
+
+it("applies an identified dismissal to a retained local prompt without replaying old messages", async () => {
+  const options = setup(), history = new ChatHistory();
+  await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({ events: [frame(3)], context: [], before: 3 }) });
+  options.publish(addUserTurn(options.getState(), "local", [], 100, "dismissed"));
+  await loadEarlierChat({ ...options, history, request: async () => [], requestPage: async before => before === 3
+    ? { events: [{ seq: 2, event: { type: "octiq_user_turn_dismissed", uuid: "dismissed" } }], context: [], before: 2 }
+    : { events: [frame(3)], context: [], before: 3 } });
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m3"]);
 });
