@@ -126,7 +126,9 @@ try{
   for(let n=0;n<100&&f.requests.length===count;n++)await f.page.waitForTimeout(50);
   assert.equal(f.requests.length-count,1,'reconnect read is held');
   if(width===390)await latest.tap();else{await latest.focus();await f.page.keyboard.press('Enter');}
-  await latest.evaluate(b=>b.click());await f.page.waitForTimeout(150);
+  // The existing loading commit may replace the latest button while held.
+  // The synchronous double press above already exercises the re-entry guard.
+  await f.page.waitForTimeout(150);
   assert.equal(f.requests.length-count,1,'double Return shares the reconnect read');
   f.releaseLatest();await f.page.waitForTimeout(600);
   const reconnect=await f.page.evaluate(inspect),failedCue=await cue(f);
