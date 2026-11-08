@@ -1,0 +1,3334 @@
+{
+  "date": "2026-11-08",
+  "base": "106dfe3d26584d44d34da851dd5aadcbb94fa63b",
+  "regressionCommit": "5d8acb7e19b15cda42e245077a4f58df2be70423",
+  "implementationCommit": "f1c56cc5829c42d8cb81ffb256852e1b29c628b9",
+  "harnessCommit": "44f106acc5e0fcebaa756f2d0e9994fbf678dc86",
+  "implementationTree": "179ee5465b48292a58103ded35f14e68bbd07189",
+  "regressionOnBase": {
+    "isolated": true,
+    "failed": 6,
+    "passed": 46,
+    "total": 52,
+    "productionAfterRpcFails": true
+  },
+  "decision": "Preserve the live-echo eligibility of sending -> unknown queue demotion; do not promote delivery or acknowledge from RPC/queue absence.",
+  "checks": {
+    "vitestFiles": 337,
+    "vitestTests": 4636,
+    "fullSuiteWorkers": 1,
+    "fullSuiteSeconds": 1632.49,
+    "targetedExact": 96,
+    "tsc": "pass",
+    "isolatedProductionBuild": "pass",
+    "diffCheck": "pass",
+    "existingBuildWarning": "large chunks"
+  },
+  "legacyLive": [
+    {
+      "case": "normal-before-rpc",
+      "width": 1280,
+      "replay": false,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": "sending"
+    },
+    {
+      "case": "normal-after-rpc",
+      "width": 1280,
+      "replay": false,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": "unknown"
+    },
+    {
+      "case": "normal-before-rpc",
+      "width": 390,
+      "replay": false,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": "sending"
+    },
+    {
+      "case": "normal-after-rpc",
+      "width": 390,
+      "replay": false,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": "unknown"
+    },
+    {
+      "case": "normal-before-rpc",
+      "width": 1280,
+      "replay": true,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": "sending"
+    },
+    {
+      "case": "normal-after-rpc",
+      "width": 1280,
+      "replay": true,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": "unknown"
+    },
+    {
+      "case": "normal-before-rpc",
+      "width": 390,
+      "replay": true,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": null
+    },
+    {
+      "case": "normal-after-rpc",
+      "width": 390,
+      "replay": true,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": "unknown"
+    }
+  ],
+  "reviewerContract": [
+    {
+      "case": "normal-before-rpc",
+      "width": 1280,
+      "replay": false,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": null
+    },
+    {
+      "case": "normal-after-rpc",
+      "width": 1280,
+      "replay": false,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": "unknown"
+    },
+    {
+      "case": "normal-before-rpc",
+      "width": 390,
+      "replay": false,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": null
+    },
+    {
+      "case": "normal-after-rpc",
+      "width": 390,
+      "replay": false,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": "sending"
+    },
+    {
+      "case": "normal-before-rpc",
+      "width": 1280,
+      "replay": true,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": null
+    },
+    {
+      "case": "normal-after-rpc",
+      "width": 1280,
+      "replay": true,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": null
+    },
+    {
+      "case": "normal-before-rpc",
+      "width": 390,
+      "replay": true,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": "sending"
+    },
+    {
+      "case": "normal-after-rpc",
+      "width": 390,
+      "replay": true,
+      "sends": 1,
+      "local": 0,
+      "retainedAfterRelease": 0,
+      "legacyNormalPass": true,
+      "restore": 0,
+      "errors": [],
+      "preEchoDelivery": "unknown"
+    }
+  ],
+  "historicalEcho": {
+    "modern": [
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 1280,
+        "replay": false,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 390,
+        "replay": false,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 1280,
+        "replay": true,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 390,
+        "replay": true,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      }
+    ],
+    "legacy": [
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 1280,
+        "replay": false,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 390,
+        "replay": false,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 1280,
+        "replay": true,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 390,
+        "replay": true,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      }
+    ]
+  },
+  "confirmedEcho": {
+    "modern": [
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      }
+    ],
+    "legacy": [
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      }
+    ]
+  },
+  "browserGrowth": [
+    {
+      "case": "browser-growth",
+      "width": 1280,
+      "replay": false,
+      "growth": [
+        {
+          "n": 1,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 2,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 3,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 4,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 5,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 6,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 7,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 8,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 9,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 10,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        }
+      ]
+    },
+    {
+      "case": "browser-growth",
+      "width": 390,
+      "replay": false,
+      "growth": [
+        {
+          "n": 1,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 2,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 3,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 4,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 5,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 6,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 7,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 8,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 9,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 10,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        }
+      ]
+    },
+    {
+      "case": "browser-growth",
+      "width": 1280,
+      "replay": true,
+      "growth": [
+        {
+          "n": 1,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 2,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 3,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 4,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 5,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 6,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 7,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 8,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 9,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 10,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        }
+      ]
+    },
+    {
+      "case": "browser-growth",
+      "width": 390,
+      "replay": true,
+      "growth": [
+        {
+          "n": 1,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 2,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 3,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 4,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 5,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 6,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 7,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 8,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 9,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 10,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        }
+      ]
+    }
+  ],
+  "original200msProbe": {
+    "status": "failed early-read on both attempts",
+    "finalExit": 1,
+    "initialLog": "browser-growth.initial-200ms.log",
+    "finalLog": "browser-growth.log",
+    "finalIteration": 1,
+    "baselineLog": "baseline-200ms-job.log",
+    "note": "Convergence controls are reported separately; no 200ms deadline is claimed.",
+    "baselineStatus": "failed same early-read on iteration one",
+    "baselineExit": 1
+  },
+  "independentModules": {
+    "historicalMatrix": 40,
+    "includesQueueDemotedUnknown": 10,
+    "stampedLifecycles": 12,
+    "legacyGuards": 16,
+    "identityAttacks": 25,
+    "stampedGrowth": [
+      {
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 2,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 3,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 4,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 5,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 6,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 7,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 8,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 9,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 10,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      }
+    ],
+    "legacyGrowth": [
+      {
+        "version": "106dfe3",
+        "replay": false,
+        "results": [
+          {
+            "send": 1,
+            "retainedLocals": 1,
+            "retainedBytes": 200212,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 2,
+            "retainedLocals": 2,
+            "retainedBytes": 400423,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 3,
+            "retainedLocals": 3,
+            "retainedBytes": 600634,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 4,
+            "retainedLocals": 4,
+            "retainedBytes": 800845,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 5,
+            "retainedLocals": 5,
+            "retainedBytes": 1001056,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 6,
+            "retainedLocals": 6,
+            "retainedBytes": 1201267,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 7,
+            "retainedLocals": 7,
+            "retainedBytes": 1401478,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 8,
+            "retainedLocals": 8,
+            "retainedBytes": 1601689,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 9,
+            "retainedLocals": 9,
+            "retainedBytes": 1801900,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 10,
+            "retainedLocals": 10,
+            "retainedBytes": 2002111,
+            "hasLocalPrompt": true
+          }
+        ]
+      },
+      {
+        "version": "106dfe3",
+        "replay": true,
+        "results": [
+          {
+            "send": 1,
+            "retainedLocals": 1,
+            "retainedBytes": 200212,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 2,
+            "retainedLocals": 2,
+            "retainedBytes": 400423,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 3,
+            "retainedLocals": 3,
+            "retainedBytes": 600634,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 4,
+            "retainedLocals": 4,
+            "retainedBytes": 800845,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 5,
+            "retainedLocals": 5,
+            "retainedBytes": 1001056,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 6,
+            "retainedLocals": 6,
+            "retainedBytes": 1201267,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 7,
+            "retainedLocals": 7,
+            "retainedBytes": 1401478,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 8,
+            "retainedLocals": 8,
+            "retainedBytes": 1601689,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 9,
+            "retainedLocals": 9,
+            "retainedBytes": 1801900,
+            "hasLocalPrompt": true
+          },
+          {
+            "send": 10,
+            "retainedLocals": 10,
+            "retainedBytes": 2002111,
+            "hasLocalPrompt": true
+          }
+        ]
+      },
+      {
+        "version": "H1-d",
+        "replay": false,
+        "results": [
+          {
+            "send": 1,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 2,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 3,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 4,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 5,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 6,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 7,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 8,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 9,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 10,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          }
+        ]
+      },
+      {
+        "version": "H1-d",
+        "replay": true,
+        "results": [
+          {
+            "send": 1,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 2,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 3,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 4,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 5,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 6,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 7,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 8,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 9,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          },
+          {
+            "send": 10,
+            "retainedLocals": 0,
+            "retainedBytes": 2,
+            "hasLocalPrompt": false
+          }
+        ]
+      }
+    ]
+  },
+  "pending": [
+    {
+      "case": "pending-prompt-reopen",
+      "width": 1280,
+      "pendingSends": 1,
+      "heldBeforeReopen": [
+        true
+      ],
+      "visibleAfterReopen": true,
+      "bodyAfterReopen": true,
+      "errors": [],
+      "takeBack": "pass"
+    },
+    {
+      "case": "pending-prompt-reopen",
+      "width": 390,
+      "pendingSends": 1,
+      "heldBeforeReopen": [
+        true
+      ],
+      "visibleAfterReopen": true,
+      "bodyAfterReopen": true,
+      "errors": [],
+      "takeBack": "pass"
+    }
+  ],
+  "planDetail": [
+    {
+      "case": "summary-new-detail-old",
+      "width": 1280,
+      "heldDetailReads": 1,
+      "readingUntilMatchingDetail": true,
+      "approvedRevision": 2,
+      "errors": []
+    },
+    {
+      "case": "summary-new-detail-old",
+      "width": 390,
+      "heldDetailReads": 1,
+      "readingUntilMatchingDetail": true,
+      "approvedRevision": 2,
+      "errors": []
+    }
+  ],
+  "planMatrix": [
+    {
+      "case": "summary-new-detail-old",
+      "width": 1280,
+      "heldDetailReads": 1,
+      "readingUntilMatchingDetail": true,
+      "approvedRevision": 2,
+      "errors": []
+    },
+    {
+      "case": "detail-first-and-exposure",
+      "width": 1280,
+      "revision": 3,
+      "shownMs": 2067,
+      "updatedMs": 2067
+    },
+    {
+      "case": "inflight-invalidation-and-failed-refetch",
+      "width": 1280,
+      "oldDetailDiscarded": true,
+      "approvalAbsent": true,
+      "errors": []
+    },
+    {
+      "case": "summary-new-detail-old",
+      "width": 390,
+      "heldDetailReads": 1,
+      "readingUntilMatchingDetail": true,
+      "approvedRevision": 2,
+      "errors": []
+    },
+    {
+      "case": "detail-first-and-exposure",
+      "width": 390,
+      "revision": 3,
+      "shownMs": 1901,
+      "updatedMs": 1901
+    },
+    {
+      "case": "inflight-invalidation-and-failed-refetch",
+      "width": 390,
+      "oldDetailDiscarded": true,
+      "approvalAbsent": true,
+      "errors": []
+    }
+  ],
+  "callbackGc": [
+    {
+      "nativeRetained": 101,
+      "fixedRetained": 2,
+      "renders": 101,
+      "identityAndCommitChecks": "pass"
+    }
+  ],
+  "compatibility": {
+    "modern": [
+      {
+        "modern": true,
+        "subscriptions": 39,
+        "width": 1280,
+        "opened": 30,
+        "background": 20,
+        "fullTranscripts": 1,
+        "splitTranscripts": 2,
+        "reopenAndEarlier": "pass"
+      },
+      {
+        "modern": true,
+        "subscriptions": 35,
+        "width": 390,
+        "opened": 30,
+        "background": 20,
+        "fullTranscripts": 1,
+        "splitTranscripts": 1,
+        "reopenAndEarlier": "pass"
+      }
+    ],
+    "legacy": [
+      {
+        "modern": false,
+        "subscriptions": 0,
+        "width": 1280,
+        "opened": 8,
+        "background": 20,
+        "fullTranscripts": 1,
+        "splitTranscripts": 2,
+        "reopenAndEarlier": "pass"
+      },
+      {
+        "modern": false,
+        "subscriptions": 0,
+        "width": 390,
+        "opened": 8,
+        "background": 20,
+        "fullTranscripts": 1,
+        "splitTranscripts": 1,
+        "reopenAndEarlier": "pass"
+      }
+    ]
+  },
+  "earlierAttempt": {
+    "fullSuiteWorkers": 2,
+    "reportedFailedFiles": [
+      "turnClock.unread.test.tsx",
+      "diskTreemap.test.ts"
+    ],
+    "reportedFailures": 8,
+    "exit": 143,
+    "reason": "Stopped after failures appeared; final exact single-worker suite passed all original assertions and timeouts.",
+    "logs": [
+      "vitest-full.initial-red.log",
+      "job.log"
+    ],
+    "hookTimeoutFeedback": "8884b852-b2c5-49ea-aaac-cbeb3b61afaf"
+  },
+  "browserPreconditionAttempt": {
+    "log": "legacy-live.initial-precondition.log",
+    "failure": "100ms preEcho still sending; final strict harness observes unknown before streaming echo. All ownership/release assertions passed before this precondition assertion. Product unchanged; original reviewer 100ms probe unchanged."
+  },
+  "growthPreconditionAttempt": {
+    "log": "browser-growth.initial-200ms.log",
+    "failure": "Original 200ms probe read a pending echo at 1280/ordinary iteration4; no product delay or assertion was changed."
+  },
+  "timingControls": {
+    "baseline-timing": [
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 0,
+        "ackMs": 253.21595800000068,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 0,
+        "matches": [
+          {
+            "echo": "growth-native-0",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 1,
+        "ackMs": 348.31745800000135,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 1,
+        "matches": [
+          {
+            "echo": "growth-native-1",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 2,
+        "ackMs": 227.4918749999997,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 2,
+        "matches": [
+          {
+            "echo": "growth-native-2",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 3,
+        "ackMs": 165.7254580000008,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 3,
+        "matches": [
+          {
+            "echo": "growth-native-3",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 4,
+        "ackMs": 555.6623329999966,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 4,
+        "matches": [
+          {
+            "echo": "growth-native-4",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 5,
+        "ackMs": 446.74441600000137,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 5,
+        "matches": [
+          {
+            "echo": "growth-native-5",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 6,
+        "ackMs": 272.01487500000076,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 6,
+        "matches": [
+          {
+            "echo": "growth-native-6",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 7,
+        "ackMs": 262.27241700000013,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 7,
+        "matches": [
+          {
+            "echo": "growth-native-7",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 8,
+        "ackMs": 361.6739579999994,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 8,
+        "matches": [
+          {
+            "echo": "growth-native-8",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 9,
+        "ackMs": 241.11479099999997,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 9,
+        "matches": [
+          {
+            "echo": "growth-native-9",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "browser-growth",
+        "width": 1280,
+        "replay": false,
+        "growth": [
+          {
+            "n": 1,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 2,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 3,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 4,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 5,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 6,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 7,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 8,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 9,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 10,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 0,
+        "ackMs": 341.7045419999995,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 0,
+        "matches": [
+          {
+            "echo": "growth-native-0",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 1,
+        "ackMs": 162.56416699999681,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 1,
+        "matches": [
+          {
+            "echo": "growth-native-1",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 2,
+        "ackMs": 178.8445420000062,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 2,
+        "matches": [
+          {
+            "echo": "growth-native-2",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 3,
+        "ackMs": 180.82020799999736,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 3,
+        "matches": [
+          {
+            "echo": "growth-native-3",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 4,
+        "ackMs": 87.89349999999831,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 4,
+        "matches": [
+          {
+            "echo": "growth-native-4",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 5,
+        "ackMs": 250.41662499999802,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 5,
+        "matches": [
+          {
+            "echo": "growth-native-5",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 6,
+        "ackMs": 117.14199999999983,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 6,
+        "matches": [
+          {
+            "echo": "growth-native-6",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 7,
+        "ackMs": 138.71145800000522,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 7,
+        "matches": [
+          {
+            "echo": "growth-native-7",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 8,
+        "ackMs": 349.5077919999967,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 8,
+        "matches": [
+          {
+            "echo": "growth-native-8",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 9,
+        "ackMs": 310.41704200000095,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 9,
+        "matches": [
+          {
+            "echo": "growth-native-9",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "browser-growth",
+        "width": 390,
+        "replay": false,
+        "growth": [
+          {
+            "n": 1,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 2,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 3,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 4,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 5,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 6,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 7,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 8,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 9,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 10,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 0,
+        "ackMs": 185.36275000000023,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 0,
+        "matches": [
+          {
+            "echo": "growth-native-0",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 1,
+        "ackMs": 426.4806249999965,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 1,
+        "matches": [
+          {
+            "echo": "growth-native-1",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 2,
+        "ackMs": 409.182833999992,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 2,
+        "matches": [
+          {
+            "echo": "growth-native-2",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 3,
+        "ackMs": 489.8040420000034,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 3,
+        "matches": [
+          {
+            "echo": "growth-native-3",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 4,
+        "ackMs": 351.1020419999986,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 4,
+        "matches": [
+          {
+            "echo": "growth-native-4",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 5,
+        "ackMs": 430.6009999999951,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 5,
+        "matches": [
+          {
+            "echo": "growth-native-5",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 6,
+        "ackMs": 687.0312919999997,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 6,
+        "matches": [
+          {
+            "echo": "growth-native-6",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 7,
+        "ackMs": 305.70154199999524,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 7,
+        "matches": [
+          {
+            "echo": "growth-native-7",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 8,
+        "ackMs": 174.5389579999901,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 8,
+        "matches": [
+          {
+            "echo": "growth-native-8",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 9,
+        "ackMs": 844.0855829999928,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 9,
+        "matches": [
+          {
+            "echo": "growth-native-9",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "browser-growth",
+        "width": 1280,
+        "replay": true,
+        "growth": [
+          {
+            "n": 1,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 2,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 3,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 4,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 5,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 6,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 7,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 8,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 9,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 10,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 0,
+        "ackMs": 605.0392910000082,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 0,
+        "matches": [
+          {
+            "echo": "growth-native-0",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 1,
+        "ackMs": 487.66975000000093,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 1,
+        "matches": [
+          {
+            "echo": "growth-native-1",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 2,
+        "ackMs": 922.2626659999951,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 2,
+        "matches": [
+          {
+            "echo": "growth-native-2",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 3,
+        "ackMs": 417.67629200000374,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 3,
+        "matches": [
+          {
+            "echo": "growth-native-3",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 4,
+        "ackMs": 622.9193749999977,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 4,
+        "matches": [
+          {
+            "echo": "growth-native-4",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 5,
+        "ackMs": 398.24895899998955,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 5,
+        "matches": [
+          {
+            "echo": "growth-native-5",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 6,
+        "ackMs": 237.92699999999604,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 6,
+        "matches": [
+          {
+            "echo": "growth-native-6",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 7,
+        "ackMs": 443.5648329999967,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 7,
+        "matches": [
+          {
+            "echo": "growth-native-7",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 8,
+        "ackMs": 361.2205829999875,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 8,
+        "matches": [
+          {
+            "echo": "growth-native-8",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 9,
+        "ackMs": 405.7032499999914,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 9,
+        "matches": [
+          {
+            "echo": "growth-native-9",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "browser-growth",
+        "width": 390,
+        "replay": true,
+        "growth": [
+          {
+            "n": 1,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 2,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 3,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 4,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 5,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 6,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 7,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 8,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 9,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 10,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          }
+        ]
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      }
+    ],
+    "fix-timing": [
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 0,
+        "ackMs": 363.20320899999933,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 0,
+        "matches": [
+          {
+            "echo": "growth-native-0",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 1,
+        "ackMs": 385.9656250000007,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 1,
+        "matches": [
+          {
+            "echo": "growth-native-1",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 2,
+        "ackMs": 363.58537499999875,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 2,
+        "matches": [
+          {
+            "echo": "growth-native-2",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 3,
+        "ackMs": 241.33087499999965,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 3,
+        "matches": [
+          {
+            "echo": "growth-native-3",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 4,
+        "ackMs": 250.59375,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 4,
+        "matches": [
+          {
+            "echo": "growth-native-4",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 5,
+        "ackMs": 260.9986659999995,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 5,
+        "matches": [
+          {
+            "echo": "growth-native-5",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 6,
+        "ackMs": 306.90699999999924,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 6,
+        "matches": [
+          {
+            "echo": "growth-native-6",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 7,
+        "ackMs": 244.25191600000107,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 7,
+        "matches": [
+          {
+            "echo": "growth-native-7",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 8,
+        "ackMs": 282.2381249999962,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 8,
+        "matches": [
+          {
+            "echo": "growth-native-8",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": false,
+        "n": 9,
+        "ackMs": 203.2385839999988,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": false,
+        "n": 9,
+        "matches": [
+          {
+            "echo": "growth-native-9",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "browser-growth",
+        "width": 1280,
+        "replay": false,
+        "growth": [
+          {
+            "n": 1,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 2,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 3,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 4,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 5,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 6,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 7,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 8,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 9,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 10,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 0,
+        "ackMs": 223.63329199999862,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 0,
+        "matches": [
+          {
+            "echo": "growth-native-0",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 1,
+        "ackMs": 266.69774999999936,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 1,
+        "matches": [
+          {
+            "echo": "growth-native-1",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 2,
+        "ackMs": 222.281332999999,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 2,
+        "matches": [
+          {
+            "echo": "growth-native-2",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 3,
+        "ackMs": 374.9152910000048,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 3,
+        "matches": [
+          {
+            "echo": "growth-native-3",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 4,
+        "ackMs": 162.0639580000061,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 4,
+        "matches": [
+          {
+            "echo": "growth-native-4",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 5,
+        "ackMs": 374.1467909999992,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 5,
+        "matches": [
+          {
+            "echo": "growth-native-5",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 6,
+        "ackMs": 467.64600000000064,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 6,
+        "matches": [
+          {
+            "echo": "growth-native-6",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 7,
+        "ackMs": 242.08224999999948,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 7,
+        "matches": [
+          {
+            "echo": "growth-native-7",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 8,
+        "ackMs": 139.86099999999715,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 8,
+        "matches": [
+          {
+            "echo": "growth-native-8",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": false,
+        "n": 9,
+        "ackMs": 125.43579199999658,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": false,
+        "n": 9,
+        "matches": [
+          {
+            "echo": "growth-native-9",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "browser-growth",
+        "width": 390,
+        "replay": false,
+        "growth": [
+          {
+            "n": 1,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 2,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 3,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 4,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 5,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 6,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 7,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 8,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 9,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 10,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 0,
+        "ackMs": 556.3579579999932,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 0,
+        "matches": [
+          {
+            "echo": "growth-native-0",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 1,
+        "ackMs": 228.64824999999837,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 1,
+        "matches": [
+          {
+            "echo": "growth-native-1",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 2,
+        "ackMs": 161.67808399999922,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 2,
+        "matches": [
+          {
+            "echo": "growth-native-2",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 3,
+        "ackMs": 124.65116600001056,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 3,
+        "matches": [
+          {
+            "echo": "growth-native-3",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 4,
+        "ackMs": 458.3825419999921,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 4,
+        "matches": [
+          {
+            "echo": "growth-native-4",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 5,
+        "ackMs": 95.633290999991,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 5,
+        "matches": [
+          {
+            "echo": "growth-native-5",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 6,
+        "ackMs": 254.73654099999112,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 6,
+        "matches": [
+          {
+            "echo": "growth-native-6",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 7,
+        "ackMs": 187.60687499999767,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 7,
+        "matches": [
+          {
+            "echo": "growth-native-7",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 8,
+        "ackMs": 202.07699999999022,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 8,
+        "matches": [
+          {
+            "echo": "growth-native-8",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 1280,
+        "replay": true,
+        "n": 9,
+        "ackMs": 143.80950000000303,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 1280,
+        "replay": true,
+        "n": 9,
+        "matches": [
+          {
+            "echo": "growth-native-9",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "browser-growth",
+        "width": 1280,
+        "replay": true,
+        "growth": [
+          {
+            "n": 1,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 2,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 3,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 4,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 5,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 6,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 7,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 8,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 9,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 10,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 0,
+        "ackMs": 221.95766699999513,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 0,
+        "matches": [
+          {
+            "echo": "growth-native-0",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 1,
+        "ackMs": 115.62404200001038,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 1,
+        "matches": [
+          {
+            "echo": "growth-native-1",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 2,
+        "ackMs": 113.88925000000745,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 2,
+        "matches": [
+          {
+            "echo": "growth-native-2",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 3,
+        "ackMs": 230.174291000003,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 3,
+        "matches": [
+          {
+            "echo": "growth-native-3",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 4,
+        "ackMs": 177.58120800000324,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 4,
+        "matches": [
+          {
+            "echo": "growth-native-4",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 5,
+        "ackMs": 268.2282089999935,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 5,
+        "matches": [
+          {
+            "echo": "growth-native-5",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 6,
+        "ackMs": 393.91312499999185,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 6,
+        "matches": [
+          {
+            "echo": "growth-native-6",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 7,
+        "ackMs": 201.91679100001056,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 7,
+        "matches": [
+          {
+            "echo": "growth-native-7",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 8,
+        "ackMs": 161.29254100000253,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 8,
+        "matches": [
+          {
+            "echo": "growth-native-8",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "observed-ack-latency",
+        "width": 390,
+        "replay": true,
+        "n": 9,
+        "ackMs": 389.74183299999277,
+        "ready": true
+      },
+      {
+        "case": "growth-ack",
+        "width": 390,
+        "replay": true,
+        "n": 9,
+        "matches": [
+          {
+            "echo": "growth-native-9",
+            "chars": 200009
+          }
+        ]
+      },
+      {
+        "case": "browser-growth",
+        "width": 390,
+        "replay": true,
+        "growth": [
+          {
+            "n": 1,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 2,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 3,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 4,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 5,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 6,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 7,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 8,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 9,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          },
+          {
+            "n": 10,
+            "retainedLocals": 0,
+            "backgroundBytes": 2
+          }
+        ]
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      }
+    ]
+  },
+  "harnessSetupError": {
+    "log": "baseline-200ms.setup-error.log",
+    "reason": "Initial direct baseline command omitted OCTIQ_WEB_ROOT, so Vite could not resolve. Corrected environment before running baseline; setup failure is not product evidence."
+  },
+  "sourceSha256": {
+    "web/src/lib/chat.ts": "0bb7112d2fe93862d19e31203fd218168c2c477d77c0bcb0327c45aad2792770",
+    "web/src/lib/replayChat.ts": "6855e07586849a02221a0b6ea26056e8f2ef4a4cd76016f43e2db83ec2bd589d",
+    "web/src/lib/history.ts": "db6200b601cbcfa1feac41dc0d56024339ba6e506302b011fb351e964e5f09e9",
+    "web/src/lib/loadChat.ts": "34c5c84e9609cadc1f272b6d9fa36d62ef2cba9c65f149c4893031750c4e2022",
+    "web/src/lib/chatRetention.ts": "4fc532c0cd247754ed5db29f7a64f1d6d43aeba9c0a3dcb60ddf9e879e8aeba8",
+    "web/src/lib/chat.unstampedEcho.test.ts": "18133b3f7fbf4364f93317f4bab5057727a9b31426277bfeccb02dd800439c22",
+    "web/src/lib/chat.confirmedEcho.test.ts": "a80f6e06666011afd79923306e428c0bedb7c5aeeaf3685b307f49f14f067b86",
+    "web/src/lib/loadChat.test.ts": "67e67459bc59a97a706f6d21d9e6ef9e1bdb8f3734fb0eb27dd5670c9fca0b27",
+    "web/scripts/test-unstamped-echo-retention.mjs": "a6e7d4c77698a54af26c5d497842a17563683d196a59e92eb09f1562b0890a3b",
+    "web/src/lib/useOrchestrationSnapshot.ts": "36813b21111917e46acfcbcb842c797362ea1959aeac40aa0aeeffeb4d6a81f8",
+    "web/src/App.tsx": "6d3e1995c6d142a40a1d18f5c6b763a6bf2f75fdba4aab6eee640b014387ce89",
+    "web/src/lib/recovery.ts": "12dcabfefe8e01bf95eb7d4d1cc6f99444f37d06901eeae5d0ca55b0410720ab",
+    "web/src/lib/messageQueue.ts": "c1f75c8077890c855f1399f68a0e30262bc1f84ee307851048aef7013bdae663",
+    "web/scripts/test-legacy-live-echo-retention.mjs": "660cbe89758a99c03eb4074dbf98ce960957457fc9c330025649eea3c97b254d"
+  },
+  "evidenceRoot": "/tmp/octiq-h1d-fix",
+  "limits": [
+    "Disposable desktop Brave including 390px, not a physical phone.",
+    "No real phone, Safari/WebKit, tunnel or endurance acceptance.",
+    "Retained local-content counts are not RSS/heap ceilings.",
+    "No push, deploy or restart."
+  ],
+  "timingSummary": {
+    "baseline-timing": {
+      "cases": 40,
+      "medianMs": 348.912624999999,
+      "p95Ms": 687.0312919999997,
+      "maxMs": 922.2626659999951
+    },
+    "fix-timing": {
+      "cases": 40,
+      "medianMs": 235.75258300000132,
+      "p95Ms": 458.3825419999921,
+      "maxMs": 556.3579579999932
+    }
+  },
+  "strictBrowserRedOn106dfe3": {
+    "exit": 1,
+    "log": "browser-red-observed.log",
+    "assertion": "one confirmed copy in either RPC/echo order"
+  },
+  "jobOutcomes": {
+    "fullInitial": 143,
+    "exactChecksThenStrictPrecondition": 1,
+    "firstBrowserMatrixThen200msEarlyRead": 1,
+    "remainingBrowserRegressions": 0,
+    "timingControlsThenFinal200msEarlyRead": 1,
+    "baseline200msControl": 1
+  }
+}
