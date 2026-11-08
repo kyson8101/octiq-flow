@@ -16,7 +16,7 @@ const engine=process.env.HISTORY_ENGINE||'chromium';
 const scratch=await mkdtemp(join(tmpdir(),'octiq-past-window-'));
 const server=process.env.OCTIQ_TEST_DIST
  ?await preview({root:web,build:{outDir:resolve(process.env.OCTIQ_TEST_DIST)},preview:{host:'127.0.0.1',port:0}})
- :await createServer({root:web,cacheDir:join(scratch,'.vite'),server:{host:'127.0.0.1',port:0}});
+ :await createServer({root:web,cacheDir:join(scratch,'.vite'),server:{host:'127.0.0.1',port:0,strictPort:false}});
 if(!process.env.OCTIQ_TEST_DIST)await server.listen();
 const executablePath=engine==='chromium'?process.env.PLAYWRIGHT_EXECUTABLE_PATH:process.env.HISTORY_WEBKIT_EXECUTABLE_PATH;
 const browser=await pw[engine].launch({headless:true,...(executablePath?{executablePath}:engine==='chromium'?{channel:process.env.PLAYWRIGHT_CHANNEL||'chrome'}:{})});
