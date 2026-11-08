@@ -2,7 +2,7 @@
 // No paid provider, personal configuration, live service, or open chat is used.
 // Usage: node scripts/test-agent-footprint.mjs <binary> <evidence-dir> before|after
 import assert from "node:assert/strict";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -94,8 +94,10 @@ const wait = async (label, test, timeout = 30_000, interval = 100) => {
 const invoke = (cmd, args = {}) => new Promise((resolve, reject) => {
   const id = ++sequence; replies.set(id, { resolve, reject }); ws.send(JSON.stringify({ t: "invoke", id, cmd, args }));
 });
+let compilerSeen = false;
 // Same ps RSS / PPID walk and nearest chat-root attribution as memory.rs.
 function measure() {
+  compilerSeen ||= spawnSync("pgrep", ["-f", "[r]ustc.*--crate-name octiq_flow"], { stdio: "ignore" }).status === 0;
   const table = execFileSync("ps", ["-axo", "pid=,ppid=,rss="], { encoding: "utf8" }).trim().split("\n").map(line => line.trim().split(/\s+/).map(Number));
   const roots = new Map(calls().filter(c => c.argv).map(c => [c.pid, c.key]));
   const stack = [[server.pid, null]], seen = new Set(), rows = {};
@@ -148,9 +150,11 @@ try {
   const alive = new Set(execFileSync("ps", ["-axo", "pid="], { encoding: "utf8" }).trim().split(/\s+/).map(Number));
   result.orphanMcps = mcpPids.filter(pid => alive.has(pid));
   assert.deepEqual(result.orphanMcps, []);
+  assert(!compilerSeen, "An OctiqFlow Rust compiler overlapped RSS sampling; repeat in a quiet window.");
   result.pass = true;
 } catch (error) { result.pass = false; result.error = String(error.stack ?? error); }
 finally {
+  result.concurrentRustcObserved = compilerSeen;
   if (ws?.readyState === WebSocket.OPEN) for (const key of keys) await invoke("chat_stop", { key }).catch(() => {});
   ws?.close(); server.kill("SIGTERM");
   if (server.exitCode === null) await new Promise(resolve => server.once("exit", resolve));
