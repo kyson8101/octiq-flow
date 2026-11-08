@@ -1788,21 +1788,29 @@ export default function App() {
   }, [catchUpChat, flushChats]);
   const loadLatestFor = useCallback(async (id: string | null) => {
     if (!id) return;
-    await chatReads.current.get(id)?.promise;
-    const previous = chatHistory.current.get(id);
-    const previousSlices = [...chatHistory.current.slices(id)];
-    const previousSeq = catchUp.current.mark(keyFor(id));
-    await forgetChatCheckpoint(id);
-    catchUp.current.forget(keyFor(id)); chatHistory.current.forget(id);
     setEarlierReads(prev => ({ ...prev, [id]: { loading: true } }));
-    try { await catchUpChat(id); flushChats(); setEarlierReads(prev => ({ ...prev, [id]: { loading: false } })); }
-    catch (error) {
-      // A failed Return to latest leaves the older window and its way back
-      // intact. Do not append live deltas across the unseen middle.
-      if (previous) {
-        chatHistory.current.set(id, previous.before, previous.end, previousSlices);
-        catchUp.current.forget(keyFor(id)); catchUp.current.begin(keyFor(id), previousSeq); catchUp.current.end(keyFor(id), []);
+    try {
+      // Waiting on a reconnect is part of this request too: its rejection
+      // must leave the same usable retry/error control as a fresh read's.
+      await chatReads.current.get(id)?.promise;
+      const previous = chatHistory.current.get(id);
+      const previousSlices = [...chatHistory.current.slices(id)];
+      const previousSeq = catchUp.current.mark(keyFor(id));
+      await forgetChatCheckpoint(id);
+      catchUp.current.forget(keyFor(id)); chatHistory.current.forget(id);
+      try { await catchUpChat(id); }
+      catch (error) {
+        // A failed Return to latest leaves the older window and its way back
+        // intact. Do not append live deltas across the unseen middle.
+        if (previous) {
+          chatHistory.current.set(id, previous.before, previous.end, previousSlices);
+          catchUp.current.forget(keyFor(id)); catchUp.current.begin(keyFor(id), previousSeq); catchUp.current.end(keyFor(id), []);
+        }
+        throw error;
       }
+      flushChats();
+      setEarlierReads(prev => ({ ...prev, [id]: { loading: false } }));
+    } catch (error) {
       setEarlierReads(prev => ({ ...prev, [id]: { loading: false, error: String(error) } }));
     }
   }, [catchUpChat, flushChats]);

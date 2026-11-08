@@ -1683,7 +1683,7 @@ const MessageListBody = function MessageList({
   // even when no new delta has arrived since paging. Keep the way back in the
   // viewport for EVERY past window, without retaining or counting live output.
   const jumpVisible = !!onLoadLatest || away;
-  const latestRequested = useRef<{ id: string | undefined } | null>(null);
+  const latestRequested = useRef<{ id: string | undefined; pending: boolean } | null>(null);
   useLayoutEffect(() => {
     const requested = latestRequested.current;
     if (!requested || loadingEarlier) return;
@@ -2248,9 +2248,12 @@ const MessageListBody = function MessageList({
           onClick={(event) => {
             if (repeatsAnother(event)) return;
             if (onLoadLatest) {
-              if (latestRequested.current) return;
-              latestRequested.current = { id: conversationId };
-              void onLoadLatest();
+              if (latestRequested.current?.pending) return;
+              const requested = { id: conversationId, pending: true };
+              latestRequested.current = requested;
+              // Release re-entry on settlement even if React batches away the
+              // loading transition. Keep the intent for the commit/follow effect.
+              void onLoadLatest().finally(() => { requested.pending = false; });
             } else jumpToBottom();
           }}
           // Not just hidden — a button under a reader's tab key that they
