@@ -2431,6 +2431,42 @@ pub(crate) mod tests {
         }
     }
 
+    #[test]
+    fn workers_keep_host_and_execution_tools_without_inherited_mcp_servers() {
+        let servers = person_servers();
+        let worker = AgentCommand {
+            orchestration_worker: true,
+            access: Some(Access::Auto),
+            lite: false,
+            ..codex_request(false, &servers)
+        };
+        let claude = CLAUDE.build_command(&worker);
+        assert!(claude.contains(" --strict-mcp-config"), "{claude}");
+        assert!(!claude.contains("--setting-sources"), "settings/hooks stay");
+        assert!(!claude.contains("--tools ''"), "execution tools stay");
+        assert!(claude.contains("mcp__octiq__orchestration_worker_report"));
+        for line in [
+            CODEX.build_command(&worker),
+            codex_exec_command(&worker, &CODEX),
+        ] {
+            assert!(
+                line.contains("mcp_servers.node_repl={command=\"false\",enabled=false}"),
+                "{line}"
+            );
+            assert!(
+                line.contains("mcp_servers.sentry={url=\"http://127.0.0.1:9/\",enabled=false}"),
+                "{line}"
+            );
+            assert!(line.contains(" --disable apps"), "{line}");
+            assert!(line.contains(" --disable plugins"), "{line}");
+            assert!(!line.contains(" --disable shell_tool"), "{line}");
+            assert!(!line.contains(" --disable unified_exec"), "{line}");
+            assert!(line.contains(
+                "mcp_servers.octiq.tools.orchestration_worker_report.approval_mode=\"approve\""
+            ));
+        }
+    }
+
     /// The host prompt a Codex front desk gets is the front desk's, not the
     /// one describing orchestration and the vault it cannot reach.
     #[test]
