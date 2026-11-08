@@ -4106,6 +4106,23 @@ fn initialize_codex_app_server(
     Ok((thread_id, prelude))
 }
 
+/// Saved resume contexts intentionally omit project environment. Worker
+/// identity must survive that sanitization, reaping and restart, including
+/// legacy worker keys which do not carry the reserved prefix.
+fn worker_launch_role(
+    manager: &ChatManager,
+    key: &str,
+    env: Option<&std::collections::BTreeMap<String, String>>,
+) -> Result<bool, String> {
+    if env.is_some_and(|env| {
+        env.get("OCTIQ_ORCHESTRATION_ATTEMPT")
+            .is_some_and(|attempt| !attempt.trim().is_empty())
+    }) {
+        return Ok(true);
+    }
+    manager.orchestrations.is_worker_chat(key)
+}
+
 /// The person's own Codex MCP servers, as the Codex this chat would start
 /// sees them: `codex mcp list --json` through the agent shell, in the chat's
 /// folder, with the project's environment (a project may set `CODEX_HOME`).
@@ -4244,10 +4261,7 @@ pub(crate) fn start_session(
     // says, on every start, resume and relaunch alike.
     let front_desk =
         session_key == key && crate::team::is_front_desk_chat(&crate::team::default_path(), &key);
-    let orchestration_worker = env.as_ref().is_some_and(|env| {
-        env.get("OCTIQ_ORCHESTRATION_ATTEMPT")
-            .is_some_and(|attempt| !attempt.trim().is_empty())
-    });
+    let orchestration_worker = worker_launch_role(&manager, &key, env.as_ref())?;
     let access = if front_desk {
         Some(Access::Read)
     } else {
@@ -12864,6 +12878,36 @@ mod start_claim_tests {
 #[cfg(test)]
 mod idle_tests {
     use super::*;
+
+    #[test]
+    fn a_resumed_worker_keeps_its_role_after_the_saved_environment_is_removed() {
+        let manager = ChatManager::default();
+        let run = crate::orchestration::tests::run(&manager.orchestrations);
+        let legacy = format!("chat:legacy-worker-{}", uuid::Uuid::new_v4());
+        let worker = crate::orchestration::tests::settled_worker(
+            &manager.orchestrations,
+            &run,
+            Some(&legacy),
+        );
+        manager.test_remember_start(&legacy, "/unused");
+        let mut context = manager.start_context(&legacy).unwrap();
+        context.env = Some(std::collections::BTreeMap::from([(
+            "OCTIQ_ORCHESTRATION_ATTEMPT".into(),
+            worker.id,
+        )]));
+        manager
+            .orchestrations
+            .save_resume_context(&legacy, context)
+            .unwrap();
+        let saved = manager
+            .orchestrations
+            .saved_resume_context(&legacy)
+            .unwrap();
+        assert!(saved.env.is_none());
+        assert!(worker_launch_role(&manager, &legacy, saved.env.as_ref()).unwrap());
+        assert!(worker_launch_role(&manager, "chat:orch-resumed", None).unwrap());
+        assert!(!worker_launch_role(&manager, "chat:ordinary-resumed", None).unwrap());
+    }
 
     /// A session with a real process behind it, last active `ago` back.
     ///

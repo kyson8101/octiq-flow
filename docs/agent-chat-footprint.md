@@ -19,6 +19,9 @@ orchestration operations, so workers do not need another copy of those servers.
   Apps and plugins are disabled too, since they can start additional MCPs.
   Failure to read/validate the list refuses startup rather than inheriting it.
   The same policy covers app-server and the exec compatibility transport.
+- Worker launch identity comes from the durable ledger (with the existing
+  launch marker supported), so a sanitized resume context without project
+  environment does not silently revert to ordinary MCP inheritance.
 - This is a default host-only worker policy, not automatic task-text matching.
   There is no per-role external-server allowlist in this change. A future
   exception needs an explicit host-owned role/task policy and provider-specific
