@@ -5,16 +5,38 @@ Chat search stores one disposable JSON segment per chat under
 keeps the archive's text, tokens or lowercase copies resident. A transcript's
 size/mtime stamp invalidates its segment.
 
-The first search imports a readable v2 `search-index.json`, preserving its text,
+Migration imports a readable v2 `search-index.json`, preserving its text,
 speaker and role. This matters because the MCP cache's fallback speaker is
 `User`, while rebuilding the same transcript with Rust uses `You`. The original
-file stays byte-for-byte intact for old servers and MCP clients. Import writes
+file stays byte-for-byte intact until migration completes. Import writes
 individual segments and the filter index before its completion marker. A failed
-publication leaves no marker and is retried; the canonical chat records are never
-written. An absent, corrupt or unsupported legacy file is checked once per server
-run. Missing, corrupt or unsupported segments rebuild from those records.
+initial publication leaves no marker and is retried; canonical chat records are
+never written. An absent, corrupt or unsupported legacy file is checked once per
+server run. Missing, corrupt or unsupported segments rebuild from those records.
 The one-time import still reads the old JSON file into memory; subsequent starts
 use only the small filter index and the segments a query needs.
+
+A startup background pass, serialized with queries, imports and reads back every
+legacy segment, then builds and reads back segments for every `chat_*.jsonl`
+record (including records absent or stale in the legacy cache). Only after all
+of these succeed and filters and the completion marker are saved does it remove
+`search-index.json`. An older completion marker alone is insufficient. The pass
+resolves `chats` from the pinned profile, reads through `profile::read`, makes
+folders through `profile::make_dir`, and calls `profile::available` immediately
+before unlinking. Missing/replaced profiles, redirected cache directories or
+legacy files, failed publication/readback, or a changed legacy file leave it untouched for a later
+startup. Queries may import before the background pass acquires the search lock;
+they never remove the legacy file. Markers also publish by sibling rename, so
+an old marker symlink cannot redirect a write. Chat records are never rewritten.
+
+Downgrade is safe: source inspection of the pre-branch binary's code at
+`106dfe3` (`chat_search::load_cache`, `refresh_cache`, `save_cache`) confirms that
+a missing legacy file starts with an empty cache; the next search indexes the
+records and saves it again. The unchanged MCP reader does the same through
+`loadSearchCache` and `refreshSearchIndex` in `scripts/mcp/octiq-ask.cjs`.
+Downgrade or MCP search can therefore recreate the legacy disk cost; the next
+new-server startup verifies migration again before retiring it. A canonical
+rebuild may use `You` instead of the preserved MCP fallback `User`.
 
 A bounded candidate index (`chats/search-filters-v1.json`) holds two/three-character
 Bloom filters. A matching transcript stamp and a negative filter can exclude a
@@ -133,9 +155,15 @@ Unicode search retains a subsecond disk-read cost compared with the resident
 index. The first import also costs time and transient heap. These tradeoffs are
 reported alongside the common-query improvement, rather than hidden in a
 single average. The 2,457 derived segments occupy 120,814,893 bytes; the largest
-is 3,601,457 bytes. Filters occupy 11,335,391 bytes on disk. The legacy index is
-kept for compatibility, so this memory change adds about 132 MB of derived
-cache storage; it does not claim a disk-space reduction. The isolated profile
+is 3,601,457 bytes. Filters occupy 11,335,391 bytes on disk. At the time of those
+measurements the legacy index was retained. The retirement follow-up removes
+its 247,847,456 bytes after verification. For that measured segment/filter set,
+cache storage is 132,150,284 bytes instead of 379,997,740 bytes, 115,697,172 bytes
+below the original legacy-only cache. These are arithmetic totals from the
+measured file sizes, not a new live-profile measurement. The background pass
+also fills any records absent from the old cache (the fixture had 2,514 records
+and 2,457 segments); their additional segment/filter bytes are not measured here.
+The isolated profile
 copies and their private response payloads are removed after exporting numeric
 evidence; no measurement service is left running.
 

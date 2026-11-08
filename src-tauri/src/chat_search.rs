@@ -26,12 +26,12 @@ const SEARCH_CHUNK_CHARS: usize = 1_200;
 const SEARCH_CHUNK_OVERLAP: usize = 120;
 const EXCERPT_CHARS: usize = 220;
 
-/// A disposable derivative of one transcript. The legacy search-index.json is
-/// deliberately left alone: older servers and the MCP search still read it.
+/// A disposable derivative of one transcript. Background migration retires the
+/// legacy search-index.json only after every segment has been read back.
 /// Missing/corrupt/new-version segments rebuild from the canonical transcript;
 /// an interrupted rebuild cannot replace either that transcript or the legacy
 /// cache. A failed cache write only means the next query tries again.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct CachedChat {
     #[serde(default = "segment_version")]
     version: u32,
@@ -40,7 +40,7 @@ struct CachedChat {
     documents: Vec<SearchDocument>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SearchDocument {
     speaker: String,
     role: String,
@@ -169,12 +169,63 @@ fn remember_filter(filters: &mut Filters, id: &str, chat: &CachedChat) -> bool {
 }
 
 /// Preserve the valid legacy cache's exact text/speaker/role before switching
-/// storage. Unknown token fields are skipped, not allocated. The old file is
-/// never edited, and an incomplete publication leaves no completion marker.
+/// storage. Unknown token fields are skipped, not allocated. Queries leave the
+/// old file alone; only the background pass may retire it after verification.
 fn migrate_legacy(root: &Path, filters: &mut Filters) -> Result<bool, String> {
+    import_legacy(root, filters, false)
+}
+
+/// Run on a startup thread, serialized with queries so imported filters cannot
+/// replace a query's newer filters. No transcript or authoritative store changes.
+pub(crate) fn retire_legacy_index() {
+    let result = (|| {
+        let root = crate::profile::available()?.join("chats");
+        let mut guard = SEARCH_STATE.lock().map_err(|e| e.to_string())?;
+        let mut filters = load_filters(&root)?;
+        import_legacy(&root, &mut filters, true)?;
+        *guard = Some(SearchState {
+            root,
+            filters,
+            legacy_checked: true,
+        });
+        Ok::<_, String>(())
+    })();
+    if let Err(error) = result {
+        eprintln!("[search] legacy index left for a later migration: {error}");
+    }
+}
+
+fn import_legacy(root: &Path, filters: &mut Filters, retire: bool) -> Result<bool, String> {
     let marker = root.join(SEGMENT_FOLDER).join("legacy-v2-imported");
-    if crate::profile::read(&marker, |e| e.to_string())?.is_some() {
+    // An earlier binary's marker proves publication, not readback verification.
+    // The background pass therefore reimports even when that marker exists.
+    if !retire && crate::profile::read(&marker, |e| e.to_string())?.is_some() {
         return Ok(false);
+    }
+    let legacy_path = root.join("search-index.json");
+    if retire {
+        let pinned = crate::profile::available()?;
+        if root != pinned.join("chats") {
+            return Err("Search migration is outside the pinned chats folder".into());
+        }
+        for path in [
+            root.to_path_buf(),
+            root.join(SEGMENT_FOLDER),
+            legacy_path.clone(),
+        ] {
+            match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(format!(
+                        "Search migration will not follow {}",
+                        path.display()
+                    ));
+                }
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(error.to_string());
+                }
+                _ => {}
+            }
+        }
     }
     #[derive(Deserialize)]
     struct Legacy {
@@ -182,13 +233,13 @@ fn migrate_legacy(root: &Path, filters: &mut Filters) -> Result<bool, String> {
         #[serde(default)]
         chats: HashMap<String, CachedChat>,
     }
-    let Some(raw) = crate::profile::read(&root.join("search-index.json"), |e| e.to_string())?
-    else {
+    let Some(raw) = crate::profile::read(&legacy_path, |e| e.to_string())? else {
         return Ok(false);
     };
     let Ok(legacy) = serde_json::from_slice::<Legacy>(&raw) else {
         return Ok(false);
     };
+    let legacy_hash = Sha256::digest(&raw);
     drop(raw);
     if legacy.version != 2 {
         return Ok(false);
@@ -198,13 +249,63 @@ fn migrate_legacy(root: &Path, filters: &mut Filters) -> Result<bool, String> {
         for document in &mut chat.documents {
             document.text = one_line(&document.text);
         }
-        save_segment(&segment_path(root, &id), &chat)?;
+        let target = segment_path(root, &id);
+        save_segment(&target, &chat)?;
+        if retire {
+            verify_segment(&target, &chat)?;
+        }
         remember_filter(filters, &id, &chat);
     }
+    if retire {
+        // Include records absent or stale in the legacy cache, including Trash.
+        // A failed/growing source or failed cache write withholds retirement.
+        for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
+            crate::profile::available()?;
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name();
+            let Some(id) = name
+                .to_str()
+                .and_then(|s| s.strip_prefix("chat_"))
+                .and_then(|s| s.strip_suffix(".jsonl"))
+            else {
+                continue;
+            };
+            let path = entry.path();
+            let chat = cached_chat(root, id, &path)?;
+            verify_segment(&segment_path(root, id), &chat)?;
+            if transcript_stamp(&path).as_ref() != Some(&chat.stamp) {
+                return Err("A chat record changed during search migration".into());
+            }
+            remember_filter(filters, id, &chat);
+        }
+    }
     save_json(&root.join("search-filters-v1.json"), filters)?;
-    crate::profile::make_dir(marker.parent().unwrap())?;
-    fs::write(marker, b"2").map_err(|e| e.to_string())?;
+    // Publish the marker through the same sibling-rename door: an old marker
+    // symlink must never turn background retirement into an outside write.
+    save_json(&marker, &2)?;
+    if retire {
+        // MCP search can still publish a legacy cache. Never remove a different
+        // file from the one imported; a later startup can retry it.
+        let current = crate::profile::read(&legacy_path, |e| e.to_string())?
+            .ok_or("Legacy index disappeared during migration")?;
+        if Sha256::digest(&current) != legacy_hash {
+            return Err("Legacy index changed during migration".into());
+        }
+        drop(current);
+        crate::profile::available()?;
+        fs::remove_file(&legacy_path).map_err(|e| crate::profile::write_error(&legacy_path, e))?;
+    }
     Ok(true)
+}
+
+fn verify_segment(target: &Path, expected: &CachedChat) -> Result<(), String> {
+    let raw =
+        crate::profile::read(target, |e| e.to_string())?.ok_or("Search segment was not saved")?;
+    let actual: CachedChat = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    if &actual != expected {
+        return Err("Search segment readback differs from its source".into());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -884,6 +985,137 @@ mod tests {
         // A corrupt filter index is only a cache miss, never negative evidence.
         fs::write(root.join("search-filters-v1.json"), b"{partial").unwrap();
         assert!(load_filters(&root).unwrap().chats.is_empty());
+    }
+
+    fn legacy_fixture(root: &Path) -> Vec<u8> {
+        let transcript = root.join("chat_record.jsonl");
+        record(&transcript, "memory 内存");
+        let raw = serde_json::to_vec(&json!({"version":2,"chats":{"record":{
+            "stamp":transcript_stamp(&transcript).unwrap(),"documents":[{
+                "speaker":"User","role":"user","text":"memory 内存"
+            }]
+        }}}))
+        .unwrap();
+        fs::write(root.join("search-index.json"), &raw).unwrap();
+        raw
+    }
+
+    #[test]
+    fn retirement_verifies_all_chats_and_removes_only_the_rebuildable_legacy_index() {
+        let home = crate::test_dir::TestDir::new("search-retirement");
+        let _process = crate::profile::started_in(&home);
+        let root = crate::transcript::chats_folder().unwrap();
+        let legacy = legacy_fixture(&root);
+        let transcript = root.join("chat_record.jsonl");
+        let original = fs::read(&transcript).unwrap();
+        let extra = root.join("chat_not-in-legacy.jsonl");
+        record(&extra, "another searchable chat");
+        let mut filters = Filters::default();
+        // The previous delivery's marker alone must not authorize retirement.
+        migrate_legacy(&root, &mut filters).unwrap();
+        fs::write(segment_path(&root, "record"), b"{partial").unwrap();
+        assert!(import_legacy(&root, &mut filters, true).unwrap());
+        assert!(!root.join("search-index.json").exists());
+        assert_eq!(fs::read(&transcript).unwrap(), original);
+        let imported = documents_for_chat(&root, "record", &transcript).unwrap();
+        assert_eq!(imported[0].speaker, "User");
+        assert_eq!(imported[0].text, "memory 内存");
+        assert_eq!(
+            documents_for_chat(&root, "not-in-legacy", &extra).unwrap()[0].text,
+            "another searchable chat"
+        );
+        assert!(load_filters(&root)
+            .unwrap()
+            .chats
+            .contains_key("not-in-legacy"));
+        assert!(!import_legacy(&root, &mut filters, true).unwrap());
+        // Removing every derivative still leaves source search recoverable.
+        fs::remove_file(segment_path(&root, "record")).unwrap();
+        assert_eq!(
+            documents_for_chat(&root, "record", &transcript).unwrap()[0].text,
+            "memory 内存"
+        );
+        assert!(!legacy.is_empty());
+    }
+
+    #[test]
+    fn incomplete_retirement_or_failed_readback_keeps_the_legacy_bytes() {
+        let home = crate::test_dir::TestDir::new("search-retirement-failure");
+        let _process = crate::profile::started_in(&home);
+        let root = crate::transcript::chats_folder().unwrap();
+        let raw = legacy_fixture(&root);
+        let mut filters = Filters::default();
+        migrate_legacy(&root, &mut filters).unwrap();
+        let target = segment_path(&root, "record");
+        let expected: CachedChat = serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+        fs::write(&target, b"{}").unwrap();
+        assert!(verify_segment(&target, &expected).is_err());
+        // An unpublishable chat absent from the legacy index prevents unlink,
+        // even though all legacy entries and the old marker are present.
+        record(
+            &root.join("chat_blocked.jsonl"),
+            "cannot publish this segment",
+        );
+        crate::profile::make_dir(&segment_path(&root, "blocked")).unwrap();
+        assert!(import_legacy(&root, &mut filters, true).is_err());
+        assert_eq!(fs::read(root.join("search-index.json")).unwrap(), raw);
+        assert!(root
+            .join(SEGMENT_FOLDER)
+            .join("legacy-v2-imported")
+            .exists());
+    }
+
+    #[test]
+    fn retirement_never_cleans_a_missing_or_replaced_profile() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let root = crate::transcript::chats_folder().unwrap();
+        legacy_fixture(&root);
+        let mut filters = Filters::default();
+        migrate_legacy(&root, &mut filters).unwrap();
+        let original = crate::profile::tests::everything_in(&home.profile());
+        home.move_away();
+        assert!(import_legacy(&root, &mut filters, true)
+            .unwrap_err()
+            .contains("not available right now"));
+        assert!(!home.profile().exists());
+        assert_eq!(crate::profile::tests::everything_in(&home.kept()), original);
+        home.move_back();
+        home.replace();
+        // A replacement with plausible migration files still has no authority.
+        fs::write(root.join("search-index.json"), b"replacement cache").unwrap();
+        let replacement = crate::profile::tests::everything_in(&home.profile());
+        assert!(import_legacy(&root, &mut filters, true)
+            .unwrap_err()
+            .contains("not the folder"));
+        assert_eq!(
+            crate::profile::tests::everything_in(&home.profile()),
+            replacement
+        );
+        assert_eq!(crate::profile::tests::everything_in(&home.kept()), original);
+        home.move_back();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retirement_never_follows_a_redirected_old_completion_marker() {
+        let home = crate::test_dir::TestDir::new("search-marker-redirect");
+        let _process = crate::profile::started_in(&home);
+        let root = crate::transcript::chats_folder().unwrap();
+        legacy_fixture(&root);
+        let outside = home.join("keep-marker-target");
+        fs::write(&outside, b"untouched").unwrap();
+        let folder = root.join(SEGMENT_FOLDER);
+        crate::profile::make_dir(&folder).unwrap();
+        let marker = folder.join("legacy-v2-imported");
+        std::os::unix::fs::symlink(&outside, &marker).unwrap();
+        assert!(import_legacy(&root, &mut Filters::default(), true).unwrap());
+        assert_eq!(fs::read(outside).unwrap(), b"untouched");
+        assert_eq!(fs::read(&marker).unwrap(), b"2");
+        assert!(!fs::symlink_metadata(marker)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[test]

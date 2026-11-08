@@ -105,6 +105,7 @@ pub async fn run_headless() {
     // they were last compacted lose pictures and finished stream pieces.
     std::thread::spawn(|| {
         record_trim::prune_old_records();
+        chat_search::retire_legacy_index();
         std::thread::sleep(std::time::Duration::from_secs(60));
         record_trim::compact_records();
     });
