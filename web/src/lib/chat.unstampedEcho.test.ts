@@ -7,6 +7,7 @@ import { ChatHistory } from "./chatHistory";
 import { chatPreviewState, hasLocalPrompt } from "./chatRetention";
 import { loadChat, loadEarlierChat } from "./loadChat";
 import { replayChat } from "./replayChat";
+import { reconcileQueueSnapshot, unconfirmedSend } from "./messageQueue";
 
 beforeEach(() => vi.stubGlobal("indexedDB", new IDBFactory()));
 afterEach(() => vi.unstubAllGlobals());
@@ -120,5 +121,83 @@ for (const replay of [false, true]) {
     if (evidence === "cancel") expect(state.messages.find(m => m.turnId === "new")).toBeUndefined();
     else expect(state.messages.find(m => m.turnId === "new")).toMatchObject({ attachments: prompt.attachments,
       ...(evidence === "echo" ? { echo: "new-native-echo" } : { takenUp: true }) });
+  });
+}
+
+// App.send finally removes the completed RPC from sendingTurns, then calls
+// syncQueue. An older persistent host has a queue but no stamped/canonical
+// prompt for a direct stdin send. Its echo may arrive on either side of that
+// successful RPC. Queue absence alone must remain unconfirmed in both cases.
+const syncLiveQueue = (state: ChatState) => reconcileQueueSnapshot(state, state, { live: true, queuedTurnIds: [] });
+for (const replay of [false, true]) {
+  it.each(["before-rpc", "after-rpc"])(`confirms a legacy echo %s across App post-send queue sync (isReplay=${replay})`, order => {
+    let state = local();
+    if (order === "after-rpc") {
+      state = syncLiveQueue(state);
+      expect(state.messages[0].delivery).toBe("unknown");
+      expect(hasLocalPrompt(state)).toBe(true);
+      // Repeated/late queue reads must not change eligibility.
+      state = syncLiveQueue(state);
+    }
+    state = reduceChat(state, echo(replay));
+    if (order === "before-rpc") state = syncLiveQueue(state);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({ turnId: "new", echo: "old-native-echo", delivery: "dispatched",
+      attachments: local().messages[0].attachments });
+    expect(state.messages[0].queueError).toBeUndefined();
+    expect(hasLocalPrompt(state)).toBe(false);
+    expect(chatPreviewState(state).messages.filter(m => m.role === "user" && !m.echo && !m.takenUp)).toEqual([]);
+  });
+
+  it(`never guesses between two same-text sends demoted by queue sync (isReplay=${replay})`, () => {
+    const state = syncLiveQueue(addUserTurn(syncLiveQueue(local()), "continue", [], 11, "second"));
+    const next = reduceChat(state, echo(replay));
+    expect(next.messages).toHaveLength(3);
+    expect(next.messages.slice(0, 2)).toEqual(state.messages);
+    expect(hasLocalPrompt(next)).toBe(true);
+  });
+
+  it(`does not treat queue-demoted unknown as historical acknowledgement (isReplay=${replay})`, async () => {
+    const state = syncLiveQueue(local());
+    kept(await replayChat(state, [{ seq: 2, event: echo(replay) }], 0, () => false), state.messages[0]);
+    for (const overlap of [false, true]) {
+      let current = state; const catchUp = new CatchUp();
+      await loadChat({ id: `queue-buffered-${replay}-${overlap}`, key: "chat:a", catchUp, getState: () => current,
+        publish: next => { current = next; }, cancelled: () => false, request: async () => {
+          catchUp.live("chat:a", 2, echo(replay));
+          return overlap ? [{ seq: 2, event: echo(replay) }] : [];
+        } });
+      if (overlap) kept(current, state.messages[0]);
+      else expect(hasLocalPrompt(current)).toBe(false);
+    }
+  });
+
+  it(`excludes queue-demoted unknown after pickup, queue ownership, disconnect or send failure (isReplay=${replay})`, () => {
+    const unknown = syncLiveQueue(local());
+    const variants = [
+      reduceChat(unknown, { type: "turn.started", octiq_user_turn_id: "new" }),
+      reconcileQueueSnapshot(unknown, unknown, { live: true, queuedTurnIds: ["new"] }),
+      reconcileQueueSnapshot(unknown, unknown, { live: false, queuedTurnIds: [] }),
+      unconfirmedSend(unknown, "new", new Error("connection closed"), true),
+    ];
+    for (const state of variants) {
+      const next = reduceChat(state, echo(replay));
+      expect(next.messages).toHaveLength(2);
+      expect(next.messages[0]).toEqual(state.messages[0]);
+    }
+  });
+
+  it(`releases ten acknowledged 200KB legacy sends instead of accumulating local copies (isReplay=${replay})`, () => {
+    let state = emptyChat();
+    for (let i = 0; i < 10; i++) {
+      const text = `legacy-${i}:` + "x".repeat(200000);
+      state = addUserTurn(state, text, [{ path: `/unique-${i}.png`, name: "unique.png", isImage: true }], i, `turn-${i}`);
+      state = syncLiveQueue(state);
+      state = reduceChat(state, { ...echo(replay), uuid: `echo-${i}`, message: { content: [{ type: "text", text }] } });
+      const preview = chatPreviewState(state);
+      state = { ...preview, messages: preview.messages.filter(m => m.role === "user" && !m.echo && !m.takenUp) };
+      expect(state.messages).toHaveLength(0);
+      expect(JSON.stringify(state.messages).length).toBe(2);
+    }
   });
 }
