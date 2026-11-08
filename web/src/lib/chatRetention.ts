@@ -3,15 +3,31 @@ import { ownsTurnId, type ChatState, type Message } from "./chat";
 /** A sidebar/cache seed is not a host acknowledgement. Keep the complete
  * local message until replay supplies its echo, pickup or queue outcome. */
 export function withLocalPrompts(next: ChatState, current: ChatState, seed = false): ChatState {
-  const pending = current.messages.filter(message => message.role === "user" && !message.echo && !message.takenUp);
-  if (!pending.length) return next;
+  const local = current.messages.filter(message => message.role === "user");
+  if (!local.length) return next;
   const messages = [...next.messages];
-  for (const message of pending) {
-    const at = messages.findIndex(known => known.id === message.id || (!!message.turnId && ownsTurnId(known, message.turnId)));
-    if (at < 0) messages.push(message);
-    else if (seed && !messages[at].echo && !messages[at].takenUp) messages[at] = message;
+  for (const message of local) {
+    const pending = !message.echo && !message.takenUp;
+    const at = messages.findIndex(known => known.id === message.id
+      || (!!message.turnId && ownsTurnId(known, message.turnId))
+      || (!!known.turnId && ownsTurnId(message, known.turnId)));
+    // Confirmed words outside this history window need not be held locally.
+    if (at < 0) { if (pending) messages.push(message); }
+    else if (messages[at].echo) {
+      // Replay has the host's confirmation; the local copy still owns its
+      // typed words, attachments and UI identity. Adopt it at the durable
+      // echo's position and discard stale queue feedback, just as live echo
+      // reconciliation does. Identity alone permits this, never equal text.
+      messages[at] = { ...message, ...messages[at], id: message.id,
+        turnId: message.turnId ?? messages[at].turnId,
+        sourceTurnIds: message.sourceTurnIds ?? messages[at].sourceTurnIds,
+        blocks: pending ? message.blocks : messages[at].blocks,
+        attachments: message.attachments ?? messages[at].attachments,
+        delivery: "dispatched", queueLost: undefined, queueAction: undefined, queueError: undefined };
+    }
+    else if (pending && seed && !messages[at].echo && !messages[at].takenUp) messages[at] = message;
   }
-  return { ...next, busy: next.busy || current.busy, messages };
+  return { ...next, busy: next.busy || (local.some(message => !message.echo && !message.takenUp) && current.busy), messages };
 }
 
 /** These words may still exist only in this tab. Never evict or shorten them. */

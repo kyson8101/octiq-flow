@@ -45,6 +45,36 @@ it("a confirmed cache/sidebar seed takes over the local identity, attachments an
   confirmed(withLocalPrompts(reduceChat(emptyChat(), echo()), pending(), true));
 });
 
+it("an old unstamped preview cannot erase the host stamp before the retained local copy is reconciled", () => {
+  const replayed = reduceChat(emptyChat(), echo());
+  const current = pending();
+  current.messages.unshift({ ...replayed.messages[0], turnId: undefined, delivery: undefined });
+  confirmed(withLocalPrompts(replayed, current));
+});
+
+it.each(["live", "cold"])("a stamped source id confirms an appended local prompt by identity (%s)", path => {
+  const local = pending();
+  local.messages[0].sourceTurnIds = ["local", "appended-id"];
+  const state = path === "live" ? reduceChat(local, echo("appended-id"))
+    : withLocalPrompts(reduceChat(emptyChat(), echo("appended-id")), local);
+  confirmed(state);
+  expect(state.messages[0].sourceTurnIds).toEqual(["local", "appended-id"]);
+});
+
+it("keeps confirmed attachments and identity when Load earlier rebuilds the same echo, but releases words outside the window", async () => {
+  let state = pending();
+  const history = new ChatHistory(), catchUp = new CatchUp();
+  const options = { id: "history", key: "chat:history", catchUp, history, getState: () => state,
+    publish: (next: ChatState) => { state = next; }, cancelled: () => false, request: async () => [] };
+  await loadChat({ ...options, requestPage: async () => ({ events: [stamped(2)], context: [], before: 2 }) });
+  confirmed(state);
+  await loadEarlierChat({ ...options, requestPage: async before => before === 2
+    ? { events: [{ seq: 1, event: { type: "system" } }], context: [], before: null }
+    : { events: [stamped(2)], context: [], before: 2 } });
+  confirmed(state);
+  expect(withLocalPrompts(emptyChat(), state).messages).toEqual([]);
+});
+
 it.each(["cold", "cached-prefix", "cached-echo", "page-context", "live-tail", "earlier"])(
   "reconciles a stamped echo across release and %s replay", async path => {
     let state = chatPreviewState(pending());

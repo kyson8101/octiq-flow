@@ -1804,7 +1804,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
             // SECOND message you never said. `sameCommand` allows the namespace
             // to differ and nothing else, and falls back to an exact compare
             // for anything that is not a slash command.
-            (echoedTurnId ? m.turnId === echoedTurnId :
+            (echoedTurnId ? ownsTurnId(m, echoedTurnId) :
               !m.queueLost && m.blocks.some((b) => b.kind === "text" && sameCommand(b.text, said))),
         );
       if (mine) {
@@ -1833,6 +1833,10 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
             blocks: [{ kind: "text", text: said }],
             streaming: false,
             echo: uuid,
+            // Native Claude uuids differ from the browser's send identity.
+            // Keep the host stamp on cold replay too, so a released local
+            // prompt can join this confirmed message without matching words.
+            ...(echoedTurnId ? { turnId: echoedTurnId, delivery: "dispatched" as const } : {}),
             ...(asOneLine(said) ? { relay: asOneLine(said) } : {}),
           },
         ],

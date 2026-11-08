@@ -129,4 +129,25 @@ node web/scripts/test-plan-detail.mjs
 
 Final production-App regressions also pass modern 30 + 30 selections and legacy 8 + 8 selections at 1280px/390px, including background activity, reopening/earlier history, split panes, covered-surface release and reconnect. Every case reports zero page errors. Sanitized results and source hashes are in `browser-memory-review.json`; raw follow-up logs remain under `/tmp/octiq-review-f507888/`.
 
+## Confirmed echo identity repair (H1-b, 2026-11-08)
+
+The re-review of `49ad96e` exposed the confirmed side of H1: a Claude echo received while the chat was released had a native uuid different from the browser turn id. Cold replay dropped its `octiq_user_turn_id`, so the retained local prompt could not join it. Both copies were drawn, and the local one remained eligible for permanent unconfirmed-message retention.
+
+Cold Claude replay now keeps the host-stamped turn id and dispatched receipt. Local reconciliation uses that identity (including source-id aliases), preserves the prompt's UI id and attachments, and clears stale delivery/queue actions and errors. The confirmed entry stays at its durable transcript position. Later history rebuilds preserve its attachments while it remains in the window; moving it outside the window or releasing the chat can drop it. Equal words with different ids stay separate. An absent queue entry still supplies no provider acknowledgement.
+
+`chat.confirmedEcho.test.ts` covers cold replay, release/reopen, checkpoint prefixes and confirmed checkpoints, history context, Load earlier, buffered live echoes, repeated wording with different ids, aliases, stale unstamped previews, attachment preservation and release. It also replays the existing verbatim `command-echo.jsonl` capture with the stamp `agent_chat::stamp_user_turn_id` adds in production; the capture itself is unchanged. The regression-only commit `465e936` fails eight of its thirteen cases on `49ad96e`, both in the task tree before the fix and in a host-created exact-base validation workspace.
+
+```sh
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+PLAYWRIGHT_EXECUTABLE_PATH=/absolute/path/to/Brave \
+OCTIQ_TEST_DIST=/absolute/path/to/isolated/client/dist \
+node web/scripts/test-confirmed-echo-retention.mjs
+```
+
+The browser harness derives from the independent review probe and exercises both ordinary and `isReplay: true, parent_tool_use_id: null` envelopes at 1280px and 390px. It checks one visible confirmed copy after reopen and Load earlier, no Restore action, no resend and no retained local copy after release. The reviewer's ten-prompt growth probe reports zero retained locals on every iteration (`[]` serializes to two bytes), replacing its previous 1-to-10 / approximately 2 MB accumulation. These are retained-content measurements, not a heap or RSS ceiling.
+
+Final verification passes 336 Vitest files / 4,584 tests, 43 targeted lifecycle cases, `tsc -b`, an isolated production build and `git diff --check`. The build retains its existing large-chunk warning. Disposable production Brave passes all four confirmed-echo cases on both modern and legacy backends, the original reviewer's two-width echo probe, the two-width pending/take-back probe, modern 30 + 30 and legacy 8 + 8 chat regressions. The original plan probe and expanded summary/detail/in-flight/refetch matrix pass at both widths; callback GC remains 101 → 2. Sanitized counters and source hashes are in `browser-memory-confirmed-echo.json`; raw evidence is under `/tmp/octiq-h1b-fix/`.
+
+This verifies fixture behavior in disposable Brave, including a 390px viewport. Real phone, Safari/WebKit, tunnel and endurance acceptance remain untested. No production restart or deployment was performed.
+
 These are fixture/browser lifecycle checks, not a new production memory ceiling or real-phone, Safari/WebKit, tunnel or endurance acceptance. No production deployment or restart is part of this repair.

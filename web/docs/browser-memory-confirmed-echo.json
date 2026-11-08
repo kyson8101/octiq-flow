@@ -1,0 +1,336 @@
+{
+  "date": "2026-11-08",
+  "base": "49ad96e683d94faee7c8985420968bfa04f33a82",
+  "regressionCommit": "465e9369bfffc668e3dafa488cedfcc94f4a1f9b",
+  "regressionOnBase": {
+    "files": 1,
+    "failed": 8,
+    "passed": 5,
+    "isolated": true
+  },
+  "checks": {
+    "vitestFiles": 336,
+    "vitestTests": 4584,
+    "targetedTests": 43,
+    "tsc": "pass",
+    "isolatedProductionBuild": "pass",
+    "diffCheck": "pass",
+    "buildWarning": "existing large chunks"
+  },
+  "confirmedEcho": {
+    "modern": [
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      }
+    ],
+    "legacy": [
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      }
+    ],
+    "originalReviewerProbe": [
+      {
+        "width": 1280,
+        "visibleCopies": 1,
+        "errors": []
+      },
+      {
+        "width": 390,
+        "visibleCopies": 1,
+        "errors": []
+      }
+    ]
+  },
+  "growth": [
+    {
+      "confirmed": 1,
+      "retainedLocals": 0,
+      "retainedBytes": 2,
+      "hasLocalPrompt": false
+    },
+    {
+      "confirmed": 2,
+      "retainedLocals": 0,
+      "retainedBytes": 2,
+      "hasLocalPrompt": false
+    },
+    {
+      "confirmed": 3,
+      "retainedLocals": 0,
+      "retainedBytes": 2,
+      "hasLocalPrompt": false
+    },
+    {
+      "confirmed": 4,
+      "retainedLocals": 0,
+      "retainedBytes": 2,
+      "hasLocalPrompt": false
+    },
+    {
+      "confirmed": 5,
+      "retainedLocals": 0,
+      "retainedBytes": 2,
+      "hasLocalPrompt": false
+    },
+    {
+      "confirmed": 6,
+      "retainedLocals": 0,
+      "retainedBytes": 2,
+      "hasLocalPrompt": false
+    },
+    {
+      "confirmed": 7,
+      "retainedLocals": 0,
+      "retainedBytes": 2,
+      "hasLocalPrompt": false
+    },
+    {
+      "confirmed": 8,
+      "retainedLocals": 0,
+      "retainedBytes": 2,
+      "hasLocalPrompt": false
+    },
+    {
+      "confirmed": 9,
+      "retainedLocals": 0,
+      "retainedBytes": 2,
+      "hasLocalPrompt": false
+    },
+    {
+      "confirmed": 10,
+      "retainedLocals": 0,
+      "retainedBytes": 2,
+      "hasLocalPrompt": false
+    }
+  ],
+  "callbackGC": {
+    "nativeRetained": 101,
+    "fixedRetained": 2,
+    "renders": 101,
+    "identityAndCommitChecks": "pass"
+  },
+  "pending": [
+    {
+      "case": "pending-prompt-reopen",
+      "width": 1280,
+      "pendingSends": 1,
+      "heldBeforeReopen": [
+        true
+      ],
+      "visibleAfterReopen": true,
+      "bodyAfterReopen": true,
+      "errors": [],
+      "takeBack": "pass"
+    },
+    {
+      "case": "pending-prompt-reopen",
+      "width": 390,
+      "pendingSends": 1,
+      "heldBeforeReopen": [
+        true
+      ],
+      "visibleAfterReopen": true,
+      "bodyAfterReopen": true,
+      "errors": [],
+      "takeBack": "pass"
+    }
+  ],
+  "plan": [
+    {
+      "case": "summary-new-detail-old",
+      "width": 1280,
+      "heldDetailReads": 1,
+      "readingUntilMatchingDetail": true,
+      "approvedRevision": 2,
+      "errors": []
+    },
+    {
+      "case": "summary-new-detail-old",
+      "width": 390,
+      "heldDetailReads": 1,
+      "readingUntilMatchingDetail": true,
+      "approvedRevision": 2,
+      "errors": []
+    }
+  ],
+  "planMatrix": [
+    {
+      "case": "summary-new-detail-old",
+      "width": 1280,
+      "heldDetailReads": 1,
+      "readingUntilMatchingDetail": true,
+      "approvedRevision": 2,
+      "errors": []
+    },
+    {
+      "case": "detail-first-and-exposure",
+      "width": 1280,
+      "revision": 3,
+      "shownMs": 1893,
+      "updatedMs": 1893
+    },
+    {
+      "case": "inflight-invalidation-and-failed-refetch",
+      "width": 1280,
+      "oldDetailDiscarded": true,
+      "approvalAbsent": true,
+      "errors": []
+    },
+    {
+      "case": "summary-new-detail-old",
+      "width": 390,
+      "heldDetailReads": 1,
+      "readingUntilMatchingDetail": true,
+      "approvedRevision": 2,
+      "errors": []
+    },
+    {
+      "case": "detail-first-and-exposure",
+      "width": 390,
+      "revision": 3,
+      "shownMs": 1875,
+      "updatedMs": 1875
+    },
+    {
+      "case": "inflight-invalidation-and-failed-refetch",
+      "width": 390,
+      "oldDetailDiscarded": true,
+      "approvalAbsent": true,
+      "errors": []
+    }
+  ],
+  "modern": [
+    {
+      "modern": true,
+      "subscriptions": 39,
+      "width": 1280,
+      "opened": 30,
+      "background": 20,
+      "fullTranscripts": 1,
+      "splitTranscripts": 2,
+      "reopenAndEarlier": "pass"
+    },
+    {
+      "modern": true,
+      "subscriptions": 35,
+      "width": 390,
+      "opened": 30,
+      "background": 20,
+      "fullTranscripts": 1,
+      "splitTranscripts": 1,
+      "reopenAndEarlier": "pass"
+    }
+  ],
+  "legacy": [
+    {
+      "modern": false,
+      "subscriptions": 0,
+      "width": 1280,
+      "opened": 8,
+      "background": 20,
+      "fullTranscripts": 1,
+      "splitTranscripts": 2,
+      "reopenAndEarlier": "pass"
+    },
+    {
+      "modern": false,
+      "subscriptions": 0,
+      "width": 390,
+      "opened": 8,
+      "background": 20,
+      "fullTranscripts": 1,
+      "splitTranscripts": 1,
+      "reopenAndEarlier": "pass"
+    }
+  ],
+  "sourceSHA256": {
+    "web/src/lib/chat.ts": "c7255d1c1182aeab1a57e8892590d54359a62ad673bb581f6214de3b7c13b78e",
+    "web/src/lib/chatRetention.ts": "4fc532c0cd247754ed5db29f7a64f1d6d43aeba9c0a3dcb60ddf9e879e8aeba8",
+    "web/src/lib/loadChat.ts": "b193aea022cca7f4a0fd51f6b8d57f8eb039905e5d0d71e1fff7dc410c333253",
+    "web/src/lib/chat.confirmedEcho.test.ts": "a80f6e06666011afd79923306e428c0bedb7c5aeeaf3685b307f49f14f067b86",
+    "web/scripts/test-confirmed-echo-retention.mjs": "67777857998a1a8e90cf4f998ac1a11521ed540242f4681680c77ec4016a7997",
+    "web/src/App.tsx": "6d3e1995c6d142a40a1d18f5c6b763a6bf2f75fdba4aab6eee640b014387ce89",
+    "web/src/lib/useOrchestrationSnapshot.ts": "36813b21111917e46acfcbcb842c797362ea1959aeac40aa0aeeffeb4d6a81f8"
+  },
+  "rawEvidence": "/tmp/octiq-h1b-fix/",
+  "limits": [
+    "Disposable Brave with fixture records and socket; no live agent or production profile.",
+    "390px viewport is not a real phone.",
+    "No Safari/WebKit, tunnel or endurance acceptance; no new RSS/heap ceiling.",
+    "No push, deploy or restart."
+  ]
+}
