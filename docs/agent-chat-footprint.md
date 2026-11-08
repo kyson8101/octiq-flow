@@ -71,9 +71,12 @@ as the backend tree so orphaned processes cannot look like reclaimed memory.
 It shuts down the isolated service; it never connects to the live service.
 
 The second compares default Node with size/JIT flags using five paired samples
-and 25 real `tools/list` requests per process. Neither candidate showed a stable
-RSS benefit in this run, so no runtime flags were adopted. The current MCP is
-already a dependency-free stdio server: most of its footprint is Node itself.
+and 25 real `tools/list` requests per process. Quiet medians were 47.89 MiB for
+default Node, 49.28 MiB with `--optimize-for-size`, and 46.28 MiB with `--jitless`.
+The latter's 3.4% RSS saving cost 19.1% more discovery time (219.8 → 261.8 ms for
+25 requests); earlier loaded samples were unstable. No flags were adopted.
+The current MCP is already a dependency-free stdio server: most of its
+footprint is Node itself.
 A native shim would require a separate design preserving agent-side file/media
 permissions and launch capability boundaries.
 
@@ -81,3 +84,40 @@ Sharing a Codex app-server is also deferred: each process currently inherits
 one chat's MCP capability/environment, while native approvals and reader state
 are correlated to that process's thread/session. Multiple Codex threads alone
 do not preserve those boundaries. No paid model was used to test sharing.
+
+## Measured result — 2026-11-08
+
+[Sanitized raw evidence](agent-chat-footprint-evidence.json) records both runs
+and the flag experiment. The baseline binary was captured at the test-only
+commit `03c019e` (implementation unchanged from `106dfe3`). Final Rust source
+is `3bc52ce`; the measurement harness is `8a2fc1e`. Both final runs observed no
+overlapping OctiqFlow Rust compiler.
+
+| Same chat role | Before RSS (MiB) | After RSS (MiB) | Processes |
+| --- | ---: | ---: | ---: |
+| Ordinary Claude control | 150.47 | 150.39 | 5 → 5 |
+| Ordinary Codex control | 150.48 | 150.45 | 5 → 5 |
+| Claude worker | 150.47 | 61.55 | 5 → 2 |
+| Codex worker | 150.47 | 62.64 | 5 → 2 |
+
+The two workers together fell **300.94 → 124.19 MiB (58.7%)**. All four chats
+fell 601.89 → 425.03 MiB, with ordinary controls effectively unchanged. These
+are stub-provider/synthetic-extra-MCP measurements, not predicted production
+savings for the person's open chats.
+
+At the 3.5-second post-report sample, both settled workers had **zero**
+processes; the baseline still held five each (302.03 MiB together). The actual
+idle sweep, tested with a one-minute override and its normal 60-second polling
+interval, released all remaining fixture descendants: no chat rows and no
+surviving original MCP PIDs. The waits after the post-report sample were
+115.45 seconds before and 111.36 seconds after. The default fifteen-minute
+wall-clock wait was not repeated; its timeout/polling policy is unchanged.
+
+Final validation: `cargo test` passed **2,077 library + 31 binary tests**, with
+18 ignored; `cargo build --bin octiq-server` passed; all **66 Node MCP tests**
+passed, including instruction limits and permission/approval rules. The three
+new regressions failed before the fix. The first full run caught a trailing
+worker flag after the prompt; placing it before the prompt kept the original
+Windows launch-line guard intact, and the final gate passed. Tests ran on
+macOS; no native Windows run or paid provider call was performed. No push,
+deployment or restart occurred.

@@ -1,0 +1,245 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-08",
+  "platform": "darwin",
+  "node": "v24.22.1",
+  "baselineCommit": "03c019ea2c3715f0bccca0be94417c86b3008d4b",
+  "baselineParent": "106dfe3d26584d44d34da851dd5aadcbb94fa63b",
+  "validatedImplementationCommit": "3bc52ce9a29f9744de76fec70209dafc4ff37e59",
+  "validatedHarnessCommit": "8a2fc1e45537d45a1f44ba4c7a6b493f22072e9b",
+  "method": "ps RSS in KiB, PPID walk with nearest chat-root ownership, server excluded; synthetic providers and 3 inert extra MCP processes per unrestricted chat; real OctiqFlow MCP; no paid calls",
+  "idleTimeoutMinutesInHarness": 1,
+  "ordinaryDefaultIdleTimeoutMinutes": 15,
+  "runs": {
+    "before": {
+      "active": {
+        "worker-codex": {
+          "rssKiB": 154080,
+          "processes": 5
+        },
+        "ordinary-codex": {
+          "rssKiB": 154096,
+          "processes": 5
+        },
+        "worker-claude": {
+          "rssKiB": 154080,
+          "processes": 5
+        },
+        "ordinary-claude": {
+          "rssKiB": 154080,
+          "processes": 5
+        }
+      },
+      "settled": {
+        "worker-codex": {
+          "rssKiB": 154080,
+          "processes": 5
+        },
+        "ordinary-codex": {
+          "rssKiB": 154096,
+          "processes": 5
+        },
+        "worker-claude": {
+          "rssKiB": 155200,
+          "processes": 5
+        },
+        "ordinary-claude": {
+          "rssKiB": 155360,
+          "processes": 5
+        }
+      },
+      "idleSweepWaitMs": 115445,
+      "afterIdleSweep": {},
+      "orphanMcps": [],
+      "pass": true,
+      "concurrentRustcObserved": false
+    },
+    "after": {
+      "active": {
+        "worker-codex": {
+          "rssKiB": 64144,
+          "processes": 2
+        },
+        "ordinary-codex": {
+          "rssKiB": 154064,
+          "processes": 5
+        },
+        "worker-claude": {
+          "rssKiB": 63024,
+          "processes": 2
+        },
+        "ordinary-claude": {
+          "rssKiB": 154000,
+          "processes": 5
+        }
+      },
+      "settled": {
+        "ordinary-codex": {
+          "rssKiB": 154064,
+          "processes": 5
+        },
+        "ordinary-claude": {
+          "rssKiB": 154000,
+          "processes": 5
+        }
+      },
+      "idleSweepWaitMs": 111361,
+      "afterIdleSweep": {},
+      "orphanMcps": [],
+      "pass": true,
+      "concurrentRustcObserved": false
+    }
+  },
+  "validation": {
+    "rustLibPassed": 2077,
+    "rustBinPassed": 31,
+    "rustIgnored": 18,
+    "rustExitCode": 0,
+    "serverBuildExitCode": 0,
+    "mcpPassed": 66,
+    "mcpExitCode": 0,
+    "evidenceJobExitCode": 0,
+    "regressionRedFailuresBeforeFix": 3,
+    "regressionRedExitCode": 101
+  },
+  "mcpFlagExperiment": {
+    "node": "v24.22.1",
+    "platform": "darwin",
+    "samples": [
+      {
+        "run": 0,
+        "flags": [],
+        "rssKiB": 48768,
+        "discovery25Ms": 219.79695800000002
+      },
+      {
+        "run": 0,
+        "flags": [
+          "--optimize-for-size"
+        ],
+        "rssKiB": 50464,
+        "discovery25Ms": 257.841542
+      },
+      {
+        "run": 0,
+        "flags": [
+          "--jitless"
+        ],
+        "rssKiB": 47360,
+        "discovery25Ms": 261.756042
+      },
+      {
+        "run": 1,
+        "flags": [],
+        "rssKiB": 49120,
+        "discovery25Ms": 198.8694170000001
+      },
+      {
+        "run": 1,
+        "flags": [
+          "--optimize-for-size"
+        ],
+        "rssKiB": 50464,
+        "discovery25Ms": 243.1183329999999
+      },
+      {
+        "run": 1,
+        "flags": [
+          "--jitless"
+        ],
+        "rssKiB": 47392,
+        "discovery25Ms": 281.837583
+      },
+      {
+        "run": 2,
+        "flags": [],
+        "rssKiB": 49056,
+        "discovery25Ms": 221.74049999999988
+      },
+      {
+        "run": 2,
+        "flags": [
+          "--optimize-for-size"
+        ],
+        "rssKiB": 50400,
+        "discovery25Ms": 332.99149999999963
+      },
+      {
+        "run": 2,
+        "flags": [
+          "--jitless"
+        ],
+        "rssKiB": 47376,
+        "discovery25Ms": 252.54512499999964
+      },
+      {
+        "run": 3,
+        "flags": [],
+        "rssKiB": 49040,
+        "discovery25Ms": 214.4882090000001
+      },
+      {
+        "run": 3,
+        "flags": [
+          "--optimize-for-size"
+        ],
+        "rssKiB": 50112,
+        "discovery25Ms": 298.50637499999993
+      },
+      {
+        "run": 3,
+        "flags": [
+          "--jitless"
+        ],
+        "rssKiB": 47456,
+        "discovery25Ms": 319.31254100000024
+      },
+      {
+        "run": 4,
+        "flags": [],
+        "rssKiB": 48640,
+        "discovery25Ms": 314.34629199999927
+      },
+      {
+        "run": 4,
+        "flags": [
+          "--optimize-for-size"
+        ],
+        "rssKiB": 50640,
+        "discovery25Ms": 195.97879100000046
+      },
+      {
+        "run": 4,
+        "flags": [
+          "--jitless"
+        ],
+        "rssKiB": 47552,
+        "discovery25Ms": 212.76858399999946
+      }
+    ],
+    "summary": [
+      {
+        "mode": "default",
+        "rssKiB": 49040,
+        "discovery25Ms": 219.79695800000002
+      },
+      {
+        "mode": "--optimize-for-size",
+        "rssKiB": 50464,
+        "discovery25Ms": 257.841542
+      },
+      {
+        "mode": "--jitless",
+        "rssKiB": 47392,
+        "discovery25Ms": 261.756042
+      }
+    ]
+  },
+  "limits": [
+    "RSS double-counts shared pages and is sensitive to OS compression; not a production forecast.",
+    "Paid model providers and third-party MCP implementations are stubs, not production cost measurements.",
+    "The idle sweep ran with a one-minute override; the default fifteen-minute wall-clock wait was not measured.",
+    "No native Windows execution; existing cross-platform launch/path tests passed.",
+    "No external MCP role allowlist, native stdio shim or shared Codex app-server implemented."
+  ]
+}
