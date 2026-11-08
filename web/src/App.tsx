@@ -856,7 +856,7 @@ export default function App() {
   const [railShut, setRailShut] = useState(() => localStorage.getItem(RAIL_KEY) === "1");
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
-  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks, reread: rereadLists, read: listsRead, late: listsLate } =
+  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, cleanupRequests, answerCleanup, refillSafetyBlocks, reread: rereadLists, read: listsRead, late: listsLate } =
     useChatRequests(conn, (...args) => announceOnce(...args));
   const [choice, setChoice] = useState<ModelChoice>(
     () => modelFromId(recall(CHOICE_KEY)) ?? MODELS[0],
@@ -5143,8 +5143,8 @@ export default function App() {
     [listsRead, ledgerRead, ledgerFailed],
   );
   const pendingRead = useMemo(
-    () => pendingReading({ orchestration, parents: chatParents, asks, safetyBlocks, questions, accessRequests, handovers, sources: waitSources, late: listsLate }),
-    [orchestration, chatParents, asks, safetyBlocks, questions, accessRequests, handovers, waitSources, listsLate],
+    () => pendingReading({ orchestration, parents: chatParents, asks, safetyBlocks, questions, accessRequests, cleanupRequests, handovers, sources: waitSources, late: listsLate }),
+    [orchestration, chatParents, asks, safetyBlocks, questions, accessRequests, cleanupRequests, handovers, waitSources, listsLate],
   );
   const pendingList = pendingRead.actions;
   const pendingHeld = pendingRead.held;
@@ -6134,6 +6134,8 @@ export default function App() {
               onContinue={(message, options) => send(message, [], options)}
               accessRequests={accessHere}
               onAccessAnswer={answerAccess}
+              cleanupRequests={cleanupRequests[conversationId] ?? []}
+              onCleanupAnswer={answerCleanup}
             />
           )}
 

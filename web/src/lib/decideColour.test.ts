@@ -28,6 +28,7 @@ import workflowBarCss from "../components/ChatWorkflowBar.css?raw";
 import runProgressCss from "../components/RunProgress.css?raw";
 import hostNoticeCss from "../components/HostNotice.css?raw";
 import worktreeCss from "../components/WorktreeLifespan.css?raw";
+import cleanupCss from "../components/WorkspaceCleanupCard.css?raw";
 import pendingBadgeCss from "../components/PendingActionBadge.css?raw";
 import { pendingLabel, pendingTone, type PendingAction, type PendingActionKind } from "./pendingActions";
 import { MANAGED, mapTokens, parseOklch, parseThemeCss } from "./theme";
@@ -185,6 +186,7 @@ function rules(css: string, file: string): Rule[] {
 
 const RULES = [
   ...rules(stylesCss, "styles.css"),
+  ...rules(cleanupCss, "WorkspaceCleanupCard.css"),
   ...rules(handoverCss, "HandoverCards.css"),
   ...rules(questionCss, "InlineQuestions.css"),
   ...rules(planReviewCss, "PlanReview.css"),
@@ -223,6 +225,8 @@ const DECISION_RULES = [
   ":root .plan-card .plan-workspace-options input[type=\"radio\"]",
   ".plan-workspace-options label:focus-within",
   // Permission and access request.
+  ".workspace-cleanup-card .ask-btn.is-primary",
+  ".workspace-cleanup-card .ask-btn.is-primary:hover",
   ".ask-card",
   ".ask-card-dot",
   // The safety card's leading answer is one of them (see below).
@@ -728,6 +732,7 @@ describe("the pending badge in the chat list", () => {
       ["gate", "Decision needed", "decide"],
       ["plan", "Plan approval", "decide"],
       ["handover", "Handover to confirm", "decide"],
+      ["cleanup", "Cleanup approval", "decide"],
       ["safety", "Review needed", "warn"],
       ["outage", "Safety check was down", "warn"],
       ["delivery", "Delivery failed", "warn"],

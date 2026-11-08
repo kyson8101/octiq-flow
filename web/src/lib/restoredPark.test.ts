@@ -122,9 +122,9 @@ describe("the reviewer's probes of the helpers", () => {
     expect(read).toEqual([90_000, 90_000, 90_000]);
   });
 
-  it("early-answer-orders: 120 of 120, where 60 counted the wait on the permission", () => {
+  it("early-answer-orders: all six-source orders keep the permission wait", () => {
     const orders = permutations([...WAIT_SOURCES]);
-    expect(orders).toHaveLength(120);
+    expect(orders).toHaveLength(720);
     const failed: string[] = [];
     for (const order of orders) {
       let state = restored();
@@ -155,7 +155,7 @@ describe("the reviewer's probes of the helpers", () => {
     expect(failed).toEqual([]);
   });
 
-  it("the same 120 with the agent writing after each answer: only what followed a known card's answer is work", () => {
+  it("the same 720 with the agent writing after each answer: only what followed a known card's answer is work", () => {
     // The stream moves five seconds after the question is answered, in
     // every order. Where the permission's card is already up, nothing ends.
     // Where its list is still out, the agent's writing ends the park there,

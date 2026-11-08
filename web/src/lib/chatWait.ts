@@ -72,7 +72,7 @@ export const notKnown = (hold: ChatHold | null | undefined): hold is "unknown" |
 function parks(action: PendingAction, folded: ReadonlySet<string>): { chat: string; wait: ChatWait } | null {
   if (action.kind === "plan") return { chat: action.openChatId, wait: "approval" };
   if (!action.chatId || action.cardMissing) return null;
-  if (action.kind === "permission") return { chat: action.chatId, wait: "approval" };
+  if (action.kind === "permission" || action.kind === "cleanup") return { chat: action.chatId, wait: "approval" };
   if (action.kind === "question") return { chat: action.chatId, wait: "answer" };
   if (action.kind === "safety" && !folded.has(action.key)) return { chat: action.chatId, wait: "answer" };
   return null;

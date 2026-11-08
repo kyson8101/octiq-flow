@@ -23,7 +23,7 @@ const restoredPark = lf(restoredParkRaw);
 const SITES: { name: string; has: RegExp }[] = [
   // The answer is read off the page's one list of who is waited on.
   { name: "one reading", has: /const chatWaits = useMemo\(\s*\(\) => waitingChats\(pendingList, / },
-  // The reading is told where each request behind it stands: the four card
+  // The reading is told where each request behind it stands: the five card
   // lists and the ledger. An unread list is not an empty one.
   { name: "the lists' requests", has: /useChatRequests\(conn, [\s\S]{0,200}?\)[\s\S]{0,20}?;/ },
   { name: "what has answered", has: /const waitSources = useMemo<SourcesRead>\(\s*\(\) => \(\{ \.\.\.listsRead, orchestration_snapshot: ledgerRead \? "answered" : ledgerFailed \? "failed" : "asked" \}\),/ },
@@ -57,7 +57,7 @@ const SITES: { name: string; has: RegExp }[] = [
 /** The card lists the page holds. Their length says how many cards the host
  *  lists, which is not who is waited on: a question the person has answered
  *  stays listed, `saved`, until its agent has it. */
-const CARD_LISTS = /\b(?:questions|asks|accessRequests|safetyBlocks|safetySplit|safetyHere|accessHere|handovers|pendingList|pendingHeld)\b/;
+const CARD_LISTS = /\b(?:questions|asks|accessRequests|cleanupRequests|safetyBlocks|safetySplit|safetyHere|accessHere|handovers|pendingList|pendingHeld)\b/;
 
 /** Every value the app hands a `waiting` prop, as written. */
 function waitingProps(source: string): string[] {
@@ -200,9 +200,9 @@ describe("a list that has not been read yet", () => {
   });
 
   it("names every request that must answer", () => {
-    expect(pendingActions).toMatch(/export const WAIT_SOURCES = \["permission_pending", "access_request_pending", "question_pending", "safety_block_pending", "orchestration_snapshot"\] as const;/);
+    expect(pendingActions).toMatch(/export const WAIT_SOURCES = \["permission_pending", "access_request_pending", "question_pending", "safety_block_pending", "orchestration_workspace_cleanup_request_pending", "orchestration_snapshot"\] as const;/);
     // Each card list is asked for by its own name, marked as it answers.
-    for (const list of ["permission_pending", "safety_block_pending", "question_pending", "access_request_pending"]) {
+    for (const list of ["permission_pending", "safety_block_pending", "question_pending", "access_request_pending", "orchestration_workspace_cleanup_request_pending"]) {
       expect(requests).toMatch(new RegExp(`refill\\(\\w+, "${list}"`));
     }
     expect(requests).toMatch(/\(answered\) => mark\(command, answered \? "answered" : "failed"\)/);

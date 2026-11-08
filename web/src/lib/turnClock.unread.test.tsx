@@ -351,7 +351,7 @@ describe("a reload while the chat waits, with the lists of what waits not read y
   });
 });
 
-/** Every order the five sources can answer in: 120. */
+/** Every order the six sources can answer in: 720. */
 function orders(): WaitSource[][] {
   const out: WaitSource[][] = [];
   const walk = (left: WaitSource[], taken: WaitSource[]) => {
@@ -368,13 +368,13 @@ function orders(): WaitSource[][] {
  *  next one's storage, so the room is given outright. */
 const LONG = 120_000;
 
-describe("the 120 orders the five lists can answer in", () => {
+describe("the 720 orders the six lists can answer in", () => {
   // The turn worked 90 s before the reload, and 5 s after its question was
   // answered: the clock must read 1m 30s at every step until then, and
   // 1m 35s at the end. Nothing else is right, in any order.
   const steps = (answer: (next: ReturnType<typeof page>, source: WaitSource) => void, before: (next: ReturnType<typeof page>) => void) => async () => {
     const all = orders();
-    expect(all).toHaveLength(120);
+    expect(all).toHaveLength(720);
     let wrong = 0;
     for (const order of all) {
       vi.stubGlobal("indexedDB", new IDBFactory());
@@ -508,14 +508,14 @@ describe("one card back and answered while another list is still unread", () => 
     expect(next.at(RELOAD + s(600))).toEqual(WAITING);
   });
 
-  /** The reviewer's 120: both cards really wait; each list answers in its
+  /** The six-source orders: both cards really wait; each list answers in its
    *  turn; the question is answered five seconds after its list is back;
-   *  the permission only when every list is. 60 of these, the ones where
+   *  the permission only when every list is. Half of these, the ones where
    *  the question's list comes back before the permission's, counted the
    *  wait on the permission as work. */
   const combination = (before: (next: ReturnType<typeof page>) => void) => async () => {
     const all = orders();
-    expect(all).toHaveLength(120);
+    expect(all).toHaveLength(720);
     const wrong: string[] = [];
     for (const order of all) {
       vi.stubGlobal("indexedDB", new IDBFactory());
@@ -558,7 +558,7 @@ describe("one card back and answered while another list is still unread", () => 
     expect(wrong).toEqual([]);
   };
 
-  it("never counts the second wait, in any of the 120 orders, after the page gave up", combination((next) => next.waitedTooLong()), LONG);
+  it("never counts the second wait, in any of the 720 orders, after the page gave up", combination((next) => next.waitedTooLong()), LONG);
 
   it("nor before it gave up", combination(() => {}), LONG);
 

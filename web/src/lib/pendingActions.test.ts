@@ -299,8 +299,8 @@ describe("how much of what waits has been read", () => {
   const every = (state: SourceRead, over: Partial<SourcesRead> = {}): SourcesRead =>
     ({ ...Object.fromEntries(WAIT_SOURCES.map((source) => [source, state])), ...over }) as SourcesRead;
 
-  it("is made of the four card lists and the ledger, each by its request", () => {
-    expect([...WAIT_SOURCES]).toEqual(["permission_pending", "access_request_pending", "question_pending", "safety_block_pending", "orchestration_snapshot"]);
+  it("is made of the five card lists and the ledger, each by its request", () => {
+    expect([...WAIT_SOURCES]).toEqual(["permission_pending", "access_request_pending", "question_pending", "safety_block_pending", "orchestration_workspace_cleanup_request_pending", "orchestration_snapshot"]);
   });
 
   it("is whole only when every one has answered", () => {
