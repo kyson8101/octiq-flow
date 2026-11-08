@@ -1294,12 +1294,21 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // open from its first paint. Derived here from the ledger for each
         // answer; the index stores nothing of it, and `chat_index_save`
         // ignores it coming back.
-        "chat_index_list" => {
+        "chat_index_list" | "chat_index_entry" => {
             // A profile folder that is away is not a list with no chats in
             // it: the page gets the reason, and keeps the list it has.
             crate::profile::available()?;
             let coordinating = svc.orchestrations.coordinating_chats();
-            let mut chats = json!(crate::agent_chat::chat_index_list());
+            let rows = if cmd == "chat_index_entry" {
+                crate::agent_chat::visible_chats(
+                    crate::chat_index::find(&arg::<String>(&args, "id")?)?
+                        .into_iter()
+                        .collect(),
+                )
+            } else {
+                crate::agent_chat::chat_index_list()
+            };
+            let mut chats = json!(rows);
             for chat in chats.as_array_mut().into_iter().flatten() {
                 let coordinates = chat["id"]
                     .as_str()
@@ -1308,7 +1317,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     chat["coordinatesRun"] = json!(true);
                 }
             }
-            Ok(chats)
+            if cmd == "chat_index_entry" {
+                Ok(chats[0].clone())
+            } else {
+                Ok(chats)
+            }
         }
         "chat_index_deleted" => {
             crate::profile::available()?;
@@ -1641,6 +1654,17 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 .with_usage(&svc.chats.usage);
             let mut view = serde_json::to_value(snapshot).map_err(|e| e.to_string())?;
             if cmd == "orchestration_summary" {
+                let include_ended: Option<bool> = arg(&args, "includeEnded")?;
+                let held_chats: Option<Vec<String>> = arg(&args, "heldChatKeys")?;
+                let coordinator: Option<String> = arg(&args, "coordinatorChatKey")?;
+                let workspace: Option<String> = arg(&args, "workspaceId")?;
+                crate::orchestration::summary::select(
+                    &mut view,
+                    include_ended.unwrap_or(false),
+                    &held_chats.unwrap_or_default(),
+                    coordinator.as_deref(),
+                    workspace.as_deref(),
+                );
                 crate::orchestration::summary::project(&mut view);
             }
             revisions.stamp(&mut view, run_id.as_deref());

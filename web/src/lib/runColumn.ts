@@ -99,11 +99,11 @@ export const NO_FIRST_PAINT: ColumnAtFirstPaint = { chatId: null, column: false,
  *  that changes is the ledger's first answer. */
 export function columnAtFirstPaint(
   before: ColumnAtFirstPaint,
-  now: { chatId: string | null; column: boolean; ledgerRead: boolean; runs: number },
+  now: { chatId: string | null; column: boolean; ledgerRead: boolean; runs: number; history?: boolean },
 ): ColumnAtFirstPaint {
   if (before.chatId !== now.chatId) return { chatId: now.chatId, column: now.column, decided: now.ledgerRead, late: false };
   if (before.decided || !now.ledgerRead) return before;
-  return { ...before, decided: true, late: !before.column && now.runs > 0 };
+  return { ...before, decided: true, late: !before.column && (now.runs > 0 || now.history === true) };
 }
 
 /** Whether the column, if there is one now, starts put away: the chat was

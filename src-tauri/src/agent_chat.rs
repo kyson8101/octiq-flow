@@ -9115,15 +9115,26 @@ pub fn chat_index_deleted() -> Vec<crate::chat_index::ChatMeta> {
 /// again, which made the sidebar a snapshot: a chat started on the phone reached
 /// the laptop at the next reload and not before.
 ///
-/// It carries the id and whether the chat went, rather than the entry itself,
-/// and the client is free to use neither — it re-reads the whole list. That is
-/// deliberate. One shape of answer means a row on screen can only ever be one
-/// this server actually holds, and the list is metadata for a handful of chats.
+/// New pages apply this one canonical row; older pages still re-read the list.
+/// Read failures stay invalidations, never an invented deletion.
 pub(crate) fn announce_index_change(id: &str, gone: bool) {
-    crate::bus::emit(
-        "chat-index-changed",
-        serde_json::json!({ "id": id, "gone": gone }),
-    );
+    // Serialize read + broadcast. Writers may finish in either order, but a
+    // later event always reads at least the state of the previous event.
+    static ANNOUNCE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _announce = ANNOUNCE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut payload = serde_json::json!({ "id": id, "gone": gone });
+    if let Ok(entry) = crate::chat_index::find(id) {
+        let entry = visible_chats(entry.into_iter().collect())
+            .into_iter()
+            .next();
+        payload["entry"] = serde_json::json!(entry);
+        if gone {
+            payload["deleted"] = serde_json::json!(crate::chat_index::deleted()
+                .into_iter()
+                .find(|row| row.id == id));
+        }
+    }
+    crate::bus::emit("chat-index-changed", payload);
 }
 
 /// Record a chat, or update what is known about it.
@@ -9363,6 +9374,34 @@ mod tests {
         test_image_media_type as image_media_type, test_sh_quote as sh_quote,
         test_toml_string as toml_string,
     };
+
+    #[test]
+    fn index_change_carries_only_the_canonical_visible_entry_and_tombstone() {
+        let home = crate::test_dir::TestDir::new("index-event");
+        let _profile = crate::profile::started_in(&home);
+        let id = "index-event-chat";
+        let tap = crate::bus::tap::Tap::on(id);
+        let row =
+            serde_json::from_value(json!({"id":id,"projectId":"p","title":"Saved","updatedAt":4}))
+                .unwrap();
+        crate::chat_index::upsert(row).unwrap();
+        announce_index_change(id, false);
+        let event = tap.heard().last().unwrap().1.clone();
+        assert_eq!(event["entry"]["title"], "Saved");
+        assert_eq!(event["id"], id);
+        assert!(event.get("entries").is_none());
+        crate::chat_index::trash(id, Some(0), None).unwrap();
+        announce_index_change(id, true);
+        let event = tap.heard().last().unwrap().1.clone();
+        assert!(event["entry"].is_null());
+        assert_eq!(event["deleted"]["id"], id);
+        let restored = crate::chat_index::restore(id).unwrap().unwrap();
+        announce_index_change(id, false);
+        assert_eq!(
+            tap.heard().last().unwrap().1["entry"]["generation"],
+            restored.generation
+        );
+    }
 
     const CONVERSATION_URL: &str =
         "https://optiqflow.app/#/p/workspace/c/1a735592-37d3-40ed-a0d4-c49665cbacaf";

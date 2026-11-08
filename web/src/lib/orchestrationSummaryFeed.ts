@@ -5,11 +5,14 @@ import type { TaskStatus } from "./chatTask";
 import { seeHolds } from "./taskHold";
 
 const unavailable = (e: unknown) => String(e).includes("not available on this backend");
+export const RUN_LISTS = ["runs", "tasks", "attempts", "gates", "nativeDecisions", "messages", "notifications", "services", "bridges", "peerAsks"] as const;
+
 /** Replace one run, including records removed by its latest read. All global
  * readers retain the summary; detail text is never injected into this value. */
 export function replaceRun(before: OrchestrationSnapshot, next: OrchestrationSnapshot, runId: string): OrchestrationSnapshot {
-  const result = { ...before, runRevisions: { ...before.runRevisions, ...next.runRevisions } };
-  for (const list of ["runs", "tasks", "attempts", "gates", "nativeDecisions", "messages", "notifications", "services", "bridges", "peerAsks"] as const) {
+  const revisions = { ...before.runRevisions }; delete revisions[runId];
+  const result = { ...before, workerParents: { ...before.workerParents, ...next.workerParents }, runCoordinators: [...new Set([...(before.runCoordinators ?? []), ...(next.runCoordinators ?? [])])], runRevisions: { ...revisions, ...next.runRevisions } };
+  for (const list of RUN_LISTS) {
     const old = before[list] ?? [];
     const incoming = next[list] ?? [];
     // Preserve the host's list order for an existing run.
@@ -42,6 +45,7 @@ export function createOrchestrationFeed() {
   const listeners = new Set<() => void>();
   const leases = new Map<string, Lease>();
   const legacy = createLegacyOrchestrationFeed();
+  let heldChatKeys: string[] = [];
   let fallback = false, detachLegacy: (() => void) | undefined;
   let detach: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined, notifyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -110,14 +114,14 @@ export function createOrchestrationFeed() {
       else {
         try {
           if (all) {
-            let next = await bridge.invoke<OrchestrationSnapshot>("orchestration_summary");
+            let next = await bridge.invoke<OrchestrationSnapshot>("orchestration_summary", { heldChatKeys });
             for (const change of patches) next = change(next);
             publish(next ?? EMPTY_ORCHESTRATION);
           } else {
             // Sequential reads bound peak parsed payload to one run. Changes
             // during any read stay dirty for a follow-up, even with new epochs.
             for (const id of ids) {
-              const run = await bridge.invoke<OrchestrationSnapshot>("orchestration_summary", { runId: id });
+              const run = await bridge.invoke<OrchestrationSnapshot>("orchestration_summary", { runId: id, heldChatKeys });
               let next = replaceRun(state.snapshot!, run, id);
               for (const change of patches) next = change(next);
               publish(next);
@@ -172,8 +176,12 @@ export function createOrchestrationFeed() {
       bridge.on<TaskStatus>("chat-task", status => {
         if (!status?.report || fallback) return;
         const key = `chat:${status.chatId}`;
+        if (!state.snapshot?.attempts.some(a => a.workerChatKey === key)) return;
         const report = { objective: "", nextStep: "", steps: status.report.steps.map(step => ({ state: step.state, title: short(step.title) })), reportedAt: status.report.reportedAt, reportedBy: status.report.reportedBy };
-        patch(s => ({ ...s, reports: { ...s.reports, [key]: report } }));
+        // A report from an unopened historical chat must not grow the global
+        // snapshot again after the host filtered that run out.
+        patch(s => s.attempts.some(a => a.workerChatKey === key)
+          ? { ...s, reports: { ...s.reports, [key]: report } } : s);
       }),
       bridge.on("safety-block-expired", () => { if (!fallback) { whole = true; invalidateDetail(); schedule(false); } }),
       bridge.on("orchestration-auto-plan", () => { if (!fallback) void refresh(); }),
@@ -190,6 +198,12 @@ export function createOrchestrationFeed() {
       return () => { listeners.delete(fn); if (!listeners.size) { detach?.(); detach = undefined; clearTimeout(timer); timer = undefined; clearTimeout(notifyTimer); notifyTimer = undefined; } };
     },
     refresh,
+    holdChats(keys: string[]) {
+      const next = [...new Set(keys)].sort();
+      if (JSON.stringify(next) === JSON.stringify(heldChatKeys)) return;
+      heldChatKeys = next;
+      if (!fallback) void refresh();
+    },
     patch,
     detail(id: string) {
       let lease = leases.get(id);

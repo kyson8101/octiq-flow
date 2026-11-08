@@ -26,6 +26,7 @@ import { SIZE_LABEL } from "../lib/agentLevels";
 import { workerArchiveDisabledReason } from "../lib/workerArchive";
 import { orchestrationFeed } from "../lib/orchestrationFeed";
 import { useOrchestrationFeed, useRunDetail } from "../lib/useOrchestrationSnapshot";
+import { useRunHistory } from "../lib/useRunHistory";
 import { initialRunDisclosures, syncRunDisclosures, toggleRunDisclosure } from "../lib/runDisclosure";
 import { AgentLogo } from "./AgentLogo";
 import { AgentAvatar } from "./AgentAvatar";
@@ -130,14 +131,18 @@ export function OrchestrationPanel({
 }) {
   // The tab's shared ledger; `initialSnapshot` stands in until its first read.
   const feed = useOrchestrationFeed();
-  const snapshot = feed.snapshot ?? initialSnapshot;
+  const history = useRunHistory(feed.snapshot ?? initialSnapshot, embedded ? coordinatorKey ?? undefined : undefined, embedded ? undefined : project?.id, !embedded || !!coordinatorKey);
+  const snapshot = history.snapshot;
+  const ledgerKnown = feed.snapshot !== null || initialSnapshot !== EMPTY;
+  const historyKnown = coordinatorKey ? !!snapshot.runCoordinators?.includes(coordinatorKey) : !embedded && !!snapshot.runCoordinators?.length;
   const initialRuns = splitArchived(embedded ? chatSnapshot(initialSnapshot, coordinatorKey).runs : initialSnapshot.runs).live;
   const [selectedId, setSelectedId] = useState<string | null>(initialRuns[0]?.id ?? null);
   // The cards the page holds, per task: with the ledger, the one reading of
   // who each run waits on (`lib/runWaits`).
   const pendingView = usePendingActions();
   const [disclosures, setDisclosures] = useState(() => initialRunDisclosures(initialRuns));
-  const [creating, setCreating] = useState(initialRuns.length === 0 && !readOnly && allowManualRun);
+  const automaticCreate = useRef(true);
+  const [creating, setCreating] = useState((!embedded || ledgerKnown) && initialRuns.length === 0 && !readOnly && allowManualRun && !historyKnown);
   const [objective, setObjective] = useState("");
   const [maxConcurrent, setMaxConcurrent] = useState(4);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("auto");
@@ -159,7 +164,7 @@ export function OrchestrationPanel({
   // through the feed's error.
   const read = () => orchestrationFeed.refresh().catch(() => {});
   const invoke = (command: string, args: Record<string, unknown>) => bridge.invoke(command, args);
-  const shownError = error ?? feed.error;
+  const shownError = error ?? history.error ?? feed.error;
 
   const scopedRuns = useMemo(
     () => embedded ? chatSnapshot(snapshot, coordinatorKey).runs : snapshot.runs.filter((run) => !project || run.workspaceId === project.id),
@@ -176,6 +181,7 @@ export function OrchestrationPanel({
 
   useEffect(() => {
     setSelectedId(null);
+    automaticCreate.current = true;
     setCreating(false);
     setError(null);
     setConfirmStop(null);
@@ -196,12 +202,18 @@ export function OrchestrationPanel({
   }, [showArchived, archivedRuns.length]);
 
   useEffect(() => {
-    if (creating && !readOnly && !(embedded && runs.some(isActiveRun))) return;
+    if (!ledgerKnown) return;
+    // A late history read may replace the automatic empty-state form, but
+    // never a new mission the person explicitly chose to start.
+    if (historyKnown && automaticCreate.current) {
+      automaticCreate.current = false;
+      setCreating(false);
+    } else if (creating && !readOnly && !(embedded && runs.some(isActiveRun))) return;
     if (selectedId && runs.some((run) => run.id === selectedId)) return;
     const next = runs.find((run) => ACTIVE_RUNS.has(run.status)) ?? runs[0];
     setSelectedId(next?.id ?? null);
-    setCreating(allowManualRun && !next && runs.length === 0);
-  }, [runs, selectedId, creating, readOnly, embedded, allowManualRun]);
+    setCreating(allowManualRun && !next && runs.length === 0 && !historyKnown);
+  }, [runs, selectedId, creating, readOnly, embedded, allowManualRun, historyKnown, ledgerKnown]);
 
   const selected = runs.find((run) => run.id === selectedId) ?? null;
   useEffect(() => {
@@ -419,7 +431,7 @@ export function OrchestrationPanel({
       className={`orch-new${creating ? " is-on" : ""}`}
       type="button"
       disabled={readOnly || busy}
-      onClick={() => { setCreating(true); setConfirmStop(null); setShowArchived(false); }}
+      onClick={() => { automaticCreate.current = false; setCreating(true); setConfirmStop(null); setShowArchived(false); }}
     >
       <PlusIcon />
       Start a mission

@@ -142,3 +142,17 @@ it("coalesces detail invalidations during reads and keeps refetching after the t
   release(); mock.reads[4].resolve({ ...summary(), summary: false }); await tick();
   expect(feed.getState().details?.size).toBe(0); off();
 });
+
+it("ignores reports outside the loaded runs instead of accumulating install history", async () => {
+  const feed=createOrchestrationFeed(),off=feed.subscribe(()=>{});mock.reads[0].resolve(summary());await tick();
+  for(let i=0;i<363;i++)emit("chat-task",{chatId:`old-${i}`,report:{objective:"historical",nextStep:"",steps:[{title:"x".repeat(5000),state:"done"}],reportedAt:i}});
+  expect(Object.keys(feed.getState().snapshot?.reports??{})).toHaveLength(0);off();
+});
+
+it("requests held chat candidates and removes them after their cards are answered",async()=>{
+  const feed=createOrchestrationFeed(),off=feed.subscribe(()=>{});mock.reads[0].resolve(summary());await tick();
+  feed.holdChats(["chat:w"]);expect(mock.reads.at(-1)?.args).toEqual({heldChatKeys:["chat:w"]});
+  mock.reads.at(-1)!.resolve(summary("r","stopped"));await tick();
+  feed.holdChats([]);mock.reads.at(-1)!.resolve({...EMPTY_ORCHESTRATION,summary:true});await tick();
+  expect(feed.getState().snapshot?.runs).toEqual([]);off();
+});

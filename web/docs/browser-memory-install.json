@@ -1,0 +1,962 @@
+{
+  "date": "2026-11-08",
+  "baseSha": "204a63c6eb68c1af9692066cb2c4362efb95bb87",
+  "browser": "156.1.98.60",
+  "measurement": "Mocked-host production App; UTF-8 JSON frame bytes; forced-GC JSHeapUsedSize; decimal MB in report; not live RSS",
+  "artifacts": {
+    "control": {
+      "main": "index-C3n0KUJ7.js",
+      "sha256": "128e8caeac8e85efad661b6c5566a8360145dbe74b457eb031471cd5e830fb72"
+    },
+    "controlRebuiltFromGitMatches": true,
+    "optimizationMeasured": {
+      "main": "index-Cg96g_xo.js",
+      "sha256": "df26533bbe1a5fa4fce39b6f6d8daecb89ba998e7c52ef71ee0bea58179892a8"
+    },
+    "finalRecoveryGuarded": {
+      "main": "index-Bdm4yjcQ.js",
+      "sha256": "c9e910b35ad871ca3c842ecc316950fd6e063c3d6275de23e3d564a9df4ea7cb"
+    }
+  },
+  "artifactBoundary": "The final source adds retry of a failed initial index read on the next canonical event. The 20-minute scene never enters that branch. Its artifact is reported separately; final recovery-source 18-switch checks and the full suite are also recorded. No final-SHA 20-minute acceptance is claimed.",
+  "sourceSha256": {
+    "web/src/App.tsx": "01ee66487cfe69ee86634556056068ea2090f3d90b2df4425f96348b1c3467df",
+    "web/src/components/ChatWorkflowBar.tsx": "ba1f3c95149dc93464f21ebd1829e016aaafa14d64650b07591bc57b1dfb3611",
+    "web/src/components/OrchestrationPanel.tsx": "e95e02c2794f2f7927854a5ae6bb546fbfaaf17c1be1bd3788d7a8c61ec486ad",
+    "web/src/lib/chatIndexFeed.ts": "1a81e840d8f1a4c1c671e38c02293a2d117e745b9d35f7f32e2d696f640ba8d3",
+    "web/src/lib/useRunHistory.ts": "4c1d648e64582c7b8c61eb15faf9e5f46c22a6e5c4ad3fca9561a6f567108518",
+    "web/src/lib/orchestrationSummaryFeed.ts": "f2c12b7a1a0abf4db7734cf31d76ee73f753a90e7407da02c513fe35dbdb1cfb",
+    "web/src/lib/orchestration.ts": "a5d1273f5930443ba497509ac12254ad6e66cae313c8a83adf5e63a0c19e5654",
+    "web/src/lib/runColumn.ts": "8b66159bccf43bdbdb71c22f86b0faafe03c0ee2b454505a67d1f3ece6c321bb",
+    "src-tauri/src/agent_chat.rs": "9cd054835d828f0570228e340c38de52c3e115bb43637346df7b0cb6d88a419d",
+    "src-tauri/src/dispatch.rs": "c4403cd9ca30c4d9227e4e5ec8b3b0fca85adec71003ba1e746ced528ae9a78d",
+    "src-tauri/src/orchestration/summary.rs": "e7a4936bf9558dd3d84a9cce564bc5f07c978bc5d50047402cf3fe85d80c7252"
+  },
+  "installationScene": {
+    "chatEntries": 1500,
+    "activeChats": 12,
+    "doneChats": 1488,
+    "oldRuns": 300,
+    "oldTasksAttemptsReports": 2400,
+    "indexBytes": 1798813,
+    "oldSummaryBytes": 6710385,
+    "intervalEvents": 363,
+    "results": [
+      {
+        "label": "before",
+        "width": 390,
+        "minutes": 20,
+        "events": 363,
+        "indexBytes": 1798813,
+        "ledgerBytes": 6710385,
+        "initial": {
+          "stage": "open",
+          "heapUsed": 14567928,
+          "bytesReceived": 10309893,
+          "chatIndexCalls": 2
+        },
+        "switches": {
+          "stage": "18-switches",
+          "heapUsed": 22606924,
+          "bytesReceived": 51722941,
+          "chatIndexCalls": 25
+        },
+        "end": {
+          "stage": "20-minute-scene",
+          "heapUsed": 35865880,
+          "bytesReceived": 715135235,
+          "chatIndexCalls": 388
+        },
+        "elapsedMs": 1201286,
+        "commands": {
+          "chat_subscribe": 20,
+          "chat_jobs": 13,
+          "orchestration_summary": 1,
+          "handover_list": 2,
+          "usage_summary": 21,
+          "list_workspaces": 1,
+          "agent_installs": 1,
+          "permission_pending": 1,
+          "safety_block_pending": 1,
+          "question_pending": 1,
+          "access_request_pending": 1,
+          "git_watch_paths": 2,
+          "chat_index_list": 388,
+          "chat_index_deleted": 382,
+          "chat_list": 1,
+          "chat_activity": 2,
+          "git_status_summary": 2,
+          "orchestration_auto_plan_get": 38,
+          "chat_task": 38,
+          "provider_fallback_choices": 38,
+          "git_local_branches": 1,
+          "chat_queue_state": 19,
+          "chat_page": 19,
+          "chat_index_save": 7,
+          "chat_since": 7
+        },
+        "errors": [],
+        "interval20": {
+          "bytesReceived": 663412294,
+          "chatIndexCalls": 363
+        }
+      },
+      {
+        "label": "before",
+        "width": 1280,
+        "minutes": 20,
+        "events": 363,
+        "indexBytes": 1798813,
+        "ledgerBytes": 6710385,
+        "initial": {
+          "stage": "open",
+          "heapUsed": 14622588,
+          "bytesReceived": 10309936,
+          "chatIndexCalls": 2
+        },
+        "switches": {
+          "stage": "18-switches",
+          "heapUsed": 21015580,
+          "bytesReceived": 48125341,
+          "chatIndexCalls": 23
+        },
+        "end": {
+          "stage": "20-minute-scene",
+          "heapUsed": 36010832,
+          "bytesReceived": 711537636,
+          "chatIndexCalls": 386
+        },
+        "elapsedMs": 1201256,
+        "commands": {
+          "chat_subscribe": 20,
+          "chat_jobs": 13,
+          "orchestration_summary": 1,
+          "handover_list": 2,
+          "usage_summary": 21,
+          "list_workspaces": 1,
+          "agent_installs": 1,
+          "permission_pending": 1,
+          "safety_block_pending": 1,
+          "question_pending": 1,
+          "access_request_pending": 1,
+          "git_watch_paths": 2,
+          "chat_index_list": 386,
+          "chat_index_deleted": 382,
+          "chat_list": 1,
+          "chat_activity": 2,
+          "git_status_summary": 2,
+          "orchestration_auto_plan_get": 38,
+          "chat_task": 38,
+          "provider_fallback_choices": 38,
+          "git_changed_files": 1,
+          "git_local_branches": 1,
+          "chat_queue_state": 19,
+          "chat_page": 19,
+          "chat_index_save": 9,
+          "chat_since": 7
+        },
+        "errors": [],
+        "interval20": {
+          "bytesReceived": 663412295,
+          "chatIndexCalls": 363
+        }
+      },
+      {
+        "label": "after",
+        "width": 390,
+        "minutes": 20,
+        "events": 363,
+        "indexBytes": 1798813,
+        "ledgerBytes": 6710385,
+        "initial": {
+          "stage": "open",
+          "heapUsed": 9767464,
+          "bytesReceived": 1869492,
+          "chatIndexCalls": 1
+        },
+        "switches": {
+          "stage": "18-switches",
+          "heapUsed": 11916436,
+          "bytesReceived": 1906124,
+          "chatIndexCalls": 1
+        },
+        "end": {
+          "stage": "20-minute-scene",
+          "heapUsed": 12784232,
+          "bytesReceived": 12134032,
+          "chatIndexCalls": 1
+        },
+        "elapsedMs": 1201250,
+        "commands": {
+          "chat_subscribe": 20,
+          "chat_jobs": 13,
+          "orchestration_summary": 1,
+          "chat_index_list": 1,
+          "chat_index_deleted": 1,
+          "handover_list": 2,
+          "usage_summary": 21,
+          "list_workspaces": 1,
+          "agent_installs": 1,
+          "permission_pending": 1,
+          "safety_block_pending": 1,
+          "question_pending": 1,
+          "access_request_pending": 1,
+          "git_watch_paths": 2,
+          "chat_list": 1,
+          "chat_activity": 2,
+          "orchestration_auto_plan_get": 38,
+          "chat_task": 38,
+          "provider_fallback_choices": 38,
+          "chat_queue_state": 19,
+          "git_status_summary": 2,
+          "git_local_branches": 1,
+          "chat_page": 19,
+          "chat_since": 7,
+          "chat_index_save": 2
+        },
+        "errors": [],
+        "interval20": {
+          "bytesReceived": 10227908,
+          "chatIndexCalls": 0
+        }
+      },
+      {
+        "label": "after",
+        "width": 1280,
+        "minutes": 20,
+        "events": 363,
+        "indexBytes": 1798813,
+        "ledgerBytes": 6710385,
+        "initial": {
+          "stage": "open",
+          "heapUsed": 9946956,
+          "bytesReceived": 1869535,
+          "chatIndexCalls": 1
+        },
+        "switches": {
+          "stage": "18-switches",
+          "heapUsed": 12010152,
+          "bytesReceived": 1906168,
+          "chatIndexCalls": 1
+        },
+        "end": {
+          "stage": "20-minute-scene",
+          "heapUsed": 12999384,
+          "bytesReceived": 12134076,
+          "chatIndexCalls": 1
+        },
+        "elapsedMs": 1201217,
+        "commands": {
+          "chat_subscribe": 20,
+          "chat_jobs": 13,
+          "orchestration_summary": 1,
+          "chat_index_list": 1,
+          "chat_index_deleted": 1,
+          "handover_list": 2,
+          "usage_summary": 21,
+          "list_workspaces": 1,
+          "agent_installs": 1,
+          "permission_pending": 1,
+          "safety_block_pending": 1,
+          "question_pending": 1,
+          "access_request_pending": 1,
+          "git_watch_paths": 2,
+          "chat_list": 1,
+          "chat_activity": 2,
+          "orchestration_auto_plan_get": 38,
+          "chat_task": 38,
+          "provider_fallback_choices": 38,
+          "chat_queue_state": 19,
+          "git_status_summary": 2,
+          "git_changed_files": 1,
+          "git_local_branches": 1,
+          "chat_page": 19,
+          "chat_since": 7,
+          "chat_index_save": 2
+        },
+        "errors": [],
+        "interval20": {
+          "bytesReceived": 10227908,
+          "chatIndexCalls": 0
+        }
+      }
+    ],
+    "finalSource18": [
+      {
+        "label": "after",
+        "width": 390,
+        "scenario": "18-switches-only",
+        "initial": {
+          "stage": "open",
+          "heapUsed": 9762436,
+          "bytesReceived": 1869492,
+          "chatIndexCalls": 1
+        },
+        "switches": {
+          "stage": "18-switches",
+          "heapUsed": 11934392,
+          "bytesReceived": 1906124,
+          "chatIndexCalls": 1
+        },
+        "indexBytes": 1798813,
+        "commands": {
+          "chat_subscribe": 20,
+          "chat_jobs": 13,
+          "orchestration_summary": 1,
+          "chat_index_list": 1,
+          "chat_index_deleted": 1,
+          "handover_list": 2,
+          "usage_summary": 1,
+          "list_workspaces": 1,
+          "agent_installs": 1,
+          "permission_pending": 1,
+          "safety_block_pending": 1,
+          "question_pending": 1,
+          "access_request_pending": 1,
+          "git_watch_paths": 2,
+          "chat_list": 1,
+          "chat_activity": 2,
+          "orchestration_auto_plan_get": 38,
+          "chat_task": 38,
+          "provider_fallback_choices": 38,
+          "chat_queue_state": 19,
+          "git_status_summary": 2,
+          "git_local_branches": 1,
+          "chat_page": 19,
+          "chat_since": 7,
+          "chat_index_save": 2
+        },
+        "errors": []
+      },
+      {
+        "label": "after",
+        "width": 1280,
+        "scenario": "18-switches-only",
+        "initial": {
+          "stage": "open",
+          "heapUsed": 9865484,
+          "bytesReceived": 1869535,
+          "chatIndexCalls": 1
+        },
+        "switches": {
+          "stage": "18-switches",
+          "heapUsed": 12017452,
+          "bytesReceived": 1906168,
+          "chatIndexCalls": 1
+        },
+        "indexBytes": 1798813,
+        "commands": {
+          "chat_subscribe": 20,
+          "chat_jobs": 13,
+          "orchestration_summary": 1,
+          "chat_index_list": 1,
+          "chat_index_deleted": 1,
+          "handover_list": 2,
+          "usage_summary": 1,
+          "list_workspaces": 1,
+          "agent_installs": 1,
+          "permission_pending": 1,
+          "safety_block_pending": 1,
+          "question_pending": 1,
+          "access_request_pending": 1,
+          "git_watch_paths": 2,
+          "chat_list": 1,
+          "chat_activity": 2,
+          "orchestration_auto_plan_get": 38,
+          "chat_task": 38,
+          "provider_fallback_choices": 38,
+          "chat_queue_state": 19,
+          "git_status_summary": 2,
+          "git_changed_files": 1,
+          "git_local_branches": 1,
+          "chat_page": 19,
+          "chat_since": 7,
+          "chat_index_save": 2
+        },
+        "errors": []
+      }
+    ]
+  },
+  "transcript171MB18": {
+    "artifactAfter": "finalRecoveryGuarded",
+    "before": [
+      {
+        "label": "before",
+        "width": 1280,
+        "recordBytesApprox": 171495792,
+        "ledgerWireBytes": {
+          "full": 93,
+          "brief": 93,
+          "summary": 108
+        },
+        "initial": {
+          "stage": "large-record-open",
+          "Documents": 1,
+          "Nodes": 1011,
+          "JSHeapUsedSize": 9090920,
+          "JSHeapTotalSize": 9535488
+        },
+        "end": {
+          "stage": "after-18-switches",
+          "Documents": 1,
+          "Nodes": 1009,
+          "JSHeapUsedSize": 12377460,
+          "JSHeapTotalSize": 13516800
+        },
+        "counters": {
+          "receivedBytes": 9403192,
+          "commands": {
+            "chat_subscribe": 20,
+            "chat_jobs": 13,
+            "orchestration_summary": 11,
+            "handover_list": 2,
+            "usage_summary": 1,
+            "list_workspaces": 1,
+            "agent_installs": 1,
+            "permission_pending": 1,
+            "safety_block_pending": 1,
+            "question_pending": 1,
+            "access_request_pending": 1,
+            "git_watch_paths": 2,
+            "chat_index_list": 1,
+            "chat_index_deleted": 1,
+            "chat_list": 1,
+            "chat_activity": 2,
+            "git_status_summary": 2,
+            "orchestration_auto_plan_get": 38,
+            "chat_task": 38,
+            "provider_fallback_choices": 38,
+            "git_changed_files": 1,
+            "git_local_branches": 1,
+            "chat_queue_state": 19,
+            "chat_page": 19
+          },
+          "replyBytes": {
+            "chat_subscribe": 1418,
+            "chat_jobs": 563,
+            "orchestration_summary": 1644,
+            "handover_list": 84,
+            "usage_summary": 67,
+            "list_workspaces": 137,
+            "agent_installs": 42,
+            "permission_pending": 42,
+            "safety_block_pending": 43,
+            "question_pending": 43,
+            "access_request_pending": 43,
+            "git_watch_paths": 86,
+            "chat_index_list": 1842,
+            "chat_index_deleted": 43,
+            "chat_list": 43,
+            "chat_activity": 86,
+            "git_status_summary": 86,
+            "orchestration_auto_plan_get": 1657,
+            "chat_task": 1733,
+            "provider_fallback_choices": 1658,
+            "git_changed_files": 43,
+            "git_local_branches": 43,
+            "chat_queue_state": 829,
+            "chat_page": 9366302
+          },
+          "heavyFrames": 0,
+          "activityFrames": 144,
+          "recordFrames": 171
+        },
+        "paging": null,
+        "errors": []
+      },
+      {
+        "label": "before",
+        "width": 390,
+        "recordBytesApprox": 171495792,
+        "ledgerWireBytes": {
+          "full": 93,
+          "brief": 93,
+          "summary": 108
+        },
+        "initial": {
+          "stage": "large-record-open",
+          "Documents": 1,
+          "Nodes": 953,
+          "JSHeapUsedSize": 9009332,
+          "JSHeapTotalSize": 9535488
+        },
+        "end": {
+          "stage": "after-18-switches",
+          "Documents": 1,
+          "Nodes": 953,
+          "JSHeapUsedSize": 11778544,
+          "JSHeapTotalSize": 12713984
+        },
+        "counters": {
+          "receivedBytes": 9403148,
+          "commands": {
+            "chat_subscribe": 20,
+            "chat_jobs": 13,
+            "orchestration_summary": 11,
+            "handover_list": 2,
+            "usage_summary": 1,
+            "list_workspaces": 1,
+            "agent_installs": 1,
+            "permission_pending": 1,
+            "safety_block_pending": 1,
+            "question_pending": 1,
+            "access_request_pending": 1,
+            "git_watch_paths": 2,
+            "chat_index_list": 1,
+            "chat_index_deleted": 1,
+            "chat_list": 1,
+            "chat_activity": 2,
+            "git_status_summary": 2,
+            "orchestration_auto_plan_get": 38,
+            "chat_task": 38,
+            "provider_fallback_choices": 38,
+            "git_local_branches": 1,
+            "chat_queue_state": 19,
+            "chat_page": 19
+          },
+          "replyBytes": {
+            "chat_subscribe": 1418,
+            "chat_jobs": 563,
+            "orchestration_summary": 1645,
+            "handover_list": 84,
+            "usage_summary": 67,
+            "list_workspaces": 137,
+            "agent_installs": 42,
+            "permission_pending": 42,
+            "safety_block_pending": 43,
+            "question_pending": 43,
+            "access_request_pending": 43,
+            "git_watch_paths": 86,
+            "chat_index_list": 1842,
+            "chat_index_deleted": 43,
+            "chat_list": 43,
+            "chat_activity": 86,
+            "git_status_summary": 86,
+            "orchestration_auto_plan_get": 1657,
+            "chat_task": 1733,
+            "provider_fallback_choices": 1656,
+            "git_local_branches": 43,
+            "chat_queue_state": 829,
+            "chat_page": 9366302
+          },
+          "heavyFrames": 0,
+          "activityFrames": 144,
+          "recordFrames": 171
+        },
+        "paging": null,
+        "errors": []
+      }
+    ],
+    "after": [
+      {
+        "label": "after",
+        "width": 1280,
+        "recordBytesApprox": 171495792,
+        "ledgerWireBytes": {
+          "full": 93,
+          "brief": 93,
+          "summary": 108
+        },
+        "initial": {
+          "stage": "large-record-open",
+          "Documents": 1,
+          "Nodes": 1011,
+          "JSHeapUsedSize": 9130624,
+          "JSHeapTotalSize": 10076160
+        },
+        "end": {
+          "stage": "after-18-switches",
+          "Documents": 1,
+          "Nodes": 1009,
+          "JSHeapUsedSize": 11966072,
+          "JSHeapTotalSize": 12992512
+        },
+        "counters": {
+          "receivedBytes": 9403342,
+          "commands": {
+            "chat_subscribe": 20,
+            "chat_jobs": 13,
+            "orchestration_summary": 12,
+            "chat_index_list": 1,
+            "chat_index_deleted": 1,
+            "handover_list": 2,
+            "usage_summary": 1,
+            "list_workspaces": 1,
+            "agent_installs": 1,
+            "permission_pending": 1,
+            "safety_block_pending": 1,
+            "question_pending": 1,
+            "access_request_pending": 1,
+            "git_watch_paths": 2,
+            "chat_list": 1,
+            "chat_activity": 2,
+            "git_status_summary": 2,
+            "orchestration_auto_plan_get": 38,
+            "chat_task": 38,
+            "provider_fallback_choices": 38,
+            "git_changed_files": 1,
+            "git_local_branches": 1,
+            "chat_queue_state": 19,
+            "chat_page": 19
+          },
+          "replyBytes": {
+            "chat_subscribe": 1418,
+            "chat_jobs": 563,
+            "orchestration_summary": 1794,
+            "chat_index_list": 1841,
+            "chat_index_deleted": 42,
+            "handover_list": 85,
+            "usage_summary": 67,
+            "list_workspaces": 137,
+            "agent_installs": 42,
+            "permission_pending": 43,
+            "safety_block_pending": 43,
+            "question_pending": 43,
+            "access_request_pending": 43,
+            "git_watch_paths": 86,
+            "chat_list": 43,
+            "chat_activity": 86,
+            "git_status_summary": 86,
+            "orchestration_auto_plan_get": 1657,
+            "chat_task": 1733,
+            "provider_fallback_choices": 1658,
+            "git_changed_files": 43,
+            "git_local_branches": 43,
+            "chat_queue_state": 829,
+            "chat_page": 9366302
+          },
+          "heavyFrames": 0,
+          "activityFrames": 144,
+          "recordFrames": 171
+        },
+        "paging": null,
+        "errors": []
+      },
+      {
+        "label": "after",
+        "width": 390,
+        "recordBytesApprox": 171495792,
+        "ledgerWireBytes": {
+          "full": 93,
+          "brief": 93,
+          "summary": 108
+        },
+        "initial": {
+          "stage": "large-record-open",
+          "Documents": 1,
+          "Nodes": 956,
+          "JSHeapUsedSize": 9037576,
+          "JSHeapTotalSize": 10076160
+        },
+        "end": {
+          "stage": "after-18-switches",
+          "Documents": 1,
+          "Nodes": 953,
+          "JSHeapUsedSize": 11787364,
+          "JSHeapTotalSize": 12992512
+        },
+        "counters": {
+          "receivedBytes": 9402998,
+          "commands": {
+            "chat_subscribe": 20,
+            "chat_jobs": 13,
+            "orchestration_summary": 10,
+            "chat_index_list": 1,
+            "chat_index_deleted": 1,
+            "handover_list": 2,
+            "usage_summary": 1,
+            "list_workspaces": 1,
+            "agent_installs": 1,
+            "permission_pending": 1,
+            "safety_block_pending": 1,
+            "question_pending": 1,
+            "access_request_pending": 1,
+            "git_watch_paths": 2,
+            "chat_list": 1,
+            "chat_activity": 2,
+            "git_status_summary": 2,
+            "orchestration_auto_plan_get": 38,
+            "chat_task": 38,
+            "provider_fallback_choices": 38,
+            "git_local_branches": 1,
+            "chat_queue_state": 19,
+            "chat_page": 19
+          },
+          "replyBytes": {
+            "chat_subscribe": 1418,
+            "chat_jobs": 563,
+            "orchestration_summary": 1495,
+            "chat_index_list": 1841,
+            "chat_index_deleted": 42,
+            "handover_list": 85,
+            "usage_summary": 67,
+            "list_workspaces": 137,
+            "agent_installs": 42,
+            "permission_pending": 43,
+            "safety_block_pending": 43,
+            "question_pending": 43,
+            "access_request_pending": 43,
+            "git_watch_paths": 86,
+            "chat_list": 43,
+            "chat_activity": 86,
+            "git_status_summary": 86,
+            "orchestration_auto_plan_get": 1657,
+            "chat_task": 1733,
+            "provider_fallback_choices": 1656,
+            "git_local_branches": 43,
+            "chat_queue_state": 829,
+            "chat_page": 9366302
+          },
+          "heavyFrames": 0,
+          "activityFrames": 144,
+          "recordFrames": 171
+        },
+        "paging": null,
+        "errors": []
+      }
+    ]
+  },
+  "layout": {
+    "before": [
+      {
+        "baseline": true,
+        "width": 1280,
+        "beforeWidth": 640,
+        "afterWidth": 640,
+        "cls": 0.001179587739338807,
+        "shifts": [
+          {
+            "at": 4494.599999904633,
+            "value": 0.0010573546694353292,
+            "nodes": [
+              "actionbar-item",
+              "actionbar-item",
+              "actionbar-item is-separated",
+              "actionbar-item",
+              "chat-task is-action"
+            ]
+          },
+          {
+            "at": 4614.399999856949,
+            "value": 0.00012223306990347767,
+            "nodes": [
+              "chat-meta",
+              "sidebar-menu-trigger chat-actions-trigger",
+              "chat-badge"
+            ]
+          }
+        ],
+        "historyReads": 0,
+        "userOpened": true,
+        "errors": []
+      },
+      {
+        "baseline": true,
+        "width": 390,
+        "beforeWidth": 390,
+        "afterWidth": 390,
+        "cls": 0.07442542037746232,
+        "shifts": [
+          {
+            "at": 3419.0999999046326,
+            "value": 0.07442542037746232,
+            "nodes": [
+              "workflow-surfaces"
+            ]
+          }
+        ],
+        "historyReads": 0,
+        "userOpened": true,
+        "errors": []
+      }
+    ],
+    "after": [
+      {
+        "baseline": false,
+        "width": 1280,
+        "beforeWidth": 640,
+        "afterWidth": 640,
+        "cls": 0.0010573546694353292,
+        "shifts": [
+          {
+            "at": 13694.299999952316,
+            "value": 0.0010573546694353292,
+            "nodes": [
+              "actionbar-item",
+              "actionbar-item",
+              "actionbar-item is-separated",
+              "actionbar-item",
+              "chat-task is-action"
+            ]
+          }
+        ],
+        "historyReads": 1,
+        "userOpened": true,
+        "errors": []
+      },
+      {
+        "baseline": false,
+        "width": 390,
+        "beforeWidth": 390,
+        "afterWidth": 390,
+        "cls": 0.07442542037746232,
+        "shifts": [
+          {
+            "at": 6367.900000095367,
+            "value": 0.07442542037746232,
+            "nodes": [
+              "workflow-surfaces"
+            ]
+          }
+        ],
+        "historyReads": 1,
+        "userOpened": true,
+        "errors": []
+      }
+    ]
+  },
+  "historyMatrix": [
+    {
+      "width": 1280,
+      "manual": false,
+      "historyReads": 6,
+      "released": true,
+      "lateReplyIgnored": true,
+      "heldCandidate": true,
+      "inFlightRefresh": true,
+      "readFailureShown": true,
+      "errors": []
+    },
+    {
+      "width": 390,
+      "manual": false,
+      "historyReads": 6,
+      "released": true,
+      "lateReplyIgnored": true,
+      "heldCandidate": true,
+      "inFlightRefresh": true,
+      "readFailureShown": true,
+      "errors": []
+    },
+    {
+      "width": 1280,
+      "manual": true,
+      "historyReads": 6,
+      "released": true,
+      "lateReplyIgnored": true,
+      "heldCandidate": true,
+      "inFlightRefresh": true,
+      "readFailureShown": true,
+      "errors": []
+    },
+    {
+      "width": 390,
+      "manual": true,
+      "historyReads": 6,
+      "released": true,
+      "lateReplyIgnored": true,
+      "heldCandidate": true,
+      "inFlightRefresh": true,
+      "readFailureShown": true,
+      "errors": []
+    }
+  ],
+  "validation": {
+    "typescript": "passed",
+    "vitest": {
+      "filesPassed": 339,
+      "testsPassed": 4653
+    },
+    "rust": {
+      "passed": 4,
+      "failed": 0,
+      "ignored": 1,
+      "ignoredReason": "Opt-in captured-profile measurement only"
+    },
+    "focusedHistoryWaits": 194,
+    "indexFeed": 8,
+    "composerFit": "passed",
+    "pendingRestoreModernLegacy": "passed at 1280 and 390",
+    "legacyLiveEcho": "8 cases passed"
+  },
+  "limits": [
+    "Synthetic install with 12 Active and 1488 Done chats; two all-Active baseline controls did not complete navigation.",
+    "Additional Return-to-latest paging probe timed out on both unchanged 204a63c and candidate artifacts; not counted as passed.",
+    "Older top-chrome harness failed reading a missing rectangle; actual historical cold-open geometry measured separately.",
+    "390px historical-only CLS remains 0.07442542037746232 on both control and candidate.",
+    "No live profile, physical phone, Safari/WebKit, tunnel, production RSS or long-endurance acceptance."
+  ],
+  "hostFeedback": "243db2ee-f29c-4c2e-8e99-801644e7255a",
+  "jobReceipts": [
+    {
+      "id": "d0980a9dedd24c1cb4b9b3a19f8e06d4",
+      "label": "Final recovery-source 18-switch confirmation",
+      "status": "done",
+      "exitCode": 0,
+      "elapsedMs": 20436
+    },
+    {
+      "id": "ecc4628cb8794464b6934eaa80bd8fa4",
+      "label": "Final recovery-source TypeScript and full suite",
+      "status": "done",
+      "exitCode": 0,
+      "elapsedMs": 322675
+    },
+    {
+      "id": "77bcc891f8e14c39b7320dd36eb01fa4",
+      "label": "Final initial-index recovery guard",
+      "status": "done",
+      "exitCode": 0,
+      "elapsedMs": 3567
+    },
+    {
+      "id": "cce7d21de3684af98eb285083ab0f824",
+      "label": "Final 171MB 18-switch measurement only",
+      "status": "done",
+      "exitCode": 0,
+      "elapsedMs": 53324
+    },
+    {
+      "id": "05ce76818a434d88bffc7deaf1bf990d",
+      "label": "Unchanged-base paging control",
+      "status": "failed",
+      "exitCode": 1,
+      "elapsedMs": 167473
+    },
+    {
+      "id": "45181edaf2f945ad8b5fa937b832a5fa",
+      "label": "Exact final historical cold-layout geometry",
+      "status": "done",
+      "exitCode": 0,
+      "elapsedMs": 49397
+    },
+    {
+      "id": "1f05deca00b0423bbf47275fe1d2f5cf",
+      "label": "All-archived final browser lifecycle matrix",
+      "status": "done",
+      "exitCode": 0,
+      "elapsedMs": 91648
+    },
+    {
+      "id": "64d69a3a867d45efb65a170125b33b06",
+      "label": "Final verified-source 20-minute after",
+      "status": "done",
+      "exitCode": 0,
+      "elapsedMs": 1228435
+    },
+    {
+      "id": "fcc7529bc8414250b784d683a619b337",
+      "label": "Canonical index event and summary Rust checks corrected fixture",
+      "status": "done",
+      "exitCode": 0,
+      "elapsedMs": 103459
+    },
+    {
+      "id": "e520b350ba7a43698ff1b1aae38b89f8",
+      "label": "Final canonical 20-minute baseline",
+      "status": "done",
+      "exitCode": 0,
+      "elapsedMs": 1272332
+    }
+  ]
+}
