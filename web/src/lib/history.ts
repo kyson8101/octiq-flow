@@ -139,7 +139,7 @@ export function importSession(session: HistorySession, key: string): Promise<Imp
 export function replaySession(events: unknown[], now = Date.now()): ChatState {
   let state = emptyChat();
   for (const event of events) {
-    state = reduceChat(state, event, now);
+    state = reduceChat(state, event, now, "replay");
   }
   // A live turn ends on `result`. A FILE has none — the session simply stops —
   // so the reducer is still holding the turn open, and the chat would show the

@@ -215,7 +215,7 @@ it.each([false, true])("keeps an optimistic prompt while prepending history (ech
   options.publish(addUserTurn(options.getState(), "queued locally", [], 100, "pending"));
   await loadEarlierChat({ ...options, history, request: async () => [], requestPage: async before => before === 2
     ? { events: [frame(1)], context: [], before: null }
-    : { events: [frame(2), ...(echo ? [{ seq: 3, event: { type: "user", uuid: "echoed", message: { content: [{ type: "text", text: "queued locally" }] } } }] : [])], context: [], before: 2 } });
+    : { events: [frame(2), ...(echo ? [{ seq: 3, event: { type: "user", uuid: "echoed", octiq_user_turn_id: "pending", message: { content: [{ type: "text", text: "queued locally" }] } } }] : [])], context: [], before: 2 } });
   const users = options.getState().messages.filter((m) => m.role === "user");
   expect(users).toHaveLength(1);
   expect(users[0].turnId).toBe("pending");

@@ -1,0 +1,920 @@
+{
+  "date": "2026-11-08",
+  "base": "f70f90e6363d8996bedfadc839c51581f4e10248",
+  "regressionCommit": "822fa2dc81d8aafbafd0644264237cbe83506baf",
+  "regressionOnBase": {
+    "failed": 18,
+    "passed": 12,
+    "total": 30,
+    "isolated": true
+  },
+  "checks": {
+    "vitestFiles": 337,
+    "vitestTests": 4624,
+    "targetedTests": 185,
+    "tsc": "pass",
+    "isolatedProductionBuild": "pass",
+    "diffCheck": "pass",
+    "buildWarning": "existing large chunks"
+  },
+  "unstampedEcho": {
+    "modern": [
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 1280,
+        "replay": false,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 390,
+        "replay": false,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 1280,
+        "replay": true,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 390,
+        "replay": true,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      }
+    ],
+    "legacy": [
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 1280,
+        "replay": false,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 390,
+        "replay": false,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 1280,
+        "replay": true,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "unstamped-history-keeps-new-local",
+        "width": 390,
+        "replay": true,
+        "visibleCopies": 2,
+        "local": 1,
+        "retainedLocals": 1,
+        "pendingSends": 1,
+        "errors": []
+      }
+    ],
+    "restoreToComposer": "passed without resend"
+  },
+  "confirmedEcho": {
+    "modern": [
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      }
+    ],
+    "legacy": [
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": false,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 1280,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      },
+      {
+        "case": "confirmed-echo-release-reopen-history",
+        "width": 390,
+        "replay": true,
+        "visibleCopies": 1,
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "pendingSends": 1,
+        "errors": []
+      }
+    ]
+  },
+  "browserGrowth": [
+    {
+      "case": "browser-growth",
+      "width": 1280,
+      "replay": false,
+      "growth": [
+        {
+          "n": 1,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 2,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 3,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 4,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 5,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 6,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 7,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 8,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 9,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 10,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        }
+      ]
+    },
+    {
+      "case": "browser-growth",
+      "width": 390,
+      "replay": false,
+      "growth": [
+        {
+          "n": 1,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 2,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 3,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 4,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 5,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 6,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 7,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 8,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 9,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 10,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        }
+      ]
+    },
+    {
+      "case": "browser-growth",
+      "width": 1280,
+      "replay": true,
+      "growth": [
+        {
+          "n": 1,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 2,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 3,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 4,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 5,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 6,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 7,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 8,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 9,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 10,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        }
+      ]
+    },
+    {
+      "case": "browser-growth",
+      "width": 390,
+      "replay": true,
+      "growth": [
+        {
+          "n": 1,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 2,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 3,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 4,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 5,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 6,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 7,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 8,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 9,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        },
+        {
+          "n": 10,
+          "retainedLocals": 0,
+          "backgroundBytes": 2
+        }
+      ]
+    }
+  ],
+  "independentModules": {
+    "unstamped": [
+      {
+        "name": "unstamped-false-false",
+        "messages": [
+          {
+            "id": "old-unstamped",
+            "echo": "old-unstamped"
+          },
+          {
+            "id": "u:new",
+            "turnId": "new",
+            "delivery": "sending",
+            "attachments": [
+              {
+                "path": "/unique.png",
+                "name": "unique.png",
+                "isImage": true
+              }
+            ]
+          }
+        ],
+        "local": true
+      },
+      {
+        "name": "unstamped-false-true",
+        "messages": [
+          {
+            "id": "u:new",
+            "turnId": "new",
+            "delivery": "sending",
+            "attachments": [
+              {
+                "path": "/unique.png",
+                "name": "unique.png",
+                "isImage": true
+              }
+            ]
+          },
+          {
+            "id": "old-unstamped",
+            "echo": "old-unstamped"
+          }
+        ],
+        "local": true
+      },
+      {
+        "name": "unstamped-true-false",
+        "messages": [
+          {
+            "id": "old-unstamped",
+            "echo": "old-unstamped"
+          },
+          {
+            "id": "u:new",
+            "turnId": "new",
+            "delivery": "sending",
+            "attachments": [
+              {
+                "path": "/unique.png",
+                "name": "unique.png",
+                "isImage": true
+              }
+            ]
+          }
+        ],
+        "local": true
+      },
+      {
+        "name": "unstamped-true-true",
+        "messages": [
+          {
+            "id": "u:new",
+            "turnId": "new",
+            "delivery": "sending",
+            "attachments": [
+              {
+                "path": "/unique.png",
+                "name": "unique.png",
+                "isImage": true
+              }
+            ]
+          },
+          {
+            "id": "old-unstamped",
+            "echo": "old-unstamped"
+          }
+        ],
+        "local": true
+      }
+    ],
+    "baseline": [
+      {
+        "replay": false,
+        "cachedLocal": false,
+        "messages": [
+          {
+            "id": "u:new",
+            "turnId": "new",
+            "delivery": "sending",
+            "attachments": [
+              {
+                "path": "/unique.png",
+                "name": "unique.png",
+                "isImage": true
+              }
+            ]
+          },
+          {
+            "id": "old-unstamped",
+            "echo": "old-unstamped"
+          }
+        ]
+      },
+      {
+        "replay": false,
+        "cachedLocal": true,
+        "messages": [
+          {
+            "id": "u:new",
+            "turnId": "new",
+            "delivery": "sending",
+            "attachments": [
+              {
+                "path": "/unique.png",
+                "name": "unique.png",
+                "isImage": true
+              }
+            ]
+          },
+          {
+            "id": "old-unstamped",
+            "echo": "old-unstamped"
+          }
+        ]
+      },
+      {
+        "replay": true,
+        "cachedLocal": false,
+        "messages": [
+          {
+            "id": "u:new",
+            "turnId": "new",
+            "delivery": "sending",
+            "attachments": [
+              {
+                "path": "/unique.png",
+                "name": "unique.png",
+                "isImage": true
+              }
+            ]
+          },
+          {
+            "id": "old-unstamped",
+            "echo": "old-unstamped"
+          }
+        ]
+      },
+      {
+        "replay": true,
+        "cachedLocal": true,
+        "messages": [
+          {
+            "id": "u:new",
+            "turnId": "new",
+            "delivery": "sending",
+            "attachments": [
+              {
+                "path": "/unique.png",
+                "name": "unique.png",
+                "isImage": true
+              }
+            ]
+          },
+          {
+            "id": "old-unstamped",
+            "echo": "old-unstamped"
+          }
+        ]
+      }
+    ],
+    "stampedLifecycle": [
+      {
+        "replay": false,
+        "path": "cold",
+        "messages": 1,
+        "attachments": 1,
+        "stableIdentity": true
+      },
+      {
+        "replay": false,
+        "path": "cached-prefix",
+        "messages": 1,
+        "attachments": 1,
+        "stableIdentity": true
+      },
+      {
+        "replay": false,
+        "path": "cached-echo",
+        "messages": 1,
+        "attachments": 1,
+        "stableIdentity": true
+      },
+      {
+        "replay": false,
+        "path": "page-context",
+        "messages": 1,
+        "attachments": 1,
+        "stableIdentity": true
+      },
+      {
+        "replay": false,
+        "path": "live-tail",
+        "messages": 1,
+        "attachments": 1,
+        "stableIdentity": true
+      },
+      {
+        "replay": false,
+        "path": "earlier",
+        "messages": 1,
+        "attachments": 1,
+        "stableIdentity": true
+      },
+      {
+        "replay": true,
+        "path": "cold",
+        "messages": 1,
+        "attachments": 1,
+        "stableIdentity": true
+      },
+      {
+        "replay": true,
+        "path": "cached-prefix",
+        "messages": 1,
+        "attachments": 1,
+        "stableIdentity": true
+      },
+      {
+        "replay": true,
+        "path": "cached-echo",
+        "messages": 1,
+        "attachments": 1,
+        "stableIdentity": true
+      },
+      {
+        "replay": true,
+        "path": "page-context",
+        "messages": 1,
+        "attachments": 1,
+        "stableIdentity": true
+      },
+      {
+        "replay": true,
+        "path": "live-tail",
+        "messages": 1,
+        "attachments": 1,
+        "stableIdentity": true
+      },
+      {
+        "replay": true,
+        "path": "earlier",
+        "messages": 1,
+        "attachments": 1,
+        "stableIdentity": true
+      }
+    ],
+    "growth": [
+      {
+        "confirmed": 1,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 2,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 3,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 4,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 5,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 6,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 7,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 8,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 9,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      },
+      {
+        "confirmed": 10,
+        "retainedLocals": 0,
+        "retainedBytes": 2,
+        "hasLocalPrompt": false
+      }
+    ]
+  },
+  "pending": [
+    {
+      "case": "pending-prompt-reopen",
+      "width": 1280,
+      "pendingSends": 1,
+      "heldBeforeReopen": [
+        true
+      ],
+      "visibleAfterReopen": true,
+      "bodyAfterReopen": true,
+      "errors": [],
+      "takeBack": "pass"
+    },
+    {
+      "case": "pending-prompt-reopen",
+      "width": 390,
+      "pendingSends": 1,
+      "heldBeforeReopen": [
+        true
+      ],
+      "visibleAfterReopen": true,
+      "bodyAfterReopen": true,
+      "errors": [],
+      "takeBack": "pass"
+    }
+  ],
+  "planDetail": [
+    {
+      "case": "summary-new-detail-old",
+      "width": 1280,
+      "heldDetailReads": 1,
+      "readingUntilMatchingDetail": true,
+      "approvedRevision": 2,
+      "errors": []
+    },
+    {
+      "case": "summary-new-detail-old",
+      "width": 390,
+      "heldDetailReads": 1,
+      "readingUntilMatchingDetail": true,
+      "approvedRevision": 2,
+      "errors": []
+    }
+  ],
+  "planMatrix": [
+    {
+      "case": "summary-new-detail-old",
+      "width": 1280,
+      "heldDetailReads": 1,
+      "readingUntilMatchingDetail": true,
+      "approvedRevision": 2,
+      "errors": []
+    },
+    {
+      "case": "detail-first-and-exposure",
+      "width": 1280,
+      "revision": 3,
+      "shownMs": 1927,
+      "updatedMs": 1927
+    },
+    {
+      "case": "inflight-invalidation-and-failed-refetch",
+      "width": 1280,
+      "oldDetailDiscarded": true,
+      "approvalAbsent": true,
+      "errors": []
+    },
+    {
+      "case": "summary-new-detail-old",
+      "width": 390,
+      "heldDetailReads": 1,
+      "readingUntilMatchingDetail": true,
+      "approvedRevision": 2,
+      "errors": []
+    },
+    {
+      "case": "detail-first-and-exposure",
+      "width": 390,
+      "revision": 3,
+      "shownMs": 1918,
+      "updatedMs": 1918
+    },
+    {
+      "case": "inflight-invalidation-and-failed-refetch",
+      "width": 390,
+      "oldDetailDiscarded": true,
+      "approvalAbsent": true,
+      "errors": []
+    }
+  ],
+  "callbackGc": {
+    "nativeRetained": 101,
+    "fixedRetained": 2,
+    "renders": 101,
+    "identityAndCommitChecks": "pass"
+  },
+  "compatibility": {
+    "modern": [
+      {
+        "modern": true,
+        "subscriptions": 39,
+        "width": 1280,
+        "opened": 30,
+        "background": 20,
+        "fullTranscripts": 1,
+        "splitTranscripts": 2,
+        "reopenAndEarlier": "pass"
+      },
+      {
+        "modern": true,
+        "subscriptions": 35,
+        "width": 390,
+        "opened": 30,
+        "background": 20,
+        "fullTranscripts": 1,
+        "splitTranscripts": 1,
+        "reopenAndEarlier": "pass"
+      }
+    ],
+    "legacy": [
+      {
+        "modern": false,
+        "subscriptions": 0,
+        "width": 1280,
+        "opened": 8,
+        "background": 20,
+        "fullTranscripts": 1,
+        "splitTranscripts": 2,
+        "reopenAndEarlier": "pass"
+      },
+      {
+        "modern": false,
+        "subscriptions": 0,
+        "width": 390,
+        "opened": 8,
+        "background": 20,
+        "fullTranscripts": 1,
+        "splitTranscripts": 1,
+        "reopenAndEarlier": "pass"
+      }
+    ]
+  },
+  "earlierAttempt": {
+    "growth": "A first concurrent run read at a fixed 200ms before its matching echo was visible. A 1500ms timing control passed all 40 iterations; the final serial original 200ms probe also passed all 40, without source or assertion changes.",
+    "rawLog": "/tmp/octiq-h1c-fix/browser-growth.log",
+    "jobCompletionNotification": "Known /hook/job timeout recurred; feedback 8884b852 records it separately from the child result."
+  },
+  "limits": [
+    "Disposable desktop Brave; 390px is a viewport, not a physical phone.",
+    "No real phone, Safari/WebKit, tunnel, endurance or new heap/RSS ceiling.",
+    "No push, deployment or backend restart.",
+    "Feedback 9c3b3024 left to independent review."
+  ],
+  "sourceSha256": {
+    "web/src/lib/chat.ts": "ce09c8311fbf7499eedaeae5939ab99065a9b930b28da31338b410df6dde940b",
+    "web/src/lib/replayChat.ts": "6855e07586849a02221a0b6ea26056e8f2ef4a4cd76016f43e2db83ec2bd589d",
+    "web/src/lib/history.ts": "db6200b601cbcfa1feac41dc0d56024339ba6e506302b011fb351e964e5f09e9",
+    "web/src/lib/loadChat.ts": "34c5c84e9609cadc1f272b6d9fa36d62ef2cba9c65f149c4893031750c4e2022",
+    "web/src/lib/chatRetention.ts": "4fc532c0cd247754ed5db29f7a64f1d6d43aeba9c0a3dcb60ddf9e879e8aeba8",
+    "web/src/lib/chat.unstampedEcho.test.ts": "db188eb41ed3d675068bc03ce94a08865032b337d9f8922dbd5f8ab02ea16cff",
+    "web/src/lib/chat.confirmedEcho.test.ts": "a80f6e06666011afd79923306e428c0bedb7c5aeeaf3685b307f49f14f067b86",
+    "web/src/lib/loadChat.test.ts": "67e67459bc59a97a706f6d21d9e6ef9e1bdb8f3734fb0eb27dd5670c9fca0b27",
+    "web/scripts/test-unstamped-echo-retention.mjs": "a6e7d4c77698a54af26c5d497842a17563683d196a59e92eb09f1562b0890a3b",
+    "web/src/lib/useOrchestrationSnapshot.ts": "36813b21111917e46acfcbcb842c797362ea1959aeac40aa0aeeffeb4d6a81f8",
+    "web/src/App.tsx": "6d3e1995c6d142a40a1d18f5c6b763a6bf2f75fdba4aab6eee640b014387ce89"
+  },
+  "evidenceRoot": "/tmp/octiq-h1c-fix/final"
+}

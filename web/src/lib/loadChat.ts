@@ -7,9 +7,9 @@ import { type ChatHistory, type ChatPage } from "./chatHistory";
 import { restoredTurn } from "./turnClock";
 import { withLocalPrompts } from "./chatRetention";
 
-/** Reconcile only identified host facts against local-only words. Seeding
- * those words before historical replay could match an unrelated old echo of
- * the same text ("continue" is common), on records without turn ids. */
+/** Reconcile only identified host facts against local-only words. Historical
+ * replay is identity-only even when a checkpoint seed already contains those
+ * words: an unrelated unstamped echo of "continue" cannot acknowledge them. */
 function pendingAfterReplay(next: ChatState, current: ChatState, frames: Frame[]): ChatState {
   next = withLocalPrompts(next, current);
   for (const { event } of frames) {

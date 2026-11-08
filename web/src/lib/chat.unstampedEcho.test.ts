@@ -52,7 +52,8 @@ for (const replay of [false, true]) {
           : { events: [prefix, old], context: [], before: 1 } });
       } else {
         catchUp.own("chat:a");
-        await loadChat({ ...options, request: async () => [old] });
+        catchUp.live("chat:a", 1, prefix.event);
+        await loadChat({ ...options, request: async after => { expect(after).toBe(1); return [old]; } });
       }
       kept(state, prompt);
     },
@@ -81,5 +82,43 @@ for (const replay of [false, true]) {
     const next = reduceChat(concurrent, echo(replay));
     expect(next.messages).toHaveLength(3);
     expect(next.messages.find(m => m.turnId === "new")).toEqual(state.messages[0]);
+  });
+
+  it(`does not count a previously picked-up prompt as a concurrent dispatch (isReplay=${replay})`, () => {
+    const old = reduceChat(addUserTurn(emptyChat(), "earlier words", [], 1, "old"), { type: "turn.started", octiq_user_turn_id: "old" });
+    const state = reduceChat(addUserTurn(old, "continue", [], 2, "new"), echo(replay));
+    expect(state.messages).toHaveLength(2);
+    expect(state.messages.find(m => m.turnId === "new")?.echo).toBe("old-native-echo");
+  });
+
+  it(`distinguishes buffered legacy live echoes from overlapping historical echoes (isReplay=${replay})`, async () => {
+    for (const overlap of [false, true]) {
+      let state = local(); const prompt = state.messages[0]; const catchUp = new CatchUp();
+      await loadChat({ id: `buffered-${overlap}`, key: "chat:a", catchUp, getState: () => state,
+        publish: next => { state = next; }, cancelled: () => false, request: async () => {
+          catchUp.live("chat:a", 2, echo(replay));
+          return overlap ? [{ seq: 2, event: echo(replay) }] : [];
+        } });
+      if (overlap) kept(state, prompt);
+      else {
+        expect(state.messages).toHaveLength(1);
+        expect(state.messages[0]).toMatchObject({ turnId: "new", echo: "old-native-echo", delivery: "dispatched" });
+      }
+    }
+  });
+
+  it.each(["echo", "pickup", "cancel"])(`only its own identified %s settles the new prompt after history (isReplay=${replay})`, async evidence => {
+    let state = local("unknown"); const prompt = state.messages[0];
+    state = await replayChat(state, [{ seq: 2, event: echo(replay) }], 0, () => false);
+    kept(state, prompt);
+    const own = evidence === "echo" ? { ...echo(replay), uuid: "new-native-echo", octiq_user_turn_id: "new" }
+      : evidence === "pickup" ? { type: "turn.started", octiq_user_turn_id: "new" }
+      : { type: "octiq_user_turn_cancelled", uuid: "new" };
+    state = await replayChat(state, [{ seq: 3, event: own }], 0, () => false);
+    expect(hasLocalPrompt(state)).toBe(false);
+    expect(state.messages.find(m => m.echo === "old-native-echo")).toBeDefined();
+    if (evidence === "cancel") expect(state.messages.find(m => m.turnId === "new")).toBeUndefined();
+    else expect(state.messages.find(m => m.turnId === "new")).toMatchObject({ attachments: prompt.attachments,
+      ...(evidence === "echo" ? { echo: "new-native-echo" } : { takenUp: true }) });
   });
 }

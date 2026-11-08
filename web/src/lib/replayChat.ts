@@ -13,7 +13,9 @@ export async function replayChat(
   for (const frame of frames) {
     if (cancelled()) throw new Error("Chat read cancelled");
     if (frame.seq <= after) continue;
-    state = reduceChat(state, frame.event);
+    // History cannot acknowledge a current local prompt by equal words.
+    // Stamped host identity still reconciles in the reducer as it does live.
+    state = reduceChat(state, frame.event, undefined, "replay");
     if (performance.now() >= deadline) {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       deadline = performance.now() + 8;

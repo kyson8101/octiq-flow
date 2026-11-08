@@ -151,3 +151,26 @@ Final verification passes 336 Vitest files / 4,584 tests, 43 targeted lifecycle 
 This verifies fixture behavior in disposable Brave, including a 390px viewport. Real phone, Safari/WebKit, tunnel and endurance acceptance remain untested. No production restart or deployment was performed.
 
 These are fixture/browser lifecycle checks, not a new production memory ceiling or real-phone, Safari/WebKit, tunnel or endurance acceptance. No production deployment or restart is part of this repair.
+
+## Historical unstamped echo repair (H1-c, 2026-11-08)
+
+The independent review of `f70f90e` found a pre-existing confirmation error, also reproduced on `eea5655`: a checkpoint seed already containing a new local prompt let an unrelated old unstamped Claude echo claim that prompt by equal words. The false acknowledgement removed Restore and allowed release to discard local-only words and attachments. Cold replay from zero happened to avoid that seed, so cold-only tests missed the error.
+
+`replayChat` and imported session replay now pass explicit historical provenance to the reducer. An unstamped historical echo becomes its own durable message; equal words cannot acknowledge a local prompt. This covers checkpoint tails (including empty prefixes and checkpoints containing the local prompt), page context, Load earlier and catch-up. The CLI's `isReplay` flag does not decide provenance: both ordinary and `isReplay: true, parent_tool_use_id: null` envelopes can arrive through either transport. Stamped echoes still reconcile by host identity, including unknown/failed local prompts, aliases and attachments.
+
+Older hosts retain a narrow live fallback: the chat must be busy, with exactly one unacknowledged dispatch candidate (`sending` or `dispatched`; or an old local message with neither turn id nor delivery field). Already echoed or picked-up messages and lost queue entries are excluded. Only that candidate can match equal words or the existing slash-command namespace equivalence. Queued, unknown, failed, idle or ambiguous concurrent sends supply no such acknowledgement. Buffered live events beyond a replay's tail retain this rule; an overlapping event already folded historically cannot use it a second time.
+
+`chat.unstampedEcho.test.ts` covers both envelopes, the replay/seed matrix, complete recovery metadata, scoped release, the live fallback and its negative cases, buffered overlap, and later identified echo/pickup/cancel evidence. Regression-only commit `822fa2d` fails 18 of 30 cases on exact `f70f90e`, independently repeated in a host-created validation workspace. Ten further cases protect buffered overlap and previously picked-up prompts. The existing Load earlier confirmation fixture now carries the real host stamp rather than treating an unstamped historical echo as acknowledgement. Final checks pass 337 Vitest files / 4,624 tests, 185 targeted tests, `tsc -b`, isolated production build and diff checks; the existing large-chunk warning remains.
+
+`test-unstamped-echo-retention.mjs` preserves the reviewer's production-App scenario and asserts the repaired outcome at 1280px/390px with both envelopes: two visible messages, the new prompt still local with Restore, one retained local after release, and actual Restore without resend. It supports the same modern/legacy fixture switch as the confirmed-echo harness.
+
+Final production Brave passes all eight modern/legacy unstamped cases and all eight confirmed-echo cases. The original reviewer growth probe passes all 40 iterations with zero retained locals and two serialized background-message bytes; the independent module matrix passes all 12 stamped lifecycles and both envelopes of the empty/cached-local prefix cases. Pending/take-back, the plan detail/order/in-flight/refetch matrix, callback GC (101 → 2), modern 30 + 30 and legacy 8 + 8 selections also pass. A first growth run under concurrent validation load read before its echo was visible at a fixed 200ms; a 1500ms timing control and the final serial original 200ms probe both passed all 40 iterations without changing product code or assertions. The initial failure remains in the raw evidence.
+
+```sh
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+PLAYWRIGHT_EXECUTABLE_PATH=/absolute/path/to/Brave \
+OCTIQ_TEST_DIST=/absolute/path/to/isolated/client/dist \
+node web/scripts/test-unstamped-echo-retention.mjs
+```
+
+Sanitized results and source hashes are recorded in `browser-memory-unstamped-echo.json`; raw evidence is under `/tmp/octiq-h1c-fix/`. These checks use disposable desktop Brave, including a 390px viewport. Real phone, Safari/WebKit, tunnel, endurance and a new RSS/heap ceiling remain untested. No push, deployment or restart is part of this repair; feedback `9c3b3024` remains for the independent review to settle.

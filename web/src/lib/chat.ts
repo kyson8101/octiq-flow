@@ -958,7 +958,7 @@ function agentStatus(raw: unknown): Partial<AgentRun> {
 /** Fold one agent event into the conversation. Pure: the caller owns the state,
  *  and the clock is an argument so a replay of a captured stream lands on the
  *  same numbers every time. */
-export function reduceChat(state: ChatState, raw: unknown, now: number = Date.now()): ChatState {
+export function reduceChat(state: ChatState, raw: unknown, now: number = Date.now(), source: "live" | "replay" = "live"): ChatState {
   const e = asObj(raw);
   const type = asStr(e.type);
   // Which writer this event belongs to: a Task call's id when a subagent wrote
@@ -1793,6 +1793,16 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
 
       // The optimistic bubble from pressing send, not yet claimed by an echo.
       const echoedTurnId = asStr(e.octiq_user_turn_id);
+      // Older hosts did not stamp echoes. Only a live event during a single
+      // dispatch can acknowledge by words; queued/failed/unknown prompts and
+      // concurrent dispatches supply no such evidence. `isReplay` is a CLI
+      // envelope flag, not transport provenance: even ordinary user envelopes
+      // read from a checkpoint tail or history are historical.
+      const dispatching = !echoedTurnId && source === "live" && state.busy
+        ? state.messages.filter(m => m.role === "user" && !m.echo && !m.takenUp && !m.queueLost
+          && (m.delivery === "sending" || m.delivery === "dispatched" || (!m.turnId && m.delivery === undefined)))
+        : [];
+      const legacy = dispatching.length === 1 ? dispatching[0] : undefined;
       const mine = state.messages
         .find(
           (m) =>
@@ -1805,7 +1815,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
             // to differ and nothing else, and falls back to an exact compare
             // for anything that is not a slash command.
             (echoedTurnId ? ownsTurnId(m, echoedTurnId) :
-              !m.queueLost && m.blocks.some((b) => b.kind === "text" && sameCommand(b.text, said))),
+              m === legacy && m.blocks.some((b) => b.kind === "text" && sameCommand(b.text, said))),
         );
       if (mine) {
         // What it resolved TO, when that differs from what was typed. The
