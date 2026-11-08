@@ -256,7 +256,10 @@ export async function loadEarlierChat(options: ChatLoadOptions): Promise<void> {
   const agentIds = new Set(kept.flatMap(slice => slice.agentIds ?? []));
   const agents = [...older.agents.filter(a => !now.agents.some(b => b.id === a.id)), ...now.agents]
     .filter(a => agentIds.has(a.id));
-  const past = slid || window.end !== undefined;
+  // The two-page soft exception is an explicit history window too. Freeze its
+  // end so App's latest-stream trim cannot immediately discard the requested
+  // page and anchor just because neither indivisible page could be evicted.
+  const past = slid || window.end !== undefined || bytes > CHAT_WINDOW_BYTES;
   history!.set(id, page.before, past ? kept.at(-1)!.end : undefined, kept);
   const outcomeIds = new Set(kept.flatMap(slice => slice.outcomeIds ?? []));
   const outcomes = Object.fromEntries(Object.entries(allOutcomes).filter(([id]) => outcomeIds.has(id)));
