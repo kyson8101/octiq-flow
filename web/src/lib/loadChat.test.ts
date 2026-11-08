@@ -262,17 +262,23 @@ it("a long offline gap resets to the recent page without downloading the whole m
   expect(options.catchUp.mark("chat:a")).toBe(100000);
 });
 
-it("slides a byte-full history window backwards without caching it as a complete record", async () => {
+it("keeps the adjacent visible page while sliding a byte-full window backwards", async () => {
   const options = setup(); const history = new ChatHistory();
   const big = (seq: number, length: number): Frame => ({ seq, event: { type: "assistant", message: { id: `m${seq}`, content: [{ type: "text", text: "x".repeat(length) }] } } });
   const latest = big(30, 3 * 1024 * 1024), older = big(20, 2 * 1024 * 1024);
   await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({ events: [latest], context: [], before: 30 }) });
   const request = vi.fn(async () => { throw new Error("unbounded tail"); });
   await loadEarlierChat({ ...options, history, request, requestPage: async before => before === 30
-    ? { events: [older], context: [], before: null }
+    ? { events: [older], context: [], before: 20 }
+    : { events: [latest], context: [], before: 30 } });
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m20", "m30"]);
+  // Two indivisible pages can exceed the target; dropping the visible m30
+  // would lose the scroll anchor. The next prepend can evict that newest page.
+  await loadEarlierChat({ ...options, history, request, requestPage: async before => before === 20
+    ? { events: [big(10, 2 * 1024 * 1024)], context: [], before: null }
     : { events: [latest], context: [], before: 30 } });
   expect(request).not.toHaveBeenCalled();
-  expect(options.getState().messages.map(m => m.id)).toEqual(["m20"]);
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m10", "m20"]);
   expect(history.isPast("a")).toBe(true); expect(history.isPartial("a")).toBe(true);
   expect(history.hasEarlier("a")).toBe(false);
   expect(await readChatCheckpoint("a")).toBeUndefined();
