@@ -362,3 +362,17 @@ it("applies an identified dismissal to a retained local prompt without replaying
     : { events: [frame(3)], context: [], before: 3 } });
   expect(options.getState().messages.map(m => m.id)).toEqual(["m3"]);
 });
+
+it("evicts historical agent and unmatched outcome projections with their page", async () => {
+  const options = setup(), history = new ChatHistory();
+  const page = (start: number) => ({ context: [], before: start, events: [frame(start),
+    { seq: start + 1, event: { type: "system", subtype: "task_started", task_id: `agent-${start}`, task_type: "local_agent" } },
+    { seq: start + 2, event: { type: "octiq_tool_outcome", tool_use_id: `missing-${start}`, octiq_outcome: { origin: "octiqflow", reasonClass: "approval-expired", severity: "warning" } } },
+  ] });
+  const requestPage = async (before: number | null) => page(before === null ? 1000 : before - 3);
+  await loadChat({ ...options, history, request: async () => [], requestPage: async () => page(1000) });
+  for (let n = 0; n < 20; n++) await loadEarlierChat({ ...options, history, request: async () => [], requestPage });
+  expect(options.getState().agents).toHaveLength(CHAT_WINDOW_PAGES);
+  expect(Object.keys(options.getState().pendingOutcomes ?? {})).toHaveLength(CHAT_WINDOW_PAGES);
+  expect(options.getState().agents.some(a => a.id === "agent-1000")).toBe(false);
+});
