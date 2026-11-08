@@ -58,6 +58,7 @@ try{
     case 'chat_since':result=frames(id).filter(frame=>frame.seq>a.after);break;
     case 'resolve_paths':result=a.paths.map(()=>null);break;
     case 'chat_task':result=null;break;
+    case 'chat_cancel_queued':result=true;break;
     case 'usage_summary':result={sessions:[],totals:{}};break;
    }
    ws.send(JSON.stringify({t:'reply',id:call.id,ok:true,result}));
@@ -80,10 +81,18 @@ try{
   await page.evaluate(()=>{location.hash='#/c/memory-1';});
   await page.locator('.msgs').getByText('Answer memory-1.',{exact:true}).waitFor();await page.waitForTimeout(300);
   const before=await page.evaluate(prompt=>{const root=document.getElementById('root'),holder=root[Object.keys(root).find(k=>k.startsWith('__reactContainer$'))],todo=[holder.stateNode?.current??holder];while(todo.length){const f=todo.pop();if(typeof f.type==='function'){let n=0;for(let h=f.memoizedState;h?.next;h=h.next)n++;if(n>200){const vals=[];for(let h=f.memoizedState;h;h=h.next)vals.push(h.memoizedState);return vals.filter(v=>v&&typeof v==='object'&&!Array.isArray(v)&&v['memory-0']?.messages).map(v=>JSON.stringify(v['memory-0'].messages).includes(prompt));}}if(f.child)todo.push(f.child);if(f.sibling)todo.push(f.sibling);}return [];},prompt);
-  await page.evaluate(()=>{location.hash='#/c/memory-0';});await page.locator('.msgs').getByText('Answer memory-0.',{exact:true}).waitFor();await page.waitForTimeout(500);
+  await page.evaluate(()=>{location.hash='#/c/memory-0';});
+  await page.locator('.msgs').getByText(prompt,{exact:true}).waitFor();
+  for(let n=0;n<50;n++){if((await page.evaluate(inspect)).full.includes('memory-0'))break;await page.waitForTimeout(100);}
+  assert.ok((await page.evaluate(inspect)).full.includes('memory-0'),'durable tool history must also finish replaying');
   assert.ok((await page.locator('.msgs').innerText()).includes(prompt),'local pending words must survive release and reopen');
   await page.getByRole('button',{name:'Take this queued message back to edit'}).waitFor();
-  console.log(JSON.stringify({case:'pending-prompt-reopen',width,pendingSends:pendingSends.length,heldBeforeReopen:before,visibleAfterReopen:(await page.locator('.msgs').innerText()).includes(prompt),bodyAfterReopen:(await page.locator('body').innerText()).includes(prompt),errors}));
+  const evidence={case:'pending-prompt-reopen',width,pendingSends:pendingSends.length,heldBeforeReopen:before,visibleAfterReopen:(await page.locator('.msgs').innerText()).includes(prompt),bodyAfterReopen:(await page.locator('body').innerText()).includes(prompt),errors};
+  await page.getByRole('button',{name:'Take this queued message back to edit'}).click();
+  await page.waitForFunction(prompt=>document.querySelector('textarea')?.value===prompt,prompt);
+  await page.locator('.msgs').getByText(prompt,{exact:true}).waitFor({state:'hidden'});
+  assert.equal(pendingSends.length,1,'taking back must not resend');
+  assert.deepEqual(errors,[]);console.log(JSON.stringify({...evidence,takeBack:'pass'}));
   await context.close();
 
  }

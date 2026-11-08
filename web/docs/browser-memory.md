@@ -102,3 +102,31 @@ node web/scripts/test-screen-memory.mjs
 ```
 
 No production restart/deployment, real phone, Safari/WebKit or tunnel/endurance acceptance was performed. No 3 GB crash-free ceiling is claimed. Disposable browsers and scratch servers are closed after each run; captured private ledger payloads are not committed.
+
+## Review lifecycle repairs (2026-11-08)
+
+The independent review of `f507888` found three lifecycle regressions. This follow-up keeps the screen subscriptions, cache budgets and callback isolation, and repairs:
+
+- **H1:** reopening seeds a sidebar/IndexedDB copy around the complete unconfirmed local messages, including attachments, delivery/queue feedback and failed messages that can still be restored. Empty or stale sidebar rows cannot acknowledge them. Replay reconciles identified delivery, pickup and cancellation facts; an unrelated historical echo of the same words cannot consume a new local prompt during a fresh replay.
+- **H2:** invalidation immediately withdraws leased detail. A response invalidated while in flight is discarded and followed by another read. A summary-mode surface is ready only when its per-run token and plan revision match the detail. Until then the plan shows Reading (or its read error) and has no Approve action. The revision exposure clock starts when matching detail can actually be drawn.
+- **M1:** detail fills an explicit list of omitted evidence/text fields from `orchestration/summary.rs`. State comes from the summary, including absent task failure/reopen/retry flags, nested execution fields, gate ownership and native-decision fields.
+
+The regression-only commit `eff3262` was replayed in a host-created validation workspace on exact `f5078885586c243ac116f476c33fd54eec468fd4`: five regression cases failed as expected. The validation workspace was removed afterward. Final Vitest passes 335 files / 4,567 tests; `tsc -b`, isolated production build and diff checks pass. The build still reports its existing large-chunk warning. The disposable Brave callback GC check still measures 101 retained contexts with native callbacks versus two with the committed-cell implementation.
+
+`test-pending-retention.mjs` and `test-plan-detail.mjs` preserve the independent review probes' held-RPC scenarios and assert the repaired behavior at 1280px and 390px. The pending probe checks retained local words, completed durable replay, queue controls, and returning the message to the composer without resending. It waits for the relevant visible prompt rather than requiring an older answer in the virtualized window. The plan probe withholds revision 2 detail after its summary arrives: the old brief and Approve disappear; only matching new detail enables an approval that submits revision 2. Unit tests also cover detail-first delivery, in-flight invalidation, failed refetch, attachments, host cancellation/pickup, and summary field removal.
+
+```sh
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+PLAYWRIGHT_EXECUTABLE_PATH=/absolute/path/to/Brave \
+OCTIQ_TEST_DIST=/absolute/path/to/isolated/client/dist \
+node web/scripts/test-pending-retention.mjs
+
+# Starts its own isolated Vite scene with the real PlanReview and feed.
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+PLAYWRIGHT_EXECUTABLE_PATH=/absolute/path/to/Brave \
+node web/scripts/test-plan-detail.mjs
+```
+
+Final production-App regressions also pass modern 30 + 30 selections and legacy 8 + 8 selections at 1280px/390px, including background activity, reopening/earlier history, split panes, covered-surface release and reconnect. Every case reports zero page errors. Sanitized results and source hashes are in `browser-memory-review.json`; raw follow-up logs remain under `/tmp/octiq-review-f507888/`.
+
+These are fixture/browser lifecycle checks, not a new production memory ceiling or real-phone, Safari/WebKit, tunnel or endurance acceptance. No production deployment or restart is part of this repair.

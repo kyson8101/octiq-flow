@@ -158,8 +158,10 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
   const metaId = useId();
   // What this card has shown, and since when (see lib/planShown).
   const shownRef = useRef<PlanShown | null>(null);
-  shownRef.current = nextShown(shownRef.current, revision, Date.now());
-  const shown = shownRef.current;
+  // Reading a summary is not showing the revised brief. Start its exposure
+  // clock only once the matching detail can actually be drawn.
+  if (detail.ready) shownRef.current = nextShown(shownRef.current, revision, Date.now());
+  const shown = shownRef.current ?? nextShown(null, revision, Date.now());
   const [, recheck] = useState(0);
   const holding = !approved && settling(shown, Date.now());
   useEffect(() => {
@@ -170,6 +172,7 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
   }, [holding, shown]);
 
   const approve = async () => {
+    if (!detail.ready) return;
     setError("");
     setBusyAction("approve");
     try {

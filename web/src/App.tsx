@@ -32,7 +32,7 @@ import {
 // Event/subscription callbacks must not chain old App render scopes. Pure
 // render-time readers use isolated factories below, rather than this hook.
 import { useCommittedCallback as useCallback } from "./lib/useCommittedCallback";
-import { chatPreviewState } from "./lib/chatRetention";
+import { chatPreviewState, withLocalPrompts } from "./lib/chatRetention";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp, type Frame } from "./lib/catchUp";
 import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
@@ -2238,7 +2238,7 @@ export default function App() {
       catchUp.current.forget(keyFor(id));
       chatHistory.current.forget(id);
       const small = chatPreviewState(state);
-      next[id] = bridge.scopedChats ? { ...small, messages: small.messages.filter(m => m.role === "user" && !m.echo && !m.takenUp && !m.queueLost) } : small;
+      next[id] = bridge.scopedChats ? { ...small, messages: small.messages.filter(m => m.role === "user" && !m.echo && !m.takenUp) } : small;
     }
     if (!released.size) return;
     writeChats(next, true);
@@ -2987,12 +2987,12 @@ export default function App() {
       writeChats(
         {
           ...held,
-          [c.id]: {
+          [c.id]: withLocalPrompts({
             ...(held[c.id] ?? emptyChat()),
             messages: c.messages, agents: [], background: [],
             sessionId: held[c.id]?.sessionId ?? c.sessionId,
             cwd: held[c.id]?.cwd ?? c.cwd,
-          },
+          }, held[c.id] ?? emptyChat(), true),
         },
         true,
       );

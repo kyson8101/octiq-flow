@@ -5,14 +5,22 @@ import { readChatCheckpoint, saveChatCheckpoint } from "./chatCache";
 import { replayChat } from "./replayChat";
 import { type ChatHistory, type ChatPage } from "./chatHistory";
 import { restoredTurn } from "./turnClock";
+import { withLocalPrompts } from "./chatRetention";
 
-/** Claude's queued prompts may exist only in this browser until echoed. */
-function keepPending(next: ChatState, current: ChatState): ChatState {
-  const pending = current.messages.filter((message) => message.role === "user"
-    && !message.echo && !message.takenUp
-    && !next.messages.some((known) => known.id === message.id
-      || (!!message.turnId && known.turnId === message.turnId)));
-  return pending.length ? { ...next, busy: next.busy || current.busy, messages: [...next.messages, ...pending] } : next;
+/** Reconcile only identified host facts against local-only words. Seeding
+ * those words before historical replay could match an unrelated old echo of
+ * the same text ("continue" is common), on records without turn ids. */
+function pendingAfterReplay(next: ChatState, current: ChatState, frames: Frame[]): ChatState {
+  next = withLocalPrompts(next, current);
+  for (const { event } of frames) {
+    if (!event || typeof event !== "object") continue;
+    const e = event as { type?: string; octiq_user_turn_id?: string };
+    if (["octiq_user_turn_cancelled", "octiq_user_turn_dismissed", "octiq_user_turn_delivery"].includes(e.type ?? "")) next = reduceChat(next, event);
+    if (e.type === "turn.started" && e.octiq_user_turn_id) next = { ...next, messages: next.messages.map(message =>
+      message.turnId === e.octiq_user_turn_id && !message.echo
+        ? { ...message, takenUp: true, delivery: "dispatched", queueLost: undefined, queueAction: undefined, queueError: undefined } : message) };
+  }
+  return next;
 }
 
 /** Whether the events after `from` empty stream pieces whose text was merged
@@ -48,7 +56,7 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
     if (cached && cached.seq >= (storedSeq ?? 0)) {
       // A turn in flight comes back with the time since this was written
       // left off its clock: nobody saw it (`turnClock.restoredTurn`).
-      publish(restoredTurn(cached.state, cached.updatedAt));
+      publish(withLocalPrompts(restoredTurn(cached.state, cached.updatedAt), getState(), true));
       storedSeq = cached.seq;
     }
   }
@@ -105,12 +113,12 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
   // end includes events held during download AND the yielding replay. Only
   // events beyond the replay's tail still need folding.
   const tail = run?.length ? run[run.length - 1].seq : from;
+  next = pendingAfterReplay(next, getState(), [...context, ...(run ?? [])]);
   const frames = catchUp.end(key, run ?? []);
   for (const frame of frames) {
     if (frame.seq > tail) next = reduceChat(next, frame.event);
   }
   if (page) options.history?.set(id, page.before);
-  next = keepPending(next, getState());
   const live = getState();
   if (live.busy && next.busy && live.turnStartedAt !== undefined) next = { ...next, turnStartedAt: live.turnStartedAt, turnWaits: live.turnWaits, activityTurnId: live.activityTurnId };
   publish(next);
@@ -163,10 +171,10 @@ export async function loadEarlierChat(options: ChatLoadOptions): Promise<void> {
   const events = [...page.events, ...tail];
   let next = await replayChat({ ...emptyChat(), sessionId: current.sessionId, cwd: current.cwd }, page.context, 0, cancelled);
   next = await replayChat(next, events.filter(f => f.seq <= after), 0, cancelled);
-  next = keepPending(next, getState());
+  next = pendingAfterReplay(next, getState(), [...page.context, ...events.filter(f => f.seq <= after)]);
   next = await replayChat(next, events, after, cancelled);
   if (cancelled()) return;
-  next = keepPending(next, getState());
+  next = pendingAfterReplay(next, getState(), events);
   const live = catchUp.end(key, []).filter(f => f.seq > end);
   const past = slid || window.end !== undefined;
   if (!past) for (const frame of live) next = reduceChat(next, frame.event);

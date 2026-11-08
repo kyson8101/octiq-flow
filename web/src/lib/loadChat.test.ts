@@ -59,9 +59,31 @@ it("keeps local words, attachments and queue state while a released chat seeds f
   const request = vi.fn(() => new Promise<Frame[]>(resolve => { finish = resolve; }));
   const loading = loadChat({ ...options, request });
   await vi.waitFor(() => expect(request).toHaveBeenCalledWith(1));
-  expect(options.getState().messages.at(-1)).toEqual(prompt);
+  expect(options.getState().messages.find(message => message.id === prompt.id)).toEqual(prompt);
   finish([frame(2)]); await loading;
-  expect(options.getState().messages.at(-1)).toEqual(prompt);
+  expect(options.getState().messages.find(message => message.id === prompt.id)).toEqual(prompt);
+});
+
+it.each(["octiq_user_turn_cancelled", "octiq_user_turn_dismissed"])("lets replayed %s remove a local-only prompt", async type => {
+  const options = setup();
+  options.publish(addUserTurn(emptyChat(), "local words", [], 10, "local"));
+  await loadChat({ ...options, request: async () => [frame(1), { seq: 2, event: { type, uuid: "local" } }] });
+  expect(options.getState().messages.some(message => message.turnId === "local")).toBe(false);
+});
+
+it("keeps an unrelated old echo separate and applies only identified delivery/pickup facts", async () => {
+  const options = setup();
+  options.publish(addUserTurn(emptyChat(), "continue", [], 10, "local"));
+  await loadChat({ ...options, request: async () => [
+    { seq: 1, event: { type: "user", uuid: "old-echo", message: { content: [{ type: "text", text: "continue" }] } } },
+    { seq: 2, event: { type: "octiq_user_turn_delivery", uuid: "local", state: "queued" } },
+  ] });
+  expect(options.getState().messages).toHaveLength(2);
+  expect(options.getState().messages.find(message => message.turnId === "local")).toMatchObject({ delivery: "queued" });
+  expect(options.getState().messages.find(message => message.turnId === "local")?.echo).toBeUndefined();
+  options.catchUp.forget("chat:a");
+  await loadChat({ ...options, request: async () => [frame(1), { seq: 2, event: { type: "turn.started", octiq_user_turn_id: "local" } }] });
+  expect(options.getState().messages.find(message => message.turnId === "local")).toMatchObject({ takenUp: true, delivery: "dispatched" });
 });
 
 it("does not resurrect a chat cleared or deleted during download", async () => {

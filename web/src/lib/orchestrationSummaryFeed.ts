@@ -76,12 +76,12 @@ export function createOrchestrationFeed() {
         if (!unavailable(e)) throw e;
         detail = await bridge.invoke<OrchestrationSnapshot>("orchestration_snapshot", { runId: id });
       }
-      if (leases.get(id) !== lease) return;
+      if (leases.get(id) !== lease || lease.dirty) return;
       const details = new Map(state.details).set(id, detail);
       const errors = new Map(state.detailErrors); errors.delete(id);
       state = { ...state, details, detailErrors: errors }; notify(true);
     } catch (e) {
-      if (leases.get(id) === lease) {
+      if (leases.get(id) === lease && !lease.dirty) {
         state = { ...state, detailErrors: new Map(state.detailErrors).set(id, String(e)) }; notify(true);
       }
     } finally {
@@ -90,11 +90,14 @@ export function createOrchestrationFeed() {
     }
   };
   const invalidateDetail = (id?: string) => {
+    const details = new Map(state.details), errors = new Map(state.detailErrors);
     for (const [key, lease] of leases) {
       if (id && key !== id) continue;
       lease.dirty = true;
+      details.delete(key); errors.delete(key);
       if (!lease.reading && !lease.timer) lease.timer = setTimeout(() => { lease.timer = undefined; void detailRead(key, lease); }, NOTIFY_MS);
     }
+    state = { ...state, details, detailErrors: errors }; notify(true);
   };
   const runRead = async () => {
     if (reading || (!whole && !dirty.size && !waiters.length)) return;
@@ -158,7 +161,10 @@ export function createOrchestrationFeed() {
         if (fallback) return; // legacy owns its event listeners
         invalidateDetail(payload?.runId);
         const update = executionUpdate(payload);
-        if (update && state.snapshot?.attempts.some(a => a.id === update.attemptId)) patch(s => withExecution(s, { ...update, execution: compactExecution(update.execution) }));
+        if (update && state.snapshot?.attempts.some(a => a.id === update.attemptId)) patch(s => ({
+          ...withExecution(s, { ...update, execution: compactExecution(update.execution) }),
+          runRevisions: payload.runId && payload.revision ? { ...s.runRevisions, [payload.runId]: payload.revision } : s.runRevisions,
+        }));
         else if (payload?.runId) dirty.add(payload.runId);
         else whole = true;
         schedule(false);

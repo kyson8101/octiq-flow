@@ -95,7 +95,7 @@ it("leases detail separately, refetches only open runs and ignores replies after
   mock.reads[2].resolve(summary("other")); await tick();
   emit("orchestration-changed", { runId: "r", attemptId: "a-r", execution: { state: "waiting_tool" } }); await tick();
   expect(mock.reads.at(-1)?.cmd).toBe("orchestration_run_detail");
-  a(); expect(feed.getState().details?.size).toBe(1); b(); b(); expect(feed.getState().details?.size).toBe(0);
+  a(); expect(feed.getState().details?.size).toBe(0); b(); b(); expect(feed.getState().details?.size).toBe(0);
   const c = feed.detail("r"); const latest = mock.reads.at(-1)!;
   mock.reads.at(-2)!.resolve(detail); await tick(); expect(feed.getState().details?.size).toBe(0);
   latest.resolve(detail); await tick(); expect(feed.getState().details?.size).toBe(1); c(); off();

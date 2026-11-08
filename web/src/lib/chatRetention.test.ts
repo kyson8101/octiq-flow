@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { addUserTurn, emptyChat, type Message } from "./chat";
-import { chatPreviewState, hasLocalPrompt } from "./chatRetention";
+import { chatPreviewState, hasLocalPrompt, withLocalPrompts } from "./chatRetention";
 
 it("bounds background transcript content even when a single tool result or answer is huge", () => {
   const state = emptyChat();
@@ -26,6 +26,21 @@ it("never shortens an unacknowledged prompt, attachments or queue feedback", () 
   expect(chatPreviewState(state).messages[0]).toBe(pending);
   expect(hasLocalPrompt({ ...state, messages: [{ ...pending, echo: "host-echo" }] })).toBe(false);
   expect(hasLocalPrompt({ ...state, messages: [{ ...pending, takenUp: true }] })).toBe(false);
+});
+
+it.each(["sending", "queued", "failed", "unknown"] as const)("keeps the entire local %s prompt through release and an empty or stale row seed", delivery => {
+  const state = addUserTurn(emptyChat(), "local words".repeat(1000), [], 10, "local");
+  const prompt = { ...state.messages[0], delivery, queueLost: delivery === "failed", queueError: "feedback",
+    attachments: [{ path: "/fixture/image.png", name: "image.png", isImage: true }] };
+  state.messages = [prompt];
+  const released = chatPreviewState(state);
+  expect(released.messages).toEqual([prompt]);
+  expect(hasLocalPrompt(released)).toBe(true);
+  expect(withLocalPrompts(emptyChat(), released, true).messages[0]).toBe(prompt);
+  const stale = { ...state, messages: [{ ...prompt, delivery: "sending" as const, attachments: [] }] };
+  expect(withLocalPrompts(stale, released, true).messages[0]).toBe(prompt);
+  const confirmed = { ...state, messages: [{ ...prompt, takenUp: true }] };
+  expect(withLocalPrompts(confirmed, released, true).messages[0].takenUp).toBe(true);
 });
 
 it("does not turn subagent output into the main chat's response preview", () => {

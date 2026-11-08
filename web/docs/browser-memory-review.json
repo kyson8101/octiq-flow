@@ -1,0 +1,135 @@
+{
+  "date": "2026-11-08",
+  "baseSha": "f5078885586c243ac116f476c33fd54eec468fd4",
+  "regressionCommit": "eff3262326a6437ed989a80b280d09e3de18b7df",
+  "baseline": {
+    "isolatedValidationWorkspace": true,
+    "testFilesFailed": 2,
+    "testsFailed": 5,
+    "testsPassed": 22
+  },
+  "fixed": {
+    "vitest": {
+      "filesPassed": 335,
+      "testsPassed": 4567
+    },
+    "tsc-b": "pass",
+    "isolatedProductionBuild": "pass; existing large-chunk warning",
+    "diffCheck": "pass",
+    "callbackGC": {
+      "nativeRetained": 101,
+      "fixedRetained": 2,
+      "renders": 101,
+      "identityAndCommitChecks": "pass"
+    },
+    "pendingPrompt": [
+      {
+        "case": "pending-prompt-reopen",
+        "width": 1280,
+        "pendingSends": 1,
+        "heldBeforeReopen": [
+          true
+        ],
+        "visibleAfterReopen": true,
+        "bodyAfterReopen": true,
+        "errors": [],
+        "takeBack": "pass"
+      },
+      {
+        "case": "pending-prompt-reopen",
+        "width": 390,
+        "pendingSends": 1,
+        "heldBeforeReopen": [
+          true
+        ],
+        "visibleAfterReopen": true,
+        "bodyAfterReopen": true,
+        "errors": [],
+        "takeBack": "pass"
+      }
+    ],
+    "planDetail": [
+      {
+        "case": "summary-new-detail-old",
+        "width": 1280,
+        "heldDetailReads": 1,
+        "readingUntilMatchingDetail": true,
+        "approvedRevision": 2,
+        "errors": []
+      },
+      {
+        "case": "summary-new-detail-old",
+        "width": 390,
+        "heldDetailReads": 1,
+        "readingUntilMatchingDetail": true,
+        "approvedRevision": 2,
+        "errors": []
+      }
+    ],
+    "modernBrowser": [
+      {
+        "modern": true,
+        "subscriptions": 39,
+        "width": 1280,
+        "opened": 30,
+        "background": 20,
+        "fullTranscripts": 1,
+        "splitTranscripts": 2,
+        "reopenAndEarlier": "pass"
+      },
+      {
+        "modern": true,
+        "subscriptions": 35,
+        "width": 390,
+        "opened": 30,
+        "background": 20,
+        "fullTranscripts": 1,
+        "splitTranscripts": 1,
+        "reopenAndEarlier": "pass"
+      }
+    ],
+    "legacyBrowser": [
+      {
+        "modern": false,
+        "subscriptions": 0,
+        "width": 1280,
+        "opened": 8,
+        "background": 20,
+        "fullTranscripts": 1,
+        "splitTranscripts": 2,
+        "reopenAndEarlier": "pass"
+      },
+      {
+        "modern": false,
+        "subscriptions": 0,
+        "width": 390,
+        "opened": 8,
+        "background": 20,
+        "fullTranscripts": 1,
+        "splitTranscripts": 1,
+        "reopenAndEarlier": "pass"
+      }
+    ]
+  },
+  "sourceSHA256": {
+    "web/scripts/test-chat-retention.mjs": "9bb7a8340645c68169e2dfb42833692a7c26d0967d73dafd3a31b394b084ff90",
+    "web/scripts/test-pending-retention.mjs": "b2ae5ec780f810b138f3405036d1925022de823064ffb0358bb864ab2811b637",
+    "web/scripts/test-plan-detail.mjs": "a236e5a525adee99205cbbfec908640ca04285ea3ad61e415eae885223b07813",
+    "web/src/App.tsx": "6d3e1995c6d142a40a1d18f5c6b763a6bf2f75fdba4aab6eee640b014387ce89",
+    "web/src/components/PlanReview.tsx": "9ec64455daa5bdba32f7ca239d41cb7032ef16f2aaf276914d2d0b95b52a4dc7",
+    "web/src/lib/chatRetention.test.ts": "cf738cf1f15646e3fda94e01fd73fea6873135c60216575d333586b946e738cf",
+    "web/src/lib/chatRetention.ts": "408b0d10eee1042b2e8dc3f47cd8dbc347c614aa8db11888b69923a4f2eddd65",
+    "web/src/lib/loadChat.test.ts": "75b9f35b9ad4de73b93d406bbd2124911fb966938a79795acd10cca8dc5e304b",
+    "web/src/lib/loadChat.ts": "b193aea022cca7f4a0fd51f6b8d57f8eb039905e5d0d71e1fff7dc410c333253",
+    "web/src/lib/orchestrationSummaryFeed.test.ts": "d10137306b3a34792c2e91399f8b55e52d117f16decadec43b3d9df7d842c15f",
+    "web/src/lib/orchestrationSummaryFeed.ts": "cdab8e7d76dcb715a90b98b0bd55f1e02709eadf32c700367eb2ff98513cba19",
+    "web/src/lib/runWaits.ts": "67edb476ad8b50be5c51786b4ae38b1e07ba5b37c7b9e0cbe730d9ec7782f772",
+    "web/src/lib/useOrchestrationSnapshot.ts": "36813b21111917e46acfcbcb842c797362ea1959aeac40aa0aeeffeb4d6a81f8"
+  },
+  "rawEvidenceDirectory": "/tmp/octiq-review-f507888",
+  "limitations": [
+    "Fixture command sockets and disposable Brave; no live agent or production writes.",
+    "390 px is a phone-sized viewport, not a real phone.",
+    "No Safari/WebKit, tunnel/endurance acceptance or new RSS/heap ceiling measurement."
+  ]
+}

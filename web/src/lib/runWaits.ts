@@ -281,10 +281,14 @@ export function pendingDecisions(snapshot: Pick<OrchestrationSnapshot, "nativeDe
  * card which that reading has already cleared. No other module tests waits. */
 export function currentWaitEvidence(summary: OrchestrationSnapshot, detail: OrchestrationSnapshot, runId: string) {
   return {
-    gates: [...detail.gates.filter(g => g.status !== "open"), ...summary.gates.filter(g => g.runId === runId).map(g => ({ ...detail.gates.find(full => full.id === g.id), ...g, question: detail.gates.find(full => full.id === g.id)?.question ?? g.question, options: detail.gates.find(full => full.id === g.id)?.options ?? g.options }))],
+    gates: [...detail.gates.filter(g => g.status !== "open"), ...summary.gates.filter(g => g.runId === runId).map(g => {
+      const full = detail.gates.find(saved => saved.id === g.id);
+      return { ...g, question: full?.question ?? g.question, options: full?.options ?? g.options,
+        createdByChatKey: full?.createdByChatKey ?? g.createdByChatKey, targetChatKey: full?.targetChatKey ?? g.targetChatKey };
+    })],
     nativeDecisions: [...(detail.nativeDecisions ?? []).filter(d => d.status !== "pending"), ...(summary.nativeDecisions ?? []).filter(d => d.runId === runId).map(d => {
       const full = (detail.nativeDecisions ?? []).find(saved => saved.id === d.id);
-      return { ...full, ...d, reason: full?.reason ?? d.reason, blockedAction: full?.blockedAction ?? d.blockedAction, recovery: full?.recovery ?? d.recovery };
+      return { ...d, reason: full?.reason ?? d.reason, blockedAction: full?.blockedAction ?? d.blockedAction, recovery: full?.recovery ?? d.recovery };
     })],
   };
 }

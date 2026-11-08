@@ -1,8 +1,22 @@
-import type { ChatState, Message } from "./chat";
+import { ownsTurnId, type ChatState, type Message } from "./chat";
+
+/** A sidebar/cache seed is not a host acknowledgement. Keep the complete
+ * local message until replay supplies its echo, pickup or queue outcome. */
+export function withLocalPrompts(next: ChatState, current: ChatState, seed = false): ChatState {
+  const pending = current.messages.filter(message => message.role === "user" && !message.echo && !message.takenUp);
+  if (!pending.length) return next;
+  const messages = [...next.messages];
+  for (const message of pending) {
+    const at = messages.findIndex(known => known.id === message.id || (!!message.turnId && ownsTurnId(known, message.turnId)));
+    if (at < 0) messages.push(message);
+    else if (seed && !messages[at].echo && !messages[at].takenUp) messages[at] = message;
+  }
+  return { ...next, busy: next.busy || current.busy, messages };
+}
 
 /** These words may still exist only in this tab. Never evict or shorten them. */
 export function hasLocalPrompt(state: ChatState): boolean {
-  return state.messages.some(message => message.role === "user" && !message.echo && !message.takenUp && !message.queueLost);
+  return state.messages.some(message => message.role === "user" && !message.echo && !message.takenUp);
 }
 
 /** Background chats need a working dot and a short response preview, not tool
@@ -10,7 +24,7 @@ export function hasLocalPrompt(state: ChatState): boolean {
  * checkpoint: callers forget its replay cursor before replacing a held chat.
  * Opening it reads the durable record again. */
 export function chatPreviewState(state: ChatState): ChatState {
-  const pending = state.messages.filter(message => message.role === "user" && !message.echo && !message.takenUp && !message.queueLost);
+  const pending = state.messages.filter(message => message.role === "user" && !message.echo && !message.takenUp);
   const messages: Message[] = [];
   for (let i = state.messages.length - 1; i >= 0 && messages.length < 3; i--) {
     const message = state.messages[i];
