@@ -972,7 +972,7 @@ impl ChatSession {
 /// What it buys is real: on one machine nine chats left open overnight held
 /// 4.3 GB between them — about 480 MB each, once each agent's own MCP servers
 /// are counted.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// How often the sweeper looks. Well under the timeout, and cheap: it takes one
 /// lock, reads a flag and an `Instant` per chat, and goes back to sleep.
@@ -2158,6 +2158,22 @@ impl ChatManager {
             .lock()
             .map(|s| s.contains_key(key))
             .unwrap_or(true)
+    }
+
+    /// Snapshot keys without waiting for a busy session's writer lock. The
+    /// worker reaper must not omit a failed process because it is mid-write.
+    pub(crate) fn process_keys(&self) -> std::collections::HashSet<String> {
+        self.sessions
+            .lock()
+            .map(|sessions| sessions.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// A terminal worker may still be returning its report to the provider.
+    /// Reclaim only after its full stop, using the ordinary idle reaper's
+    /// locked recheck (including background work, jobs and held queues).
+    pub(crate) fn reap_settled_worker(&self, key: &str) -> Result<bool, String> {
+        end_process_when(self, key, Some(Duration::ZERO))
     }
 
     pub(crate) fn hold_lifespan_checkout(
@@ -4163,6 +4179,23 @@ fn initialize_codex_app_server(
     Ok((thread_id, prelude))
 }
 
+/// Saved resume contexts intentionally omit project environment. Worker
+/// identity must survive that sanitization, reaping and restart, including
+/// legacy worker keys which do not carry the reserved prefix.
+fn worker_launch_role(
+    manager: &ChatManager,
+    key: &str,
+    env: Option<&std::collections::BTreeMap<String, String>>,
+) -> Result<bool, String> {
+    if env.is_some_and(|env| {
+        env.get("OCTIQ_ORCHESTRATION_ATTEMPT")
+            .is_some_and(|attempt| !attempt.trim().is_empty())
+    }) {
+        return Ok(true);
+    }
+    manager.orchestrations.is_worker_chat(key)
+}
+
 /// The person's own Codex MCP servers, as the Codex this chat would start
 /// sees them: `codex mcp list --json` through the agent shell, in the chat's
 /// folder, with the project's environment (a project may set `CODEX_HOME`).
@@ -4171,7 +4204,7 @@ fn codex_user_mcp_servers(
     env: Option<&std::collections::BTreeMap<String, String>>,
 ) -> Result<Vec<crate::agent_provider::CodexMcpServer>, String> {
     use std::io::Read;
-    const WHY: &str = "The front desk could not check which MCP servers Codex would give it";
+    const WHY: &str = "The restricted chat could not check which MCP servers Codex would give it";
     let shell = crate::proc::resolve_agent_shell(
         std::env::var("SHELL").ok(),
         std::env::var("LOCALAPPDATA").ok(),
@@ -4301,6 +4334,7 @@ pub(crate) fn start_session(
     // says, on every start, resume and relaunch alike.
     let front_desk =
         session_key == key && crate::team::is_front_desk_chat(&crate::team::default_path(), &key);
+    let orchestration_worker = worker_launch_role(&manager, &key, env.as_ref())?;
     let access = if front_desk {
         Some(Access::Read)
     } else {
@@ -4311,11 +4345,12 @@ pub(crate) fn start_session(
             desks.insert(session_key.clone(), agent);
         }
     }
-    // Codex has no `--strict-mcp-config`: a Codex front desk turns off each
-    // of the person's own MCP servers by name, so it has to know them. Asked
+    // Codex has no `--strict-mcp-config`: a worker/front desk turns off each
+    // inherited MCP server by name, so it has to know them. Asked
     // before the session table is locked; a list it cannot read stops the
-    // launch rather than start a front desk with the person's tools.
-    let codex_user_mcp = if front_desk && agent == ChatAgent::Codex {
+    // launch rather than silently inherit every server. Ordinary chats keep
+    // their configuration. Every start/resume/relaunch goes through this door.
+    let codex_user_mcp = if (front_desk || orchestration_worker) && agent == ChatAgent::Codex {
         codex_user_mcp_servers(&cwd, env.as_ref())?
     } else {
         Vec::new()
@@ -4451,10 +4486,6 @@ pub(crate) fn start_session(
     let authorizations = (agent == ChatAgent::Codex)
         .then(|| crate::safety_block::project_authorizations(&cwd))
         .flatten();
-    let orchestration_worker = env.as_ref().is_some_and(|env| {
-        env.get("OCTIQ_ORCHESTRATION_ATTEMPT")
-            .is_some_and(|attempt| !attempt.trim().is_empty())
-    });
     let wire_prompt = if mcp.is_some() {
         routed_prompt(agent, &prompt)
     } else {
@@ -12924,6 +12955,36 @@ mod start_claim_tests {
 mod idle_tests {
     use super::*;
 
+    #[test]
+    fn a_resumed_worker_keeps_its_role_after_the_saved_environment_is_removed() {
+        let manager = ChatManager::default();
+        let run = crate::orchestration::tests::run(&manager.orchestrations);
+        let legacy = format!("chat:legacy-worker-{}", uuid::Uuid::new_v4());
+        let worker = crate::orchestration::tests::settled_worker(
+            &manager.orchestrations,
+            &run,
+            Some(&legacy),
+        );
+        manager.test_remember_start(&legacy, "/unused");
+        let mut context = manager.start_context(&legacy).unwrap();
+        context.env = Some(std::collections::BTreeMap::from([(
+            "OCTIQ_ORCHESTRATION_ATTEMPT".into(),
+            worker.id,
+        )]));
+        manager
+            .orchestrations
+            .save_resume_context(&legacy, context)
+            .unwrap();
+        let saved = manager
+            .orchestrations
+            .saved_resume_context(&legacy)
+            .unwrap();
+        assert!(saved.env.is_none());
+        assert!(worker_launch_role(&manager, &legacy, saved.env.as_ref()).unwrap());
+        assert!(worker_launch_role(&manager, "chat:orch-resumed", None).unwrap());
+        assert!(!worker_launch_role(&manager, "chat:ordinary-resumed", None).unwrap());
+    }
+
     /// A session with a real process behind it, last active `ago` back.
     ///
     /// A real child rather than a fake one, because ending it is half of what
@@ -12962,7 +13023,10 @@ mod idle_tests {
             .insert(key.to_string(), session);
     }
 
-    const FIFTEEN: Duration = Duration::from_secs(15 * 60);
+    #[test]
+    fn default_idle_timeout_is_five_minutes() {
+        assert_eq!(IDLE_TIMEOUT, Duration::from_secs(5 * 60));
+    }
 
     #[test]
     fn native_background_work_keeps_an_idle_parent_alive_and_explicit_end_reports_ids() {
@@ -12976,7 +13040,11 @@ mod idle_tests {
         manager.background.observe(&key, "test-launch", &json!({
             "type": "system", "subtype": "task_started", "task_id": "native-agent-42", "task_type": "local_agent"
         })).unwrap();
-        assert!(sweep_still_chats(&manager, FIFTEEN).is_empty());
+        assert!(sweep_still_chats(&manager, IDLE_TIMEOUT).is_empty());
+        assert!(
+            !manager.reap_settled_worker(&key).unwrap(),
+            "native background work still owns the process"
+        );
         assert!(manager.sessions.lock().unwrap().contains_key(&key));
         end_process(&manager, &key).unwrap();
         assert!(manager
@@ -12993,9 +13061,9 @@ mod idle_tests {
         let key = "idle-recheck";
         let session = still_session(false, Duration::from_secs(20 * 60));
         put(&manager, key, session.clone());
-        assert_eq!(still_keys(&manager, FIFTEEN), vec![key]);
+        assert_eq!(still_keys(&manager, IDLE_TIMEOUT), vec![key]);
         session.lock().unwrap().turn_started();
-        assert!(!end_process_when(&manager, key, Some(FIFTEEN)).unwrap());
+        assert!(!end_process_when(&manager, key, Some(IDLE_TIMEOUT)).unwrap());
         end_process(&manager, key).unwrap();
     }
 
@@ -13036,10 +13104,13 @@ mod idle_tests {
         put(
             &m,
             "chat-a",
-            still_session(false, Duration::from_secs(20 * 60)),
+            still_session(false, Duration::from_secs(6 * 60)),
         );
 
-        assert_eq!(sweep_still_chats(&m, FIFTEEN), vec!["chat-a".to_string()]);
+        assert_eq!(
+            sweep_still_chats(&m, IDLE_TIMEOUT),
+            vec!["chat-a".to_string()]
+        );
         assert!(
             chat_list_impl(&m).unwrap().is_empty(),
             "and it is gone from the map, so the next message starts a fresh one"
@@ -13087,10 +13158,10 @@ mod idle_tests {
         put(
             &m,
             "chat-a",
-            still_session(false, Duration::from_secs(5 * 60)),
+            still_session(false, Duration::from_secs(4 * 60)),
         );
 
-        assert!(sweep_still_chats(&m, FIFTEEN).is_empty());
+        assert!(sweep_still_chats(&m, IDLE_TIMEOUT).is_empty());
         assert_eq!(chat_list_impl(&m).unwrap().len(), 1);
     }
 
@@ -13108,7 +13179,7 @@ mod idle_tests {
             still_session(true, Duration::from_secs(3 * 60 * 60)),
         );
 
-        assert!(sweep_still_chats(&m, FIFTEEN).is_empty());
+        assert!(sweep_still_chats(&m, IDLE_TIMEOUT).is_empty());
         assert_eq!(chat_list_impl(&m).unwrap().len(), 1);
     }
 

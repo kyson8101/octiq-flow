@@ -853,26 +853,38 @@ impl OrchestrationStore {
         Ok(())
     }
 
-    /// Stop the provider of every attempt that failed with an error and
-    /// still has a process, before it can execute further tools. It reads
-    /// the ledger's memory and saves nothing, so it never waits on a save.
+    /// Errors retain their immediate stop. Other terminal attempts give back
+    /// their process after the closing provider turn, without a 5m idle wait.
+    /// Read only live candidates and release the ledger before any chat lock.
+    /// This pass saves nothing, including while the profile folder is away.
     pub(super) fn stop_ended_workers(&self, chats: &ChatManager) {
+        let live = chats.process_keys();
+        if live.is_empty() {
+            return;
+        }
         let Ok(inner) = self.inner.lock() else {
             return;
         };
-        let ended: Vec<String> = inner
+        let ended: Vec<(String, bool)> = inner
             .data
             .attempts
             .values()
-            .filter(|a| a.status == AttemptStatus::Failed && a.execution.latest_error.is_some())
-            .map(|a| a.worker_chat_key.clone())
+            .filter(|a| live.contains(&a.worker_chat_key) && !attempt_is_unsettled(&inner.data, a))
+            .map(|a| {
+                (
+                    a.worker_chat_key.clone(),
+                    a.status == AttemptStatus::Failed && a.execution.latest_error.is_some(),
+                )
+            })
             .collect();
         drop(inner);
-        for key in ended {
-            if !chats.has_process(&key) {
-                continue;
-            }
-            if let Err(error) = crate::agent_chat::chat_stop_impl(chats, key.clone()) {
+        for (key, force) in ended {
+            let stopped = if force {
+                crate::agent_chat::chat_stop_impl(chats, key.clone())
+            } else {
+                chats.reap_settled_worker(&key).map(|_| ())
+            };
+            if let Err(error) = stopped {
                 eprintln!("orchestration: could not stop the ended worker {key}: {error}");
             }
         }
@@ -1148,6 +1160,86 @@ mod tests {
             .into_iter()
             .find(|a| a.id == id)
             .unwrap()
+    }
+
+    #[test]
+    fn a_settled_worker_finishes_its_closing_turn_before_its_process_is_freed() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let attempt = running_worker(&store, &run);
+        let chats = ChatManager::default();
+        chats.test_launch(&attempt.worker_chat_key);
+        chats.test_busy(&attempt.worker_chat_key, true);
+        store
+            .report_worker(
+                &attempt.worker_chat_key,
+                WorkerReport {
+                    attempt_id: attempt.id.clone(),
+                    outcome: WorkerOutcome::Completed,
+                    summary: "Done".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        store.stop_ended_workers(&chats);
+        assert!(
+            chats.has_process(&attempt.worker_chat_key),
+            "tool reply/closing turn still in flight"
+        );
+        chats.test_busy(&attempt.worker_chat_key, false);
+        store.stop_ended_workers(&chats);
+        let still_running = chats.has_process(&attempt.worker_chat_key);
+        if still_running {
+            crate::agent_chat::chat_stop_impl(&chats, attempt.worker_chat_key.clone()).unwrap();
+        }
+        assert!(!still_running);
+        store
+            .worker_disconnected(&attempt.worker_chat_key, None)
+            .unwrap();
+        assert_eq!(latest(&store, &attempt.id).status, AttemptStatus::Completed);
+    }
+
+    #[test]
+    fn an_open_gate_keeps_its_idle_worker_but_a_blocked_report_ends_it() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let gated = running_worker(&store, &run);
+        let chats = ChatManager::default();
+        chats.test_launch(&gated.worker_chat_key);
+        store
+            .create_gate(
+                &gated.worker_chat_key,
+                run.id.clone(),
+                Some(gated.task_id.clone()),
+                "Choose".into(),
+                vec![],
+            )
+            .unwrap();
+        store.stop_ended_workers(&chats);
+        assert!(chats.has_process(&gated.worker_chat_key));
+        crate::agent_chat::chat_stop_impl(&chats, gated.worker_chat_key.clone()).unwrap();
+
+        let blocked = running_worker(&store, &run);
+        chats.test_launch(&blocked.worker_chat_key);
+        store
+            .report_worker(
+                &blocked.worker_chat_key,
+                WorkerReport {
+                    attempt_id: blocked.id.clone(),
+                    outcome: WorkerOutcome::Blocked,
+                    summary: "Cannot continue".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        store.stop_ended_workers(&chats);
+        let still_running = chats.has_process(&blocked.worker_chat_key);
+        if still_running {
+            crate::agent_chat::chat_stop_impl(&chats, blocked.worker_chat_key.clone()).unwrap();
+        }
+        assert!(!still_running);
     }
     fn capacity(store: &OrchestrationStore, attempt: &Attempt) {
         store
