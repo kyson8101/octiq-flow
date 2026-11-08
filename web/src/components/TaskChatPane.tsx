@@ -40,7 +40,7 @@ export type TaskChatPaneProps = {
   hasEarlier: boolean;
   loadingEarlier: boolean;
   earlierError?: string;
-  onLoadEarlier: () => Promise<void>;
+  onLoadEarlier: (ready?: () => Promise<void>) => Promise<void>;
   onLoadLatest?: () => Promise<void>;
   connected: boolean;
   context?: PanelContext;

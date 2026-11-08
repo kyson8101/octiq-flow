@@ -11,10 +11,10 @@ const web = resolve(process.env.OCTIQ_WEB_ROOT || fileURLToPath(new URL('..', im
 const require = createRequire(join(web, 'package.json'));
 const { createServer, preview } = await import(pathToFileURL(require.resolve('vite')).href);
 const spec = process.env.PLAYWRIGHT_MODULE || 'playwright';
-const playwright = await import(isAbsolute(spec) ? pathToFileURL(spec).href : spec);
+const playwright = await import(isAbsolute(spec) || spec.startsWith('.') ? pathToFileURL(resolve(spec)).href : spec);
 const engine = process.env.HISTORY_ENGINE || 'chromium', baseline = process.env.HISTORY_BASELINE === '1';
 const project = { id: 'history', name: 'History fixture', primary_path: '/fixture', paths: ['/fixture'], env: {} };
-const turns = 1200, pageTurns = Number(process.env.HISTORY_PAGE_TURNS || 3), presses = 16;
+const turns = 1200, pageTurns = Number(process.env.HISTORY_PAGE_TURNS || 3), presses = Number(process.env.HISTORY_PRESSES || 16);
 const frames = n => [
   { seq: n * 4 + 1, event: { type: 'user', uuid: `u-${n}`, octiq_user_turn_id: `t-${n}`, message: { content: [{ type: 'text', text: `Question ${n}.` }] } } },
   { seq: n * 4 + 2, event: { type: 'assistant', message: { id: `a-${n}`, content: [{ type: 'text', text: `Answer ${n}.\n\n` + ('A paragraph for reading history. '.repeat(12) + '\n\n').repeat(4) }, { type: 'tool_use', id: `c-${n}`, name: 'Read', input: { path: '/fixture/file' } }] } } },
@@ -29,7 +29,10 @@ try {
     ? await preview({ root: web, build: { outDir: resolve(process.env.OCTIQ_TEST_DIST) }, preview: { host: '127.0.0.1', port: 0, strictPort: false } })
     : await createServer({ root: web, cacheDir: join(scratch, '.vite'), server: { host: '127.0.0.1', port: 0, strictPort: false, fs: { allow: [web, fileURLToPath(new URL('../node_modules', import.meta.url))] } } });
   if (!process.env.OCTIQ_TEST_DIST) await server.listen();
-  browser = await playwright[engine].launch({ headless: true, ...(engine === 'chromium' ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH || '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser', args: ['--enable-precise-memory-info'] } : process.env.HISTORY_WEBKIT_EXECUTABLE_PATH ? { executablePath: process.env.HISTORY_WEBKIT_EXECUTABLE_PATH } : {}) });
+  browser = await playwright[engine].launch({ headless: true, ...(engine === 'chromium' ? {
+    ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : { channel: process.env.PLAYWRIGHT_CHANNEL || 'chrome' }),
+    args: ['--enable-precise-memory-info'],
+  } : process.env.HISTORY_WEBKIT_EXECUTABLE_PATH ? { executablePath: process.env.HISTORY_WEBKIT_EXECUTABLE_PATH } : {}) });
   for (const width of [1280, 390]) {
     const context = await browser.newContext({ viewport: { width, height: 844 }, ...(width === 390 ? { isMobile: true, hasTouch: true } : {}) });
     let reads = 0, wireBytes = 0;
@@ -88,7 +91,7 @@ try {
         const mode = ['button', 'scroll', 'momentum'][i % 3];
         await page.evaluate(mode => {
           const el = document.querySelector('.msgs');
-          el.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -100 }));
+          if (mode !== 'button') el.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -100 }));
           el.scrollTop = 0;
           const anchor = el.querySelector('[data-map-turn]');
           window.__historySample = { id: anchor.dataset.mapTurn, top: anchor.getBoundingClientRect().top, started: performance.now(), drift: [] };
@@ -157,14 +160,16 @@ try {
         const top = anchor.getBoundingClientRect().top;
         el.querySelector('[data-map-turn]').style.marginTop = '137px';
         await new Promise(resolve => setTimeout(resolve, 120));
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (Math.abs(anchor.getBoundingClientRect().top - top) > 2) console.log('late-layout', { anchorStyle: el.style.overflowAnchor, top, now: anchor.getBoundingClientRect().top, inner: el.querySelector('.msgs-inner').getBoundingClientRect().height });
         return anchor.getBoundingClientRect().top - top;
       });
       if (!baseline) {
         assert.notEqual(reflow, null);
         assert.ok(Math.abs(reflow) <= 2, `late layout drift ${reflow}px`);
-        if (samples.at(-1).heap !== null && pageTurns === 3) assert.ok(samples.at(-1).heap - samples[11].heap < 4 * 1024 * 1024, 'heap must plateau once the page window is full');
+        if (samples.at(-1).heap !== null && pageTurns === 3 && presses >= 12) assert.ok(samples.at(-1).heap - samples[11].heap < 4 * 1024 * 1024, 'heap must plateau once the page window is full');
       }
-      const result = { engine, width, baseline, pageTurns, initialHeap, samples, lateLayoutDriftPx: reflow, errors };
+      const result = { engine, browserVersion: browser.version(), width, baseline, pageTurns, initialHeap, samples, lateLayoutDriftPx: reflow, errors };
       results.push(result); console.log(JSON.stringify(result));
       assert.deepEqual(errors, []);
       await cdp?.detach();

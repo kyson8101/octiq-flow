@@ -1432,7 +1432,7 @@ const MessageListBody = function MessageList({
   hasEarlier?: boolean;
   loadingEarlier?: boolean;
   earlierError?: string;
-  onLoadEarlier?: () => Promise<void>;
+  onLoadEarlier?: (ready?: () => Promise<void>) => Promise<void>;
   onLoadLatest?: () => Promise<void>;
   busy: boolean;
   stoppedAt?: string;
@@ -1487,7 +1487,9 @@ const MessageListBody = function MessageList({
   const innerRef = useRef<HTMLDivElement>(null);
   const loadMoreRef = useRef<() => void>(() => {});
   const morePending = useRef(false);
-  const prependAnchor = useRef<{ id?: string; first?: string; at: ChatPlace } | null>(null);
+  const prependAnchor = useRef<{ id?: string; first?: string; at: ChatPlace; server: boolean } | null>(null);
+  const lastScroll = useRef(0);
+  const touching = useRef(false);
   // Only follow the stream while the reader is already at the bottom: yanking
   // the view down while someone is reading back is the worst thing a streaming
   // chat can do.
@@ -1683,6 +1685,7 @@ const MessageListBody = function MessageList({
     const mark = (event?: Event) => {
       if (isJumpControl(event?.target ?? null)) return;
       if (event) correctedTop.current = null;
+      if (event) lastScroll.current = performance.now();
       gesture.current = true;
       // The reader has taken the scroller. An animation still running under
       // their finger fights them for it, and they win either way — so it ends
@@ -1727,10 +1730,10 @@ const MessageListBody = function MessageList({
     const onScroll = () => {
       const corrected = correctedTop.current;
       correctedTop.current = null;
-      if (corrected !== null && el.scrollTop === corrected) return;
+      if (corrected !== null && Math.abs(el.scrollTop - corrected) <= 1) return;
       // The reader may keep moving (or use the map) while chat_page is in
       // flight. Preserve their latest view when the page finally arrives.
-      if (prependAnchor.current) {
+      if (gesture.current && prependAnchor.current && el.querySelector<HTMLElement>("[data-map-turn]")?.dataset.mapTurn === prependAnchor.current.first) {
         prependAnchor.current.at = prependPlaceFrom(el.scrollTop, anchorsIn(el));
       }
       if (!gesture.current) {
@@ -1747,6 +1750,7 @@ const MessageListBody = function MessageList({
       // the reader back to the bottom they had just scrolled away from. The
       // glide is still the reader's gesture, so it keeps the window open.
       mark();
+      lastScroll.current = performance.now();
       const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM;
       stick.current = atBottom;
       setAway(!atBottom);
@@ -1758,10 +1762,14 @@ const MessageListBody = function MessageList({
     // A reload is the other half of what a place is for, and a place noted
     // 200ms before one would otherwise be lost with the page.
     const leaving = () => flushPlace();
+    const touchStart = (event: Event) => { touching.current = true; mark(event); };
+    const touchEnd = () => { touching.current = false; lastScroll.current = performance.now(); };
     el.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("pagehide", leaving);
     el.addEventListener("wheel", mark, { passive: true });
-    el.addEventListener("touchstart", mark, { passive: true });
+    el.addEventListener("touchstart", touchStart, { passive: true });
+    el.addEventListener("touchend", touchEnd, { passive: true });
+    el.addEventListener("touchcancel", touchEnd, { passive: true });
     el.addEventListener("touchmove", mark, { passive: true });
     el.addEventListener("pointerdown", mark, { passive: true });
     el.addEventListener("keydown", mark);
@@ -1770,6 +1778,8 @@ const MessageListBody = function MessageList({
     el.addEventListener("focusin", mediaIntent);
     return () => {
       window.clearTimeout(until);
+      touching.current = false;
+      conv.current = undefined;
       stopGlide();
       // Whatever was noted and not yet written: the transcript is going away,
       // and the place was worked out while it was still on screen.
@@ -1777,7 +1787,9 @@ const MessageListBody = function MessageList({
       window.removeEventListener("pagehide", leaving);
       el.removeEventListener("scroll", onScroll);
       el.removeEventListener("wheel", mark);
-      el.removeEventListener("touchstart", mark);
+      el.removeEventListener("touchstart", touchStart);
+      el.removeEventListener("touchend", touchEnd);
+      el.removeEventListener("touchcancel", touchEnd);
       el.removeEventListener("touchmove", mark);
       el.removeEventListener("pointerdown", mark);
       el.removeEventListener("keydown", mark);
@@ -1807,6 +1819,7 @@ const MessageListBody = function MessageList({
     // Whatever gesture opened this chat was aimed at the sidebar, not at the
     // transcript; letting it carry over would judge the new chat by it.
     gesture.current = false;
+    touching.current = false;
     correctedTop.current = null;
     // A glide belongs to the conversation it was started in. Left running it
     // would ease the NEW transcript from the old one's offset — see it as the
@@ -1939,6 +1952,15 @@ const MessageListBody = function MessageList({
     setWindow(visibleWindow);
     prependAnchor.current = null;
   }
+  // The incoming page and its visible window are ONE commit. Previously App
+  // first installed the messages behind the old window, then the callback
+  // revealed them on another commit. WebKit could scroll/overwrite the anchor
+  // between those two layouts.
+  const incoming = prependAnchor.current;
+  if (incoming?.server && incoming.id === conversationId && turns[0]?.[0].id !== incoming.first && visibleWindow.first !== null) {
+    visibleWindow = { id: conversationId, ready: true, first: null };
+    setWindow(visibleWindow);
+  }
   const start = turnWindowStart(turns, visibleWindow.first);
   const visibleTurns = useMemo(() => turns.slice(start), [turns, start]);
   // Marks whose turn is not shown yet: at the head until it is.
@@ -1957,24 +1979,43 @@ const MessageListBody = function MessageList({
   if (historyRow.id !== conversationId || (showHistoryRow && !historyRow.shown)) {
     setHistoryRow({ id: conversationId, shown: showHistoryRow });
   }
-  const loadMore = async () => {
+  const loadMore = async (pressed = false) => {
     if (!hasMore || loadingEarlier || morePending.current) return;
     const el = scrollerRef.current;
     if (!el) return;
     const id = conversationId;
+    const requestedAt = performance.now();
     const at = prependPlaceFrom(el.scrollTop, anchorsIn(el));
-    prependAnchor.current = { id, first: visibleTurns[0]?.[0].id, at };
-    holdPlace(at);
+    prependAnchor.current = { id, first: visibleTurns[0]?.[0].id, at, server: start === 0 };
     stopGlide();
+    releasePlace();
     stick.current = false;
-    if (start > 0) {
-      setWindow({ id, ready: true, first: turns[Math.max(0, start - TURN_BATCH)][0].id });
-      return;
-    }
     morePending.current = true;
+    // iOS ignores/fights scrollTop writes while a native flick is moving. The
+    // download can run meanwhile, but neither path changes the DOM until the
+    // finger is up and scroll events have been quiet for 120 ms.
+    const ready = async () => {
+      let quietFrames = 0;
+      // A delivered button click has already ended the tap/drag that reached
+      // it. Only scrolling AFTER that press needs another native quiet wait.
+      while ((!pressed || lastScroll.current > requestedAt || touching.current) && conv.current === id && document.visibilityState !== "hidden") {
+        // A timer can run ahead of a queued native animation frame after a
+        // busy render. Require two quiet frames as well as the quiet interval.
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        if (touching.current || performance.now() - lastScroll.current < 120) quietFrames = 0;
+        else if (++quietFrames >= 2) break;
+      }
+      if (conv.current !== id || !prependAnchor.current) return;
+      const latest = prependPlaceFrom(el.scrollTop, anchorsIn(el));
+      prependAnchor.current.at = latest;
+      gesture.current = false;
+      holdPlace(latest);
+    };
     try {
-      await onLoadEarlier?.();
-      if (conv.current === id) setWindow({ id, ready: true, first: null });
+      if (start > 0) {
+        await ready();
+        if (conv.current === id) setWindow({ id, ready: true, first: turns[Math.max(0, start - TURN_BATCH)][0].id });
+      } else await onLoadEarlier?.(ready);
     } catch (error) {
       if (conv.current === id) {
         prependAnchor.current = null;
@@ -1987,12 +2028,12 @@ const MessageListBody = function MessageList({
   useLayoutEffect(() => {
     const saved = prependAnchor.current;
     const el = scrollerRef.current;
-    if (!saved || saved.id !== conversationId || !el || saved.first === visibleTurns[0]?.[0].id) return;
+    if (!saved || saved.id !== conversationId || !el || (saved.first === visibleTurns[0]?.[0].id && loadingEarlier)) return;
     prependAnchor.current = null;
     holdPlace(saved.at);
     restorePlace(saved.at);
     setAway(el.scrollHeight - el.scrollTop - el.clientHeight >= NEAR_BOTTOM);
-  }, [visibleTurns, conversationId]);
+  }, [visibleTurns, conversationId, loadingEarlier]);
   useLayoutEffect(() => {
     // App reports a failed page on a prop instead of rejecting the callback.
     // It has no prepend to wait for, and the retry must remain usable.
@@ -2120,7 +2161,7 @@ const MessageListBody = function MessageList({
         {showHistoryRow && (
           <div className="history-more">
             {hasMore || loadingEarlier || morePending.current ? (
-            <button type="button" disabled={loadingEarlier || morePending.current} onClick={() => void loadMore()}>
+            <button type="button" disabled={loadingEarlier || morePending.current} onClick={() => void loadMore(true)}>
               {loadingEarlier || morePending.current ? "Loading earlier messages…" : "Load earlier messages"}
             </button>
             ) : <span className="history-start">Start of conversation</span>}
