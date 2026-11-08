@@ -11,7 +11,7 @@ const script = fileURLToPath(new URL("./mcp/octiq-ask.cjs", import.meta.url));
 const samples = [];
 for (let run = 0; run < 5; run++) for (const flags of [[], ["--optimize-for-size"], ["--jitless"]]) {
   const child = spawn(process.execPath, [...flags, script], {
-    env: { ...process.env, OCTIQ_CHAT_KEY: "chat:footprint-fixture", OCTIQ_ORCHESTRATION_ATTEMPT: "", OCTIQ_FRONT_DESK: "", OCTIQ_CHAT_CAPABILITY: "", OCTIQ_HOOK_PORT: "", OCTIQ_SESSION_KEY: "" },
+    env: { ...process.env, OCTIQ_CHAT_KEY: "chat:footprint-fixture", OCTIQ_ORCHESTRATION_ATTEMPT: "", OCTIQ_FRONT_DESK: "", OCTIQ_CHAT_CAPABILITY: "", OCTIQ_HOOK_PORT: "", OCTIQ_SESSION_KEY: "", OCTIQ_ROOT: fileURLToPath(new URL("./mcp/", import.meta.url)) },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let errors = ""; child.stderr.on("data", d => { errors += d; });

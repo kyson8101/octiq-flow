@@ -168,8 +168,8 @@ pub struct AgentCommand<'a> {
     /// A front-desk chat (`handover::route`): it routes the person to an
     /// agent and does nothing else, so it gets no tool but `route_chat`.
     pub front_desk: bool,
-    /// The person's own Codex MCP servers, which a Codex front desk turns
-    /// off one by one (`codex_front_desk_mcp_servers`). Empty otherwise.
+    /// The person's Codex MCP servers. Workers and front desks turn these
+    /// off individually; ordinary chats inherit them unchanged.
     pub codex_user_mcp: &'a [CodexMcpServer],
     /// The person's personal preferences from Settings, already worded for a
     /// system prompt (`personal_preferences::prompt`). Every provider ends
@@ -196,9 +196,8 @@ pub struct CodexMcpServer {
 }
 
 /// The person's Codex MCP servers, read from `codex mcp list --json`. Codex
-/// has no `--strict-mcp-config`, so this list is how a front desk knows what
-/// to turn off. A name Codex itself would refuse is an error: a server the
-/// front desk cannot name is one it cannot turn off.
+/// has no `--strict-mcp-config`, so workers and front desks use this list to
+/// turn inherited servers off. An unaddressable name fails the launch closed.
 pub fn codex_front_desk_mcp_servers(json: &str) -> Result<Vec<CodexMcpServer>, String> {
     let listed: Vec<Value> = serde_json::from_str(json)
         .map_err(|e| format!("Codex's MCP server list could not be read: {e}"))?;
@@ -214,7 +213,7 @@ pub fn codex_front_desk_mcp_servers(json: &str) -> Result<Vec<CodexMcpServer>, S
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         {
             return Err(format!(
-                "Codex listed an MCP server named {name:?}, which the front desk cannot turn off."
+                "Codex listed an MCP server named {name:?}, which the restricted chat cannot turn off."
             ));
         }
         // Ours is set on the command line and replaces any of that name.
@@ -264,6 +263,18 @@ fn append_codex_front_desk(cmd: &mut String, servers: &[CodexMcpServer]) {
         cmd.push_str(&format!(" --disable {feature}"));
     }
     cmd.push_str(&format!(" -c {}", sh_quote("web_search=\"disabled\"")));
+    append_codex_inherited_mcp_off(cmd, servers);
+}
+
+/// Only the MCP selection changes for a worker: retain execution tools,
+/// sandbox, approvals, hooks and memories. Apps/plugins may start their own
+/// MCPs outside the configured server list, so they must stay off too.
+fn append_codex_worker_mcp(cmd: &mut String, servers: &[CodexMcpServer]) {
+    cmd.push_str(" --disable apps --disable plugins");
+    append_codex_inherited_mcp_off(cmd, servers);
+}
+
+fn append_codex_inherited_mcp_off(cmd: &mut String, servers: &[CodexMcpServer]) {
     for server in servers {
         let off = if server.remote {
             format!(
@@ -569,6 +580,11 @@ impl AgentProvider for ClaudeProvider {
         // that built-in tool is removed in favour of OctiqFlow's MCP tool.
         cmd.push_str(" --permission-prompt-tool stdio");
         cmd.push_str(" --disallowedTools AskUserQuestion");
+        if request.orchestration_worker && !request.front_desk && !request.lite {
+            // Keep settings/hooks/skills and leave the system prompt last:
+            // the Windows launch-line guard checks its final outage guidance.
+            cmd.push_str(" --strict-mcp-config");
+        }
         if request.front_desk {
             // No built-in tool at all, the one MCP tool it needs, and none of
             // the person's MCP servers, skills or settings.
@@ -846,6 +862,8 @@ fn codex_exec_command(request: &AgentCommand<'_>, provider: &CodexProvider) -> S
     append_codex_mcp(&mut cmd, request.mcp_config, request.front_desk);
     if request.front_desk {
         append_codex_front_desk(&mut cmd, request.codex_user_mcp);
+    } else if request.orchestration_worker {
+        append_codex_worker_mcp(&mut cmd, request.codex_user_mcp);
     }
     let extra_dirs: &[String] = if request.front_desk {
         &[]
@@ -945,6 +963,8 @@ impl AgentProvider for CodexProvider {
             append_codex_mcp(&mut cmd, request.mcp_config, request.front_desk);
             if request.front_desk {
                 append_codex_front_desk(&mut cmd, request.codex_user_mcp);
+            } else if request.orchestration_worker {
+                append_codex_worker_mcp(&mut cmd, request.codex_user_mcp);
             }
             cmd
         }
@@ -2445,6 +2465,13 @@ pub(crate) mod tests {
         assert!(!claude.contains("--setting-sources"), "settings/hooks stay");
         assert!(!claude.contains("--tools ''"), "execution tools stay");
         assert!(claude.contains("mcp__octiq__orchestration_worker_report"));
+        let ordinary = AgentCommand {
+            orchestration_worker: false,
+            ..worker
+        };
+        assert!(!CLAUDE
+            .build_command(&ordinary)
+            .contains(" --strict-mcp-config"));
         for line in [
             CODEX.build_command(&worker),
             codex_exec_command(&worker, &CODEX),

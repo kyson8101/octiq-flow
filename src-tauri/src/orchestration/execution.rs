@@ -843,26 +843,38 @@ impl OrchestrationStore {
         Ok(())
     }
 
-    /// Stop the provider of every attempt that failed with an error and
-    /// still has a process, before it can execute further tools. It reads
-    /// the ledger's memory and saves nothing, so it never waits on a save.
+    /// Errors retain their immediate stop. Other terminal attempts give back
+    /// their process after the closing provider turn, without a 15m idle wait.
+    /// Read only live candidates and release the ledger before any chat lock.
+    /// This pass saves nothing, including while the profile folder is away.
     pub(super) fn stop_ended_workers(&self, chats: &ChatManager) {
+        let live = chats.process_keys();
+        if live.is_empty() {
+            return;
+        }
         let Ok(inner) = self.inner.lock() else {
             return;
         };
-        let ended: Vec<String> = inner
+        let ended: Vec<(String, bool)> = inner
             .data
             .attempts
             .values()
-            .filter(|a| a.status == AttemptStatus::Failed && a.execution.latest_error.is_some())
-            .map(|a| a.worker_chat_key.clone())
+            .filter(|a| live.contains(&a.worker_chat_key) && !attempt_is_unsettled(&inner.data, a))
+            .map(|a| {
+                (
+                    a.worker_chat_key.clone(),
+                    a.status == AttemptStatus::Failed && a.execution.latest_error.is_some(),
+                )
+            })
             .collect();
         drop(inner);
-        for key in ended {
-            if !chats.has_process(&key) {
-                continue;
-            }
-            if let Err(error) = crate::agent_chat::chat_stop_impl(chats, key.clone()) {
+        for (key, force) in ended {
+            let stopped = if force {
+                crate::agent_chat::chat_stop_impl(chats, key.clone())
+            } else {
+                chats.reap_settled_worker(&key).map(|_| ())
+            };
+            if let Err(error) = stopped {
                 eprintln!("orchestration: could not stop the ended worker {key}: {error}");
             }
         }

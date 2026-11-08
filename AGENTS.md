@@ -1905,6 +1905,23 @@ on disk, the client's send path already starts a chat it has no process for with
 `resume`, and the `exit` event it triggers is what turns the live dot off.
 `OCTIQ_CHAT_IDLE_MINS=0` turns it off; any other number sets the minutes.
 
+Settled orchestration workers do not wait for that timeout: the existing
+two-second worker scheduler releases their provider after its closing turn.
+It snapshots terminal attempts off the chat locks, then uses the same locked
+idle recheck (turns, background work, jobs and held queues). Open decision gates
+keep their attempts unsettled. Terminal provider errors still stop immediately.
+The record, workspace, resume context and reported outcome survive reclamation;
+this cleanup is independent of `OCTIQ_CHAT_IDLE_MINS=0`.
+
+Claude/Codex workers start only OctiqFlow's MCP; ordinary chats keep the person's
+configured servers. Claude uses `--strict-mcp-config` without dropping settings
+or hooks; Codex lists inherited servers in the launch cwd/environment and turns
+them off individually, plus apps/plugins which may add their own MCPs. A list it
+cannot read/validate refuses the launch. Native/exec Codex, resume and relaunch
+all use that policy. There is no external-server role allowlist yet; Pi's
+one-shot/no-MCP path and Antigravity's plugin settings remain unchanged.
+See [measurements and limits](docs/agent-chat-footprint.md).
+
 - **"Idle" is `!busy`, never "no output lately".** A turn is in flight from the
   moment something is written to the agent's stdin until its own full stop
   (`result` / `turn.completed` / `turn.failed`). An agent inside a 20-minute

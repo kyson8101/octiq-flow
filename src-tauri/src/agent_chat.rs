@@ -2159,6 +2159,22 @@ impl ChatManager {
             .unwrap_or(true)
     }
 
+    /// Snapshot keys without waiting for a busy session's writer lock. The
+    /// worker reaper must not omit a failed process because it is mid-write.
+    pub(crate) fn process_keys(&self) -> std::collections::HashSet<String> {
+        self.sessions
+            .lock()
+            .map(|sessions| sessions.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// A terminal worker may still be returning its report to the provider.
+    /// Reclaim only after its full stop, using the ordinary idle reaper's
+    /// locked recheck (including background work, jobs and held queues).
+    pub(crate) fn reap_settled_worker(&self, key: &str) -> Result<bool, String> {
+        end_process_when(self, key, Some(Duration::ZERO))
+    }
+
     pub(crate) fn hold_lifespan_checkout(
         &self,
         checkout: &str,
@@ -4098,7 +4114,7 @@ fn codex_user_mcp_servers(
     env: Option<&std::collections::BTreeMap<String, String>>,
 ) -> Result<Vec<crate::agent_provider::CodexMcpServer>, String> {
     use std::io::Read;
-    const WHY: &str = "The front desk could not check which MCP servers Codex would give it";
+    const WHY: &str = "The restricted chat could not check which MCP servers Codex would give it";
     let shell = crate::proc::resolve_agent_shell(
         std::env::var("SHELL").ok(),
         std::env::var("LOCALAPPDATA").ok(),
@@ -4228,6 +4244,10 @@ pub(crate) fn start_session(
     // says, on every start, resume and relaunch alike.
     let front_desk =
         session_key == key && crate::team::is_front_desk_chat(&crate::team::default_path(), &key);
+    let orchestration_worker = env.as_ref().is_some_and(|env| {
+        env.get("OCTIQ_ORCHESTRATION_ATTEMPT")
+            .is_some_and(|attempt| !attempt.trim().is_empty())
+    });
     let access = if front_desk {
         Some(Access::Read)
     } else {
@@ -4238,11 +4258,12 @@ pub(crate) fn start_session(
             desks.insert(session_key.clone(), agent);
         }
     }
-    // Codex has no `--strict-mcp-config`: a Codex front desk turns off each
-    // of the person's own MCP servers by name, so it has to know them. Asked
+    // Codex has no `--strict-mcp-config`: a worker/front desk turns off each
+    // inherited MCP server by name, so it has to know them. Asked
     // before the session table is locked; a list it cannot read stops the
-    // launch rather than start a front desk with the person's tools.
-    let codex_user_mcp = if front_desk && agent == ChatAgent::Codex {
+    // launch rather than silently inherit every server. Ordinary chats keep
+    // their configuration. Every start/resume/relaunch goes through this door.
+    let codex_user_mcp = if (front_desk || orchestration_worker) && agent == ChatAgent::Codex {
         codex_user_mcp_servers(&cwd, env.as_ref())?
     } else {
         Vec::new()
@@ -4378,10 +4399,6 @@ pub(crate) fn start_session(
     let authorizations = (agent == ChatAgent::Codex)
         .then(|| crate::safety_block::project_authorizations(&cwd))
         .flatten();
-    let orchestration_worker = env.as_ref().is_some_and(|env| {
-        env.get("OCTIQ_ORCHESTRATION_ATTEMPT")
-            .is_some_and(|attempt| !attempt.trim().is_empty())
-    });
     let wire_prompt = if mcp.is_some() {
         routed_prompt(agent, &prompt)
     } else {
@@ -12901,6 +12918,10 @@ mod idle_tests {
             "type": "system", "subtype": "task_started", "task_id": "native-agent-42", "task_type": "local_agent"
         })).unwrap();
         assert!(sweep_still_chats(&manager, FIFTEEN).is_empty());
+        assert!(
+            !manager.reap_settled_worker(&key).unwrap(),
+            "native background work still owns the process"
+        );
         assert!(manager.sessions.lock().unwrap().contains_key(&key));
         end_process(&manager, &key).unwrap();
         assert!(manager

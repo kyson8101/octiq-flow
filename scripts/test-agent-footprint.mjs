@@ -25,6 +25,7 @@ function providerStub() {
   const provider = path.basename(process.argv[1]), argv = process.argv.slice(2);
   const servers = ["fixture_browser", "fixture_codegraph", "fixture_docs"];
   if (argv.includes("--version")) { console.log("stub 1.0.0"); return; }
+  if (argv.includes("models") || argv.includes("--help")) { console.log("[]"); return; }
   if (argv[0] === "mcp") { console.log(JSON.stringify(servers.map(name => ({ name, transport: { type: "stdio" } })))); return; }
   const log = data => fs.appendFileSync(process.env.FOOTPRINT_LOG, JSON.stringify({ provider, pid: process.pid, key: process.env.OCTIQ_CHAT_KEY, ...data }) + "\n");
   const out = data => process.stdout.write(JSON.stringify(data) + "\n");
@@ -79,15 +80,15 @@ const port = portFinder.address().port;
 await new Promise(resolve => portFinder.close(resolve));
 const token = "isolated-footprint-fixture";
 const env = { ...process.env, HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, ".codex"), CLAUDE_CONFIG_DIR: path.join(home, ".claude"), SHELL: shell, PATH: `${bin}:${process.env.PATH}`, FOOTPRINT_LOG: callsFile, OCTIQ_CHAT_KEY: "", OCTIQ_SESSION_KEY: "", OCTIQ_CHAT_CAPABILITY: "", OCTIQ_ORCHESTRATION_ATTEMPT: "", OCTIQ_FRONT_DESK: "", OCTIQ_HOOK_PORT: "", OCTIQ_ROOT: "",
-  OCTIQ_WEB_PORT: String(port), OCTIQ_WEB_TOKEN: token, OCTIQ_CHAT_IDLE_MINS: "1", OCTIQ_CODEX_TRANSPORT: "app-server" };
+  OCTIQ_WEB_BIND: "127.0.0.1", OCTIQ_WEB_PORT: String(port), OCTIQ_WEB_TOKEN: token, OCTIQ_CHAT_IDLE_MINS: "1", OCTIQ_CODEX_TRANSPORT: "app-server" };
 const server = spawn(binary, [], { env, stdio: ["ignore", "pipe", "pipe"] });
 let serverLog = "", ws, sequence = 0;
 server.stdout.on("data", d => { serverLog += d; }); server.stderr.on("data", d => { serverLog += d; });
 const replies = new Map(), events = [], keys = [], labels = {};
 const calls = () => fs.existsSync(callsFile) ? fs.readFileSync(callsFile, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [];
-const wait = async (label, test, timeout = 30_000) => {
+const wait = async (label, test, timeout = 30_000, interval = 100) => {
   const until = Date.now() + timeout;
-  while (Date.now() < until) { const result = await test(); if (result) return result; await new Promise(r => setTimeout(r, 100)); }
+  while (Date.now() < until) { const result = await test(); if (result) return result; await new Promise(r => setTimeout(r, interval)); }
   throw new Error(`Timed out: ${label}`);
 };
 const invoke = (cmd, args = {}) => new Promise((resolve, reject) => {
@@ -138,7 +139,7 @@ try {
   result.settled = measure();
   for (const worker of workers) assert.equal(Boolean(result.settled[worker.workerChatKey]), !after, "settled worker lifetime");
   const idleStarted = Date.now();
-  await wait("idle sweep frees every fixture descendant", () => Object.keys(measure()).length === 0, 130_000);
+  await wait("idle sweep frees every fixture descendant", () => Object.keys(measure()).length === 0, 130_000, 5000);
   result.idleSweepWaitMs = Date.now() - idleStarted;
   result.afterIdleSweep = measure();
   // MCPs have their own pipe lifetime. Check their pids, not just attribution:
