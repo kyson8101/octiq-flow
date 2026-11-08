@@ -67,6 +67,7 @@ import { foldNoticeReplies, isNoticeTurn, noticeReply, noticeText, readNoticeTur
 import { ChatPersonaContext } from "../lib/agentRoster";
 import { HostNotice } from "./HostNotice";
 import { initialTurn, turnWindowStart, TURN_BATCH } from "../lib/messageWindow";
+import { dropHeld, repeatsAnother } from "../lib/pressGuard";
 import { parseVisualizationReference, VisualizationLink } from "./Visualization";
 import {
   chatPlaceOf,
@@ -1678,6 +1679,20 @@ const MessageListBody = function MessageList({
     glideToBottom();
   };
 
+  // A past window ends before the live tail. Its bottom is not "caught up",
+  // even when no new delta has arrived since paging. Keep the way back in the
+  // viewport for EVERY past window, without retaining or counting live output.
+  const jumpVisible = !!onLoadLatest || away;
+  const latestRequested = useRef<{ id: string | undefined } | null>(null);
+  useLayoutEffect(() => {
+    const requested = latestRequested.current;
+    if (!requested || loadingEarlier) return;
+    latestRequested.current = null;
+    // A failed read leaves onLoadLatest in place; a chat switch belongs to
+    // that chat's restore effect. Only a successful, explicit return follows.
+    if (requested.id === conversationId && !onLoadLatest) jumpToBottom();
+  }, [conversationId, loadingEarlier, onLoadLatest]);
+
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
@@ -2169,7 +2184,6 @@ const MessageListBody = function MessageList({
           </div>
         )}
         {head}
-        {onLoadLatest && <button type="button" className="load-earlier" disabled={loadingEarlier} onClick={() => void onLoadLatest()}>Return to latest messages</button>}
         {earlierMarks}
         {visibleTurns.map((turn, i) => (
           <Fragment key={turn[0].id}>
@@ -2224,18 +2238,29 @@ const MessageListBody = function MessageList({
       {/* Outside `.msgs-inner` and after it: it takes no height and must not
           take the column's 18px gap either, and it sticks to the bottom of the
           SCROLLER, which is this element rather than that one. */}
-      <div className="jump-slot" aria-hidden={!away}>
+      <div className="jump-slot" aria-hidden={!jumpVisible}>
         <button
+          key={onLoadLatest ? "latest" : "bottom"}
           type="button"
-          className={`jump ${away ? "is-on" : ""}`}
-          onClick={jumpToBottom}
+          className={`jump ${jumpVisible ? "is-on" : ""} ${onLoadLatest ? "jump-latest" : ""}`}
+          disabled={!!onLoadLatest && loadingEarlier}
+          onKeyDown={dropHeld}
+          onClick={(event) => {
+            if (repeatsAnother(event)) return;
+            if (onLoadLatest) {
+              if (latestRequested.current) return;
+              latestRequested.current = { id: conversationId };
+              void onLoadLatest();
+            } else jumpToBottom();
+          }}
           // Not just hidden — a button under a reader's tab key that they
           // cannot see is worse than no button.
-          tabIndex={away ? 0 : -1}
-          title="Jump to the end"
-          aria-label="Jump to the end"
+          tabIndex={jumpVisible ? 0 : -1}
+          title={onLoadLatest ? undefined : "Jump to the end"}
+          aria-label={onLoadLatest ? "Return to latest messages" : "Jump to the end"}
         >
           <ChevronDownIcon />
+          {onLoadLatest && <span>Newer messages · Return to latest</span>}
         </button>
       </div>
       </ConfigWorldProvider>
