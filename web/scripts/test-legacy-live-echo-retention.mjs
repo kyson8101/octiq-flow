@@ -75,7 +75,16 @@ try{
   await box.fill(prompt);await box.press('Enter');
   while(!pendingSends.length)await page.waitForTimeout(5);
   const reply=send=>send.ws.send(JSON.stringify({t:'reply',id:send.call.id,ok:true,result:null}));
-  if(scenario!=='normal-before-rpc'){for(const send of pendingSends)reply(send);await page.waitForTimeout(100);}
+  if(scenario!=='normal-before-rpc'){
+    for(const send of pendingSends)reply(send);
+    // Observe App's actual queue demotion, rather than assume that a fixed
+    // 100ms delay included the RPC, queue read and React commit under load.
+    // The independent reviewer's 100ms contract probe remains unchanged.
+    await page.waitForFunction(({read,turnId})=>{
+      const snapshot=(0,eval)(`(${read})`)();
+      return snapshot.stateMessages.find(s=>s.id==='memory-0')?.messages.find(m=>m.turnId===turnId)?.delivery==='unknown';
+    },{read:inspect.toString(),turnId:pendingSends[0].call.args.turnId});
+  }
   const host=(uuid,seq)=>socket.send(JSON.stringify({t:'event',event:'chat-event',payload:{key:'chat:memory-0',seq,event:{type:'user',uuid,...(replay?{isReplay:true,parent_tool_use_id:null}:{}),message:{content:[{type:'text',text:prompt}]}}}}));
   const preEcho=await page.evaluate(inspect);
   host('legacy-native-1',6);
