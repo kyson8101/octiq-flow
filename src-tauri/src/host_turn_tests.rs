@@ -259,3 +259,24 @@ fn a_turn_this_server_handed_over_is_gone_only_by_a_line_that_says_so() {
         None
     );
 }
+
+#[test]
+fn unsent_record_debt_refuses_compaction_until_the_line_is_settled() {
+    let home = crate::test_dir::TestDir::new("storage-unsent-debt");
+    let _profile = crate::profile::started_in(&home);
+    let record = Record::new();
+    let turn = record.accepted("not-sent");
+    let path = crate::transcript::path_for(&record.key).unwrap();
+    let profile = crate::profile::profile_dir();
+    let away = home.join("profile-away");
+    std::fs::rename(&profile, &away).unwrap();
+    record.manager.record_unsent(&record.key, &turn);
+    assert!(!profile.exists());
+    std::fs::rename(&away, &profile).unwrap();
+    assert!(record.manager.owes_unsent());
+    assert!(record.manager.claim_record(&path).is_err());
+    record.manager.settle_unsent().unwrap();
+    assert!(!record.manager.owes_unsent());
+    assert!(record.manager.claim_record(&path).is_ok());
+    assert_eq!(record.fate("not-sent"), Some(HostTurn::Gone));
+}

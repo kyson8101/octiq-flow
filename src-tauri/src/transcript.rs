@@ -100,6 +100,41 @@ fn file_name(key: &str) -> String {
 /// thousands of lines thousands of times. The file is read once, on the first
 /// append after startup, and counted in memory after that.
 static NEXT_SEQ: Mutex<Option<HashMap<PathBuf, u64>>> = Mutex::new(None);
+// Bounded hashes, not copies of init lists. Always accessed inside NEXT_SEQ.
+static WRITE_LISTS: Mutex<Option<HashMap<PathBuf, crate::record_storage::Lists>>> =
+    Mutex::new(None);
+
+/// A record reserved for storage migration cannot hand a new delivery flow
+/// a generation that the imminent rewrite would invalidate. None is already
+/// the receipt consumers' retry/unconfirmed path; tokens themselves are unchanged.
+static STORAGE_HELD: Mutex<Option<std::collections::HashSet<PathBuf>>> = Mutex::new(None);
+
+pub(crate) struct StorageHold(PathBuf);
+impl Drop for StorageHold {
+    fn drop(&mut self) {
+        if let Some(held) = STORAGE_HELD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            held.remove(&self.0);
+        }
+    }
+}
+
+pub(crate) fn hold_storage(path: &Path) -> Result<StorageHold, String> {
+    let _appending = NEXT_SEQ.lock().map_err(|e| e.to_string())?;
+    let record = identity(path);
+    if !STORAGE_HELD
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get_or_insert_with(std::collections::HashSet::new)
+        .insert(record.clone())
+    {
+        return Err("chat record is already reserved for storage migration".into());
+    }
+    Ok(StorageHold(record))
+}
 
 /// The append lock, held. Asked for by what reads or moves a record's
 /// generation, so neither can be done without it.
@@ -135,6 +170,16 @@ fn identity(path: &Path) -> PathBuf {
     } else {
         folder.join(name)
     }
+}
+
+/// A compaction start hold covers every spelling that names this record,
+/// including `chat:x` / `chat_x` and filesystem case aliases.
+pub(crate) fn record_claim(path: &Path) -> String {
+    format!("@record:{}", identity(path).display())
+}
+
+pub(crate) fn key_record_claim(key: &str) -> Option<String> {
+    path_for(key).map(|path| record_claim(&path))
 }
 
 /// A folder as the filesystem resolves it, and whether it takes two
@@ -206,8 +251,8 @@ fn folds_case(folder: &Path) -> bool {
 /// - `forget` and `forget_file` remove it;
 /// - `rewrite_numbered` replaces a host event's line (`is_host_event`). A
 ///   rewrite keeps every line in its place, and what it changes today is
-///   stream pieces and tool results (`record_trim`), which leaves the
-///   generation alone: a compaction is not a new record.
+///   stream pieces and tool results (`record_trim`). Storage migrations also
+///   move generation, while preserving every host fact and logical seq.
 ///
 /// Nothing else the host does removes, empties or replaces a record file:
 /// the page's file editor refuses one (`fsbrowse::write_file_impl`). Kept
@@ -301,11 +346,21 @@ fn next_generation(_appending: &Appending, record: &Path) {
 
 /// Which record `key` has now, to be handed to `confirm_synced` with what
 /// is read from it or written to it afterwards. `None` for a key that
-/// names no record.
+/// names no record, the profile is unavailable, or storage migration has
+/// temporarily reserved it. A delivery with no token remains unconfirmed.
 pub fn generation(key: &str) -> Option<Generation> {
     let path = path_for(key)?;
     let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-    Some(generation_of(&appending, &identity(&path)))
+    let record = identity(&path);
+    if STORAGE_HELD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|held| held.contains(&record))
+    {
+        return None;
+    }
+    Some(generation_of(&appending, &record))
 }
 
 /// Record an event and return its sequence number.
@@ -326,11 +381,57 @@ pub fn append_synced(key: &str, event: &Value) -> Option<u64> {
 
 fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
     let path = path_for(key)?;
-    let line = serde_json::to_string(event).ok()?;
     let record = identity(&path);
 
     let mut appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-    let (seq, file, existed) = put(&mut appending, &path, record, &line, synced)?;
+    let list_event = event["type"] == "system"
+        && matches!(event["subtype"].as_str(), Some("init" | "commands_changed"));
+    // Most events are typing pieces: neither clone their JSON nor clone a
+    // dictionary on every few characters. Only list events can change it.
+    let mut lists = list_event.then(|| {
+        let mut writers = WRITE_LISTS.lock().unwrap_or_else(|e| e.into_inner());
+        let writers = writers.get_or_insert_with(HashMap::new);
+        if writers.len() >= 256 && !writers.contains_key(&record) {
+            writers.clear();
+        }
+        writers.get(&record).cloned().unwrap_or_else(|| {
+            let mut lists = crate::record_storage::Lists::default();
+            if let Ok(file) = File::open(&path) {
+                for_each_stored_line(file, |seq, line| {
+                    if memchr::memmem::find(line, b"\"system\"").is_some() {
+                        if let Ok(event) = serde_json::from_slice(line) {
+                            lists.observe(&event, seq);
+                        }
+                    }
+                });
+            }
+            lists
+        })
+    });
+    let trim = event.get("tool_use_result").is_some()
+        || event.get("toolUseResult").is_some()
+        || (event["type"] == "system" && event["subtype"] == "hook_response");
+    let mut stored = (list_event || trim).then(|| event.clone());
+    if let Some(stored) = stored.as_mut() {
+        crate::record_storage::trim_display_only(stored);
+        if let Some(lists) = lists.as_mut() {
+            let seq = appending
+                .as_ref()
+                .and_then(|counts| counts.get(&record))
+                .copied()
+                .unwrap_or_else(|| count(&path) + 1);
+            lists.encode(stored, seq);
+        }
+    }
+    let line = serde_json::to_string(stored.as_ref().unwrap_or(event)).ok()?;
+    let (seq, file, existed) = put(&mut appending, &path, record.clone(), &line, synced)?;
+    if let Some(lists) = lists {
+        WRITE_LISTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashMap::new)
+            .insert(record, lists);
+    }
     if synced {
         file.sync_data().ok()?;
         if !existed {
@@ -376,6 +477,7 @@ fn put(
     // Only claim the number once the line is actually on disk, so a failed
     // write cannot leave a gap that `since` would read straight past.
     writeln!(file, "{line}").ok()?;
+    let seq = seq.checked_add(crate::record_storage::span(line.as_bytes()) - 1)?;
     counts.insert(record, seq + 1);
     Some((seq, file, existed))
 }
@@ -540,10 +642,45 @@ pub(crate) fn for_each_line(file: File, see: impl FnMut(u64, &[u8])) {
 /// `for_each_line`, answering a read that failed part way instead of
 /// ending there as if the file did.
 fn try_each_line(file: File, mut see: impl FnMut(u64, &[u8])) -> std::io::Result<()> {
+    let mut lists = crate::record_storage::ListReader::default();
+    let mut failed = None;
+    try_each_stored_line(file, |seq, line| {
+        if failed.is_some() {
+            return;
+        }
+        let referenced = memchr::memmem::find(line, b"\"octiq_record_refs\"").is_some();
+        if referenced || memchr::memmem::find(line, b"\"system\"").is_some() {
+            if let Ok(mut event) = serde_json::from_slice::<Value>(line) {
+                if let Err(error) = lists.decode(&mut event, seq) {
+                    failed = Some(error);
+                    return;
+                }
+                if referenced {
+                    if let Ok(text) = serde_json::to_vec(&event) {
+                        see(seq, &text);
+                        return;
+                    }
+                }
+            }
+        }
+        see(seq, line);
+    })?;
+    failed.map_or(Ok(()), Err)
+}
+
+/// Raw storage walk for rewriters. The number is the END of a no-op range;
+/// real events always retain their original sequence numbers.
+pub(crate) fn for_each_stored_line(file: File, see: impl FnMut(u64, &[u8])) {
+    let _ = try_each_stored_line(file, see);
+}
+
+pub(crate) fn try_each_stored_line(
+    file: File,
+    mut see: impl FnMut(u64, &[u8]),
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(file);
     let (mut line, mut seq) = (Vec::new(), 0u64);
     while reader.read_until(b'\n', &mut line)? > 0 {
-        seq += 1;
         let mut body = line.as_slice();
         if let [rest @ .., b'\n'] = body {
             body = rest;
@@ -551,6 +688,9 @@ fn try_each_line(file: File, mut see: impl FnMut(u64, &[u8])) -> std::io::Result
                 body = rest;
             }
         }
+        seq = seq
+            .checked_add(crate::record_storage::span(body))
+            .ok_or_else(|| std::io::Error::other("chat record sequence overflow"))?;
         see(seq, body);
         line.clear();
     }
@@ -597,7 +737,14 @@ pub fn seed(key: &str, events: &[Value]) -> Result<bool, String> {
     file.write_all(text.as_bytes())
         .and_then(|_| file.sync_data())
         .map_err(|e| format!("cannot write the chat record: {e}"))?;
-    counts.insert(record, events.len() as u64 + 1);
+    counts.insert(
+        record,
+        events
+            .iter()
+            .map(|e| crate::record_storage::span(e.to_string().as_bytes()))
+            .sum::<u64>()
+            + 1,
+    );
     if !existed {
         if let Some(dir) = path.parent() {
             let _ = sync_dir(dir);
@@ -668,7 +815,7 @@ fn count(path: &Path) -> u64 {
         return 0;
     };
     let mut lines = 0;
-    for_each_line(file, |seq, _| lines = seq);
+    for_each_stored_line(file, |seq, _| lines = seq);
     lines
 }
 
@@ -790,8 +937,9 @@ pub fn page(key: &str, before: Option<u64>) -> Result<Page, String> {
 /// Parsing every line as JSON to the same end made opening a 100 MB chat take
 /// seconds.
 struct LineIndex {
-    /// Byte offset of each line; `starts[i]` is the line with `seq = i + 1`.
+    /// Physical byte offsets, paired with logical end numbers in `seqs`.
     starts: Vec<u64>,
+    seqs: Vec<u64>,
     /// Where the indexed bytes end.
     end: u64,
     /// Lines that might be page context, ascending: `thread.started`, then
@@ -818,24 +966,30 @@ impl LineIndex {
         let mut reader = BufReader::with_capacity(1 << 20, file);
         let mut index = LineIndex {
             starts: Vec::new(),
+            seqs: Vec::new(),
             end: 0,
             context: [Vec::new(), Vec::new()],
             host_prompts: HashMap::new(),
             first_prompt: None,
         };
         let mut line = Vec::new();
-        while (index.starts.len() as u64) < limit {
+        let mut seq = 0u64;
+        while seq < limit {
             line.clear();
             let read = reader.read_until(b'\n', &mut line)?;
             if read == 0 {
                 break;
             }
+            seq = seq.saturating_add(crate::record_storage::span(&line));
+            if seq > limit {
+                break;
+            }
             index.starts.push(index.end);
+            index.seqs.push(seq);
             if host_prompt.find(&line).is_some()
                 || (index.first_prompt.is_none() && user.find(&line).is_some())
             {
                 if let Ok(event) = serde_json::from_slice::<Value>(&line) {
-                    let seq = index.starts.len() as u64;
                     if let Some(id) = host_prompt_id(&event) {
                         index.host_prompts.entry(id.to_string()).or_insert(seq);
                     }
@@ -849,7 +1003,7 @@ impl LineIndex {
             }
             for (needle, seqs) in needles.iter().zip(&mut index.context) {
                 if needle.find(&line).is_some() {
-                    seqs.push(index.starts.len() as u64);
+                    seqs.push(seq);
                 }
             }
             index.end += read as u64;
@@ -859,9 +1013,11 @@ impl LineIndex {
 
     /// Line `seq`, parsed, with its length as `lines()` would have counted it.
     /// `None` for a line that is not a JSON value (a torn last line).
-    fn read(&self, file: &File, seq: u64) -> std::io::Result<Option<(Value, usize)>> {
+    fn read_raw(&self, file: &File, seq: u64) -> std::io::Result<Option<(Value, usize)>> {
         use std::io::{Read, Seek, SeekFrom};
-        let at = (seq - 1) as usize;
+        let Ok(at) = self.seqs.binary_search(&seq) else {
+            return Ok(None);
+        };
         let start = self.starts[at];
         let end = self.starts.get(at + 1).copied().unwrap_or(self.end);
         let mut bytes = vec![0; (end - start) as usize];
@@ -877,6 +1033,31 @@ impl LineIndex {
         Ok(serde_json::from_slice(&bytes)
             .ok()
             .map(|event| (event, bytes.len())))
+    }
+
+    fn read(&self, file: &File, seq: u64) -> std::io::Result<Option<(Value, usize)>> {
+        let Some((mut event, bytes)) = self.read_raw(file, seq)? else {
+            return Ok(None);
+        };
+        let referenced = event.get("octiq_record_refs").is_some();
+        crate::record_storage::resolve(&mut event, |source, field| {
+            if source >= seq {
+                return None;
+            }
+            // Only this field's material value is needed. Resolving every
+            // unrelated reference on its source init would recurse through
+            // older inits and repeat the same large reads exponentially.
+            self.read_raw(file, source)
+                .ok()
+                .flatten()
+                .and_then(|(e, _)| e.get(field).cloned())
+        })?;
+        let size = if referenced {
+            event.to_string().len()
+        } else {
+            bytes
+        };
+        Ok(Some((event, size)))
     }
 }
 
@@ -969,7 +1150,7 @@ fn page_with_budget(
     };
 
     let mut open = true;
-    for seq in (1..=index.starts.len() as u64).rev() {
+    for &seq in index.seqs.iter().rev() {
         let Some((event, bytes)) = read(seq)? else {
             continue;
         };
@@ -1183,7 +1364,18 @@ pub(crate) fn forget_file(path: &Path) -> bool {
     // Whether or not there was a file: what is there afterwards is not
     // what was.
     let removed = fs::remove_file(path).is_ok();
+    // /clear also discards an interrupted migration's old inode. It must
+    // never keep cleared words around or attach them to a new history.
+    let _ = fs::remove_file(path.with_extension("jsonl.compact-backup"));
+    let _ = fs::remove_file(path.with_extension("jsonl.rewrite"));
     next_generation(&appending, &record);
+    if let Some(writers) = WRITE_LISTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
+        writers.remove(&record);
+    }
     if let Some(counts) = appending.as_mut() {
         counts.remove(&record);
     }
@@ -1195,74 +1387,366 @@ pub(crate) fn forget_file(path: &Path) -> bool {
 /// a line's position is its `seq`; a line that is not UTF-8, or a replacement
 /// that would split into two lines, is kept byte for byte.
 ///
-/// Holds the append lock throughout, so a chat writing meanwhile waits rather
-/// than landing a line in the file being replaced. True when anything changed.
+/// Builds outside the append lock, then publishes only if source stamp and
+/// generation still match. Concurrent appends/clears cause a retryable error.
 pub(crate) fn rewrite_lines(
     path: &Path,
     mut edit: impl FnMut(&str) -> Option<String>,
 ) -> std::io::Result<bool> {
-    rewrite_numbered(path, |_, line| {
-        std::str::from_utf8(line).ok().and_then(&mut edit)
-    })
+    rewrite_numbered(
+        path,
+        |_, line| std::str::from_utf8(line).ok().and_then(&mut edit),
+        false,
+    )
 }
 
 /// `rewrite_lines`, handing `edit` each line's `seq` and its bytes as they
 /// are, so a change worked out earlier without the lock can be applied by
 /// position.
+/// `storage` also coalesces no-op ranges and keeps a synced backup until
+/// readback checks numbering, references and host facts. Such a replacement
+/// always moves generation, even when no host fact changed.
 pub(crate) fn rewrite_numbered(
     path: &Path,
-    mut edit: impl FnMut(u64, &[u8]) -> Option<String>,
+    edit: impl FnMut(u64, &[u8]) -> Option<String>,
+    storage: bool,
 ) -> std::io::Result<bool> {
-    // The path was found in a listing made a while ago (a compaction pass
-    // walks every record): the folder it names is asked now whether it is
-    // still the server's own, so a record of the same name in a folder put
-    // at that path is not rewritten.
-    if let Some(dir) = path.parent() {
-        crate::profile::create_dir_all(dir)?;
+    rewrite_numbered_guarded(path, edit, storage, || Ok(()))
+}
+
+pub(crate) fn rewrite_numbered_guarded<G>(
+    path: &Path,
+    edit: impl FnMut(u64, &[u8]) -> Option<String>,
+    storage: bool,
+    publish: impl FnOnce() -> std::io::Result<G>,
+) -> std::io::Result<bool> {
+    rewrite(path, edit, storage, publish)
+}
+
+fn storage_facts(path: &Path, through: u64) -> std::io::Result<(u64, [u8; 32])> {
+    use sha2::{Digest, Sha256};
+    let mut last = 0;
+    let mut facts = Sha256::new();
+    // One pass also resolves and validates every disk-only list reference.
+    try_each_line(File::open(path)?, |seq, line| {
+        last = seq;
+        if seq <= through
+            && is_host_event(line)
+            && serde_json::from_slice::<Value>(line)
+                .ok()
+                .is_none_or(|e| e["type"] != "octiq_compacted")
+        {
+            facts.update(seq.to_le_bytes());
+            facts.update((line.len() as u64).to_le_bytes());
+            facts.update(line);
+        }
+    })?;
+    Ok((last, facts.finalize().into()))
+}
+
+fn verify_storage(before: &Path, after: &Path) -> std::io::Result<()> {
+    if storage_facts(before, u64::MAX)? != storage_facts(after, u64::MAX)? {
+        return Err(std::io::Error::other(
+            "chat compaction changed sequence numbers or host facts; backup retained",
+        ));
     }
-    let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    Ok(())
+}
+
+fn record_folder(path: &Path) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        crate::profile::make_dir(dir).map_err(std::io::Error::other)?;
+    }
+    Ok(())
+}
+
+// Separate from NEXT_SEQ: only another rewrite of this same physical record
+// is excluded while its large replacement is built. Appends and chat starts
+// remain free; a changed source makes publication fail closed.
+static REWRITING: Mutex<Option<std::collections::HashSet<PathBuf>>> = Mutex::new(None);
+struct Rewriting(PathBuf);
+impl Drop for Rewriting {
+    fn drop(&mut self) {
+        if let Some(records) = REWRITING.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            records.remove(&self.0);
+        }
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct RecordStamp {
+    len: u64,
+    modified: std::time::SystemTime,
+    created: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    inode: (u64, u64),
+}
+fn record_stamp(path: &Path) -> std::io::Result<RecordStamp> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.is_file() || meta.file_type().is_symlink() {
+        return Err(std::io::Error::other(
+            "chat rewrite requires a regular record file",
+        ));
+    }
+    Ok(RecordStamp {
+        len: meta.len(),
+        modified: meta.modified()?,
+        created: meta.created().ok(),
+        #[cfg(unix)]
+        inode: {
+            use std::os::unix::fs::MetadataExt;
+            (meta.dev(), meta.ino())
+        },
+    })
+}
+fn source_unchanged(
+    path: &Path,
+    stamp: &RecordStamp,
+    seen: &Generation,
+    appending: &Appending,
+) -> std::io::Result<()> {
+    record_folder(path)?;
+    if record_stamp(path)? != *stamp || generation_of(appending, &seen.record) != *seen {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "chat record changed while preparing compaction; retry later",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! { static REWRITE_LOCK_MAX: std::cell::Cell<std::time::Duration> = const { std::cell::Cell::new(std::time::Duration::ZERO) }; }
+#[cfg(test)]
+struct RewriteTiming(std::time::Instant);
+#[cfg(test)]
+impl Drop for RewriteTiming {
+    fn drop(&mut self) {
+        REWRITE_LOCK_MAX.with(|max| max.set(max.get().max(self.0.elapsed())));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn take_rewrite_lock_max() -> std::time::Duration {
+    REWRITE_LOCK_MAX.with(|max| max.replace(std::time::Duration::ZERO))
+}
+
+fn rewrite<G>(
+    path: &Path,
+    mut edit: impl FnMut(u64, &[u8]) -> Option<String>,
+    storage: bool,
+    publish: impl FnOnce() -> std::io::Result<G>,
+) -> std::io::Result<bool> {
+    record_folder(path)?;
+    let record = identity(path);
+    if !REWRITING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(std::collections::HashSet::new)
+        .insert(record.clone())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "chat record is already being rewritten",
+        ));
+    }
+    let _rewriting = Rewriting(record.clone());
     let temp = path.with_extension("jsonl.rewrite");
-    // Whether a line this replaced was a host event's: one a receipt may
-    // be owed for, which the new record then no longer holds as it was.
+    let backup = path.with_extension("jsonl.compact-backup");
+    let (stamp, seen) = {
+        let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        let _time = RewriteTiming(std::time::Instant::now());
+        (record_stamp(path)?, generation_of(&appending, &record))
+    };
+    if storage && backup.exists() {
+        // Recovery scans are outside the global append lock too. A changed
+        // source leaves the backup for the next pass instead of guessing.
+        let (old_end, old_facts) = storage_facts(&backup, u64::MAX)?;
+        let (new_end, old_prefix) = storage_facts(path, old_end)?;
+        if new_end < old_end || old_facts != old_prefix {
+            return Err(std::io::Error::other(
+                "chat compaction recovery could not verify the backup; backup retained",
+            ));
+        }
+        let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        let _time = RewriteTiming(std::time::Instant::now());
+        source_unchanged(path, &stamp, &seen, &appending)?;
+        fs::remove_file(&backup)?;
+        sync_dir(path.parent().unwrap())?;
+    }
     let mut host_event_replaced = false;
     let written = (|| {
         let mut reader = BufReader::new(File::open(path)?);
+        record_folder(path)?;
         let mut out = BufWriter::new(File::create(&temp)?);
         let mut changed = false;
         let mut line = Vec::new();
-        let mut seq = 0;
+        let mut seq = 0u64;
+        let mut pending: Option<(u64, u64, bool)> = None;
+        let flush = |out: &mut BufWriter<File>,
+                     pending: &mut Option<(u64, u64, bool)>|
+         -> std::io::Result<()> {
+            if let Some((into, count, ended)) = pending.take() {
+                let text = if count == 1 {
+                    crate::record_trim::compacted_line(into)
+                } else {
+                    format!(r#"{{"type":"octiq_compacted","into":{into},"count":{count}}}"#)
+                };
+                out.write_all(text.as_bytes())?;
+                if ended {
+                    out.write_all(b"\n")?;
+                }
+            }
+            Ok(())
+        };
         while reader.read_until(b'\n', &mut line)? > 0 {
-            seq += 1;
             let ended = line.last() == Some(&b'\n');
             let body = &line[..line.len() - usize::from(ended)];
-            match edit(seq, body) {
-                Some(text) if !text.contains('\n') => {
-                    out.write_all(text.as_bytes())?;
-                    if ended {
-                        out.write_all(b"\n")?;
+            if storage && !ended {
+                changed = true;
+            }
+            let output_ended = ended || storage;
+            let span = crate::record_storage::span(body);
+            seq = seq
+                .checked_add(span)
+                .ok_or_else(|| std::io::Error::other("chat sequence overflow"))?;
+            let replacement = edit(seq, body).filter(|text| !text.contains('\n'));
+            let bytes = replacement.as_ref().map_or(body, |text| text.as_bytes());
+            if bytes != body {
+                changed = true;
+                host_event_replaced |= is_host_event(body);
+            }
+            let stub = (storage && memchr::memmem::find(bytes, b"\"octiq_compacted\"").is_some())
+                .then(|| serde_json::from_slice::<Value>(bytes).ok())
+                .flatten()
+                .filter(|e| e["type"] == "octiq_compacted")
+                .and_then(|e| e["into"].as_u64());
+            if let Some(into) = stub {
+                if let Some((old_into, count, old_ended)) = pending.as_mut() {
+                    if count.saturating_add(span) <= u32::MAX as u64 {
+                        *old_into = (*old_into).min(into);
+                        *count += span;
+                        *old_ended = output_ended;
+                        changed = true;
+                    } else {
+                        flush(&mut out, &mut pending)?;
+                        pending = Some((into, span, output_ended));
                     }
-                    changed = true;
-                    host_event_replaced = host_event_replaced || is_host_event(body);
+                } else {
+                    pending = Some((into, span, output_ended));
                 }
-                _ => out.write_all(&line)?,
+            } else {
+                flush(&mut out, &mut pending)?;
+                out.write_all(bytes)?;
+                if output_ended {
+                    out.write_all(b"\n")?;
+                }
             }
             line.clear();
         }
+        flush(&mut out, &mut pending)?;
         out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
         Ok(changed)
     })();
     match written {
         Ok(true) => {
-            fs::rename(&temp, path)?;
-            if host_event_replaced {
-                next_generation(&appending, &identity(path));
+            // All parsing, copying, source/target verification and readback are
+            // outside NEXT_SEQ. The publication gate is acquired only now, so
+            // a chat starting during preparation wins and we retry later.
+            if storage {
+                verify_storage(path, &temp)?;
+            }
+            let published = {
+                let claim = publish()?;
+                let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+                #[cfg(test)]
+                let _time = RewriteTiming(std::time::Instant::now());
+                source_unchanged(path, &stamp, &seen, &appending)?;
+                if storage {
+                    fs::hard_link(path, &backup)?;
+                    // Windows FlushFileBuffers requires GENERIC_WRITE. Keep
+                    // the Unix read-only fsync path for read-only source files.
+                    #[cfg(windows)]
+                    OpenOptions::new().write(true).open(&backup)?.sync_all()?;
+                    #[cfg(not(windows))]
+                    File::open(&backup)?.sync_all()?;
+                    sync_dir(path.parent().unwrap())?;
+                    #[cfg(test)]
+                    compact_checkpoint(1)?;
+                }
+                record_folder(path)?;
+                fs::rename(&temp, path)?;
+                if storage || host_event_replaced {
+                    next_generation(&appending, &record);
+                }
+                if let Some(writers) = WRITE_LISTS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_mut()
+                {
+                    writers.remove(&record);
+                }
+                if storage {
+                    #[cfg(test)]
+                    compact_checkpoint(2)?;
+                    sync_dir(path.parent().unwrap())?;
+                }
+                let published = generation_of(&appending, &record);
+                // Drop order releases NEXT_SEQ before the lifecycle claim.
+                let _ = &claim;
+                published
+            };
+            if storage {
+                // A new turn may append after publication. Verify the original
+                // prefix, retaining the backup if /clear or a rewrite intervenes.
+                let (old_end, old_facts) = storage_facts(&backup, u64::MAX)?;
+                let (new_end, old_prefix) = storage_facts(path, old_end)?;
+                if new_end < old_end || old_facts != old_prefix {
+                    return Err(std::io::Error::other(
+                        "chat compaction readback failed; backup retained",
+                    ));
+                }
+                let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+                #[cfg(test)]
+                let _time = RewriteTiming(std::time::Instant::now());
+                record_folder(path)?;
+                if generation_of(&appending, &record) != published {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "chat record changed during compaction readback",
+                    ));
+                }
+                fs::remove_file(&backup)?;
+                sync_dir(path.parent().unwrap())?;
             }
             Ok(true)
         }
         other => {
-            let _ = fs::remove_file(&temp);
+            if record_folder(path).is_ok() {
+                let _ = fs::remove_file(&temp);
+            }
             other
         }
+    }
+}
+
+#[cfg(test)]
+thread_local! { static FAIL_COMPACT_AT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+fn compact_checkpoint(at: u8) -> std::io::Result<()> {
+    if std::env::var("OCTIQ_COMPACT_KILL_AT").ok().as_deref() == Some(&at.to_string()) {
+        // An offline child test exits without destructors at the publication
+        // boundary, then a fresh process verifies and resumes the migration.
+        std::process::exit(73);
+    }
+    if FAIL_COMPACT_AT.with(|fail| fail.get() == at) {
+        Err(std::io::Error::other(
+            "compactor stopped at crash door (test)",
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -1270,6 +1754,302 @@ pub(crate) fn rewrite_numbered(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn rewrite_preparation_allows_appends_and_refuses_a_changed_source() {
+        let key = unique_key("storage-concurrent-append");
+        append(&key, &json!({"type":"user","message":{"content":"keep"}}));
+        let path = path_for(&key).unwrap();
+        let seen = generation(&key).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut writer = None;
+        let mut edited = false;
+        let result = rewrite_numbered(
+            &path,
+            |_, _| {
+                if edited {
+                    return None;
+                }
+                edited = true;
+                let key = key.clone();
+                let tx = tx.clone();
+                writer = Some(std::thread::spawn(move || {
+                    tx.send(append(&key, &json!({"type":"result"}))).unwrap();
+                }));
+                assert_eq!(
+                    rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap(),
+                    Some(2)
+                );
+                Some(r#"{"type":"user","message":{"content":"must not publish"}}"#.into())
+            },
+            true,
+        );
+        assert!(result.is_err());
+        writer.unwrap().join().unwrap();
+        assert_eq!(generation(&key), Some(seen));
+        assert_eq!(since(&key, 0)[0].event["message"]["content"], "keep");
+        assert_eq!(since(&key, 1)[0].seq, 2);
+        forget(&key);
+    }
+
+    #[test]
+    fn rewrite_preparation_cannot_put_cleared_words_in_a_new_history() {
+        let key = unique_key("storage-concurrent-clear");
+        append(&key, &json!({"type":"octiq_note","text":"old"}));
+        let path = path_for(&key).unwrap();
+        let result = rewrite_numbered(
+            &path,
+            |_, _| {
+                forget(&key);
+                append(&key, &json!({"type":"octiq_note","text":"fresh"}));
+                Some(r#"{"type":"octiq_note","text":"old rewritten"}"#.into())
+            },
+            true,
+        );
+        assert!(result.is_err());
+        assert_eq!(since(&key, 0).len(), 1);
+        assert_eq!(since(&key, 0)[0].event["text"], "fresh");
+        forget(&key);
+    }
+
+    #[test]
+    fn publication_releases_the_append_lock_before_readback() {
+        struct AppendOnDrop(String);
+        impl Drop for AppendOnDrop {
+            fn drop(&mut self) {
+                assert_eq!(
+                    append(&self.0, &json!({"type":"octiq_note","text":"new"})),
+                    Some(5)
+                );
+            }
+        }
+        let key = unique_key("storage-readback-append");
+        append(&key, &json!({"type":"octiq_note","text":"keep"}));
+        for _ in 0..3 {
+            append(&key, &json!({"type":"octiq_compacted","into":1}));
+        }
+        let path = path_for(&key).unwrap();
+        assert!(rewrite_numbered_guarded(
+            &path,
+            |_, _| None,
+            true,
+            || Ok(AppendOnDrop(key.clone()))
+        )
+        .unwrap());
+        assert!(!path.with_extension("jsonl.compact-backup").exists());
+        assert_eq!(since(&key, 4)[0].event["text"], "new");
+        forget(&key);
+    }
+
+    #[test]
+    fn ranges_keep_seq_page_context_and_receipts_across_restart() {
+        let key = unique_key("storage-ranges");
+        let init = json!({"type":"system","subtype":"init","session_id":"session","slash_commands":["help"],"tools":["tool"]});
+        append(&key, &init);
+        append(&key, &json!({"type":"octiq_user_turn","uuid":"p1"}));
+        append(
+            &key,
+            &json!({"type":"user","uuid":"p1","message":{"content":"question"}}),
+        );
+        for _ in 0..10 {
+            append(&key, &json!({"type":"octiq_compacted","into":3}));
+        }
+        append(
+            &key,
+            &json!({"type":"octiq_question_answered","id":"q1","answer":"yes"}),
+        );
+        append(&key, &json!({"type":"result"}));
+        append(&key, &init);
+        let path = path_for(&key).unwrap();
+        let generation = generation(&key).unwrap();
+        assert!(rewrite_numbered(&path, |_, _| None, true).unwrap());
+        assert_eq!(receipt(&key, &generation), Held::Moved);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"count\":10"));
+        assert!(text.contains("octiq_record_refs"));
+        let tail = since(&key, 8);
+        assert_eq!(seqs(&tail), [13, 14, 15, 16]);
+        assert_eq!(tail.last().unwrap().event, init);
+        assert_eq!(of_type(&key, "octiq_question_answered").len(), 1);
+        for before in [None, Some(8), Some(14), Some(17)] {
+            let page = page_with_budget(&key, before, 999999, 20).unwrap();
+            let forward = page_forward(&key, before, 999999, 20).unwrap();
+            assert_eq!(
+                serde_json::to_value(page).unwrap(),
+                serde_json::to_value(forward).unwrap()
+            );
+        }
+        forget_count(&key);
+        assert_eq!(append(&key, &init), Some(17));
+        assert_eq!(since(&key, 16)[0].event, init);
+        forget(&key);
+        assert_eq!(append(&key, &init), Some(1));
+        assert_eq!(since(&key, 0)[0].event, init);
+        forget(&key);
+    }
+
+    #[test]
+    fn interrupted_compaction_keeps_backup_and_resumes_even_after_new_appends() {
+        for stage in [1, 2] {
+            let key = unique_key("storage-crash");
+            append(
+                &key,
+                &json!({"type":"octiq_question_answered","answer":"keep"}),
+            );
+            for _ in 0..4 {
+                append(&key, &json!({"type":"octiq_compacted","into":1}));
+            }
+            let path = path_for(&key).unwrap();
+            let seen = generation(&key).unwrap();
+            FAIL_COMPACT_AT.with(|fail| fail.set(stage));
+            assert!(rewrite_numbered(&path, |_, _| None, true).is_err());
+            FAIL_COMPACT_AT.with(|fail| fail.set(0));
+            assert!(path.with_extension("jsonl.compact-backup").exists());
+            if stage == 2 {
+                assert_eq!(receipt(&key, &seen), Held::Moved);
+            }
+            assert_eq!(
+                append(&key, &json!({"type":"octiq_task_reopened","taskId":"new"})),
+                Some(6)
+            );
+            rewrite_numbered(&path, |_, _| None, true).unwrap();
+            assert!(!path.with_extension("jsonl.compact-backup").exists());
+            assert_eq!(of_type(&key, "octiq_question_answered").len(), 1);
+            assert_eq!(since(&key, 5)[0].event["taskId"], "new");
+            forget(&key);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn storage_crash_child() {
+        let path = PathBuf::from(
+            std::env::var("OCTIQ_COMPACT_CRASH_FILE").expect("parent test scratch path"),
+        );
+        let scratch = crate::paths::canonicalize(&std::env::temp_dir()).unwrap();
+        assert!(crate::paths::canonicalize(&path)
+            .unwrap()
+            .starts_with(scratch));
+        let _profile = crate::profile::started_in(path.parent().unwrap());
+        rewrite_numbered(&path, |_, _| None, true).unwrap();
+    }
+
+    #[test]
+    fn a_fresh_process_resumes_a_compactor_killed_at_either_publication_boundary() {
+        for stage in [1, 2] {
+            let scratch = crate::test_dir::TestDir::new("record-storage-process-crash");
+            let path = scratch.join("chat_crash.jsonl");
+            fs::write(
+                &path,
+                format!(
+                    "{{\"type\":\"octiq_question_answered\",\"answer\":\"yes\"}}\n{}\n",
+                    vec![crate::record_trim::compacted_line(1); 8].join("\n")
+                ),
+            )
+            .unwrap();
+            let child = || {
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "transcript::tests::storage_crash_child",
+                        "--ignored",
+                    ])
+                    .env("OCTIQ_COMPACT_CRASH_FILE", &path);
+                command
+            };
+            let killed = child()
+                .env("OCTIQ_COMPACT_KILL_AT", stage.to_string())
+                .output()
+                .unwrap();
+            assert_eq!(killed.status.code(), Some(73));
+            assert!(path.with_extension("jsonl.compact-backup").is_file());
+            let resumed = child()
+                .env_remove("OCTIQ_COMPACT_KILL_AT")
+                .output()
+                .unwrap();
+            assert!(
+                resumed.status.success(),
+                "{}",
+                String::from_utf8_lossy(&resumed.stderr)
+            );
+            assert!(!path.with_extension("jsonl.compact-backup").exists());
+            let (end, _) = storage_facts(&path, u64::MAX).unwrap();
+            assert_eq!(end, 9);
+            assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 2);
+        }
+    }
+
+    #[test]
+    fn page_reads_mixed_list_sources_directly_without_recursive_init_expansion() {
+        let key = unique_key("mixed-list-sources");
+        let mut init = json!({"type":"system","subtype":"init","tools":["t0"],"slash_commands":["c0"],"skills":["s0"]});
+        append(&key, &init);
+        for at in 1..40 {
+            let field = ["tools", "slash_commands", "skills"][at % 3];
+            init[field] = json!([format!("value{at}")]);
+            append(&key, &init);
+        }
+        let file = File::open(path_for(&key).unwrap()).unwrap();
+        let index = LineIndex::scan(&file, u64::MAX).unwrap();
+        assert_eq!(index.read(&file, 40).unwrap().unwrap().0, init);
+        assert_eq!(since(&key, 39)[0].event, init);
+        forget(&key);
+    }
+
+    #[test]
+    fn storage_migration_ends_a_torn_or_unterminated_line_before_future_appends() {
+        for body in [
+            br#"{"type":"octiq_note","text":"keep"}"#.as_slice(),
+            b"{\"type\":\"assistant\",\"text\":\"\xff",
+        ] {
+            let key = unique_key("storage-final-boundary");
+            let path = path_for(&key).unwrap();
+            fs::write(&path, body).unwrap();
+            assert!(rewrite_numbered(&path, |_, _| None, true).unwrap());
+            assert!(fs::read(&path).unwrap().ends_with(b"\n"));
+            forget_count(&key);
+            assert_eq!(append(&key, &json!({"type":"result"})), Some(2));
+            assert_eq!(since(&key, 1)[0].seq, 2);
+            forget(&key);
+        }
+    }
+
+    #[test]
+    fn migration_reservation_defers_new_receipt_flows_without_changing_tokens() {
+        let key = format!("chat:{}", unique_key("storage-receipt-reservation"));
+        append(&key, &json!({"type":"octiq_note","text":"keep"}));
+        let seen = generation(&key).unwrap();
+        let held = hold_storage(&path_for(&key).unwrap()).unwrap();
+        assert!(generation(&key).is_none());
+        assert!(generation(&key.replace(':', "_")).is_none());
+        assert_eq!(receipt(&key, &seen), Held::Confirmed);
+        drop(held);
+        assert_eq!(generation(&key), Some(seen));
+        forget(&key);
+    }
+
+    #[test]
+    fn storage_publication_waits_for_the_backup_folder_to_sync() {
+        let key = unique_key("storage-folder-sync");
+        append(&key, &json!({"type":"octiq_note","text":"keep"}));
+        for _ in 0..3 {
+            append(&key, &json!({"type":"octiq_compacted","into":1}));
+        }
+        let path = path_for(&key).unwrap();
+        let before = fs::read(&path).unwrap();
+        let seen = generation(&key).unwrap();
+        FAIL_DIR_SYNC.with(|fail| fail.set(true));
+        assert!(rewrite_numbered(&path, |_, _| None, true).is_err());
+        FAIL_DIR_SYNC.with(|fail| fail.set(false));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(generation(&key), Some(seen.clone()));
+        assert!(path.with_extension("jsonl.compact-backup").is_file());
+        assert!(rewrite_numbered(&path, |_, _| None, true).unwrap());
+        assert_eq!(receipt(&key, &seen), Held::Moved);
+        assert_eq!(of_type(&key, "octiq_note").len(), 1);
+        forget(&key);
+    }
 
     /// A key nobody else's test will use, so these can run in parallel against
     /// one real profile directory.
@@ -1349,7 +2129,9 @@ mod tests {
         for event in [
             json!({"type":"system", "subtype":"init", "session_id":"session"}),
             json!({"type":"thread.started", "thread_id":"thread"}),
-            json!({"type":"system", "subtype":"hook_response", "output":"x".repeat(300 * 1024)}),
+            // Hooks are bounded on write now. Use generic startup metadata
+            // to keep exercising an indivisible prefix larger than the budget.
+            json!({"type":"system", "subtype":"startup_metadata", "output":"x".repeat(300 * 1024)}),
             // User-shaped context is not an earlier host prompt.
             json!({"type":"user", "message":{"content":[{"type":"tool_result","content":"hook"}]}}),
             json!({"type":"user", "parent_tool_use_id":"p", "message":{"content":"subagent"}}),

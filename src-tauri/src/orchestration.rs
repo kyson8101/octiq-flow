@@ -1137,6 +1137,49 @@ pub struct OrchestrationStore {
     listed_chats: Mutex<retry::Listed>,
 }
 
+impl OrchestrationStore {
+    /// A nonblocking compaction gate. Its caller has already reserved the
+    /// transcript, so a delivery starting after this look gets no old token.
+    pub(crate) fn record_quiet(&self, record: &str) -> Result<(), String> {
+        let _workspace = self
+            .workspace_ops
+            .try_lock()
+            .map_err(|_| "reopen delivery is busy")?;
+        let _auto_plan = self
+            .auto_plan_delivery
+            .try_lock()
+            .map_err(|_| "auto-plan delivery is busy")?;
+        let inner = self
+            .inner
+            .try_lock()
+            .map_err(|_| "orchestration ledger is busy")?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        let same =
+            |chat: &str| crate::transcript::key_record_claim(chat).as_deref() == Some(record);
+        if inner
+            .data
+            .auto_plan_notices
+            .values()
+            .any(|notice| notice.targets_record(record))
+        {
+            return Err("chat record still owes an auto-plan approval notice".into());
+        }
+        if inner.data.tasks.values().any(|task| {
+            task.reopens.iter().any(|reopen| !reopen.notice_delivered)
+                && inner
+                    .data
+                    .runs
+                    .get(&task.run_id)
+                    .is_some_and(|run| same(&run.coordinator_chat_key))
+        }) {
+            return Err("chat record still owes a reopen notice".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct WorkerLaunch {
     pub task_id: String,

@@ -391,7 +391,7 @@ directories, not these file roots. Native cards carry the actual provider.
 | agent token usage | `<chats dir>/agent-usage.json` | `agent_usage.rs` |
 | long-running jobs (`octiq-job`, `job_register`) | `<chats dir>/jobs.json` | `chat_jobs.rs` — see `docs/jobs.md` |
 | the `octiq-job` launcher agents run | `~/.octiqflow/bin/octiq-job` (`.cmd` beside it on Windows) | `chat_jobs.rs` |
-| chat record compaction (size when last compacted) | `<chats dir>/.compacted-sizes-v1.json` | `record_trim.rs` |
+| chat record compaction (size when last compacted) | `<chats dir>/.compacted-sizes-v2.json` | `record_trim.rs` |
 | Antigravity plugin, settings backup | `~/.octiqflow/mcp/antigravity/` | `agent_provider.rs` |
 | job spool folders (a sandboxed chat's `octiq-job`; never in the profile) | `$TMPDIR/octiqflow-job-spool-<uid>/` | `job_spool.rs` — see `docs/jobs.md` |
 | the island (plots, 波特, assets, wishes) | `<profile dir>/island.json` | `island.rs` — see `docs/island.md` |
@@ -3732,9 +3732,16 @@ missing/stale evidence explains the swept state and asks for restore/refresh.
     the reason behind a disclosure and not as an error. Do not bend a
     receipt to get past a reader that throws without it: change the reader.
 - **Every reader of a chat record walks it with `transcript::for_each_line`
-  or a reader built on it** (`since`, `of_type`, `page`). A line's position
-  is its `seq`, so a line that cannot be decoded is skipped by the reader
-  and still counted: `lines().map_while(Result::ok)` ends a read at the
+  or a reader built on it** (`since`, `of_type`, `page`). Real events retain
+  their original logical `seq`; a disk-only `octiq_compacted` range occupies
+  its original positions and is returned once at its end. Disk-only list
+  references are resolved before ordinary readers see an event. Raw storage
+  walks are only for encoders/rewriters. A storage migration moves generation:
+  reserve publication against starts and every pending receipt debt, while
+  keeping bulk preparation/readback outside the global append lock. See
+  [chat record storage](docs/chat-record-storage.md).
+  A line that cannot be decoded is skipped by the reader and still counted:
+  `lines().map_while(Result::ok)` ends a read at the
   first line that is not UTF-8 and shifts every number after it.
 - **Carry a session or history file to a second name without ever writing
   over what is there, and promise no more wholeness than the path gives.**

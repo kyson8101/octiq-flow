@@ -352,6 +352,33 @@ fn load_to_write(path: &Path) -> Result<Ledger, String> {
     )
 }
 
+/// Refuse migration while an activity delivery is in progress or a saved
+/// intent still needs this record. Never turn an unreadable ledger into empty.
+pub(crate) fn record_quiet(record: &str) -> Result<(), String> {
+    let _guard = LOCK
+        .try_lock()
+        .map_err(|_| "memory activity delivery is busy")?;
+    let path = ledger_path().ok_or("memory activity ledger is unavailable")?;
+    let ledger: Ledger = crate::profile::read(&path, |e| e.to_string())?
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string()))
+        .transpose()?
+        .unwrap_or_default();
+    let same = |chat: &str| crate::transcript::key_record_claim(chat).as_deref() == Some(record);
+    let mut shown = None;
+    for (id, entry) in ledger.entries {
+        if entry.pending.keys().any(|chat| same(chat)) {
+            return Err("chat record still owes a memory activity line".into());
+        }
+        for (chat, status) in entry.delivered.iter().filter(|(chat, _)| same(chat)) {
+            let lines = shown.get_or_insert_with(|| shown_in(chat));
+            if lines.get(&id).is_none_or(|held| *held < *status) {
+                return Err("chat record still owes a recovered memory activity line".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Write the whole ledger in place of the old one: synced, renamed, and the
 /// folder synced, so an intent it holds survives a power cut.
 fn save(path: &Path, ledger: &Ledger) -> Result<(), String> {
@@ -1144,6 +1171,39 @@ mod tests {
 
     fn fresh_id() -> String {
         digest(&json!(uuid::Uuid::new_v4().to_string()))
+    }
+
+    #[test]
+    fn storage_gate_waits_for_memory_intents_and_missing_delivered_lines() {
+        let home = crate::test_dir::TestDir::new("storage-memory-debt");
+        let _profile = crate::profile::started_in(&home);
+        let key = "chat:storage-memory-debt";
+        let path = crate::transcript::path_for(key).unwrap();
+        let record = crate::transcript::record_claim(&path);
+        let ledger_path = ledger_path().unwrap();
+        let mut ledger = Ledger::default();
+        ledger
+            .entries
+            .entry("activity".into())
+            .or_default()
+            .pending
+            .insert(key.into(), Status::Saved);
+        fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+        assert!(record_quiet(&record).is_err());
+        let event = json!({"type": EVENT,"id":"activity","status":"saved"});
+        crate::transcript::append_synced(key, &event).unwrap();
+        let entry = ledger.entries.get_mut("activity").unwrap();
+        entry.pending.clear();
+        entry.delivered.insert(key.into(), Status::Saved);
+        fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+        assert!(record_quiet(&record).is_ok());
+        crate::transcript::forget(key);
+        assert!(record_quiet(&record).is_err());
+        crate::transcript::append_synced(key, &event).unwrap();
+        assert!(record_quiet(&record).is_ok());
+        fs::write(&ledger_path, "torn ledger").unwrap();
+        assert!(record_quiet(&record).is_err());
+        assert_eq!(fs::read_to_string(&ledger_path).unwrap(), "torn ledger");
     }
 
     type Seen = std::sync::Arc<Mutex<Vec<(String, Value)>>>;

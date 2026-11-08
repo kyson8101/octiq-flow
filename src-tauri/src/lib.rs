@@ -64,6 +64,7 @@ mod push;
 mod question;
 mod question_media;
 mod question_store;
+mod record_storage;
 mod record_trim;
 mod retired_features;
 mod safety_block;
@@ -99,17 +100,6 @@ pub async fn run_headless() {
     // points at any more.
     chat_index::reconcile();
     agent_chat::start_deleted_chat_reaper();
-    // Once per profile, off the startup path: old records lose the snapshot
-    // reads they were recorded with (see record_trim.rs).
-    // And on every start, once things have settled: records that grew since
-    // they were last compacted lose pictures and finished stream pieces.
-    std::thread::spawn(|| {
-        record_trim::prune_old_records();
-        chat_search::retire_legacy_index();
-        std::thread::sleep(std::time::Duration::from_secs(60));
-        record_trim::compact_records();
-    });
-
     // Before anything can start a chat: the orchestration scheduler starts
     // workers from a plain thread, and their permission questions are waited
     // on here.
@@ -118,6 +108,13 @@ pub async fn run_headless() {
     // Before the scheduler can start a worker: every agent is told this port.
     web::remember_hook_port(cfg.port);
     let services = dispatch::Services::load();
+    let chats = services.chats.clone();
+    std::thread::spawn(move || {
+        record_trim::prune_old_records(&chats);
+        chat_search::retire_legacy_index();
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        record_trim::compact_records(&chats);
+    });
     // Memory update lines whose intent a crash left unconfirmed are written
     // (or found already written) now, not only when that write is retried,
     // and a confirmed line a transcript has lost is written back. A

@@ -331,6 +331,24 @@ impl Store {
         Ok(())
     }
 
+    pub(crate) fn record_quiet(&self, record: &str) -> Result<(), String> {
+        let state = self
+            .state
+            .try_lock()
+            .map_err(|_| "auto-resume delivery is busy")?;
+        Self::check(&state)?;
+        if state.owed
+            || state.entries.values().any(|entry| {
+                entry.delivery == Delivery::Cancelled
+                    && crate::transcript::key_record_claim(&entry.chat_key).as_deref()
+                        == Some(record)
+            })
+        {
+            return Err("chat record still owes an auto-resume cancellation".into());
+        }
+        Ok(())
+    }
+
     /// Whether a cancel is kept here that is not on disk.
     pub(crate) fn owes(&self) -> bool {
         self.state.lock().is_ok_and(|state| state.owed)
@@ -969,7 +987,14 @@ mod tests {
         assert_eq!(cancelled.id, entry.id);
         assert!(store.cancel("chat:one").unwrap().is_none());
         assert_eq!(store.cancelled().unwrap().len(), 1);
+        let record = crate::transcript::key_record_claim("chat:one").unwrap();
+        assert!(store.record_quiet(&record).is_err());
         store.finish(&cancelled).unwrap();
+        assert!(store.record_quiet(&record).is_ok());
+        store.state.lock().unwrap().owed = true;
+        assert!(store.record_quiet(&record).is_err());
+        store.state.lock().unwrap().owed = false;
+        assert!(store.record_quiet(&record).is_ok());
 
         store
             .schedule("chat:one", 3_000, start(AgentKind::Claude), 1_000)
