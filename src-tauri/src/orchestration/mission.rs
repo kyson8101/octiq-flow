@@ -4,8 +4,9 @@
 //! a follow-up lands on the branch the first task started, and "is it merged,
 //! is it released" has one answer per repository instead of one per task.
 //!
-//! Two operations live here, both the person's, neither reachable from an
-//! agent's hook:
+//! Refresh is available to the coordinator. Direct Close/Abandon remain
+//! socket-only; the coordinator may propose Close on a batch card whose
+//! socket answer runs this same guarded path with exact plan/HEAD bindings:
 //!
 //! - **Refresh** asks git where each mission worktree stands — merged into the
 //!   base on its remote, and released by the project's own release check — and
@@ -47,7 +48,7 @@ pub struct MissionDelivery {
 }
 
 /// The mission's own worktrees still standing, one per checkout.
-fn mission_plans(data: &Stored, run_id: &str) -> Vec<WorkspacePlan> {
+pub(super) fn mission_plans(data: &Stored, run_id: &str) -> Vec<WorkspacePlan> {
     let mut seen = BTreeSet::new();
     data.tasks
         .values()
@@ -372,6 +373,17 @@ impl OrchestrationStore {
         run_id: &str,
         abandon: bool,
     ) -> Result<Run, String> {
+        self.close_mission_expected(chats, actor, run_id, abandon, None)
+    }
+
+    pub(super) fn close_mission_expected(
+        &self,
+        chats: &ChatManager,
+        actor: &str,
+        run_id: &str,
+        abandon: bool,
+        expected: Option<&[super::cleanup_request::Worktree]>,
+    ) -> Result<Run, String> {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
         let (plans_before, workers_before) = {
             let inner = self.inner.lock().map_err(|e| e.to_string())?;
@@ -387,6 +399,9 @@ impl OrchestrationStore {
                     .collect::<Vec<_>>(),
             )
         };
+        if let Some(expected) = expected {
+            super::cleanup_request::same_plans(expected, &plans_before)?;
+        }
         for key in workers_before {
             crate::agent_chat::chat_stop_impl(chats, key)?;
         }
@@ -410,6 +425,9 @@ impl OrchestrationStore {
                 return Err(
                     "Mission ownership changed during Restore comparison; folders kept.".into(),
                 );
+            }
+            if let Some(expected) = expected {
+                super::cleanup_request::same_plans(expected, &plans)?;
             }
             for plan in &plans {
                 chats.require_lifespan_idle(&plan.checkout_root)?;
@@ -441,6 +459,17 @@ impl OrchestrationStore {
             for (plan, proof) in plans.iter().zip(&proofs) {
                 chats.require_checkout_idle(&plan.checkout_root, plan.is_managed_worktree())?;
                 let mut delivery = delivery_of(&run, plan)?;
+                if let Some(expected) = expected {
+                    let approved = expected
+                        .iter()
+                        .find(|w| w.path == plan.checkout_root)
+                        .ok_or("Mission workspace was not on the approved card; folder kept.")?;
+                    if approved.head_commit != delivery.evidence.head_sha {
+                        return Err(
+                            "HEAD changed since the approved mission card; folder kept.".into()
+                        );
+                    }
+                }
                 if delivery.evidence.dirty {
                     return Err(format!(
                         "{} has uncommitted or untracked files. Commit or move them before closing.",

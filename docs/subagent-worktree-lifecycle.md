@@ -78,8 +78,10 @@ It differs from the per-task modes in three ways:
   and pushes it — and, once merged, the project's release check
   (`chat_task::release_status`).
 
-`orchestration_mission_close` is the person's only, like task cleanup: absent
-from MCP discovery and the hook allowlist. It requires every worker settled
+`orchestration_mission_close` is socket-only, like task cleanup: absent
+from MCP discovery and the hook allowlist. A coordinator may also propose a
+batch through `orchestration_workspace_cleanup_request`; only the person's
+approval card reaches the same Close path. It requires every worker settled
 and no open decision, then per mission worktree:
 
 | Ending | Requires | Removes |
@@ -279,13 +281,107 @@ The authenticated browser dispatch and chat-bound MCP share these operations:
 `taskId`, `expectedHead`, and optional `abandon`; it is intentionally absent from
 MCP tool discovery and the local orchestration hook's action allowlist.
 
+## Coordinator batch cleanup card
+
+MCP `orchestration_workspace_cleanup_request { runId? }` maps only to the
+`workspace_cleanup_request` hook action. The capability's own chat must be the
+`coordinatorChatKey` of every concerned run. No `runId` means all runs that chat
+coordinates, including finished runs with retained task worktrees. Workers are
+refused by durable identity (`require_user_chat` / `is_worker_chat`, including
+after settlement), as are front desks, room seats and unrelated chats. Keeping
+the `HookCaller` through the room-seat check is mandatory.
+
+The host refreshes task delivery through `refresh_workspace` (for an already
+swept folder, the exact kept HEAD is reverified against the current local base,
+just as Cleanup does, without recreating it) and mission
+delivery through `refresh_mission`, then selects completed retained managed task
+worktrees with verified merge, clean status and the existing Cleanup readiness
+checks and read-only Restore preflight, plus missions whose host-derived
+`closeEligible` is true. Unknown or nonzero at-stake ignored-file inventories
+keep an existing task folder out of the batch. A mission retains the host's
+existing `closeEligible` definition: its actual Close still runs every removal
+proof and may keep it with a reason. Swept folders can show `null` because they
+no longer have an inventory.
+No Abandon, Archive or unmerged work is proposed. No eligible items means
+`{status:"empty",text}` and no card. One outstanding batch per coordinator:
+a repeated request returns that card unchanged.
+
+The host holds pending records in memory. Reconnect reads them; a server restart
+forgets consent, never executes it. The request computes a proposal only; it
+never stops workers or removes folders. The authenticated browser uses:
+
+- `orchestration_workspace_cleanup_request_pending {}` → `Asked[]` (all pending
+  cards, including `processing:true` while the host handles one).
+- `orchestration_workspace_cleanup_request_answer {id,approve:boolean}` →
+  `Settled`; these two commands are socket-only. There is no answer hook/MCP.
+- Bus event `orchestration-workspace-cleanup-request`:
+  `{state:"appeared",id,request:Asked}` or
+  `{state:"settled",id,chatKey,result:Settled}`. A settled event removes the card.
+  Usual workspace/mission events still refresh the run panel.
+
+```ts
+type Asked = {
+  id: string; chatKey: string; runIds: string[]; processing: boolean;
+  items: {
+    id: string; kind: "task-worktree" | "mission"; runId: string;
+    taskId?: string; title: string;
+    worktrees: {
+      branch: string; path: string; headCommit: string; baseBranch: string;
+      ignoredFileCount: number | null;
+    }[];
+  }[];
+};
+type Settled = {
+  id: string; approved: boolean;
+  items: {id: string; status: "removed" | "kept"; reason: string}[];
+};
+```
+
+Render one card listing **every item and every worktree**: task/mission title,
+branch, path, merged HEAD and base branch, ignored-file count (`null` means
+unknown, never zero). A mission is one Close item containing all repository
+roots; an empty mission has `worktrees:[]` and closes only its record. Approve
+and Deny answer the whole batch; disable actions while `processing` and never
+send item IDs, paths or HEADs back as authority. Duplicate/stale answers fail
+without executing twice. No per-item selection or automatic approval.
+
+Approve binds the exact host-held item IDs, complete allocation plans and HEADs;
+no newly eligible task, mission or repository root can join the approved batch.
+The original `cleanup_workspace` → `cleanup_verified` → `remove_proven`, and
+`close_mission` paths retain all guards (including raw Restore proof, ignored
+inventory, path/start holds, profile, allocation, activity and merge checks).
+Mission membership and HEADs are checked before and after off-lock proof, and
+HEAD is checked again for each root. Changed items are kept with a reason.
+Like ordinary mission Close, an external filesystem race or late failure can
+leave an earlier mission root already removed; `kept` means the full item did
+not complete, and the reason reports the partial removal count. If all folders
+were removed before an error, status is `removed` and the reason preserves the
+host's error. The ledger's per-root delivery remains authoritative.
+Lifecycle is released between items. Approve is save-first and refuses with the
+profile's words if unavailable; Deny removes nothing, even if saves fail.
+
+Codex and providers that cannot wait between turns return
+`{status:"pending",request:Asked,text}` immediately, before the MCP deadline;
+other providers wait up to `access_request::wait_for` and may return
+`{status:"settled",result:Settled}`. A wait timeout leaves the card pending.
+If preparation itself exceeds 40 seconds, the call returns
+`{status:"preparing",text}` while the host finishes the read-only checks; a
+notification says when the card is actually up, or why no card was created.
+When no call takes the result, the host enqueues one durable notification
+(`kind:"workspace_cleanup"`, source `cleanup-result:<card-id>`) with all per-item
+outcomes to the requesting coordinator, including when its run was stopped.
+This host decision receipt never restarts stopped tasks. A save failure after removal keeps that
+outcome in RAM and owes its notification save, never retries deletion. The
+request is host bookkeeping; the person's card is the sole approval gate.
+
 ## Host-owned worktree lifespan
 
 The host automatically strips safe build output after **3 idle days** and removes
 **Finished** folders after **14 idle days**, reporting changes afterwards. These
 thresholds and the enabled switch are adjustable in the authenticated browser.
 Pinning prevents both actions. Close, Abandon and explicit per-task cleanup keep
-their existing person-only meaning; a sweep never closes or abandons a run.
+their existing guards; the coordinator's batch card also needs the person's
+approval, and never includes Abandon. A sweep never closes or abandons a run.
 Agent history (`~/.codex`, `~/.claude`) and the session folders named after a
 worktree are outside this feature.
 

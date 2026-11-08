@@ -2357,6 +2357,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "taskId")?,
             &arg::<String>(&args, "path")?,
         )),
+        "orchestration_workspace_cleanup_request_pending" => {
+            to_value(svc.orchestrations.cleanup_request_pending())
+        }
+        "orchestration_workspace_cleanup_request_answer" => {
+            to_value(svc.orchestrations.answer_workspace_cleanup(
+                &svc.chats,
+                &arg::<String>(&args, "id")?,
+                arg(&args, "approve")?,
+            ))
+        }
         "orchestration_workspace_refresh" => to_value(svc.orchestrations.refresh_workspace(
             &arg::<String>(&args, "actorChatKey")?,
             &arg::<String>(&args, "taskId")?,

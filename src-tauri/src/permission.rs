@@ -90,6 +90,7 @@ pub const HOST_BOOKKEEPING: &[&str] = &[
     "team_create",
     "team_update",
     "request_access",
+    "orchestration_workspace_cleanup_request",
     "vault_info",
     "vault_list",
     "vault_search",
@@ -718,6 +719,12 @@ mod tests {
         assert!(!host_bookkeeping("mcp__octiq__orchestration_worker_start"));
         assert!(host_bookkeeping("mcp__octiq__handover"));
         assert!(host_bookkeeping("mcp__octiq__request_access"));
+        assert!(host_bookkeeping(
+            "mcp__octiq__orchestration_workspace_cleanup_request"
+        ));
+        assert!(!host_bookkeeping(
+            "mcp__octiq__orchestration_workspace_cleanup_request_answer"
+        ));
         assert!(host_bookkeeping("mcp__octiq__agent_delete"));
         // A team change is asked on the host's own one-off card too.
         assert!(host_bookkeeping("mcp__octiq__team_create"));

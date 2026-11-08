@@ -1924,7 +1924,7 @@ message starts it again and takes the tick away.
   start? }` and `chat_complete_preview { chatKey }` are `dispatch.rs` arms. No
   hook routes to them and the MCP server has no such tool, the same way
   `orchestration_mission_close` has none. The wrap-up asks the agent to stop a
-  run it coordinates; closing the mission stays the person's.
+  run it coordinates; closing the mission needs the person's own action or approval of the coordinator's batch cleanup card.
 - **The wording is the host's** (`agent_chat::wrap_up_message`), never the
   page's. Two steps are left out when they cannot apply: saving agent memory
   (a registered agent's chat only) and stopping a run (only when the chat
@@ -2938,8 +2938,8 @@ retired palette back to Dark.
 See [the task workspace lifecycle](docs/subagent-worktree-lifecycle.md) for the
 host-owned policy. In agents mode, new runs are **missions** by default: one worktree per
 repository shared by the run's tasks one writer at a time, a status board whose
-Merged/Released steps come from git only, and a Close/Abandon that only the
-person can trigger (`orchestration/mission.rs`). A worker settling, code being pushed, a PR being merged, and
+Merged/Released steps come from git only, and a Close/Abandon approved by the
+person (`orchestration/mission.rs`). A worker settling, code being pushed, a PR being merged, and
 a workspace being eligible for cleanup are separate states. Retry and review
 fixes reuse the task's persisted workspace with a new attempt ID. Current
 checkout mode never deletes a directory. The plan card may override the run's advice
@@ -2949,6 +2949,32 @@ mission worktree). Non-Git folders offer and advise checkout only in every run
 mode; approval without a choice re-plans them as Direct and fixes that mode.
 The main chat coordinates while a
 worker owns the write lease; it must not also edit that checkout.
+
+**Coordinator batch cleanup is a proposal, never removal permission.**
+`orchestration_workspace_cleanup_request { runId? }` (MCP / hook action
+`workspace_cleanup_request`) refreshes delivery and proposes one card containing
+eligible retained, completed, merged task worktrees and missions the host calls
+`closeEligible`. Without `runId` it covers every run this chat coordinates.
+Only that coordinator's own capability may ask: `require_user_chat` refuses
+workers by durable identity even after settlement; front desks, room seats
+(`HookCaller.session_key != chat_key`) and unrelated chats are refused.
+Empty batches create no card. Pending records are host memory and are lost on
+server restart, never automatically approved. Codex returns pending immediately
+and receives results as a durable host notification turn; other providers wait
+up to the access-request deadline, then leave the card pending.
+Only the person's socket exposes
+`orchestration_workspace_cleanup_request_pending` and
+`orchestration_workspace_cleanup_request_answer { id, approve }`; no hook maps
+to either command. The request itself is chat-only and host bookkeeping
+(`permission::HOST_BOOKKEEPING`, including generated Codex tool approvals).
+Approval binds the host-held item IDs, full workspace plans and HEAD commits,
+then runs the existing task Cleanup and mission Close paths serially, releasing
+lifecycle between items. New or changed items are kept with the host's reason;
+there is no Abandon, Archive, force removal or relaxed guard. Approve is
+save-first: an unavailable profile refuses before any removal; Deny removes
+nothing. Per-item outcomes go to the waiting call or durable host inbox, and
+normal lifecycle events still update the panel. See the exact card/event
+contract in [the lifecycle doc](docs/subagent-worktree-lifecycle.md#coordinator-batch-cleanup-card).
 
 **Per-chat automatic plan approval is the person's standing consent.** Only
 the browser socket exposes `orchestration_auto_plan_get { chatKey }` and
@@ -3455,6 +3481,7 @@ active/queued chats and their operation-specific delivery gates before removal.
 | Mission Abandon | Same mission guards and shared door, with the existing published-commit gate; no discard bypass |
 | Explicit validation removal | `remove_validation` rechecks allocation ownership and activity; `remove_validation_verified` requires detached HEAD, then enters the shared door |
 | Confirmed Archive then remove | Its own lifecycle/path/start/usage/pin guards, exact preview hash including ignored inventory, verified archive ref/tree and full captured-tree disk/type proof, config guard and final stamps; only this path calls force removal |
+| Coordinator batch approval | Existing per-task Cleanup / mission Close paths below the socket-only answer; exact approved plan/HEAD, save-first, same raw/ignored/profile/activity proofs; no Abandon or Archive |
 | Disk report downloaded cleanup script | Prints and skips each worktree: an offline script cannot hold the host guards; use host Cleanup/lifespan or confirmed Archive |
 
 Build stripping removes only individually proven rebuildable subtrees, never the
