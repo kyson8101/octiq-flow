@@ -101,7 +101,9 @@ try{
     assert.equal(sample.anchor,'main-u-12');
     assert.notEqual(sample.driftPx,null);
     assert.ok(Math.abs(sample.driftPx)<=1,`anchor drift ${sample.driftPx}px`);
-    await f.page.getByRole('button',{name:'Return to latest messages',exact:true}).click();
+    // Invoke the actual button without Playwright scrolling it into view,
+    // which can itself trigger a second automatic earlier read.
+    await f.page.getByRole('button',{name:'Return to latest messages',exact:true}).evaluate(button=>button.click());
     await f.page.waitForFunction(()=>!document.querySelector('.history-more button:disabled')&&document.querySelector('.msgs [data-map-turn]')?.dataset.mapTurn==='main-u-12');
     await f.page.waitForTimeout(250);
     const latest=await f.page.evaluate(inspect);
