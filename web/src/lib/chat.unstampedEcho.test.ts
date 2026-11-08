@@ -47,10 +47,11 @@ for (const replay of [false, true]) {
         // Empty event pages retain their seed; context must still be historical.
         await loadChat({ ...options, requestPage: async () => ({ events: [], context: [old], before: 3 }) });
       } else if (path === "earlier") {
-        await loadChat({ ...options, requestPage: async () => ({ events: [prefix], context: [], before: 1 }) });
-        await loadEarlierChat({ ...options, requestPage: async before => before === 1
-          ? { events: [], context: [], before: null }
-          : { events: [prefix, old], context: [], before: 1 } });
+        // The earlier page is prepended on its own; the loaded window is not read again.
+        await loadChat({ ...options, requestPage: async () => ({ events: [{ ...prefix, seq: 3 }], context: [], before: 3 }) });
+        await loadEarlierChat({ ...options, requestPage: async before => before === 3
+          ? { events: [prefix, old], context: [], before: null }
+          : { events: [{ ...prefix, seq: 3 }], context: [], before: 3 } });
       } else {
         catchUp.own("chat:a");
         catchUp.live("chat:a", 1, prefix.event);
