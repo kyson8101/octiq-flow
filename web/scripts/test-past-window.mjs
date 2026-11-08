@@ -37,6 +37,7 @@ async function fixture(width,kind){
  const context=await browser.newContext({viewport:{width,height:844},...(width===390?{isMobile:true,hasTouch:true}:{})});
  const groups=Array.from({length:large?15:120},(_,n)=>frame('main',n));let seq=0;for(const g of groups)for(const f of g)f.seq=++seq;
  const requests=[],calls=[],connections=[],sockets=[],errors=[];
+ let holdLatest=false,failLatest=false;const pendingLatest=[];
  const page=await context.newPage();page.on('pageerror',e=>errors.push(String(e)));page.setDefaultTimeout(20000);
  await context.routeWebSocket(/\/ws\?/,ws=>{sockets.push(ws);const conn=[];connections.push(conn);ws.onMessage(async raw=>{const c=JSON.parse(String(raw));if(c.t!=='invoke')return;conn.push(c.cmd);calls.push({cmd:c.cmd,args:c.args});const a=c.args??{};let result=[];
  switch(c.cmd){
@@ -50,7 +51,9 @@ async function fixture(width,kind){
    const last=a.before==null?groups.length-1:groups.findLastIndex(g=>g[0].seq<a.before),first=last===11?11:Math.max(0,last-2);
    result={events:groups.slice(first,last+1).flat(),context:[],before:first?groups[first][0].seq:null};
   }else result={events:frame('task',0).map((f,i)=>({...f,seq:i+1})),context:[],before:null};
-  await new Promise(r=>setTimeout(r,90));break;
+  if(a.before==null&&holdLatest)await new Promise(r=>pendingLatest.push(r));
+  await new Promise(r=>setTimeout(r,90));
+  if(a.before==null&&failLatest){failLatest=false;ws.send(JSON.stringify({t:'reply',id:c.id,ok:false,error:'Fixture latest read failed'}));return;}break;
  }
  case 'chat_since':result=(a.key==='chat:main'?groups.flat():[]).filter(f=>f.seq>a.after);break;
  case 'chat_task':result=null;break;
@@ -63,6 +66,8 @@ async function fixture(width,kind){
  function send(g,events){for(const ff of events){const f={seq:++seq,event:ff.type?ff:ff.event};g.push(f);sockets.at(-1).send(JSON.stringify({t:'event',event:'chat-event',payload:{key:'chat:main',...f}}));}}
  let streaming;const newTurn=groups.length;
  return {page,context,requests,calls,connections,sockets,errors,groups,newTurn,
+  set holdLatest(v){holdLatest=v;},set failLatest(v){failLatest=v;},
+  releaseLatest(){holdLatest=false;pendingLatest.splice(0).forEach(r=>r());},
   start(){streaming=[];groups.push(streaming);send(streaming,[{type:'user',uuid:`main-u-${newTurn}`,octiq_user_turn_id:`main-t-${newTurn}`,message:{content:[{type:'text',text:`Question main ${newTurn}`}]}},{type:'stream_event',event:{type:'message_start',message:{id:`main-a-${newTurn}`}}},{type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text',text:''}}},{type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'PREFIX '}}}]);},
   finish(){send(streaming,[{type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'SUFFIX COMPLETE'}}},{type:'stream_event',event:{type:'message_stop'}},{type:'result',subtype:'success'}]);},
   grow(){const n=groups.length,g=[];groups.push(g);send(g,frame('main',n));}
@@ -108,10 +113,6 @@ try{
   assert.ok(Math.abs(readingCue.top-beforeOutput.top)<1,'new output never moves reading position');
   await bottom(f);const bottomCue=await cue(f);assert.ok(bottomCue.gap<1,'cue stays visible at loaded bottom');
   if(process.env.HISTORY_SCREENSHOTS)await f.page.screenshot({path:`${process.env.HISTORY_SCREENSHOTS}/${engine}-${width}-${kind}-past.png`});
-  // Reconnect preserves the past window and its always-present way back.
-  f.sockets.at(-1).close();await f.page.waitForTimeout(1800);const reconnect=await f.page.evaluate(inspect);
-  assert.ok(f.connections.length>=2);assert.ok(f.connections.every(c=>c[0]==='chat_subscribe'));
-  assert.ok(reconnect.history.main?.end!==undefined);await cue(f);
   const latest=f.page.getByRole('button',{name:'Return to latest messages',exact:true});
   const heldDropped=await latest.evaluate(b=>!b.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',repeat:true,bubbles:true,cancelable:true})));
   assert.equal(heldDropped,true,'held Enter is dropped');
@@ -119,7 +120,28 @@ try{
   await latest.evaluate(b=>{const r=b.getBoundingClientRect(),p={bubbles:true,cancelable:true,detail:1,clientX:r.x+r.width/2,clientY:r.y+r.height/2};document.querySelector('.msgs-inner').dispatchEvent(new MouseEvent('click',p));b.dispatchEvent(new MouseEvent('click',p));});
   await f.page.waitForTimeout(180);assert.equal(f.requests.length,count,'a repeat from another control cannot activate latest');
   await f.page.waitForTimeout(720);
+  // Press Return while reconnect owns the read, then reject that same read.
+  // The failure must preserve the past window and permit a new explicit try.
+  f.holdLatest=true;f.failLatest=true;f.sockets.at(-1).close();
+  for(let n=0;n<100&&f.requests.length===count;n++)await f.page.waitForTimeout(50);
+  assert.equal(f.requests.length-count,1,'reconnect read is held');
   if(width===390)await latest.tap();else{await latest.focus();await f.page.keyboard.press('Enter');}
+  await latest.evaluate(b=>b.click());await f.page.waitForTimeout(150);
+  assert.equal(f.requests.length-count,1,'double Return shares the reconnect read');
+  f.releaseLatest();await f.page.waitForTimeout(600);
+  const reconnect=await f.page.evaluate(inspect),failedCue=await cue(f);
+  const failedAlert=await f.page.getByRole('alert').filter({hasText:'Could not load earlier messages'}).count();
+  assert.ok(f.connections.length>=2);assert.ok(f.connections.every(c=>c[0]==='chat_subscribe'));
+  assert.ok(reconnect.history.main?.end!==undefined);
+  assert.deepEqual(reconnect.chats.main.ids,kept.chats.main.ids,'failed return preserves past messages');
+  f.holdLatest=true;
+  await latest.evaluate(b=>{b.click();b.click();});
+  for(let n=0;n<40&&f.requests.length===count+1;n++)await f.page.waitForTimeout(50);
+  assert.equal(f.requests.length-count,2,'second press after reconnect failure starts one retry');
+  await latest.evaluate(b=>b.click());await f.page.waitForTimeout(150);
+  assert.equal(f.requests.length-count,2,'in-flight double press sends one request');
+  assert.equal(failedAlert,1,'failed reconnect Return shows the existing retry error');
+  f.releaseLatest();
   await f.page.waitForFunction(()=>!document.querySelector('.jump-latest')&&!document.querySelector('.history-more button:disabled'));
   await f.page.waitForTimeout(500);const returned=await f.page.evaluate(inspect),landed=await f.page.evaluate(geometry);
   const n=f.newTurn,expected=[n-2,n-1,n].flatMap(n=>[`main-u-${n}`,`main-a-${n}`]);
@@ -134,8 +156,8 @@ try{
   assert.ok((await f.page.evaluate(inspect)).history.main?.end===undefined);
   assert.deepEqual(f.errors,[]);
   if(process.env.HISTORY_SCREENSHOTS)await f.page.screenshot({path:`${process.env.HISTORY_SCREENSHOTS}/${engine}-${width}-${kind}-latest.png`});
-  results.push({engine,width,kind,pages,samples,kept,beforeCue,readingCue,bottomCue,reconnect,returned,landed,requests:f.requests,errors:f.errors});
- }catch(e){results.push({engine,width,kind,error:String(e),state:await f.page.evaluate(inspect).catch(()=>null),requests:f.requests});}finally{await f.context.close();}}
+  results.push({engine,width,kind,pages,samples,kept,beforeCue,readingCue,bottomCue,reconnect,failedCue,failedAlert,returned,landed,requests:f.requests,errors:f.errors});
+ }catch(e){results.push({engine,width,kind,error:String(e),state:await f.page.evaluate(inspect).catch(()=>null),requests:f.requests,errors:f.errors});}finally{f.releaseLatest();await f.context.close();}}
 }finally{
  if(process.env.HISTORY_RESULTS)await writeFile(process.env.HISTORY_RESULTS,JSON.stringify(results,null,2));
  console.log(JSON.stringify(results));await browser.close();await new Promise(r=>server.httpServer.close(r));await rm(scratch,{recursive:true,force:true});
