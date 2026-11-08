@@ -120,7 +120,7 @@ fn human(bytes: usize) -> String {
 /// profile, on its own thread at startup; each record is rewritten under the
 /// append lock, so a chat writing meanwhile cannot lose a line. A pass that
 /// hits an error leaves no marker and is tried again on the next start.
-pub fn prune_old_records() {
+pub fn prune_old_records(manager: &crate::agent_chat::ChatManager) {
     let Some(dir) = crate::transcript::chats_dir() else {
         return;
     };
@@ -136,7 +136,14 @@ pub fn prune_old_records() {
         if path.extension().is_none_or(|ext| ext != "jsonl") {
             continue;
         }
-        match prune_record(&path) {
+        let Ok(claim) = manager.claim_record(&path) else {
+            failed = true;
+            continue;
+        };
+        drop(claim);
+        match prune_record_guarded(&path, || {
+            manager.claim_record(&path).map_err(std::io::Error::other)
+        }) {
             Ok(Some(bytes)) => {
                 records += 1;
                 freed += bytes;
@@ -154,31 +161,45 @@ pub fn prune_old_records() {
             human(freed as usize)
         );
     }
-    if !failed {
+    if !failed && crate::profile::make_dir(&dir).is_ok() {
         let _ = std::fs::write(&marker, "");
     }
 }
 
 /// Bytes freed, or `None` when the record held nothing to prune.
+#[cfg(test)]
 fn prune_record(path: &Path) -> std::io::Result<Option<u64>> {
+    prune_record_guarded(path, || Ok(()))
+}
+
+fn prune_record_guarded<G>(
+    path: &Path,
+    publish: impl FnOnce() -> std::io::Result<G>,
+) -> std::io::Result<Option<u64>> {
     if !holds_long_results(path)? {
         return Ok(None);
     }
     let before = std::fs::metadata(path)?.len();
     let mut results = SnapshotResults::default();
-    let changed = crate::transcript::rewrite_lines(path, |line| {
-        // Parse only what can matter: a long line, or a Claude call naming the
-        // tool so its result can be recognised later.
-        let call = line.contains(TOOL) && line.contains("\"tool_use\"");
-        if line.len() < PRUNE_MIN_BYTES && !call {
-            return None;
-        }
-        let mut event: Value = serde_json::from_str(line).ok()?;
-        results
-            .trim(&mut event, PRUNE_MIN_BYTES)
-            .then(|| serde_json::to_string(&event).ok())
-            .flatten()
-    })?;
+    let changed = crate::transcript::rewrite_numbered_guarded(
+        path,
+        |_, bytes| {
+            let line = std::str::from_utf8(bytes).ok()?;
+            // Parse only what can matter: a long line, or a Claude call naming the
+            // tool so its result can be recognised later.
+            let call = line.contains(TOOL) && line.contains("\"tool_use\"");
+            if line.len() < PRUNE_MIN_BYTES && !call {
+                return None;
+            }
+            let mut event: Value = serde_json::from_str(line).ok()?;
+            results
+                .trim(&mut event, PRUNE_MIN_BYTES)
+                .then(|| serde_json::to_string(&event).ok())
+                .flatten()
+        },
+        false,
+        publish,
+    )?;
     let after = std::fs::metadata(path)?.len();
     Ok(changed.then(|| before.saturating_sub(after)))
 }
@@ -238,7 +259,7 @@ fn piece_field(kind: &str) -> Option<&'static str> {
 }
 /// Remembers how long each record was when it was last compacted, so a start
 /// only reads the records that grew since.
-const COMPACTED_SIZES: &str = ".compacted-sizes-v1.json";
+const COMPACTED_SIZES: &str = ".compacted-sizes-v2.json";
 
 /// Empty the picture data in a tool's result. True when `event` changed.
 pub fn strip_pictures(event: &mut Value) -> bool {
@@ -314,32 +335,47 @@ struct Pieces {
 /// nothing in it could go.
 ///
 /// The record is read once without the append lock to find what changes, so
-/// the lock is held only to copy the file. A line that is no longer what that
-/// read saw is left as it is.
+/// copying and validation stay off the lock too. Publication checks source
+/// stamp and generation, so concurrent writes cause a retryable failure.
+#[cfg(test)]
 pub fn compact_record(path: &Path) -> std::io::Result<Option<u64>> {
+    compact_record_guarded(path, || Ok(()))
+}
+
+fn compact_record_guarded<G>(
+    path: &Path,
+    publish: impl FnOnce() -> std::io::Result<G>,
+) -> std::io::Result<Option<u64>> {
     use std::collections::HashMap;
-    use std::io::BufRead;
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_file() || meta.file_type().is_symlink() {
+        return Err(std::io::Error::other(
+            "chat compaction requires a regular record file",
+        ));
+    }
     // Records are written compactly by `serde_json`, and a quote inside a
     // string is escaped, so these spellings can only be the events' own.
-    const NEEDLES: [&[u8]; 5] = [
+    const NEEDLES: [&[u8]; 7] = [
         br#""type":"message_start""#,
         br#""type":"message_stop""#,
         br#""type":"content_block_delta""#,
         br#""type":"base64""#,
         br#""base64":""#,
+        br#""type":"system""#,
+        br#""type":"user""#,
     ];
     let needles = NEEDLES.map(memchr::memmem::Finder::new);
-    let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
-    let mut line = Vec::new();
-    let mut seq = 0u64;
+    let mut lists = crate::record_storage::Lists::default();
     let mut stopped: HashSet<String> = HashSet::new();
     let mut writing: HashMap<String, String> = HashMap::new();
     // By message id, then block index and kind of piece.
     let mut blocks: HashMap<(String, i64, &'static str), Pieces> = HashMap::new();
     let mut edits: HashMap<u64, (u64, String)> = HashMap::new();
-    while reader.read_until(b'\n', &mut line)? > 0 {
-        seq += 1;
-        let body = line.strip_suffix(b"\n").unwrap_or(&line);
+    let (mut previous_stub, mut needs_ranges) = (false, false);
+    crate::transcript::try_each_stored_line(std::fs::File::open(path)?, |seq, body| {
+        let stub = memchr::memmem::find(body, br#""type":"octiq_compacted""#).is_some();
+        needs_ranges |= previous_stub && stub;
+        previous_stub = stub;
         if needles.iter().any(|needle| needle.find(body).is_some()) {
             if let Ok(mut event) = serde_json::from_slice::<Value>(body) {
                 match event["type"].as_str().unwrap_or_default() {
@@ -378,8 +414,11 @@ pub fn compact_record(path: &Path) -> std::io::Result<Option<u64>> {
                         _ => {}
                     },
                     _ => {
-                        if strip_pictures(&mut event) {
-                            if let Ok(text) = serde_json::to_string(&event) {
+                        strip_pictures(&mut event);
+                        crate::record_storage::trim_display_only(&mut event);
+                        lists.encode(&mut event, seq);
+                        if let Ok(text) = serde_json::to_string(&event) {
+                            if text.as_bytes() != body {
                                 edits.insert(seq, (digest(body), text));
                             }
                         }
@@ -387,8 +426,7 @@ pub fn compact_record(path: &Path) -> std::io::Result<Option<u64>> {
                 }
             }
         }
-        line.clear();
-    }
+    })?;
     // Only a stopped message: an open one is still having pieces added. A
     // block's lines change together or not at all, so each line notes which
     // block it is in.
@@ -412,36 +450,50 @@ pub fn compact_record(path: &Path) -> std::io::Result<Option<u64>> {
             merged_blocks.insert(seq, number);
         }
     }
-    if edits.is_empty() {
+    // Most Codex records have none of these repeated parts. Do not copy and
+    // sync an entire unchanged file merely to discover there is no edit.
+    if edits.is_empty() && !needs_ranges && !path.with_extension("jsonl.compact-backup").exists() {
         return Ok(None);
     }
     let before = std::fs::metadata(path)?.len();
     let mut skipped: HashSet<usize> = HashSet::new();
-    let changed = crate::transcript::rewrite_numbered(path, |seq, body| {
-        let (sum, text) = edits.remove(&seq)?;
-        let block = merged_blocks.get(&seq);
-        if block.is_some_and(|block| skipped.contains(block)) {
-            return None;
-        }
-        if digest(body) != sum {
-            // Changed since it was read; a block's first line comes first, so
-            // the rest of it is left too.
-            skipped.extend(block);
-            return None;
-        }
-        Some(text)
-    })?;
+    let changed = crate::transcript::rewrite_numbered_guarded(
+        path,
+        |seq, body| {
+            let (sum, text) = edits.remove(&seq)?;
+            let block = merged_blocks.get(&seq);
+            if block.is_some_and(|block| skipped.contains(block)) {
+                return None;
+            }
+            if digest(body) != sum {
+                // Changed since it was read; a block's first line comes first, so
+                // the rest of it is left too.
+                skipped.extend(block);
+                return None;
+            }
+            Some(text)
+        },
+        true,
+        publish,
+    )?;
     let after = std::fs::metadata(path)?.len();
     Ok(changed.then(|| before.saturating_sub(after)))
 }
 
 /// Compact one chat's record, e.g. once its process has gone idle.
-pub fn compact_chat(key: &str) {
+pub fn compact_chat(manager: &crate::agent_chat::ChatManager, key: &str) {
     let Some(path) = crate::transcript::path_for(key) else {
         return;
     };
-    if let Err(error) = compact_record(&path) {
+    let Ok(claim) = manager.claim_record(&path) else {
+        return;
+    };
+    drop(claim);
+    if let Err(error) = compact_record_guarded(&path, || {
+        manager.claim_record(&path).map_err(std::io::Error::other)
+    }) {
         eprintln!("[records] could not compact {}: {error}", path.display());
+        return;
     }
     remember_size(&path);
 }
@@ -452,16 +504,26 @@ fn sizes_path() -> Option<std::path::PathBuf> {
     Some(crate::transcript::chats_dir()?.join(COMPACTED_SIZES))
 }
 
-fn read_sizes() -> std::collections::HashMap<String, u64> {
-    sizes_path()
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+fn read_sizes() -> Result<std::collections::HashMap<String, u64>, String> {
+    let path = sizes_path().ok_or_else(|| {
+        crate::profile::available()
+            .err()
+            .unwrap_or_else(|| "chat folder unavailable".into())
+    })?;
+    crate::profile::read(&path, |e| e.to_string())?
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string()))
+        .unwrap_or_else(|| Ok(std::collections::HashMap::new()))
 }
 
 fn write_sizes(sizes: &std::collections::HashMap<String, u64>) {
     if let (Some(path), Ok(text)) = (sizes_path(), serde_json::to_string(sizes)) {
         let temp = path.with_extension("json.tmp");
+        if path
+            .parent()
+            .is_none_or(|dir| crate::profile::make_dir(dir).is_err())
+        {
+            return;
+        }
         if std::fs::write(&temp, text).is_ok() {
             let _ = std::fs::rename(&temp, &path);
         }
@@ -476,15 +538,17 @@ fn remember_size(path: &Path) {
         return;
     };
     let _held = SIZES.lock().unwrap_or_else(|e| e.into_inner());
-    let mut sizes = read_sizes();
+    let Ok(mut sizes) = read_sizes() else {
+        return;
+    };
     sizes.insert(name.to_string(), meta.len());
     write_sizes(&sizes);
 }
 
 /// Compact every record that grew since it was last compacted. On its own
-/// thread at startup; each record takes the append lock only while it is
-/// copied, and a pause between records leaves the lock to live chats.
-pub fn compact_records() {
+/// thread at startup. Only source checks/rename/sync take the append lock;
+/// preparation and readback permit live appends and chat starts.
+pub fn compact_records(manager: &crate::agent_chat::ChatManager) {
     let Some(dir) = crate::transcript::chats_dir() else {
         return;
     };
@@ -493,7 +557,10 @@ pub fn compact_records() {
     };
     let known = {
         let _held = SIZES.lock().unwrap_or_else(|e| e.into_inner());
-        read_sizes()
+        let Ok(sizes) = read_sizes() else {
+            return;
+        };
+        sizes
     };
     let (mut records, mut freed) = (0, 0);
     for path in entries.flatten().map(|entry| entry.path()) {
@@ -503,11 +570,17 @@ pub fn compact_records() {
         if path.extension().is_none_or(|ext| ext != "jsonl") {
             continue;
         }
+        let Ok(claim) = manager.claim_record(&path) else {
+            continue;
+        };
+        drop(claim);
         let size = std::fs::metadata(&path).map_or(0, |meta| meta.len());
-        if known.get(name) == Some(&size) {
+        if known.get(name) == Some(&size) && !path.with_extension("jsonl.compact-backup").exists() {
             continue;
         }
-        match compact_record(&path) {
+        match compact_record_guarded(&path, || {
+            manager.claim_record(&path).map_err(std::io::Error::other)
+        }) {
             Ok(Some(bytes)) => {
                 records += 1;
                 freed += bytes;
@@ -533,6 +606,136 @@ pub fn compact_records() {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_chat_start_during_preparation_wins_over_publication() {
+        let manager = crate::agent_chat::ChatManager::default();
+        let key = format!("chat:{}", uuid::Uuid::new_v4());
+        crate::transcript::append(&key, &json!({"type":"user","message":{"content":"keep"}}));
+        let path = crate::transcript::path_for(&key).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let seen = crate::transcript::generation(&key);
+        let mut start = None;
+        let result = crate::transcript::rewrite_numbered_guarded(
+            &path,
+            |_, _| {
+                start = Some(manager.claim_start(&key).unwrap());
+                Some(r#"{"type":"user","message":{"content":"changed"}}"#.into())
+            },
+            true,
+            || manager.claim_record(&path).map_err(std::io::Error::other),
+        );
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(crate::transcript::generation(&key), seen);
+        drop(start);
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    #[ignore]
+    fn release_lock_evidence() {
+        let root = std::path::PathBuf::from(
+            std::env::var("OCTIQ_RECORD_EVIDENCE").expect("offline scratch root"),
+        );
+        let root = crate::paths::canonicalize(root).unwrap();
+        assert!(root.starts_with(crate::paths::canonicalize(std::env::temp_dir()).unwrap()));
+        assert!(root
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("octiq-record-storage-"));
+        let source = std::fs::read_dir(root.join("original"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+            .max_by_key(|p| p.metadata().unwrap().len())
+            .unwrap();
+        let target = root.join("lock-evidence.jsonl");
+        std::fs::copy(&source, &target).unwrap();
+        crate::transcript::take_rewrite_lock_max();
+        let began = std::time::Instant::now();
+        let freed = compact_record(&target).unwrap().unwrap();
+        let longest = crate::transcript::take_rewrite_lock_max();
+        let result = json!({"sourceBytes":source.metadata().unwrap().len(), "savedBytes":freed,
+            "elapsedSeconds":began.elapsed().as_secs_f64(), "longestAppendLockSeconds":longest.as_secs_f64(),
+            "optimized":!cfg!(debug_assertions)});
+        std::fs::write(
+            root.join("lock-evidence.json"),
+            serde_json::to_vec_pretty(&result).unwrap(),
+        )
+        .unwrap();
+        println!("{result}");
+        assert!(
+            longest < std::time::Duration::from_secs(1),
+            "publication lock exceeded budget: {longest:?}"
+        );
+    }
+
+    #[test]
+    fn a_record_hold_blocks_alias_starts_and_a_claimed_chat_is_not_compacted() {
+        let manager = crate::agent_chat::ChatManager::default();
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let key = format!("chat:{id}");
+        let alias = format!("chat_{id}");
+        let init = json!({"type":"system","subtype":"init","tools":["tool"]});
+        crate::transcript::append(&key, &init);
+        let path = crate::transcript::path_for(&key).unwrap();
+        let hold = manager.claim_record(&path).unwrap();
+        assert!(manager.claim_start(&key).is_err());
+        assert!(manager.claim_start(&alias).is_err());
+        drop(hold);
+        let claim = manager.claim_start(&alias).unwrap();
+        assert!(manager.claim_record(&path).is_err());
+        let before = std::fs::read(&path).unwrap();
+        compact_chat(&manager, &key);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        drop(claim);
+        assert!(manager.claim_record(&path).is_ok());
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn pending_and_unsynced_answered_questions_hold_the_record_generation() {
+        let manager = crate::agent_chat::ChatManager::default();
+        let key = format!("chat:{}", uuid::Uuid::new_v4());
+        crate::transcript::append(&key, &json!({"type":"system","subtype":"init"}));
+        let path = crate::transcript::path_for(&key).unwrap();
+        let (id, _rx) = manager
+            .questions
+            .insert(
+                crate::question_store::test_origin(&key),
+                vec![serde_json::from_value(json!({"question":"Keep?"})).unwrap()],
+            )
+            .unwrap();
+        assert!(manager.claim_record(&path).is_err());
+        let asked = manager.questions.pending().unwrap();
+        manager
+            .questions
+            .answer(&[crate::question_store::Answer {
+                id: asked[0].id.clone(),
+                answer: "yes".into(),
+            }])
+            .unwrap();
+        crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(true));
+        assert!(manager.questions.take_tool(&id).unwrap().is_some());
+        crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(false));
+        assert!(manager.questions.owes_notes());
+        assert!(manager.claim_record(&path).is_err());
+        let seen = crate::transcript::generation(&key);
+        compact_chat(&manager, &key);
+        assert_eq!(crate::transcript::generation(&key), seen);
+        manager.questions.notes_due_now();
+        manager.questions.settle_notes().unwrap();
+        assert!(!manager.questions.owes_notes());
+        assert!(manager.claim_record(&path).is_ok());
+        assert_eq!(
+            crate::transcript::of_type(&key, "octiq_question_answered").len(),
+            1
+        );
+        crate::transcript::forget(&key);
+    }
 
     fn codex_read(size: usize) -> Value {
         json!({"type": "item.completed", "item": {
@@ -656,34 +859,222 @@ mod tests {
         assert!(!strip_pictures(&mut typed));
     }
 
-    /// Compact copies of real records, with timings:
-    /// `OCTIQ_COMPACT_CHECK=<record>=<copy>:… cargo test -- --ignored real_records_compact`
+    /// Offline evidence only. Requires TWO existing, distinct scratch folders,
+    /// and refuses the live profile. The caller copies records first; this test
+    /// never discovers or mutates this machine's live chats.
     #[test]
     #[ignore]
-    fn real_records_compact() {
-        let Ok(pairs) = std::env::var("OCTIQ_COMPACT_CHECK") else {
-            return;
-        };
-        for pair in pairs.split(':') {
-            let (from, to) = pair.split_once('=').unwrap();
-            std::fs::copy(from, to).unwrap();
-            let before = std::fs::metadata(to).unwrap().len();
-            let started = std::time::Instant::now();
-            let freed = compact_record(Path::new(to)).unwrap().unwrap_or(0);
-            eprintln!(
-                "{from}: {} → {} in {:?}",
-                human(before as usize),
-                human((before - freed) as usize),
-                started.elapsed()
-            );
-            let lines = |path: &str| {
-                std::fs::read(path)
-                    .unwrap()
-                    .iter()
-                    .filter(|&&b| b == b'\n')
-                    .count()
+    fn offline_storage_evidence() {
+        use sha2::{Digest, Sha256};
+        use std::io::{Read, Write};
+        let from = std::path::PathBuf::from(
+            std::env::var("OCTIQ_RECORD_ORIGINAL").expect("original scratch folder"),
+        );
+        let to = std::path::PathBuf::from(
+            std::env::var("OCTIQ_RECORD_COMPACTED").expect("compacted scratch folder"),
+        );
+        let from = crate::paths::canonicalize(&from).unwrap();
+        let to = crate::paths::canonicalize(&to).unwrap();
+        assert_ne!(from, to);
+        let scratch = crate::paths::canonicalize(&std::env::temp_dir()).unwrap();
+        assert!(from.starts_with(&scratch) && to.starts_with(&scratch));
+        assert_eq!(from.parent(), to.parent());
+        assert!(from
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("octiq-record-storage-"));
+        if std::env::var_os("OCTIQ_RECORD_SKIP_SETUP").is_none() {
+            // Append-only growth, measured before any historical rewrite. This
+            // uses the exact encoder called by transcript::write.
+            let largest = std::fs::read_dir(&from)
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+                .max_by_key(|p| std::fs::metadata(p).map_or(0, |m| m.len()))
+                .unwrap();
+            let mut lists = crate::record_storage::Lists::default();
+            let mut groups: std::collections::BTreeMap<String, (u64, u64, u64)> =
+                std::collections::BTreeMap::new();
+            let mut turns = Vec::new();
+            let (mut old_turn, mut new_turn) = (0u64, 0u64);
+            crate::transcript::try_each_stored_line(
+                std::fs::File::open(&largest).unwrap(),
+                |seq, line| {
+                    let Ok(mut event) = serde_json::from_slice::<Value>(line) else {
+                        return;
+                    };
+                    let group = match (event["type"].as_str(), event["subtype"].as_str()) {
+                        (Some("system"), Some(kind)) => format!("system/{kind}"),
+                        (Some("user"), _)
+                            if event.get("tool_use_result").is_some()
+                                || event.get("toolUseResult").is_some() =>
+                        {
+                            "user/tool-result".into()
+                        }
+                        _ => "other".into(),
+                    };
+                    let before = line.len() as u64 + 1;
+                    crate::record_storage::trim_display_only(&mut event);
+                    lists.encode(&mut event, seq);
+                    let after = event.to_string().len() as u64 + 1;
+                    let totals = groups.entry(group).or_default();
+                    totals.0 += 1;
+                    totals.1 += before;
+                    totals.2 += after;
+                    old_turn += before;
+                    new_turn += after;
+                    if event["type"] == "result"
+                        || event["type"] == "turn.completed"
+                        || event["type"] == "turn.failed"
+                    {
+                        turns.push((old_turn, new_turn));
+                        old_turn = 0;
+                        new_turn = 0;
+                    }
+                },
+            )
+            .unwrap();
+            let mut old: Vec<_> = turns.iter().map(|t| t.0).collect();
+            let mut new: Vec<_> = turns.iter().map(|t| t.1).collect();
+            old.sort_unstable();
+            new.sort_unstable();
+            let percentile = |values: &[u64], percent: usize| {
+                values
+                    .get(values.len().saturating_sub(1) * percent / 100)
+                    .copied()
             };
-            assert_eq!(lines(from), lines(to));
+            std::fs::write(to.parent().unwrap().join("write-growth.json"), serde_json::to_vec_pretty(&json!({
+            "record": largest.file_name().unwrap().to_string_lossy(), "completedTurns":turns.len(),
+            "categories":groups, "beforeP50TurnBytes":percentile(&old,50), "afterP50TurnBytes":percentile(&new,50),
+            "beforeP90TurnBytes":percentile(&old,90), "afterP90TurnBytes":percentile(&new,90)
+        })).unwrap()).unwrap();
+        }
+        if std::env::var_os("OCTIQ_RECORD_SKIP_SETUP").is_none() {
+            // Run the exact Rust compactor against all real captured streams too.
+            let fixtures =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/src/lib/__fixtures__");
+            let evidence = to.parent().unwrap().join("fixtures");
+            crate::profile::make_dir(&evidence).unwrap();
+            let decoded = to.parent().unwrap().join("decoded-fixtures");
+            crate::profile::make_dir(&decoded).unwrap();
+            for entry in std::fs::read_dir(fixtures).unwrap().flatten() {
+                if entry.path().extension().is_some_and(|e| e == "jsonl") {
+                    let target = evidence.join(entry.file_name());
+                    std::fs::copy(entry.path(), &target).unwrap();
+                    compact_record(&target).unwrap();
+                    let mut output = std::io::BufWriter::new(
+                        std::fs::File::create(decoded.join(entry.file_name())).unwrap(),
+                    );
+                    crate::transcript::for_each_line(
+                        std::fs::File::open(&target).unwrap(),
+                        |seq, line| {
+                            if let Ok(event) = serde_json::from_slice::<Value>(line) {
+                                writeln!(output, "{}", json!({"seq":seq,"event":event})).unwrap();
+                            }
+                        },
+                    );
+                    output.flush().unwrap();
+                }
+            }
+            std::fs::write(
+                to.parent().unwrap().join("fixtures.done"),
+                "verified Rust readback exported",
+            )
+            .unwrap();
+        }
+        let mut paths: Vec<_> = std::fs::read_dir(&to)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+            .collect();
+        paths.sort_by_key(|path| {
+            (
+                std::cmp::Reverse(
+                    std::fs::metadata(from.join(path.file_name().unwrap())).map_or(0, |m| m.len()),
+                ),
+                path.file_name().unwrap().to_os_string(),
+            )
+        });
+        let shard = std::env::var("OCTIQ_RECORD_SHARD").ok().map(|value| {
+            let (at, count) = value.split_once('/').expect("shard index/count");
+            let at: usize = at.parse().unwrap();
+            let count: usize = count.parse().unwrap();
+            assert!(count > 0 && at < count);
+            (at, count)
+        });
+        if let Some((at, count)) = shard {
+            paths = paths
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, path)| (index % count == at).then_some(path))
+                .collect();
+        }
+        let report_path = to.parent().unwrap().join(shard.map_or_else(
+            || "sizes.jsonl".into(),
+            |(at, _)| format!("sizes-{at}.jsonl"),
+        ));
+        let mut report = std::fs::File::create(report_path).unwrap();
+        for (at, path) in paths.iter().enumerate() {
+            let original = from.join(path.file_name().unwrap());
+            let before = std::fs::metadata(&original).unwrap().len();
+            let current = std::fs::metadata(path).unwrap().len();
+            let started = std::time::Instant::now();
+            let freed = compact_record(path)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+                .unwrap_or(0);
+            let after = std::fs::metadata(path).unwrap().len();
+            assert_eq!(freed, current.saturating_sub(after));
+            // Host facts and numbering are checked against the untouched
+            // scratch copy as well as the atomic rewriter's backup.
+            let facts = |p: &Path| {
+                let mut out = Vec::new();
+                crate::transcript::for_each_line(std::fs::File::open(p).unwrap(), |seq, line| {
+                    if let Ok(e) = serde_json::from_slice::<Value>(line) {
+                        if e["type"]
+                            .as_str()
+                            .is_some_and(|t| t.starts_with("octiq_") && t != "octiq_compacted")
+                        {
+                            out.push((seq, e));
+                        }
+                    }
+                });
+                out
+            };
+            let digest = |path: &Path| {
+                let mut file = std::fs::File::open(path).unwrap();
+                let mut sha = Sha256::new();
+                let mut buffer = [0u8; 64 * 1024];
+                loop {
+                    let n = file.read(&mut buffer).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    sha.update(&buffer[..n]);
+                }
+                <[u8; 32]>::from(sha.finalize())
+            };
+            // An unchanged byte-for-byte record needs no second JSON parse.
+            // Changed records still compare every host fact at its logical seq.
+            if before != after || digest(&original) != digest(path) {
+                assert_eq!(
+                    facts(&original),
+                    facts(path),
+                    "host facts {}",
+                    path.display()
+                );
+            }
+            writeln!(report, "{}", json!({"name":path.file_name().unwrap().to_string_lossy(), "before":before,"after":after,"millis":started.elapsed().as_millis()})).unwrap();
+            eprintln!(
+                "{}/{} {}: {before} -> {after}",
+                at + 1,
+                paths.len(),
+                path.file_name().unwrap().to_string_lossy()
+            );
         }
     }
 

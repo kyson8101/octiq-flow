@@ -101,6 +101,12 @@ pub(super) struct Notice {
     event: serde_json::Value,
 }
 
+impl Notice {
+    pub(super) fn targets_record(&self, record: &str) -> bool {
+        crate::transcript::key_record_claim(&self.chat_key).as_deref() == Some(record)
+    }
+}
+
 impl OrchestrationStore {
     pub fn auto_plan_get(&self, chat: &str) -> Result<Setting, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
@@ -990,8 +996,11 @@ mod tests {
             restarted.inner.lock().unwrap().data.auto_plan_notices.len(),
             1
         );
+        let record = crate::transcript::key_record_claim("chat:master").unwrap();
+        assert!(restarted.record_quiet(&record).is_err());
         restarted.deliver_auto_plan_notices().unwrap();
         restarted.deliver_auto_plan_notices().unwrap();
+        assert!(restarted.record_quiet(&record).is_ok());
         let events = crate::transcript::of_type("chat:master", "octiq_plan_auto_approved");
         assert_eq!(events.iter().filter(|e| e["runId"] == run.id).count(), 1);
         let event = events.iter().find(|e| e["runId"] == run.id).unwrap();

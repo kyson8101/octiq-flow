@@ -1,0 +1,151 @@
+# Chat record storage
+
+The application JSONL files are display/history records. Claude, Codex, Pi and
+Antigravity resume their native sessions through `agent_provider.rs`; they do
+not read these files as native session files. There is one important additional
+consumer: `provider_switch::provider_history` builds bounded handoff evidence
+from the application record when switching providers. Actual conversation text,
+tool arguments/results, delivery identities and host events therefore remain.
+
+## Readers
+
+| Reader | Required data |
+| --- | --- |
+| `chat.ts`, live and replay | Messages, stream block text and original tool arguments, result text, errors/outcomes, model/session/cwd/commands, usage and host facts |
+| `replayChat`, `CatchUp`, `loadChat` | Stable logical `seq`; a compacted marker whose `into <= checkpoint` forces a fresh page when merged text crossed the checkpoint |
+| `chat_page` | Whole turns, source-resolved init context, stable exclusive cursors; indexes physical lines with their logical end numbers |
+| `chat_since`, `every_line`, `of_type` | Source-resolved events and original sequence numbers; malformed/torn lines still occupy a position |
+| Search | User/assistant text and provider final messages, not init lists, hooks or the structured tool-result copy |
+| Provider switch | Bounded transcript evidence; never storage-only references |
+| Question/answered and reopen receipts | Exact host event identities/content, generation, file sync and folder sync |
+| Tool diff | `tool_use_result.filePath`, `structuredPatch`, `type`, and `content` for newly created files |
+| Failure origin | `tool_use_result._meta`, including `octiq/outcome` |
+
+## Disk format
+
+An unchanged init or commands list is omitted after its material source, and
+`octiq_record_refs` maps each omitted field to the original logical sequence.
+References point backwards to material lists, never to other references. Older
+backend binaries cannot read this storage format; rollback needs a pre-migration
+chats-folder backup. Scalar
+init facts remain on every init event. A changed list is stored in full.
+`transcript::for_each_line` decodes references for ordinary readers;
+`LineIndex::read` fetches material source lines for random-access pages. The wire
+format remains ordinary provider events. The writer keeps a bounded cache of
+hashes and source numbers, not list contents, and reconstructs it after restart.
+
+The displayed tool-result text stays in `message.content`. Structured copies
+keep only diff fields and `_meta`; repeated stdout, MCP payloads, Read file
+contents and originalFile are omitted. Hook output/stdout/stderr are omitted
+because the reducer draws none of them. User-authored image attachments and
+host question/answer/reopen events are preserved.
+
+Finished stream pieces retain the first piece with the complete original block
+text; redundant pieces become no-ops. Using the final assistant's arguments in
+place of the stream is unsafe: Claude can normalize a Bash command in that copy
+(the captured command-echo fixture exercises this). An unfinished stream stays
+unchanged.
+
+Adjacent no-ops use one physical line:
+
+```json
+{"type":"octiq_compacted","into":42,"count":200}
+```
+
+That line occupies 200 original logical sequence positions and is returned once
+with the last position as its `seq`. `into` is the earliest destination of any
+merged piece in the range; this may conservatively trigger a fresh page. Every
+real event retains its original `seq`. A cursor inside the range receives its
+end marker on catch-up. Invalid UTF-8/JSON still counts as one position. Only a
+valid `octiq_compacted` range can span multiple positions.
+
+## Atomic migration and recovery
+
+`record_trim::compact_record` plans edits from a raw storage walk. Publication
+goes through `transcript::rewrite_numbered`:
+
+1. Capture source metadata/generation briefly under the append lock. Build and
+   sync a replacement outside the lock; check logical count, reference resolution
+   and a streaming digest of every host fact at its original sequence. A separate
+   per-record rewrite reservation excludes competing replacement files.
+2. Acquire the lifecycle/receipt gate only for publication, then take the append
+   lock and reject a source whose metadata or generation changed. Hard-link the
+   original inode as `.jsonl.compact-backup`, sync it and its folder, atomically
+   rename the replacement, move generation and sync the folder.
+3. Release both publication gates before readback. Verify the published prefix
+   against the backup outside the lock, allowing later appends; briefly lock to
+   check generation again before removing the backup and syncing its folder.
+
+The backup sync opens a writable handle on Windows because
+[FlushFileBuffers requires GENERIC_WRITE](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers).
+The Unix path keeps its read-only fsync handle.
+
+A failure retains the backup. A fresh process verifies and removes an
+interrupted backup before retrying; later appends are allowed if the old host
+fact prefix and sequence boundary remain intact. `/clear` removes its record
+and pending backup together, invalidates generation and forgets cached writer
+state. No backup is restored into a cleared history.
+
+Startup and post-process passes preflight the record through the chat start
+claims door, then release that claim during preparation. A second claim at
+publication refuses running processes, pending starts, handoffs and alias keys.
+A chat starting during preparation wins; that file is retried later. Pending/native questions and unsynced answered-line debt also hold the
+record: moving generation must not make an owed answer look like a cleared
+history. Reopen notices, auto-plan approvals, not-sent lines, auto-resume cancels
+and pending/restored memory activity deliveries also refuse migration. Existing
+delivery locks are queried without waiting. During a reserved migration,
+`generation` returns unavailable to new receipt flows; their existing retry
+paths keep the debt, and the token/receipt rules stay unchanged. A source symlink or nonregular file is refused. Successful file sizes
+are remembered in `.compacted-sizes-v2.json`; a failed file or one retaining a
+backup is retried. Folder creation/read/error handling uses the pinned profile.
+
+Compaction runs when the process is released/closed and on startup for records
+that grew. It does not rewrite a long history after every assistant turn; that
+would produce quadratic I/O. The startup pass runs in its own background thread, one record at a time.
+Only source checks, backup/rename/sync and generation changes hold the global
+append lock; bulk copying, parsing, recovery verification and post-publication
+readback do not. A changed source is skipped rather than blocking a new turn. Storage savings do not imply equal wire or browser-memory
+savings: list references are decoded before delivery.
+
+## Offline verification
+
+Never point the offline evidence harness at the live profile. Copy the chats
+folder into `original` and `compacted` under an `octiq-record-storage-*` OS
+scratch directory. The ignored test rejects destinations outside that scratch
+boundary. It compacts only the preexisting copy and runs the exact Rust
+compactor on captured JSONL fixtures too.
+
+```sh
+OCTIQ_RECORD_ORIGINAL=<scratch>/original \
+OCTIQ_RECORD_COMPACTED=<scratch>/compacted \
+  cargo test --manifest-path src-tauri/Cargo.toml --lib offline_storage_evidence -- --ignored --nocapture
+
+OCTIQ_RECORD_EVIDENCE=<scratch> \
+OCTIQ_RECORD_LARGE=<comma-separated-record-filenames> \
+  pnpm --dir web exec vitest run --maxWorkers=1 tests/storedRecord.test.ts
+```
+
+The reducer comparison includes drawn messages, tool results/diffs/outcomes,
+questions/answered host facts, other ChatState fields and logical sequence
+positions. `write-growth.json` separately measures append-only bytes per turn
+and per event category before any rewrite. Unit tests also cover range catch-up, page/since/append after restart,
+list changes, generation receipts, alias start exclusion and fresh processes
+stopped at both publication boundaries.
+
+## Receipt consumer audit
+
+| Consumer | Compaction gate |
+| --- | --- |
+| `QuestionStore::Note`, native handover, `append_in` | Pending/open questions, native_seen and owed notes; record reservation defers new generation captures |
+| `orchestration::workspaces::notice_receipts` / `deliver_reopen_notices` | Busy workspace delivery or an undelivered reopen for this coordinator record |
+| `orchestration::auto_plan::deliver_auto_plan_notices` | Busy delivery or an entry in auto_plan_notices |
+| `memory_activity::show` / `recover_at` | Busy activity journal, pending intent, or a delivered line missing from the transcript |
+| `ChatManager::record_unsent` / `settle_unsent` | Busy not-sent queue or an owed line for any alias of this record |
+| Auto-resume cancellation | Busy/unreadable queue, an owed save, or a cancelled tombstone not finished yet |
+| `record_chat_event_synced` | Its durability-waiting callers are memory activity and reopen notices above; `record_start_failure` has no waiting receipt/debt and does not gate an action |
+
+All production `generation`/`confirm_synced`/`Held::Moved` consumers are in the
+first four rows or the transcript's own mutation/receipt functions. Existing
+receipts still invalidate on a migration; no history token is silently renewed.
+The captured wire-adapter check tolerates only decimal parser ULP differences
+for noninteger numbers; reducer output and sequence comparisons remain exact.

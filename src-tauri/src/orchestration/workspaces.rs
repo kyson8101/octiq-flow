@@ -192,8 +192,8 @@ fn reopen_event(task: &Task, reopen: &TaskReopen) -> serde_json::Value {
 /// and handed to every `confirm_synced`, which answers none once the host
 /// has removed that record. Then nothing is recorded, the tasks stay held,
 /// and the next pass reads the record that is there, does not find the
-/// line and writes it, once. A compaction keeps every host event and is
-/// not a new record.
+/// line and writes it, once. Storage migration keeps every host event but
+/// moves generation; its publication gate waits for notice debt to settle.
 ///
 /// **And for the file it was taken for.** The token names its record's
 /// file as the filesystem tells files apart (`transcript::identity`), so
@@ -3785,6 +3785,8 @@ exec /usr/bin/git "$@"
         // The reopen is on record as not yet shown, and the snapshot says
         // why the task waits, in every view.
         assert!(!reopened.reopens[0].notice_delivered);
+        let record = crate::transcript::key_record_claim(&work.key).unwrap();
+        assert!(work.store.record_quiet(&record).is_err());
         let waiting = |store: &OrchestrationStore| {
             let snapshot = store.snapshot(Some(&work.run.id)).unwrap();
             let full = serde_json::to_value(&snapshot).unwrap();
@@ -3819,6 +3821,7 @@ exec /usr/bin/git "$@"
         work.mend_transcript();
         assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
         assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+        assert!(work.store.record_quiet(&record).is_ok());
         let told = work.told();
         assert_eq!(told.len(), 1, "{told:?}");
         assert_eq!(
@@ -4136,8 +4139,14 @@ exec /usr/bin/git "$@"
         );
         let before = fs::metadata(work.transcript()).unwrap().len();
         let fault = NoFolderSync::begin();
-        let freed = crate::record_trim::compact_record(&work.transcript()).unwrap();
-        assert!(freed.is_some(), "the record was rewritten");
+        // Exercise a legacy non-storage rewrite that has no folder receipt.
+        // The storage migration now refuses publication while folder sync fails.
+        let rewritten = crate::transcript::rewrite_lines(&work.transcript(), |line| {
+            let mut event: serde_json::Value = serde_json::from_str(line).ok()?;
+            crate::record_trim::strip_pictures(&mut event).then(|| event.to_string())
+        })
+        .unwrap();
+        assert!(rewritten, "the record was rewritten");
         assert!(fs::metadata(work.transcript()).unwrap().len() < before);
         held_until_the_folder_syncs(&work, &task, fault);
     }
@@ -4468,10 +4477,11 @@ exec /usr/bin/git "$@"
     /// A compaction in the same window is not a clear. It puts a new file
     /// under the record's name and keeps every line of it, the notice
     /// among them, so the receipt asked for afterwards is for a record that
-    /// holds the line: delivered in that pass, written once. For a line
-    /// written now and for one found there.
+    /// holds the line. A storage migration moves generation, so that pass
+    /// refuses its old receipt; the next pass re-reads and confirms the same
+    /// notice exactly once. For a fresh line and for one found there.
     #[test]
-    fn a_compaction_before_the_receipt_still_confirms_the_notice() {
+    fn a_storage_generation_move_before_receipt_defers_then_confirms_once() {
         let picture = json!({ "type": "user", "message": { "content": [{
             "type": "tool_result",
             "tool_use_id": "shot",
@@ -4494,12 +4504,25 @@ exec /usr/bin/git "$@"
                 drop(fault);
                 assert!(!reopened.reopens[0].notice_delivered);
                 before_the_receipt(compacted);
-                assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+                assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
             } else {
                 before_the_receipt(compacted);
                 let reopened = work.reopen(&task, "Compacted in the window").unwrap();
-                assert!(reopened.reopens[0].notice_delivered, "found: {found}");
+                assert!(
+                    !reopened.reopens[0].notice_delivered,
+                    "old receipt refused: {found}"
+                );
             }
+            assert_eq!(
+                work.told().len(),
+                1,
+                "the moved receipt never repeats the line"
+            );
+            assert_eq!(
+                work.store.deliver_reopen_notices_now(),
+                Ok(1),
+                "fresh receipt"
+            );
             assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
             assert_eq!(recorded_types(&work.key), ["user", "octiq_task_reopened"]);
             assert_eq!(work.told()[0]["spec"], "Compacted in the window");

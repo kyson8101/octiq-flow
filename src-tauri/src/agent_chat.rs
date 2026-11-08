@@ -1364,6 +1364,7 @@ pub struct ChatManager {
 pub(crate) struct StartClaim<'a> {
     manager: &'a ChatManager,
     key: String,
+    _storage: Option<crate::transcript::StorageHold>,
 }
 
 impl Drop for StartClaim<'_> {
@@ -2222,6 +2223,75 @@ impl ChatManager {
             .ok_or_else(|| format!("chat '{key}' is already running"))
     }
 
+    /// Hold a transcript for migration, against running chats AND starts
+    /// under any key that aliases its file. The same start_claims door keeps
+    /// a new process out until the compactor drops the guard.
+    pub(crate) fn claim_record(&self, path: &std::path::Path) -> Result<StartClaim<'_>, String> {
+        let record = crate::transcript::record_claim(path);
+        {
+            let sessions = self
+                .sessions
+                .try_lock()
+                .map_err(|_| "chat lifecycle is busy")?;
+            if sessions
+                .keys()
+                .any(|key| crate::transcript::key_record_claim(key).as_ref() == Some(&record))
+            {
+                return Err("chat record is running".into());
+            }
+        }
+        // Waiting for another record's publication holds no lifecycle lock.
+        // Recheck starts/processes under the manager door after reserving it.
+        let storage = crate::transcript::hold_storage(path)?;
+        let claim = {
+            let sessions = self
+                .sessions
+                .try_lock()
+                .map_err(|_| "chat lifecycle is busy")?;
+            let handoffs = self
+                .handoffs
+                .try_lock()
+                .map_err(|_| "chat handoff is busy")?;
+            let mut claims = self
+                .start_claims
+                .try_lock()
+                .map_err(|_| "chat start claims are busy")?;
+            if sessions
+                .keys()
+                .chain(handoffs.iter())
+                .chain(claims.keys())
+                .any(|key| {
+                    key == &record
+                        || crate::transcript::key_record_claim(key).as_ref() == Some(&record)
+                })
+            {
+                return Err("chat record is running or reserved".into());
+            }
+            claims.insert(record.clone(), thread::current().id());
+            StartClaim {
+                manager: self,
+                key: record.clone(),
+                _storage: Some(storage),
+            }
+        };
+        // No manager/session lock spans a ledger or transcript read. The
+        // claim now excludes starts; the storage hold defers new receipts.
+        self.questions.record_quiet(&record)?;
+        self.orchestrations.record_quiet(&record)?;
+        if self
+            .unsent
+            .try_lock()
+            .map_err(|_| "not-sent delivery is busy")?
+            .iter()
+            .any(|(chat, _)| crate::transcript::key_record_claim(chat).as_ref() == Some(&record))
+        {
+            return Err("chat record still owes a not-sent line".into());
+        }
+        self.auto_resumes.record_quiet(&record)?;
+        crate::memory_activity::record_quiet(&record)?;
+        Ok(claim)
+    }
+
     /// Borrow this thread's recovery claim, or reserve a fresh launch. Even
     /// a refused duplicate browser start must not rewrite resume settings.
     fn hold_start(&self, key: &str) -> Result<Option<StartClaim<'_>>, String> {
@@ -2232,7 +2302,9 @@ impl ChatManager {
             .map_err(|e| e.to_string())?
             .contains(key);
         let mut claims = self.start_claims.lock().map_err(|e| e.to_string())?;
-        if sessions.contains_key(key)
+        if crate::transcript::key_record_claim(key)
+            .is_some_and(|record| claims.contains_key(&record))
+            || sessions.contains_key(key)
             || replacing
             || claims
                 .get(key)
@@ -2247,6 +2319,7 @@ impl ChatManager {
         Ok(Some(StartClaim {
             manager: self,
             key: key.to_string(),
+            _storage: None,
         }))
     }
 
@@ -5136,6 +5209,9 @@ pub(crate) fn start_session(
                         snapshot_reads.trim(&mut event, crate::record_trim::RECORD_MIN_BYTES);
                         // Nor does the page draw a picture a tool returned.
                         crate::record_trim::strip_pictures(&mut event);
+                        // Keep the live payload small too; the reducer draws
+                        // the same text/diff/outcome without this second copy.
+                        crate::record_storage::trim_display_only(&mut event);
                         let notification_receipts: Vec<_> =
                             crate::orchestration::inbox::receipt_ids(&event)
                                 .into_iter()
@@ -7951,7 +8027,7 @@ fn conclude_completion(
     match close_completed(manager, key, session, turn_id, starts) {
         Ok(_) => {
             // Every message in it has stopped, so its stream pieces can go.
-            crate::record_trim::compact_chat(key);
+            crate::record_trim::compact_chat(manager, key);
             true
         }
         Err(reason) => {
@@ -8624,7 +8700,7 @@ pub fn start_idle_reaper(manager: Arc<ChatManager>) {
         for key in sweep_still_chats(&manager, timeout) {
             println!("[chat] {key} ended after {}m still", timeout.as_secs() / 60);
             // Every message in it has stopped, so its stream pieces can go.
-            crate::record_trim::compact_chat(&key);
+            crate::record_trim::compact_chat(&manager, &key);
         }
         for key in sweep_replaced_binaries(&manager) {
             println!("[chat] {key} ended: the agent program it runs was replaced on disk");

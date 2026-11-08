@@ -360,6 +360,35 @@ impl QuestionStore {
         state.load_error.clone().map_or(Ok(()), Err)
     }
 
+    /// Storage migration moves a record generation. Do not invalidate an
+    /// answer's old-history token while it is pending, in native delivery,
+    /// or still owed a durable transcript line. Called with the manager's
+    /// session/start door held, so no new provider can ask in this record.
+    pub(crate) fn record_quiet(&self, record: &str) -> Result<(), String> {
+        let state = self
+            .state
+            .try_lock()
+            .map_err(|_| "question delivery is busy")?;
+        Self::check(&state)?;
+        let same =
+            |chat: &str| crate::transcript::key_record_claim(chat).as_deref() == Some(record);
+        if state.notes.values().any(|note| same(&note.chat))
+            || state
+                .records
+                .values()
+                .any(|question| question.open() && same(&question.origin.chat_key))
+            || state.native_seen.keys().any(|id| {
+                state
+                    .records
+                    .get(id)
+                    .is_some_and(|question| same(&question.origin.chat_key))
+            })
+        {
+            return Err("chat record has a pending question or an answered line still owed".into());
+        }
+        Ok(())
+    }
+
     pub fn pending(&self) -> Result<Vec<Asked>, String> {
         let state = self.state.lock().map_err(|e| e.to_string())?;
         Self::check(&state)?;
