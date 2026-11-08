@@ -1180,6 +1180,24 @@ mod tests {
         let key = "chat:storage-memory-debt";
         let path = crate::transcript::path_for(key).unwrap();
         let record = crate::transcript::record_claim(&path);
+        // Other tests model separate profiles but share the production mutex.
+        // Busy is a valid fail-closed answer, not evidence about this ledger.
+        // Retry only that contention; every debt/parse assertion stays exact.
+        let quiet = || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let answer = record_quiet(&record);
+                if answer
+                    .as_ref()
+                    .err()
+                    .is_none_or(|e| e != "memory activity delivery is busy")
+                    || std::time::Instant::now() >= deadline
+                {
+                    return answer;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        };
         let ledger_path = ledger_path().unwrap();
         let mut ledger = Ledger::default();
         ledger
@@ -1189,20 +1207,20 @@ mod tests {
             .pending
             .insert(key.into(), Status::Saved);
         fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
-        assert!(record_quiet(&record).is_err());
+        assert!(quiet().is_err());
         let event = json!({"type": EVENT,"id":"activity","status":"saved"});
         crate::transcript::append_synced(key, &event).unwrap();
         let entry = ledger.entries.get_mut("activity").unwrap();
         entry.pending.clear();
         entry.delivered.insert(key.into(), Status::Saved);
         fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
-        assert!(record_quiet(&record).is_ok());
+        assert!(quiet().is_ok());
         crate::transcript::forget(key);
-        assert!(record_quiet(&record).is_err());
+        assert!(quiet().is_err());
         crate::transcript::append_synced(key, &event).unwrap();
-        assert!(record_quiet(&record).is_ok());
+        assert!(quiet().is_ok());
         fs::write(&ledger_path, "torn ledger").unwrap();
-        assert!(record_quiet(&record).is_err());
+        assert!(quiet().is_err());
         assert_eq!(fs::read_to_string(&ledger_path).unwrap(), "torn ledger");
     }
 
