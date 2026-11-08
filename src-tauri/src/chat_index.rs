@@ -327,17 +327,27 @@ pub fn find(id: &str) -> Result<Option<ChatMeta>, String> {
 /// Every chat, pinned ones first and then most recently active — the order the
 /// task-oriented sidebar shows them in.
 pub fn list() -> Vec<ChatMeta> {
-    let mut chats: Vec<_> = read()
+    list_checked().unwrap_or_default()
+}
+
+/// Agent reads must distinguish an unreadable archive from an empty one.
+pub(crate) fn active_in_record_order() -> Result<Vec<ChatMeta>, String> {
+    Ok(read_checked()
+        .map_err(|_| "the chat index could not be read".to_string())?
         .chats
         .into_iter()
         .filter(|chat| chat.deleted_at.is_none())
-        .collect();
+        .collect())
+}
+
+pub(crate) fn list_checked() -> Result<Vec<ChatMeta>, String> {
+    let mut chats = active_in_record_order()?;
     chats.sort_by(|a, b| {
         b.pinned
             .cmp(&a.pinned)
             .then(b.updated_at.cmp(&a.updated_at))
     });
-    chats
+    Ok(chats)
 }
 
 /// Add a chat or update the one with this id.

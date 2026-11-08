@@ -20,7 +20,8 @@ use sha2::{Digest, Sha256};
 use crate::chat_index::ChatMeta;
 use crate::workspaces::WorkspaceState;
 
-const SEGMENT_VERSION: u32 = 1;
+// v2 shares the MCP semantic projection (origin/skill handling and User fallback).
+const SEGMENT_VERSION: u32 = 2;
 const SEGMENT_FOLDER: &str = "search-chats-v1";
 const SEARCH_CHUNK_CHARS: usize = 1_200;
 const SEARCH_CHUNK_OVERLAP: usize = 120;
@@ -57,10 +58,21 @@ fn segment_version() -> u32 {
     SEGMENT_VERSION
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct Filters {
     #[serde(default)]
+    version: u32,
+    #[serde(default)]
     chats: HashMap<String, CandidateFilter>,
+}
+
+impl Default for Filters {
+    fn default() -> Self {
+        Self {
+            version: SEGMENT_VERSION,
+            chats: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -145,7 +157,8 @@ fn load_filters(root: &Path) -> Result<Filters, String> {
         .filter(|bytes| bytes.len() as u64 <= FILTER_FILE_LIMIT)
         .and_then(|bytes| serde_json::from_slice::<Filters>(&bytes).ok())
         .filter(|f| {
-            f.chats.len() <= FILTER_LIMIT
+            f.version == SEGMENT_VERSION
+                && f.chats.len() <= FILTER_LIMIT
                 && f.chats.keys().all(|id| id.len() <= 512)
                 && f.chats
                     .values()
@@ -318,13 +331,6 @@ pub struct ChatSearchHit {
 }
 
 #[derive(Debug)]
-struct Entry {
-    speaker: String,
-    role: String,
-    text: String,
-}
-
-#[derive(Debug)]
 struct BestMatch {
     score: usize,
     excerpt: String,
@@ -339,18 +345,45 @@ pub fn search(
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<ChatSearchHit>, String> {
+    crate::profile::available()?;
+    let chats = crate::agent_chat::visible_chats(crate::chat_index::list());
+    search_chats(
+        workspaces,
+        query,
+        limit.unwrap_or(50).clamp(1, 50),
+        chats,
+        EXCERPT_CHARS,
+        false,
+    )
+}
+
+/// The MCP supplies its authorized project/current-chat selection BEFORE
+/// ranking. A global top-N followed by filtering would lose valid matches.
+pub(crate) fn search_chats(
+    workspaces: &WorkspaceState,
+    query: String,
+    limit: usize,
+    chats: Vec<ChatMeta>,
+    excerpt_chars: usize,
+    lexical: bool,
+) -> Result<Vec<ChatSearchHit>, String> {
+    crate::profile::available()?;
     let query = one_line(&query);
     if query.chars().count() < 2 {
         return Err("Type at least two characters to search chats.".into());
     }
     let query_lower = query.to_lowercase();
-    let words = search_words(&query_lower);
+    let mut words = search_words(&query_lower);
+    if lexical {
+        let mut seen = HashSet::new();
+        words.retain(|word| seen.insert(word.clone()));
+    }
+    let tokens = lexical.then(|| lexical_tokens(&query_lower));
     if words.is_empty() {
         return Err("Search needs letters or numbers.".into());
     }
 
     // Front-desk chats are in no listing, this one included.
-    let chats = crate::agent_chat::visible_chats(crate::chat_index::list());
     let workspace_names: HashMap<String, String> =
         crate::workspaces::list_workspaces_impl(workspaces)?
             .into_iter()
@@ -376,7 +409,8 @@ pub fn search(
             }
         }
     }
-    let active: HashSet<_> = chats.iter().map(|meta| meta.id.as_str()).collect();
+    let all_chats = crate::chat_index::list_checked()?;
+    let active: HashSet<_> = all_chats.iter().map(|meta| meta.id.as_str()).collect();
     let before = state.filters.chats.len();
     state
         .filters
@@ -384,7 +418,6 @@ pub fn search(
         .retain(|id, _| active.contains(id.as_str()));
     let mut changed = before != state.filters.chats.len();
 
-    let limit = limit.unwrap_or(50).clamp(1, 50);
     let mut matches = Vec::new();
     // Metadata is cheap and can outrank every document. Establish that floor
     // before loading segments; then a chat whose best possible document cannot
@@ -394,7 +427,15 @@ pub fn search(
             .get(&meta.project_id)
             .map(String::as_str)
             .unwrap_or("Unknown project");
-        if let Some(best) = best_match(meta, project, &[], &query_lower, &words) {
+        if let Some(best) = best_match(
+            meta,
+            project,
+            &[],
+            &query_lower,
+            &words,
+            excerpt_chars,
+            tokens.as_deref(),
+        ) {
             keep_hit(&mut matches, meta, order, best, limit);
         }
     }
@@ -440,7 +481,15 @@ pub fn search(
             }
             None => Vec::new(),
         };
-        if let Some(best) = best_match(meta, project, &documents, &query_lower, &words) {
+        if let Some(best) = best_match(
+            meta,
+            project,
+            &documents,
+            &query_lower,
+            &words,
+            excerpt_chars,
+            tokens.as_deref(),
+        ) {
             keep_hit(&mut matches, meta, order, best, limit);
         }
     }
@@ -482,11 +531,22 @@ fn best_match(
     documents: &[SearchDocument],
     query: &str,
     words: &[String],
+    excerpt_chars: usize,
+    tokens: Option<&[String]>,
 ) -> Option<BestMatch> {
     let mut best = None;
     for document in documents {
         // Segment text is already whitespace-normalized by entry_chunks.
-        let score = search_score(&document.text.to_lowercase(), query, words, 1);
+        let lower = document.text.to_lowercase();
+        let score = search_score(&lower, query, words, 1);
+        if score > 0
+            && tokens.is_some_and(|tokens| {
+                let found = lexical_tokens(&lower);
+                !tokens.iter().all(|token| found.contains(token))
+            })
+        {
+            continue;
+        }
         if score == 0
             || best
                 .as_ref()
@@ -496,7 +556,7 @@ fn best_match(
         }
         best = Some(BestMatch {
             score,
-            excerpt: search_excerpt(&document.text, words, EXCERPT_CHARS),
+            excerpt: search_excerpt(&document.text, words, excerpt_chars),
             speaker: document.speaker.clone(),
             role: document.role.clone(),
         });
@@ -526,7 +586,7 @@ fn best_match(
         }
         best = Some(BestMatch {
             score,
-            excerpt: search_excerpt(&normalized, words, EXCERPT_CHARS),
+            excerpt: search_excerpt(&normalized, words, excerpt_chars),
             speaker: speaker.into(),
             role: role.into(),
         });
@@ -637,7 +697,7 @@ fn index_transcript(path: &Path) -> Result<Vec<SearchDocument>, String> {
     let mut documents = Vec::new();
     // A line that cannot be decoded is passed over, never the end of the
     // read (`transcript::for_each_line`).
-    crate::transcript::for_each_line(file, |_, line| {
+    crate::transcript::try_each_line(file, |_, line| {
         let Ok(event) = serde_json::from_slice::<Value>(line) else {
             return;
         };
@@ -654,110 +714,13 @@ fn index_transcript(path: &Path) -> Result<Vec<SearchDocument>, String> {
                 documents.push(document);
             }
         }
-    });
+    })
+    .map_err(|e| e.to_string())?;
     Ok(documents)
 }
 
-fn conversation_entries(event: &Value) -> Vec<Entry> {
-    let speaker = |fallback: &str| {
-        event["octiq_speaker"]["name"]
-            .as_str()
-            .map(one_line)
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| fallback.to_string())
-    };
-    // Antigravity's closing words are its `result`'s response; its other
-    // events carry only pieces of them.
-    if event["event"] == "result" {
-        return event["result"]["response"]
-            .as_str()
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(|text| Entry {
-                speaker: speaker("Assistant"),
-                role: "assistant".into(),
-                text: text.to_string(),
-            })
-            .into_iter()
-            .collect();
-    }
-    match event["type"].as_str().unwrap_or_default() {
-        "user" => content_text(&event["message"]["content"])
-            .filter(|text| !text.is_empty())
-            .map(|text| Entry {
-                speaker: speaker("You"),
-                role: "user".into(),
-                text: compact_skill_prompt(text),
-            })
-            .into_iter()
-            .collect(),
-        "assistant" => content_text(&event["message"]["content"])
-            .filter(|text| !text.is_empty())
-            .map(|text| Entry {
-                speaker: speaker("Assistant"),
-                role: "assistant".into(),
-                text,
-            })
-            .into_iter()
-            .collect(),
-        "message_end" if event["message"]["role"] == "assistant" => {
-            content_text(&event["message"]["content"])
-                .filter(|text| !text.is_empty())
-                .map(|text| Entry {
-                    speaker: speaker("Assistant"),
-                    role: "assistant".into(),
-                    text,
-                })
-                .into_iter()
-                .collect()
-        }
-        "item.completed" if event["item"]["type"] == "agent_message" => event["item"]["text"]
-            .as_str()
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(|text| Entry {
-                speaker: speaker("Assistant"),
-                role: "assistant".into(),
-                text: text.to_string(),
-            })
-            .into_iter()
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn content_text(content: &Value) -> Option<String> {
-    if let Some(text) = content.as_str() {
-        return Some(text.trim().to_string());
-    }
-    let blocks = content.as_array()?;
-    let text = blocks
-        .iter()
-        .filter(|block| block["type"] == "text")
-        .filter_map(|block| block["text"].as_str())
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    Some(text)
-}
-
-fn compact_skill_prompt(text: String) -> String {
-    if !text.starts_with("Base directory for this skill:") {
-        return text;
-    }
-    let first = text.lines().next().unwrap_or_default();
-    let base = first
-        .trim_start_matches("Base directory for this skill:")
-        .trim();
-    let name = Path::new(base)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("skill");
-    match text.rsplit_once("\nARGUMENTS:") {
-        Some((_, args)) if !args.trim().is_empty() => format!("Ran /{name}: {}", args.trim()),
-        _ => format!("Ran /{name}"),
-    }
+fn conversation_entries(event: &Value) -> Vec<crate::conversation_tools::Entry> {
+    crate::conversation_tools::entries(event, false)
 }
 
 fn entry_chunks(value: &str) -> Vec<String> {
@@ -797,6 +760,28 @@ fn alphanumeric_runs(value: &str) -> Vec<String> {
         runs.push(current);
     }
     runs
+}
+
+// Legacy MCP postings used whole ASCII words and overlapping non-ASCII
+// bigrams. Recompute only for a scored document instead of retaining postings.
+fn lexical_tokens(value: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for run in alphanumeric_runs(value) {
+        if run
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        {
+            out.push(run);
+        } else {
+            let chars: Vec<_> = run.chars().collect();
+            if chars.len() == 1 {
+                out.push(run);
+            } else {
+                out.extend(chars.windows(2).map(|w| w.iter().collect()));
+            }
+        }
+    }
+    out
 }
 
 fn search_score(value: &str, query: &str, words: &[String], weight: usize) -> usize {
@@ -895,9 +880,15 @@ mod tests {
                 for meta in crate::chat_index::list() {
                     let path = crate::transcript::path_for(&format!("chat:{}", meta.id)).unwrap();
                     let documents = index_transcript(&path).unwrap();
-                    if let Some(best) =
-                        best_match(&meta, "Unknown project", &documents, query, &words)
-                    {
+                    if let Some(best) = best_match(
+                        &meta,
+                        "Unknown project",
+                        &documents,
+                        query,
+                        &words,
+                        EXCERPT_CHARS,
+                        None,
+                    ) {
                         full.push((
                             best.score,
                             meta.updated_at,
@@ -1133,6 +1124,37 @@ mod tests {
         assert_eq!(filters.chats.len(), FILTER_LIMIT);
         assert!(remember_filter(&mut filters, "0", &chat));
         assert_eq!(filters.chats.len(), FILTER_LIMIT);
+    }
+
+    #[test]
+    fn old_semantic_segments_and_filters_rebuild_in_place() {
+        let root = crate::test_dir::TestDir::new("search-semantic-version");
+        let source = root.join("record.jsonl");
+        record(&source, "new semantic text");
+        let target = segment_path(&root, "old");
+        crate::profile::make_dir(target.parent().unwrap()).unwrap();
+        let old = CachedChat {
+            version: 1,
+            stamp: transcript_stamp(&source).unwrap(),
+            documents: vec![SearchDocument {
+                speaker: "You".into(),
+                role: "user".into(),
+                text: "stale projection".into(),
+            }],
+        };
+        fs::write(&target, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(
+            cached_chat(&root, "old", &source).unwrap().documents[0].text,
+            "new semantic text"
+        );
+        fs::write(
+            root.join("search-filters-v1.json"),
+            br#"{"chats":{"old":{"stamp":"old","bits":[]}}}"#,
+        )
+        .unwrap();
+        assert!(load_filters(&root).unwrap().chats.is_empty());
+        let rebuilt: CachedChat = serde_json::from_slice(&fs::read(target).unwrap()).unwrap();
+        assert_eq!(rebuilt.version, SEGMENT_VERSION);
     }
 
     #[test]

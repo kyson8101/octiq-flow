@@ -1,0 +1,178 @@
+{
+  "date": "2026-11-09",
+  "selection": "four largest records plus 20 filename-SHA256-ranked records; fresh APFS copy only",
+  "records": 24,
+  "changed": 14,
+  "beforeBytes": 459623909,
+  "afterBytes": 314881596,
+  "files": [
+    {
+      "afterBytes": 69779086,
+      "afterHash": "667f54d5e996f7173db7d10b4c1ebdf68b82d41774a7df77167eeb52c6c71aa4",
+      "beforeBytes": 170989128,
+      "beforeHash": "02a6eff3f771ed90ec1521a4c20348539f961d8a8a090acb8e53b0d44277e83d",
+      "file": "chat_76954dc9-f658-4fb2-b504-2f8b703529cf.jsonl"
+    },
+    {
+      "afterBytes": 45503551,
+      "afterHash": "29309e34b0147d392df199ca04f4b852e61bef27bec10d95f6481853495790fd",
+      "beforeBytes": 79321441,
+      "beforeHash": "5f515a6fba0ff6447f72c03ab01c52a7e37ac90ffa6dc9b351bfc08a582d4be4",
+      "file": "chat_12b38231-5aa1-4344-8a65-dcaaeeaf635c.jsonl"
+    },
+    {
+      "afterBytes": 71017822,
+      "afterHash": "aec293c47f64cec45a7f642c6f5712d487da075820bdcaecbe23037e9510454e",
+      "beforeBytes": 71017822,
+      "beforeHash": "aec293c47f64cec45a7f642c6f5712d487da075820bdcaecbe23037e9510454e",
+      "file": "chat_b2913c8c-cd69-4627-a73a-180c0cb38713.jsonl"
+    },
+    {
+      "afterBytes": 67776977,
+      "afterHash": "eb855e0b014c8578aabe618faa2ac6faee4cc359ca7bef80688271916a8a2b40",
+      "beforeBytes": 67776977,
+      "beforeHash": "eb855e0b014c8578aabe618faa2ac6faee4cc359ca7bef80688271916a8a2b40",
+      "file": "chat_8479838b-c43e-42e8-b583-21851eadedd8.jsonl"
+    },
+    {
+      "afterBytes": 1930812,
+      "afterHash": "e45bcff2a94a8d107d15f5c01964f8e9c331154717c87b96897dcceb253d0fdc",
+      "beforeBytes": 1930812,
+      "beforeHash": "e45bcff2a94a8d107d15f5c01964f8e9c331154717c87b96897dcceb253d0fdc",
+      "file": "chat_orch-7cc0369dd15848baa0897f98f4f7e2ab.jsonl"
+    },
+    {
+      "afterBytes": 1414976,
+      "afterHash": "768c9a36609db3161dcb541143c59e32d1d9b8b7dfd1f7ccc9c9d3b3752c3c15",
+      "beforeBytes": 2401410,
+      "beforeHash": "04c5ab0b92f019777ff66ebbacbb3cbf5c1abf46b0493ee3dda19b2b8a134b35",
+      "file": "chat_orch-79ec1f596c0b42bd9866f1124169a679.jsonl"
+    },
+    {
+      "afterBytes": 46413,
+      "afterHash": "f86dedc8cb0f4ff3bdeea7bad17cef533297bb2790e5e38de29d643b801f6dc9",
+      "beforeBytes": 46413,
+      "beforeHash": "f86dedc8cb0f4ff3bdeea7bad17cef533297bb2790e5e38de29d643b801f6dc9",
+      "file": "chat_orch-2de47b128ee04b26a42fb72807f4a2d8.jsonl"
+    },
+    {
+      "afterBytes": 851480,
+      "afterHash": "cba78f214cbae7b3bd4c314cc834f8f50c685ab66695d172613524457545a8c1",
+      "beforeBytes": 1414009,
+      "beforeHash": "1c8b2cbd7f58f136389c435740066877318bae1dcf01b9b017d8098f2a51da36",
+      "file": "chat_orch-d151ee39f59149eca88e828814740b4e.jsonl"
+    },
+    {
+      "afterBytes": 991362,
+      "afterHash": "18c23bdcc8cac7ad6d6b24ddd2b8300ac66c0306bdceb28fd5f8e34520e6c572",
+      "beforeBytes": 991362,
+      "beforeHash": "18c23bdcc8cac7ad6d6b24ddd2b8300ac66c0306bdceb28fd5f8e34520e6c572",
+      "file": "chat_orch-6a13d7ed824d4534a07320810a9b77d6.jsonl"
+    },
+    {
+      "afterBytes": 472247,
+      "afterHash": "4e62f1c6c51a2fd39730e87c2c11efc365a1e4921bda35485ef8459a75b8becf",
+      "beforeBytes": 472247,
+      "beforeHash": "4e62f1c6c51a2fd39730e87c2c11efc365a1e4921bda35485ef8459a75b8becf",
+      "file": "chat_orch-b55791494cf640329483748d272f0e51.jsonl"
+    },
+    {
+      "afterBytes": 940571,
+      "afterHash": "e08e4a048fbb9307d0ec67dfe5a1b63d17567d46d57cefadbee0d95859ab42e7",
+      "beforeBytes": 1663988,
+      "beforeHash": "81fc0a354c79f33ae7532962d36406500279141e07c19818c1c07e111f104040",
+      "file": "chat_orch-81d70115afae49f99348b750c1fb686c.jsonl"
+    },
+    {
+      "afterBytes": 477505,
+      "afterHash": "0c44a1f99be6ecec542570cc9be6905d12ac3fd88b31bc3747ca77dee70a4625",
+      "beforeBytes": 676842,
+      "beforeHash": "0511b72c07c57707c3e35efcbda926587c61b717005a4cf6c8d71ce994a4305c",
+      "file": "chat_orch-c24b225d95784aabacd3f66cc1e4e7eb.jsonl"
+    },
+    {
+      "afterBytes": 2463257,
+      "afterHash": "82a351636f27f298a1eedafe4c3edabcea4c6c6b84071d32e6345f0e05aa1e2d",
+      "beforeBytes": 3435683,
+      "beforeHash": "9f1d0d95c8f7a2d76183913a20adb7da4b1ba5895e2ec9ea78704aba64842b42",
+      "file": "chat_orch-3c95c5c1ffb748bbbdc6cd4681c648ff.jsonl"
+    },
+    {
+      "afterBytes": 365216,
+      "afterHash": "0f1b3617bebf215aeef7cb475f2fff70dd52ac306bb4766a850cbb9892b2ac07",
+      "beforeBytes": 521520,
+      "beforeHash": "6a714881b793c2202426317bc8596e3b78cf8da940503950ce615126a97c92fa",
+      "file": "chat_orch-b4301db5ea4844f18af862540bae216b.jsonl"
+    },
+    {
+      "afterBytes": 811871,
+      "afterHash": "ccb6d4482f6c4f2c70588dfb8f85acab8a55d90a4a590da436816e50534ae655",
+      "beforeBytes": 1467276,
+      "beforeHash": "af95d5c63c0f139b5aa6e345739738230852fc39f4bd1af7b8a510ad25977020",
+      "file": "chat_orch-cbd4e3b2961042a9a5afd923e11ded52.jsonl"
+    },
+    {
+      "afterBytes": 734796,
+      "afterHash": "2f1b506c464f2cffcc375ab1912342cdc1196f3d159bed835bd76ff82dd88122",
+      "beforeBytes": 1149547,
+      "beforeHash": "8afb674c006f4ae11400be686400a6f51e7d9c6b5df8b886dc0904780b0370f6",
+      "file": "chat_orch-13838e0cc8234702b196d5f12b3f0e8e.jsonl"
+    },
+    {
+      "afterBytes": 1578182,
+      "afterHash": "7b3ba80d81c7c722a7641bcd3f2aeb5edf253be4e4311b8119dfeba5cb54af20",
+      "beforeBytes": 2120208,
+      "beforeHash": "acf8d2b840e9258c7fdd205bc1862fcdd15780aad0388c6c23e31fbf392d424f",
+      "file": "chat_5cd56cff-0b61-415d-aa94-bba223f7b77e.jsonl"
+    },
+    {
+      "afterBytes": 699246,
+      "afterHash": "8c2204416385ee2528ad63ea983acb165f22002867c5d1768b1e08e0c1702871",
+      "beforeBytes": 1266068,
+      "beforeHash": "1f427950f630c45f7526f69101935a33ebfa40cdb941473fbfe4fee045887f7e",
+      "file": "chat_1b492137-2017-4f3c-9aa7-6f7fe675f3a4.jsonl"
+    },
+    {
+      "afterBytes": 41357446,
+      "afterHash": "433baff5e3b85335debbf102888090f7badf3f7e74453aa3e8b6f0896d4fee0d",
+      "beforeBytes": 41357446,
+      "beforeHash": "433baff5e3b85335debbf102888090f7badf3f7e74453aa3e8b6f0896d4fee0d",
+      "file": "chat_orch-cee301d9de57420aa7be32e71ba85f29.jsonl"
+    },
+    {
+      "afterBytes": 2296060,
+      "afterHash": "670425fd00922010bbcb2667b497c308ebbc0423c5244602654b2d41fa5aad2a",
+      "beforeBytes": 2296060,
+      "beforeHash": "670425fd00922010bbcb2667b497c308ebbc0423c5244602654b2d41fa5aad2a",
+      "file": "chat_orch-65b715f240a148208d7d15827516d79d.jsonl"
+    },
+    {
+      "afterBytes": 1412186,
+      "afterHash": "af3ce5d167594881aa3683275743e0e223e4175e408fcb5151061ebd72443aea",
+      "beforeBytes": 2294453,
+      "beforeHash": "1177b1a3692ee7c2f603a9da34f84dffd0f9d0ebc11eb017eaa1f95027bfdd1f",
+      "file": "chat_orch-21c2b0bf87ee47fba4a9fcf5451b89e0.jsonl"
+    },
+    {
+      "afterBytes": 139013,
+      "afterHash": "417bd5f6a0f3b5242d00014149e5323159957c6cc305236e41279c69924f9b30",
+      "beforeBytes": 139013,
+      "beforeHash": "417bd5f6a0f3b5242d00014149e5323159957c6cc305236e41279c69924f9b30",
+      "file": "chat_orch-388a803301014d998671e5dfbaf9f798.jsonl"
+    },
+    {
+      "afterBytes": 451301,
+      "afterHash": "c0fd563699ebb2fe8f25954f62ff811df9999d239ab3f54f381aacd5c5c9eb7e",
+      "beforeBytes": 451301,
+      "beforeHash": "c0fd563699ebb2fe8f25954f62ff811df9999d239ab3f54f381aacd5c5c9eb7e",
+      "file": "chat_orch-2bd995be9e4a4652bf8b98ff28930f80.jsonl"
+    },
+    {
+      "afterBytes": 1370220,
+      "afterHash": "602d1d28f971b414f88086eb5f1ae3e1eb999269d42053f271df02aba7c38ee6",
+      "beforeBytes": 4422883,
+      "beforeHash": "b6f4fe9ea56e0f5d1272266783b3fa2c14d1d6c2ee00d5134e1aae136d34e48f",
+      "file": "chat_orch-344457ee9c354102be0d15ba39e3c9fb.jsonl"
+    }
+  ]
+}

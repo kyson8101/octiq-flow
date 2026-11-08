@@ -560,6 +560,7 @@ fn router(ctx: Ctx) -> Router {
         .route("/hook/access", post(access_handler))
         .route("/hook/orchestration", post(orchestration_handler))
         .route("/hook/task", post(task_handler))
+        .route("/hook/conversations", post(conversations_handler))
         .route("/hook/job", post(job_handler))
         .route("/hook/feedback", post(feedback_handler))
         .route("/hook/agents", post(agents_handler))
@@ -2102,6 +2103,61 @@ async fn feedback_handler(
     }
 }
 
+/// Read-only conversation tools are available to ordinary chats, workers and
+/// room seats. They neither speak for a registered agent nor mutate a store.
+/// Front desks retain their route-only boundary, enforced here, not in MCP.
+async fn conversations_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<TaskHook>,
+) -> Response {
+    let caller = match hook_caller(
+        &ctx.services.chats,
+        &headers,
+        HookClaim {
+            chat_key: request.chat_key.as_deref(),
+            session_key: request.session_key.as_deref(),
+            launch_id: None,
+        },
+    ) {
+        Ok(caller) => caller,
+        Err(refused) => return hook_refusal(refused),
+    };
+    if let Err(error) = crate::profile::available() {
+        return hook_failed(
+            StatusCode::BAD_REQUEST,
+            crate::outcome::Refusal::new(crate::outcome::ReasonClass::Validation, error),
+        );
+    }
+    let caller = match not_front_desk(&ctx, caller) {
+        Ok(caller) => caller,
+        Err(refused) => return hook_refusal(refused),
+    };
+    let workspaces = ctx.services.workspaces.clone();
+    // Segment and record I/O never blocks a Tokio worker. The host pins the
+    // profile and checks availability before reading any index or transcript.
+    let result = tokio::task::spawn_blocking(move || {
+        crate::conversation_tools::call(
+            &workspaces,
+            &caller.chat_key,
+            &request.action,
+            &request.args,
+        )
+    })
+    .await;
+    match result {
+        Ok(Ok(result)) => axum::Json(json!({"result":result})).into_response(),
+        Ok(Err(error)) => hook_failed(
+            StatusCode::BAD_REQUEST,
+            crate::outcome::Refusal::new(crate::outcome::ReasonClass::Validation, error),
+        ),
+        Err(error) => hook_failed(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            crate::outcome::Refusal::new(crate::outcome::ReasonClass::Other, error.to_string()),
+        ),
+    }
+}
+
 /// An agent at the island (`island.rs`): it looks, builds assets, gives a
 /// wish its present, and as a registered agent in its own chat styles its
 /// robot and arranges its plot. Who is building is the chat its capability
@@ -3145,6 +3201,236 @@ mod tests {
         let service = router(ctx.clone()).into_make_service_with_connect_info::<SocketAddr>();
         tokio::spawn(async move { axum::serve(listener, service).await });
         (ctx, base)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn conversation_hooks_decode_compact_records_and_keep_read_only_roles() {
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let (_ctx, base) = test_server(
+            chats.clone(),
+            Arc::new(crate::orchestration::OrchestrationStore::default()),
+        )
+        .await;
+        let workspace = crate::workspaces::add_workspace_impl(
+            &_ctx.services.workspaces,
+            "Conversation hook tests".into(),
+            String::new(),
+        )
+        .unwrap();
+        let id = format!("conversations-{}", uuid::Uuid::new_v4());
+        let key = format!("chat:{id}");
+        crate::chat_index::upsert(
+            serde_json::from_value(
+                json!({"id":id,"projectId":workspace.id,"title":"Conversation decoder"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        for event in [
+            json!({"type":"system","subtype":"init","tools":["Read"],"commands":["x"]}),
+            json!({"type":"system","subtype":"init","tools":["Read"],"commands":["x"]}),
+            json!({"type":"octiq_compacted","into":4,"count":11}),
+            json!({"type":"user","message":{"content":"heron migration needle"}}),
+            json!({"type":"user","message":{"content":[{"type":"tool_result","content":"kept result"}]},"tool_use_result":{"stdout":"kept result"}}),
+        ] {
+            crate::transcript::append(&key, &event).unwrap();
+        }
+        assert!(
+            std::fs::read_to_string(crate::transcript::path_for(&key).unwrap())
+                .unwrap()
+                .contains("octiq_record_refs")
+        );
+        let call = |chat: &str, action: &str, args: Value| json!({"chatKey":chat,"action":action,"args":args});
+        for caller in [
+            "chat:plain-conversation-reader",
+            "chat:orch-conversation-reader",
+        ] {
+            let cap = chats.test_launch(caller);
+            for action in ["search", "read"] {
+                let args = if action == "search" {
+                    json!({"query":"heron migration needle","project":"all"})
+                } else {
+                    json!({"id":id,"includeToolActivity":true})
+                };
+                let (status, answer) = post_hook(
+                    &base,
+                    "conversations",
+                    None,
+                    Some(&cap),
+                    call(caller, action, args),
+                )
+                .await;
+                assert_eq!(status, 200, "{answer}");
+                if action == "search" {
+                    assert!(answer["result"].as_str().unwrap().contains(&id));
+                } else {
+                    let text = answer["result"].as_str().unwrap();
+                    assert!(text.contains("from 15 stored events"), "{text}");
+                    assert_eq!(text.matches("kept result").count(), 1);
+                }
+            }
+            // A room seat retains the same reads, but cannot claim another chat.
+            let seat_key = format!("{caller}:seat");
+            let seat_cap = chats.test_launch_in(&seat_key, caller);
+            let mut body = call(caller, "read", json!({"id":id}));
+            body["sessionKey"] = seat_key.clone().into();
+            assert_eq!(
+                post_hook(&base, "conversations", None, Some(&seat_cap), body.clone())
+                    .await
+                    .0,
+                200
+            );
+            body["chatKey"] = "chat:forged".into();
+            assert_eq!(
+                post_hook(&base, "conversations", None, Some(&seat_cap), body)
+                    .await
+                    .0,
+                403
+            );
+            chats.test_end(&seat_key);
+            chats.test_end(caller);
+            assert_eq!(
+                post_hook(
+                    &base,
+                    "conversations",
+                    None,
+                    Some(&cap),
+                    call(caller, "read", json!({"id":id}))
+                )
+                .await
+                .0,
+                401
+            );
+        }
+        for capability in [None, Some("unknown-capability")] {
+            assert_eq!(
+                post_hook(
+                    &base,
+                    "conversations",
+                    Some("hook-token"),
+                    capability,
+                    call("chat:x", "read", json!({"id":id}))
+                )
+                .await
+                .0,
+                401
+            );
+        }
+        crate::chat_index::remove(&id).unwrap();
+        crate::transcript::forget(&key);
+    }
+
+    /// Synthetic, scratch-only equivalence and process RSS run. Never discovers
+    /// or copies a real profile. The supplied baseline script is a git-export.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "manual scratch corpus equivalence/RSS; needs OCTIQ_CONVERSATION_LEGACY"]
+    async fn conversation_mcp_equivalence_and_rss() {
+        let root = crate::profile::profile_dir();
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scripts/test-conversation-host.cjs");
+        let prep = std::process::Command::new("node")
+            .arg(&script)
+            .arg("prepare")
+            .arg(&root)
+            .output()
+            .unwrap();
+        assert!(
+            prep.status.success(),
+            "{}",
+            String::from_utf8_lossy(&prep.stderr)
+        );
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let cap = chats.test_launch("chat:corpus-current");
+        let (_ctx, base) = test_server(
+            chats,
+            Arc::new(crate::orchestration::OrchestrationStore::default()),
+        )
+        .await;
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("node")
+                .arg(script)
+                .arg("verify")
+                .arg(root)
+                .env("OCTIQ_HOOK_PORT", base.rsplit(':').next().unwrap())
+                .env("OCTIQ_CHAT_CAPABILITY", cap)
+                .output()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        println!("{}", String::from_utf8_lossy(&output.stdout));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "manual original/compacted real-corpus copies; never a live profile"]
+    async fn conversation_real_corpus_equivalence_and_rss() {
+        let source = std::path::PathBuf::from(
+            std::env::var("OCTIQ_CONVERSATION_CORPUS").expect("explicit scratch corpus"),
+        );
+        let source = crate::paths::canonicalize(source).unwrap();
+        assert!(source.starts_with(crate::paths::canonicalize(std::env::temp_dir()).unwrap()));
+        assert!(source
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("octiq-record-storage-"));
+        let root = crate::profile::profile_dir();
+        assert!(!root.join("chats").exists(), "run in a fresh test process");
+        // APFS clone on the measurement platform; only test-owned folders are
+        // destinations. No live path can be selected by this harness.
+        let copy = std::process::Command::new("cp")
+            .arg("-cRp")
+            .arg(source.join("compacted"))
+            .arg(root.join("chats"))
+            .status()
+            .unwrap();
+        assert!(copy.success());
+        std::fs::copy(source.join("workspaces.json"), root.join("workspaces.json")).unwrap();
+        let index: Value =
+            serde_json::from_slice(&std::fs::read(root.join("chats/index.json")).unwrap()).unwrap();
+        let id = index["chats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["deletedAt"].is_null())
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let chats = Arc::new(crate::agent_chat::ChatManager::default());
+        let cap = chats.test_launch(&format!("chat:{id}"));
+        let (_ctx, base) = test_server(
+            chats,
+            Arc::new(crate::orchestration::OrchestrationStore::default()),
+        )
+        .await;
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scripts/test-conversation-host.cjs");
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("node")
+                .arg(script)
+                .arg("real")
+                .arg(root)
+                .env("OCTIQ_CONVERSATION_CORPUS", source)
+                .env("OCTIQ_CONVERSATION_CURRENT", id)
+                .env("OCTIQ_HOOK_PORT", base.rsplit(':').next().unwrap())
+                .env("OCTIQ_CHAT_CAPABILITY", cap)
+                .output()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        println!("{}", String::from_utf8_lossy(&output.stdout));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     // ---- two principals: a launch's capability is not the person ----------
@@ -5128,6 +5414,10 @@ mod tests {
         // Every agent hook but a question to the person refuses it outright,
         // whatever its MCP offered.
         for (route, body) in [
+            (
+                "conversations",
+                json!({"chatKey":"chat:desk","action":"search","args":{"query":"test","project":"all"}}),
+            ),
             (
                 "orchestration",
                 json!({ "chatKey": "chat:desk", "action": "run_create", "args": {} }),

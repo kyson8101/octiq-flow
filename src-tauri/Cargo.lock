@@ -1460,6 +1460,7 @@ dependencies = [
  "sha2",
  "tokio",
  "ureq",
+ "url",
  "uuid",
  "web-push",
  "windows-sys 0.61.2",

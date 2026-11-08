@@ -1,0 +1,295 @@
+{
+  "afterReads": {
+    "hostMcpRss": 43270144,
+    "legacyRss": 1454669824
+  },
+  "afterSearch": {
+    "hostMcpRss": 39469056,
+    "legacyRss": 339099648
+  },
+  "beforeSearch": {
+    "hostMcpRss": 46497792,
+    "legacyRss": 46743552
+  },
+  "complete": true,
+  "corpusRecords": 2532,
+  "differenceFiles": [],
+  "fixture": "read-only snapshot; original legacy MCP vs compacted host",
+  "largest": [
+    {
+      "bytes": 170989128,
+      "id": "76954dc9-f658-4fb2-b504-2f8b703529cf",
+      "projectExists": true
+    },
+    {
+      "bytes": 79321441,
+      "id": "12b38231-5aa1-4344-8a65-dcaaeeaf635c",
+      "projectExists": true
+    },
+    {
+      "bytes": 71017822,
+      "id": "b2913c8c-cd69-4627-a73a-180c0cb38713",
+      "projectExists": false
+    }
+  ],
+  "legacyCacheBytes": 249356497,
+  "node": "v24.22.1",
+  "queries": [
+    {
+      "actualCount": 8,
+      "actualHash": "2952af9fe9f25e5bf9936b8a6782ebd8cafbf8994f7eb7918df980235d2748a3",
+      "args": {
+        "project": "all",
+        "query": "memory"
+      },
+      "equal": true,
+      "expectedCount": 8,
+      "expectedHash": "2952af9fe9f25e5bf9936b8a6782ebd8cafbf8994f7eb7918df980235d2748a3"
+    },
+    {
+      "actualCount": 8,
+      "actualHash": "a1cab83d0938232a78407cbc4ddc2433b8e08f54430cc26188ad83967a56aded",
+      "args": {
+        "project": "all",
+        "query": "profile"
+      },
+      "equal": true,
+      "expectedCount": 8,
+      "expectedHash": "a1cab83d0938232a78407cbc4ddc2433b8e08f54430cc26188ad83967a56aded"
+    },
+    {
+      "actualCount": 8,
+      "actualHash": "546ac003e40d2e8560bb0b98d15ea33a4b83ef4694fbd55dceb2d62ed1c6131b",
+      "args": {
+        "project": "all",
+        "query": "内存"
+      },
+      "equal": true,
+      "expectedCount": 8,
+      "expectedHash": "546ac003e40d2e8560bb0b98d15ea33a4b83ef4694fbd55dceb2d62ed1c6131b"
+    },
+    {
+      "actualCount": 8,
+      "actualHash": "d9394c1e2975db070a71853c0c43cffc708cec18a184803d44669e3a46961eea",
+      "args": {
+        "project": "all",
+        "query": "人物"
+      },
+      "equal": true,
+      "expectedCount": 8,
+      "expectedHash": "d9394c1e2975db070a71853c0c43cffc708cec18a184803d44669e3a46961eea"
+    },
+    {
+      "actualCount": 8,
+      "actualHash": "fb70749bcbd930eca142ebf651153f564ffd8239ac21b88a67dc3968fa9d23ab",
+      "args": {
+        "project": "fa08eadd-cfe5-4314-8eae-47b185abfe39",
+        "query": "memory"
+      },
+      "equal": true,
+      "expectedCount": 8,
+      "expectedHash": "fb70749bcbd930eca142ebf651153f564ffd8239ac21b88a67dc3968fa9d23ab"
+    },
+    {
+      "actualCount": 8,
+      "actualHash": "1a4f8b289681576011c423e4d07f8af7983889318539e0955d292878fc8d614e",
+      "args": {
+        "project": "octiq-flow",
+        "query": "profile"
+      },
+      "equal": true,
+      "expectedCount": 8,
+      "expectedHash": "1a4f8b289681576011c423e4d07f8af7983889318539e0955d292878fc8d614e"
+    },
+    {
+      "actualCount": 8,
+      "actualHash": "3628f464e669109ff4b19f11373cc3f4534bb20c45dd2a2a7b3a2c88bc2ecab8",
+      "args": {
+        "project": "octiq-flow",
+        "query": "内存"
+      },
+      "equal": true,
+      "expectedCount": 8,
+      "expectedHash": "3628f464e669109ff4b19f11373cc3f4534bb20c45dd2a2a7b3a2c88bc2ecab8"
+    },
+    {
+      "actualCount": 0,
+      "actualHash": "60038dc32928da8b364f19ada1c4846b300479af05ca8c6f192ae9b21db92036",
+      "args": {
+        "query": "memory"
+      },
+      "equal": true,
+      "expectedCount": 0,
+      "expectedHash": "60038dc32928da8b364f19ada1c4846b300479af05ca8c6f192ae9b21db92036"
+    }
+  ],
+  "readTargets": [
+    {
+      "bytes": 170989128,
+      "id": "76954dc9-f658-4fb2-b504-2f8b703529cf",
+      "projectExists": true
+    },
+    {
+      "bytes": 79321441,
+      "id": "12b38231-5aa1-4344-8a65-dcaaeeaf635c",
+      "projectExists": true
+    },
+    {
+      "bytes": 71017822,
+      "id": "b2913c8c-cd69-4627-a73a-180c0cb38713",
+      "projectExists": false
+    },
+    {
+      "bytes": 53045144,
+      "id": "cb38b264-c76d-48ab-a492-cb5b7433ab02",
+      "projectExists": true
+    }
+  ],
+  "reads": [
+    {
+      "actualHash": "c0a5554b74f707f3a2ba029824f6a85cf7198eac8c41dfcc115de2e2b6f40ef7",
+      "args": {
+        "id": "76954dc9-f658-4fb2-b504-2f8b703529cf",
+        "limit": 40
+      },
+      "equal": true,
+      "expectedHash": "c0a5554b74f707f3a2ba029824f6a85cf7198eac8c41dfcc115de2e2b6f40ef7",
+      "refused": false
+    },
+    {
+      "actualHash": "b718a3f6e41d6533d3957e9d46493261845f0b380450db0d981f1cf4de6bb358",
+      "args": {
+        "before": 41,
+        "id": "76954dc9-f658-4fb2-b504-2f8b703529cf",
+        "limit": 40
+      },
+      "equal": true,
+      "expectedHash": "b718a3f6e41d6533d3957e9d46493261845f0b380450db0d981f1cf4de6bb358",
+      "refused": false
+    },
+    {
+      "actualHash": "e9cbed630fc4b93ea42a2934d0888e201b0555b202004aa1fb0173624ef05611",
+      "args": {
+        "id": "76954dc9-f658-4fb2-b504-2f8b703529cf",
+        "includeToolActivity": true,
+        "limit": 20,
+        "maxChars": 20000
+      },
+      "equal": true,
+      "expectedHash": "e9cbed630fc4b93ea42a2934d0888e201b0555b202004aa1fb0173624ef05611",
+      "refused": false
+    },
+    {
+      "actualHash": "c9a2fa7eae648c3a5d6ee3167e2a00422bd1d893b25dea3959a4f927dd2bbf44",
+      "args": {
+        "id": "12b38231-5aa1-4344-8a65-dcaaeeaf635c",
+        "limit": 40
+      },
+      "equal": true,
+      "expectedHash": "c9a2fa7eae648c3a5d6ee3167e2a00422bd1d893b25dea3959a4f927dd2bbf44",
+      "refused": false
+    },
+    {
+      "actualHash": "b05808a49c3ec671bde4c6442e7d588f06d4a55a0c5ab7ec4cc14de050c3f7ca",
+      "args": {
+        "before": 41,
+        "id": "12b38231-5aa1-4344-8a65-dcaaeeaf635c",
+        "limit": 40
+      },
+      "equal": true,
+      "expectedHash": "b05808a49c3ec671bde4c6442e7d588f06d4a55a0c5ab7ec4cc14de050c3f7ca",
+      "refused": false
+    },
+    {
+      "actualHash": "241b14e439c5ecfd6cc730ae3745541f3552210b69ce4ce89206585148df60c7",
+      "args": {
+        "id": "12b38231-5aa1-4344-8a65-dcaaeeaf635c",
+        "includeToolActivity": true,
+        "limit": 20,
+        "maxChars": 20000
+      },
+      "equal": true,
+      "expectedHash": "241b14e439c5ecfd6cc730ae3745541f3552210b69ce4ce89206585148df60c7",
+      "refused": false
+    },
+    {
+      "actualHash": "30d7839d05c2d0894f453ceaa223d27148e41186ec1f03606fd6bd8b653a24a1",
+      "args": {
+        "id": "b2913c8c-cd69-4627-a73a-180c0cb38713",
+        "limit": 40
+      },
+      "equal": true,
+      "expectedHash": "30d7839d05c2d0894f453ceaa223d27148e41186ec1f03606fd6bd8b653a24a1",
+      "refused": true
+    },
+    {
+      "actualHash": "30d7839d05c2d0894f453ceaa223d27148e41186ec1f03606fd6bd8b653a24a1",
+      "args": {
+        "before": 41,
+        "id": "b2913c8c-cd69-4627-a73a-180c0cb38713",
+        "limit": 40
+      },
+      "equal": true,
+      "expectedHash": "30d7839d05c2d0894f453ceaa223d27148e41186ec1f03606fd6bd8b653a24a1",
+      "refused": true
+    },
+    {
+      "actualHash": "30d7839d05c2d0894f453ceaa223d27148e41186ec1f03606fd6bd8b653a24a1",
+      "args": {
+        "id": "b2913c8c-cd69-4627-a73a-180c0cb38713",
+        "includeToolActivity": true,
+        "limit": 20,
+        "maxChars": 20000
+      },
+      "equal": true,
+      "expectedHash": "30d7839d05c2d0894f453ceaa223d27148e41186ec1f03606fd6bd8b653a24a1",
+      "refused": true
+    },
+    {
+      "actualHash": "6c11aa37ab93b8ef07bd87f9bba14bc511da0dd6b09f776d825b22b5797280c1",
+      "args": {
+        "id": "cb38b264-c76d-48ab-a492-cb5b7433ab02",
+        "limit": 40
+      },
+      "equal": true,
+      "expectedHash": "6c11aa37ab93b8ef07bd87f9bba14bc511da0dd6b09f776d825b22b5797280c1",
+      "refused": false
+    },
+    {
+      "actualHash": "cd00e94d552941f4ce24b6842bfe019aa3a5a198e9dc4632c94a2f58cc620734",
+      "args": {
+        "before": 41,
+        "id": "cb38b264-c76d-48ab-a492-cb5b7433ab02",
+        "limit": 40
+      },
+      "equal": true,
+      "expectedHash": "cd00e94d552941f4ce24b6842bfe019aa3a5a198e9dc4632c94a2f58cc620734",
+      "refused": false
+    },
+    {
+      "actualHash": "de48b47b2b8ae351166ff1ba1809428cbc8c62529b9004fff9390fa3bfc51e2f",
+      "args": {
+        "id": "cb38b264-c76d-48ab-a492-cb5b7433ab02",
+        "includeToolActivity": true,
+        "limit": 20,
+        "maxChars": 20000
+      },
+      "equal": true,
+      "expectedHash": "de48b47b2b8ae351166ff1ba1809428cbc8c62529b9004fff9390fa3bfc51e2f",
+      "refused": false
+    }
+  ],
+  "savedRssBytes": 299630592,
+  "date": "2026-11-09",
+  "baselineSha": "204a63c6eb68c1af9692066cb2c4362efb95bb87",
+  "sourceRecordsBytes": 7161556338,
+  "sourceLegacyCacheBytes": 221746560,
+  "sourceHashes": {
+    "scripts/mcp/octiq-ask.cjs": "20af8be7c9f620ab9cd9c44e324d07bcec8ab442b1750c11a31cfc53c864075a",
+    "src-tauri/src/conversation_tools.rs": "e0ed8426d37a01e5b15fd9f1c4732bbf34a71411ca5d406c8f59a6dff579f6ba",
+    "src-tauri/src/chat_search.rs": "b4e8644ef073559d8ac8bb289cef2fd65441a5981b7ef5b8d986b3ced7a63476",
+    "src-tauri/src/transcript.rs": "b916bbbf775904f29be24f38eb3adf2cc82fc3be58ba820f4e08d9cd7621c214",
+    "src-tauri/src/record_trim.rs": "8780b5084df9649e518f1a4708e2bbd599079a7506415ac0a23cabd9032db6f0",
+    "src-tauri/src/web.rs": "138a6d1503cf5f3706450603dc3cd07baf0d067fd66733bf5cd1d0dd53c18bfa"
+  }
+}

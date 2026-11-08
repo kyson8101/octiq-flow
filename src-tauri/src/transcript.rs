@@ -641,7 +641,7 @@ pub(crate) fn for_each_line(file: File, see: impl FnMut(u64, &[u8])) {
 
 /// `for_each_line`, answering a read that failed part way instead of
 /// ending there as if the file did.
-fn try_each_line(file: File, mut see: impl FnMut(u64, &[u8])) -> std::io::Result<()> {
+pub(crate) fn try_each_line(file: File, mut see: impl FnMut(u64, &[u8])) -> std::io::Result<()> {
     let mut lists = crate::record_storage::ListReader::default();
     let mut failed = None;
     try_each_stored_line(file, |seq, line| {

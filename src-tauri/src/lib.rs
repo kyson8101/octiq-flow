@@ -28,6 +28,7 @@ mod chat_task;
 mod claude_allow;
 mod codex_app_server;
 mod codex_git;
+mod conversation_tools;
 mod diagnostics;
 mod disk_report;
 mod dispatch;
