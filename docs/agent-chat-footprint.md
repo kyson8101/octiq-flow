@@ -47,7 +47,7 @@ waiting for its profile folder. Terminal provider errors retain their existing
 immediate stop behavior. Records, workspaces, resume settings and task outcomes
 are retained; a reaper exit does not restart or fail a completed attempt.
 
-Ordinary idle timeout remains **15 minutes**, checked every 60 seconds.
+Ordinary idle timeout defaults to **5 minutes**, checked every 60 seconds.
 `OCTIQ_CHAT_IDLE_MINS=0` still disables that sweep. Settled-worker reclamation
 is independent of that setting. A shorter timeout for *unsettled but idle*
 workers is a separate policy decision; two minutes is a candidate, with the
@@ -110,8 +110,10 @@ processes; the baseline still held five each (302.03 MiB together). The actual
 idle sweep, tested with a one-minute override and its normal 60-second polling
 interval, released all remaining fixture descendants: no chat rows and no
 surviving original MCP PIDs. The waits after the post-report sample were
-115.45 seconds before and 111.36 seconds after. The default fifteen-minute
-wall-clock wait was not repeated; its timeout/polling policy is unchanged.
+115.45 seconds before and 111.36 seconds after. Those measurements used the
+then-default fifteen-minute policy; the full default wall-clock wait was not
+repeated. The later default reduction to five minutes changes only the timeout,
+with the same polling interval and all turn/background/job/queue guards.
 
 Final validation: `cargo test` passed **2,077 library + 31 binary tests**, with
 18 ignored; `cargo build --bin octiq-server` passed; all **66 Node MCP tests**

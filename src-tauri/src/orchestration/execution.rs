@@ -844,7 +844,7 @@ impl OrchestrationStore {
     }
 
     /// Errors retain their immediate stop. Other terminal attempts give back
-    /// their process after the closing provider turn, without a 15m idle wait.
+    /// their process after the closing provider turn, without a 5m idle wait.
     /// Read only live candidates and release the ledger before any chat lock.
     /// This pass saves nothing, including while the profile folder is away.
     pub(super) fn stop_ended_workers(&self, chats: &ChatManager) {

@@ -1893,7 +1893,7 @@ what `chat_interrupt` is for. Two things hold it up:
 
 ### Idle chats are ended, and resumed on the next message
 
-A **chat** process (`agent_chat.rs`, not a PTY) is killed after **15 minutes**
+A **chat** process (`agent_chat.rs`, not a PTY) is killed after **5 minutes**
 with no turn in flight, by **one** sweeper thread for the whole backend, not one
 per chat: `start_idle_reaper` is spawned once from `Services::load`
 (`dispatch.rs`), which `lib.rs` calls at startup and nothing else calls outside

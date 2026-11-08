@@ -4595,7 +4595,7 @@ export default function App() {
    *  to ONCE, when the process spawns. Add a server or enable a plugin while a
    *  chat is open and that chat never sees it — the only way in is a new
    *  process. Until this button the only way to get one was to leave the chat
-   *  alone for fifteen minutes and let the idle sweeper do it.
+   *  alone for five minutes and let the idle sweeper do it.
    *
    *  Which is all this is: the sweeper's ending, on purpose and now. Nothing is
    *  thrown away, because nothing here throws anything away — the transcript is

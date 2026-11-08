@@ -5,7 +5,7 @@
 //!
 //! A system prompt is fixed when the agent process starts, so a change
 //! reaches a chat the next time its process starts: a new chat, or a running
-//! one after it is resumed (the idle sweeper ends a quiet chat after 15
+//! one after it is resumed (the idle sweeper ends a quiet chat after 5
 //! minutes, and the next message starts it again).
 //!
 //! Browser-only: written through `dispatch.rs`, which no agent hook reaches,

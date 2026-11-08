@@ -14,7 +14,7 @@ import { ACCESS, MODELS, SettingsSheet } from "./Composer";
  *  An agent reads its MCP servers, its plugins and the tool list they add up to
  *  once, at spawn. Add one to a chat that is already open and that chat never
  *  sees it. This row ends the process so the next message spawns a new one —
- *  the idle sweeper's ending, fifteen minutes early and on purpose.
+ *  the idle sweeper's ending, five minutes early and on purpose.
  *
  *  It is drawn inside the model picker, which one component renders in two
  *  places: the dropdown on a wide screen and this sheet on a phone. Rendering

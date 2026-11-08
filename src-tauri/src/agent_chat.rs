@@ -972,7 +972,7 @@ impl ChatSession {
 /// What it buys is real: on one machine nine chats left open overnight held
 /// 4.3 GB between them — about 480 MB each, once each agent's own MCP servers
 /// are counted.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// How often the sweeper looks. Well under the timeout, and cheap: it takes one
 /// lock, reads a flag and an `Instant` per chat, and goes back to sleep.
@@ -12947,7 +12947,10 @@ mod idle_tests {
             .insert(key.to_string(), session);
     }
 
-    const FIFTEEN: Duration = Duration::from_secs(15 * 60);
+    #[test]
+    fn default_idle_timeout_is_five_minutes() {
+        assert_eq!(IDLE_TIMEOUT, Duration::from_secs(5 * 60));
+    }
 
     #[test]
     fn native_background_work_keeps_an_idle_parent_alive_and_explicit_end_reports_ids() {
@@ -12961,7 +12964,7 @@ mod idle_tests {
         manager.background.observe(&key, "test-launch", &json!({
             "type": "system", "subtype": "task_started", "task_id": "native-agent-42", "task_type": "local_agent"
         })).unwrap();
-        assert!(sweep_still_chats(&manager, FIFTEEN).is_empty());
+        assert!(sweep_still_chats(&manager, IDLE_TIMEOUT).is_empty());
         assert!(
             !manager.reap_settled_worker(&key).unwrap(),
             "native background work still owns the process"
@@ -12982,9 +12985,9 @@ mod idle_tests {
         let key = "idle-recheck";
         let session = still_session(false, Duration::from_secs(20 * 60));
         put(&manager, key, session.clone());
-        assert_eq!(still_keys(&manager, FIFTEEN), vec![key]);
+        assert_eq!(still_keys(&manager, IDLE_TIMEOUT), vec![key]);
         session.lock().unwrap().turn_started();
-        assert!(!end_process_when(&manager, key, Some(FIFTEEN)).unwrap());
+        assert!(!end_process_when(&manager, key, Some(IDLE_TIMEOUT)).unwrap());
         end_process(&manager, key).unwrap();
     }
 
@@ -13025,10 +13028,13 @@ mod idle_tests {
         put(
             &m,
             "chat-a",
-            still_session(false, Duration::from_secs(20 * 60)),
+            still_session(false, Duration::from_secs(6 * 60)),
         );
 
-        assert_eq!(sweep_still_chats(&m, FIFTEEN), vec!["chat-a".to_string()]);
+        assert_eq!(
+            sweep_still_chats(&m, IDLE_TIMEOUT),
+            vec!["chat-a".to_string()]
+        );
         assert!(
             chat_list_impl(&m).unwrap().is_empty(),
             "and it is gone from the map, so the next message starts a fresh one"
@@ -13076,10 +13082,10 @@ mod idle_tests {
         put(
             &m,
             "chat-a",
-            still_session(false, Duration::from_secs(5 * 60)),
+            still_session(false, Duration::from_secs(4 * 60)),
         );
 
-        assert!(sweep_still_chats(&m, FIFTEEN).is_empty());
+        assert!(sweep_still_chats(&m, IDLE_TIMEOUT).is_empty());
         assert_eq!(chat_list_impl(&m).unwrap().len(), 1);
     }
 
@@ -13097,7 +13103,7 @@ mod idle_tests {
             still_session(true, Duration::from_secs(3 * 60 * 60)),
         );
 
-        assert!(sweep_still_chats(&m, FIFTEEN).is_empty());
+        assert!(sweep_still_chats(&m, IDLE_TIMEOUT).is_empty());
         assert_eq!(chat_list_impl(&m).unwrap().len(), 1);
     }
 
