@@ -772,26 +772,36 @@ impl OrchestrationStore {
         now: i64,
         background: &dyn Fn(&str) -> Vec<(String, String)>,
     ) -> Result<(), String> {
-        let snapshot = self.snapshot(None)?;
-        for before in snapshot
-            .attempts
-            .iter()
-            .filter(|a| matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running))
-        {
-            // A proposed report is an idle worker waiting on its coordinator,
-            // who was told when the words were held.
+        self.capture_native_decisions()?;
+        let candidates: Vec<_> = {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            if let Some(error) = &inner.load_error {
+                return Err(error.clone());
+            }
+            inner
+                .data
+                .attempts
+                .values()
+                .filter(|a| matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running))
+                .map(|attempt| {
+                    let policy = inner
+                        .data
+                        .tasks
+                        .get(&attempt.task_id)
+                        .and_then(|task| task.worker.as_ref())
+                        .and_then(|worker| worker.recovery.clone())
+                        .unwrap_or_default();
+                    (attempt.clone(), policy)
+                })
+                .collect()
+        };
+        for (before, p) in &candidates {
+            // A proposed report is an idle worker waiting on its coordinator.
             if crate::safety_block::awaits_decision(&before.worker_chat_key)
                 || before.proposed_report.is_some()
             {
                 continue;
             }
-            let p = snapshot
-                .tasks
-                .iter()
-                .find(|t| t.id == before.task_id)
-                .and_then(|t| t.worker.as_ref())
-                .and_then(|w| w.recovery.clone())
-                .unwrap_or_default();
             let e = &before.execution;
             let threshold = if e.state == ExecutionState::WaitingTool || !e.pending_tools.is_empty()
             {
@@ -881,7 +891,36 @@ impl OrchestrationStore {
         // whether or not anything can be saved.
         self.stop_ended_workers(&chats);
         self.monitor_workers_with(now, &|key| chats.running_background(key))?;
-        let snapshot = self.snapshot(None)?;
+        let wanted: BTreeSet<_> = {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            if let Some(error) = &inner.load_error {
+                return Err(error.clone());
+            }
+            inner
+                .data
+                .attempts
+                .values()
+                .filter(|attempt| {
+                    attempt.status == AttemptStatus::Running
+                        || (attempt.status == AttemptStatus::Failed
+                            && attempt.execution.latest_error.is_some()
+                            && attempt.execution.next_retry_at.is_some_and(|at| at <= now)
+                            && inner.data.tasks.get(&attempt.task_id).is_some_and(|task| {
+                                task.active_attempt_id.as_deref() == Some(&attempt.id)
+                            })
+                            && inner
+                                .data
+                                .runs
+                                .get(&attempt.run_id)
+                                .is_some_and(|run| run.status != RunStatus::Stopped))
+                })
+                .map(|attempt| attempt.run_id.clone())
+                .collect()
+        };
+        if wanted.is_empty() {
+            return Ok(());
+        }
+        let snapshot = self.snapshot_in(None, Some(&wanted), false)?;
         for attempt in snapshot
             .attempts
             .iter()
