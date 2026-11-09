@@ -2613,8 +2613,7 @@ impl OrchestrationStore {
                         return Err(not_coordinator);
                     };
                     let parent_task = data.tasks.get(parent).ok_or("The parent task does not exist.")?;
-                    let manager = active_attempt_for_actor(data, actor_chat_key)
-                        .filter(|attempt| attempt.task_id == parent);
+                    let manager = active_attempt_for_task(data, actor_chat_key, parent);
                     let Some(manager) = manager.filter(|_| parent_task.assignee.is_some()) else {
                         return Err(not_coordinator);
                     };
@@ -5816,6 +5815,17 @@ fn active_attempt_for_actor<'a>(data: &'a Stored, actor_chat_key: &str) -> Optio
                 .get(&attempt.task_id)
                 .is_some_and(|task| task.active_attempt_id.as_deref() == Some(attempt.id.as_str()))
     })
+}
+
+fn active_attempt_for_task<'a>(
+    data: &'a Stored,
+    actor: &str,
+    task_id: &str,
+) -> Option<&'a Attempt> {
+    let id = data.tasks.get(task_id)?.active_attempt_id.as_ref()?;
+    data.attempts
+        .get(id)
+        .filter(|a| a.worker_chat_key == actor && attempt_is_unsettled(data, a))
 }
 
 fn active_task_for_actor(data: &Stored, actor_chat_key: &str) -> Option<Task> {

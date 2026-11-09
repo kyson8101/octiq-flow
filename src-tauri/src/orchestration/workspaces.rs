@@ -1278,10 +1278,7 @@ impl OrchestrationStore {
             .runs
             .get(&task.run_id)
             .ok_or("Run does not exist.")?;
-        let own = active_task_for_actor(&inner.data, actor)
-            .as_ref()
-            .map(|t| t.id.as_str())
-            == Some(task_id);
+        let own = active_attempt_for_task(&inner.data, actor, task_id).is_some();
         if actor != run.coordinator_chat_key && !own {
             return Err(
                 "Only this task's active worker or coordinator can manage validation workspaces."

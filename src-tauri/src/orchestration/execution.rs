@@ -547,6 +547,19 @@ impl OrchestrationStore {
             .cloned()
     }
 
+    fn observed_attempts(&self, key: &str) -> Vec<Attempt> {
+        let Ok(inner) = self.inner.lock() else {
+            return Vec::new();
+        };
+        inner
+            .data
+            .attempts
+            .values()
+            .filter(|a| a.worker_chat_key == key && attempt_is_unsettled(&inner.data, a))
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn observe_worker_event(&self, key: &str, event: &Value) -> Result<(), String> {
         self.observe_worker_turn_event(key, event, false)
     }
@@ -561,9 +574,19 @@ impl OrchestrationStore {
         event: &Value,
         interrupted: bool,
     ) -> Result<(), String> {
-        let Some(before) = self.observed_attempt(key) else {
-            return Ok(());
-        };
+        for before in self.observed_attempts(key) {
+            self.observe_attempt_turn_event(key, before, event, interrupted)?;
+        }
+        Ok(())
+    }
+
+    fn observe_attempt_turn_event(
+        &self,
+        key: &str,
+        before: Attempt,
+        event: &Value,
+        interrupted: bool,
+    ) -> Result<(), String> {
         let now = now_ms();
         let observations = observe(event, now, interrupted);
         // Streaming deltas are activity, never progress. Persist at most once a
@@ -719,9 +742,26 @@ impl OrchestrationStore {
         key: &str,
         last_words: Option<&str>,
     ) -> Result<(), String> {
-        let Some(before) = self.observed_attempt(key) else {
+        let attempts = self.observed_attempts(key);
+        if attempts
+            .iter()
+            .any(|a| a.status == AttemptStatus::Blocked || a.proposed_report.is_some())
+            || crate::safety_block::awaits_decision(key)
+        {
             return Ok(());
-        };
+        }
+        for before in attempts {
+            self.attempt_disconnected(key, before, last_words)?;
+        }
+        Ok(())
+    }
+
+    fn attempt_disconnected(
+        &self,
+        key: &str,
+        before: Attempt,
+        last_words: Option<&str>,
+    ) -> Result<(), String> {
         // A one-shot provider may exit while a durable decision waits, and an
         // idle read-only worker's process may be reaped while its proposed
         // report waits for the coordinator: its work is done, not lost.
