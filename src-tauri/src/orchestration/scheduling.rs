@@ -148,6 +148,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_removed_blocked_agents_lane_is_published_without_another_ledger_change() {
+        let home = crate::test_dir::TestDir::new("scheduling-roster-event");
+        let _profile = crate::profile::started_in(&home);
+        let agent = crate::team::save(
+            &crate::team::default_path(),
+            serde_json::from_value(json!({
+                "name": "Fixture worker", "role": "Only fixture work", "agent": "codex",
+                "model": "gpt-6.1-sol", "access": "auto"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let store = OrchestrationStore::default();
+        store
+            .mutate(|data| {
+                data.agent_blocks
+                    .insert(agent.id.clone(), "Dirty checkout".into());
+                Ok(())
+            })
+            .unwrap();
+        let before = store.scheduling_get().unwrap();
+        assert_eq!(before["lanes"][0]["agentId"], agent.id);
+        assert_eq!(before["lanes"][0]["state"], "blocked");
+        let mut browser = crate::bus::events().subscribe();
+        crate::team::delete(&crate::team::default_path(), &agent.id).unwrap();
+        store
+            .schedule_agent_batches(Arc::new(ChatManager::default()), &WorkspaceState::load())
+            .unwrap();
+        // No task or batch changed; the tick must still publish the roster's
+        // removal, including when this was the last registered agent.
+        assert_eq!(
+            store.scheduling_last.lock().unwrap().as_ref().unwrap()["lanes"],
+            json!([])
+        );
+        let mut published = false;
+        while let Ok(frame) = browser.try_recv() {
+            let frame: serde_json::Value = serde_json::from_str(&frame).unwrap();
+            published |=
+                frame["event"] == "scheduling-changed" && frame["payload"]["lanes"] == json!([]);
+        }
+        assert!(published, "the page must receive the lane's removal");
+    }
+
+    #[test]
     fn cap_is_global_in_both_orientations_and_null_keeps_old_behaviour() {
         let store = OrchestrationStore::default();
         let first = super::super::tests::run(&store);

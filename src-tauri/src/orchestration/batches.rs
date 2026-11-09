@@ -896,6 +896,9 @@ impl OrchestrationStore {
                 self.block_batch(&batch, reason)?;
             }
         }
+        // Roster changes can remove a lane without mutating this ledger.
+        // Publish after both locks have returned; unchanged payloads deduplicate.
+        self.scheduling_changed();
         Ok(())
     }
 }
