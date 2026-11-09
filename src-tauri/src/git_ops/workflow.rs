@@ -1275,7 +1275,8 @@ pub fn agent_plan(
     plan.branch = branch
         .map(str::to_owned)
         .unwrap_or_else(|| format!("agent/{slug}/{short}"));
-    plan.cwd = target.join(relative).to_string_lossy().into_owned();
+    let _ = relative;
+    plan.cwd = target.to_string_lossy().into_owned();
     plan.checkout_root = target.to_string_lossy().into_owned();
     Ok(plan)
 }

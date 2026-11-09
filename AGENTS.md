@@ -2971,7 +2971,10 @@ Keep roster → ledger lock order. Copy ledger state before Git or chat work;
 never read `team.rs` under the ledger, and never take chat locks while holding
 it. Scheduling change publication runs after the ledger is released. All Git
 operations use the existing cross-platform helpers; no POSIX-only spawn is
-introduced. Switching orientation leaves running attempts and batches alone.
+introduced. Switching orientation leaves running attempts and batches alone. Starts
+already queued retain their provenance; an already fixed Agent allocation
+still uses a single-task batch after switching to Tasks. Newly proposed Tasks
+allocations keep ordinary task-per-worker dispatch.
 
 **Coordinator batch cleanup is a proposal, never removal permission.**
 `orchestration_workspace_cleanup_request { runId? }` (MCP / hook action

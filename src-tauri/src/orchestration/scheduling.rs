@@ -53,9 +53,7 @@ pub(super) fn require_host_slot_for(
 pub(super) fn slot_wait(data: &Stored, task: &Task, settings: &Settings) -> Option<SlotWait> {
     let run = data.runs.get(&task.run_id)?;
     let running = live(data);
-    if settings.orientation == crate::scheduling::Orientation::Agents
-        && batches::eligible(data, task)
-    {
+    if data.agent_queue.contains_key(&task.id) && batches::eligible(data, task) {
         if let Some(agent) = &task.assignee {
             let queue = batches::queue(data, &agent.id);
             if let Some(ahead) = queue.iter().position(|t| t.id == task.id) {

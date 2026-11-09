@@ -77,6 +77,20 @@ pub(super) struct BatchLaunch {
     pub started: bool,
 }
 
+pub(super) fn agent_workspace(task: &Task) -> bool {
+    task.approved
+        .as_ref()
+        .and_then(|a| a.workspace_mode)
+        .or_else(|| task.workspace.as_ref().map(|w| w.plan.mode))
+        .or_else(|| {
+            task.workspace_proposal
+                .as_ref()
+                .and_then(|p| p.plan.as_ref())
+                .map(|p| p.mode)
+        })
+        == Some(WorkspaceMode::Agent)
+}
+
 pub(super) fn eligible(data: &Stored, task: &Task) -> bool {
     let Some(run) = data.runs.get(&task.run_id) else {
         return false;
@@ -194,9 +208,17 @@ fn compatible(data: &Stored, head: &Task, candidate: &Task) -> bool {
     head.peer_request.is_none()
         && candidate.peer_request.is_none()
         && head.run_id == candidate.run_id
-        && head.assignee == candidate.assignee
-        && workspaces::task_root(run, head.destination.as_ref())
-            == workspaces::task_root(run, candidate.destination.as_ref())
+        && head.assignee.as_ref().map(|a| &a.id) == candidate.assignee.as_ref().map(|a| &a.id)
+        && head
+            .workspace_proposal
+            .as_ref()
+            .and_then(|p| p.plan.as_ref())
+            .map(|p| &p.repository_root)
+            == candidate
+                .workspace_proposal
+                .as_ref()
+                .and_then(|p| p.plan.as_ref())
+                .map(|p| &p.repository_root)
         && base(head) == base(candidate)
         && mode(head) == Some(WorkspaceMode::Agent)
         && mode(candidate) == Some(WorkspaceMode::Agent)
@@ -283,13 +305,12 @@ pub(super) fn interrupt_peers(data: &mut Stored, stopped: &Attempt, now: i64) {
 
 impl OrchestrationStore {
     pub(super) fn sync_agent_queue(&self) -> Result<(), String> {
-        if crate::scheduling::load()?.orientation != Orientation::Agents {
-            return Ok(());
-        }
+        let orientation = crate::scheduling::load()?.orientation;
         {
             let inner = self.inner.lock().map_err(|e| e.to_string())?;
             if !inner.data.tasks.values().any(|t| {
                 eligible(&inner.data, t)
+                    && (orientation == Orientation::Agents || agent_workspace(t))
                     && t.status == TaskStatus::Ready
                     && !inner.data.agent_queue.contains_key(&t.id)
             }) {
@@ -302,6 +323,7 @@ impl OrchestrationStore {
                 .values()
                 .filter(|t| {
                     eligible(data, t)
+                        && (orientation == Orientation::Agents || agent_workspace(t))
                         && t.status == TaskStatus::Ready
                         && !data.agent_queue.contains_key(&t.id)
                 })
@@ -523,7 +545,11 @@ impl OrchestrationStore {
         };
         let candidates = queue(data, agent)
             .into_iter()
-            .filter(|t| t.id != head.id && compatible(data, &head, t))
+            .filter(|t| {
+                settings.orientation == Orientation::Agents
+                    && t.id != head.id
+                    && compatible(data, &head, t)
+            })
             .map(|t| t.id.clone())
             .collect();
         let batch = Batch {
@@ -812,9 +838,8 @@ impl OrchestrationStore {
             }
         }
         let settings = crate::scheduling::load()?;
-        if settings.orientation != Orientation::Agents {
-            return Ok(());
-        }
+        // Already queued starts keep their provenance across a switch. New
+        // Tasks-mode work is not added here unless approval fixed Agent mode.
         self.sync_agent_queue()?;
         // No ledger lock across roster reads or process/chat operations.
         let agents = crate::team::list(&crate::team::default_path(), None, true)?;
@@ -859,7 +884,11 @@ impl OrchestrationStore {
                 })?;
             }
             let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
-            let Some((batch, runtime)) = self.begin_batch(&agent.id, &settings)? else {
+            let Some((batch, runtime)) = (match self.begin_batch(&agent.id, &settings) {
+                Ok(batch) => batch,
+                Err(error) if error.starts_with("QUEUED_FOR_SLOT") => break,
+                Err(error) => return Err(error),
+            }) else {
                 continue;
             };
             if let Err(reason) = self.start_batch_chat(chats.clone(), workspaces, &batch, &runtime)
@@ -1313,6 +1342,23 @@ mod retention_tests {
         let store = OrchestrationStore::default();
         let run = super::super::tests::run(&store);
         let first = assigned(&store, &run, 1);
+        store
+            .mutate(|data| {
+                let task = data.tasks.get_mut(&first.id).unwrap();
+                task.workspace_proposal
+                    .as_mut()
+                    .unwrap()
+                    .plan
+                    .as_mut()
+                    .unwrap()
+                    .mode = WorkspaceMode::Worktree;
+                if let Some(approved) = &mut task.approved {
+                    approved.workspace_mode = Some(WorkspaceMode::Worktree);
+                }
+                Ok(())
+            })
+            .unwrap();
+
         let worker = super::tests::worker();
         let launch = |task_id| WorkerLaunch {
             task_id,
@@ -1519,5 +1565,117 @@ mod stop_tests {
         assert!(claims
             .iter()
             .all(|a| inner.data.attempts[&a.id].status == AttemptStatus::Cancelled));
+    }
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use super::tests::{assigned, settings, worker};
+    use super::*;
+    use crate::test_dir::TestDir;
+
+    #[test]
+    fn switching_to_tasks_keeps_queued_person_and_agent_allocation_as_single_task_batches() {
+        let home = TestDir::new("orientation-switch");
+        let _profile = crate::profile::started_in(&home);
+        crate::scheduling::save(settings()).unwrap();
+        let store = OrchestrationStore::default();
+        let run = super::super::tests::run(&store);
+        let first = assigned(&store, &run, 1);
+        assigned(&store, &run, 2);
+        let chosen = worker();
+        let launch = WorkerLaunch {
+            task_id: first.id.clone(),
+            agent: chosen.agent,
+            access: chosen.access,
+            model: chosen.model.clone(),
+            effort: chosen.effort.clone(),
+            new_worktree: None,
+            base_branch: String::new(),
+        };
+        assert!(store
+            .reserve_attempt_for("chat:master", &launch, StartedBy::Page { retry_of: None })
+            .unwrap_err()
+            .starts_with("QUEUED_FOR_SLOT"));
+        let tasks_mode = Settings {
+            orientation: Orientation::Tasks,
+            host_cap: None,
+        };
+        crate::scheduling::save(tasks_mode.clone()).unwrap();
+        store.sync_agent_queue().unwrap();
+        let (_, runtime) = store
+            .begin_batch("agent_test", &tasks_mode)
+            .unwrap()
+            .unwrap();
+        assert!(runtime.candidates.is_empty());
+        assert_eq!(runtime.head, first.id);
+        let attempts = store
+            .batch_claim(&runtime.worker_chat_key, vec![first.id.clone()])
+            .unwrap();
+        assert_eq!(attempts[0].branch, runtime.plan.branch);
+        assert!(matches!(
+            store.inner.lock().unwrap().data.batches[0].status,
+            BatchStatus::Working
+        ));
+        // Ordinary work proposed after the switch preserves today's start door.
+        let ordinary = super::super::tests::task(&store, &run, vec![]);
+        store
+            .mutate(|data| {
+                let task = data.tasks.get_mut(&ordinary.id).unwrap();
+                task.assignee = Some(TaskAssignee {
+                    id: "agent_other".into(),
+                    name: "Other".into(),
+                });
+                task.worker = Some(chosen.clone());
+                Ok(())
+            })
+            .unwrap();
+        let mut direct = launch;
+        direct.task_id = ordinary.id;
+        assert!(store.reserve_attempt("chat:master", &direct).is_ok());
+    }
+
+    #[test]
+    fn a_batch_worker_can_open_a_gate_for_any_owned_claim_but_no_foreign_task() {
+        let home = TestDir::new("batch-own-gates");
+        let _profile = crate::profile::started_in(&home);
+        crate::scheduling::save(settings()).unwrap();
+        let store = OrchestrationStore::default();
+        let run = super::super::tests::run(&store);
+        let first = assigned(&store, &run, 1);
+        let second = assigned(&store, &run, 2);
+        store.sync_agent_queue().unwrap();
+        let (_, runtime) = store
+            .begin_batch("agent_test", &settings())
+            .unwrap()
+            .unwrap();
+        store
+            .batch_claim(
+                &runtime.worker_chat_key,
+                vec![first.id.clone(), second.id.clone()],
+            )
+            .unwrap();
+        for task in [&first, &second] {
+            let gate = store
+                .create_gate(
+                    &runtime.worker_chat_key,
+                    run.id.clone(),
+                    Some(task.id.clone()),
+                    "Need a decision".into(),
+                    vec![],
+                )
+                .unwrap();
+            assert_eq!(gate.task_id.as_deref(), Some(task.id.as_str()));
+        }
+        let foreign = super::super::tests::task(&store, &run, vec![]);
+        assert!(store
+            .create_gate(
+                &runtime.worker_chat_key,
+                run.id,
+                Some(foreign.id),
+                "Cannot own this".into(),
+                vec![]
+            )
+            .is_err());
     }
 }

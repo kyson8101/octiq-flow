@@ -803,13 +803,35 @@ impl OrchestrationStore {
         let proposals: Vec<(String, WorkspaceProposal)> = wanted
             .iter()
             .map(|(run, task)| {
-                let proposal = propose_assigned(
-                    run,
-                    &task.id,
-                    task.destination.as_ref(),
-                    task.worker.as_ref(),
-                    task.assignee.as_ref(),
-                );
+                let proposal =
+                    if let Some(mode) = task.approved.as_ref().and_then(|a| a.workspace_mode) {
+                        let mut fixed = run.clone();
+                        fixed.workspace_mode = mode;
+                        if mode == WorkspaceMode::Agent {
+                            propose_assigned(
+                                &fixed,
+                                &task.id,
+                                task.destination.as_ref(),
+                                task.worker.as_ref(),
+                                task.assignee.as_ref(),
+                            )
+                        } else {
+                            propose(
+                                &fixed,
+                                &task.id,
+                                task.destination.as_ref(),
+                                task.worker.as_ref(),
+                            )
+                        }
+                    } else {
+                        propose_assigned(
+                            run,
+                            &task.id,
+                            task.destination.as_ref(),
+                            task.worker.as_ref(),
+                            task.assignee.as_ref(),
+                        )
+                    };
                 (task.id.clone(), proposal)
             })
             .collect();
@@ -6206,7 +6228,9 @@ pub(super) fn propose_assigned(
             }
         }
     };
-    if settings.orientation != crate::scheduling::Orientation::Agents {
+    if settings.orientation != crate::scheduling::Orientation::Agents
+        && run.workspace_mode != WorkspaceMode::Agent
+    {
         return propose(run, task_id, destination, worker);
     }
     let root = task_root(run, destination);

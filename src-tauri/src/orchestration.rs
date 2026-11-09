@@ -3189,7 +3189,9 @@ impl OrchestrationStore {
                 .tasks
                 .get(&launch.task_id)
                 .ok_or("The task does not exist.")?;
-            if settings.orientation == crate::scheduling::Orientation::Agents
+            if (settings.orientation == crate::scheduling::Orientation::Agents
+                || batches::agent_workspace(task)
+                || data.agent_queue.contains_key(&task.id))
                 && task.assignee.is_some()
             {
                 // Validate every normal start gate on a disposable ledger. Capacity
@@ -3197,6 +3199,7 @@ impl OrchestrationStore {
                 let mut probe = data.clone();
                 let mut unchecked_capacity = settings.clone();
                 unchecked_capacity.host_cap = None;
+                unchecked_capacity.orientation = crate::scheduling::Orientation::Agents;
                 if let Some(run) = probe
                     .tasks
                     .get(&launch.task_id)
@@ -3770,7 +3773,13 @@ impl OrchestrationStore {
             None => Some(workspace(workspaces, &owning_run.workspace_id)?),
             Some(_) => None,
         };
-        if crate::scheduling::load()?.orientation == crate::scheduling::Orientation::Agents
+        let already_queued = {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            inner.data.agent_queue.contains_key(&owned.id)
+        };
+        if (crate::scheduling::load()?.orientation == crate::scheduling::Orientation::Agents
+            || batches::agent_workspace(&owned)
+            || already_queued)
             && owned.assignee.is_some()
         {
             return self
@@ -4441,15 +4450,15 @@ impl OrchestrationStore {
                 if data.gates.values().any(|gate| gate.task_id.as_deref() == Some(requested) && gate.status == GateStatus::Open) {
                     return Err("This task already has an open decision gate. Resolve it first.".into());
                 }
-                if actor_chat_key != run.coordinator_chat_key
-                    && owned_task.as_ref().map(|task| task.id.as_str()) != Some(requested)
+                let owns_requested = task.active_attempt_id.as_ref().and_then(|id| data.attempts.get(id))
+                    .is_some_and(|attempt| attempt.worker_chat_key == actor_chat_key && attempt_is_unsettled(data, attempt));
+                if actor_chat_key != run.coordinator_chat_key && !owns_requested
                 {
                     return Err("A worker may open a gate only for its own task.".into());
                 }
                 // A coordinator's gate would put its own question, and its
                 // own answer, in the brief of the teammate's next attempt.
-                if task.peer_request.is_some()
-                    && owned_task.as_ref().map(|task| task.id.as_str()) != Some(requested)
+                if task.peer_request.is_some() && !owns_requested
                 {
                     return Err(peer_request::TEAMMATES_GATE.into());
                 }
