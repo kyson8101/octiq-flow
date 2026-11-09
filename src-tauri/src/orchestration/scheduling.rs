@@ -23,12 +23,28 @@ pub(super) fn live(data: &Stored) -> usize {
 }
 
 pub(super) fn require_host_slot(data: &Stored, cap: Option<u16>) -> Result<(), String> {
+    require_host_slot_for(data, cap, None)
+}
+
+/// A claiming chat has not reserved an attempt yet, but already holds one
+/// launch promise. Keep that promise out of `live.total` while preventing a
+/// scheduler wave from starting every agent before their claim tools arrive.
+pub(super) fn require_host_slot_for(
+    data: &Stored,
+    cap: Option<u16>,
+    claiming: Option<&str>,
+) -> Result<(), String> {
     if let Some(limit) = cap {
         let running = live(data);
-        if running >= usize::from(limit) {
-            return Err(format!(
-                "QUEUED_FOR_SLOT host: {running} live workers, limit {limit}."
-            ));
+        let promised = data
+            .batches
+            .iter()
+            .filter(|b| {
+                b.status == batches::BatchStatus::Claiming && Some(b.id.as_str()) != claiming
+            })
+            .count();
+        if running + promised >= usize::from(limit) {
+            return Err(format!("QUEUED_FOR_SLOT host: {running} live workers, {promised} claiming launches, limit {limit}."));
         }
     }
     Ok(())
@@ -56,7 +72,7 @@ pub(super) fn slot_wait(data: &Stored, task: &Task, settings: &Settings) -> Opti
                     && !busy
                     && settings
                         .host_cap
-                        .is_some_and(|cap| running >= usize::from(cap))
+                        .is_some_and(|cap| require_host_slot(data, Some(cap)).is_err())
                 {
                     return Some(SlotWait {
                         reason: "host".into(),

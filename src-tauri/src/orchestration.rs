@@ -3217,12 +3217,13 @@ impl OrchestrationStore {
                     launch,
                     by,
                     &unchecked_capacity,
+                    None,
                 )?;
                 let entry = batches::Queued::new(launch, by, now_ms());
                 batches::enqueue(data, entry)?;
                 return Ok(None);
             }
-            Self::reserve_attempt_in(data, actor_chat_key, launch, by, &settings).map(Some)
+            Self::reserve_attempt_in(data, actor_chat_key, launch, by, &settings, None).map(Some)
         })?;
         self.scheduling_changed();
         queued.ok_or_else(|| "QUEUED_FOR_SLOT agent: this task is queued in its agent's lane; no worker was started.".into())
@@ -3234,6 +3235,7 @@ impl OrchestrationStore {
         launch: &WorkerLaunch,
         by: StartedBy,
         scheduling: &crate::scheduling::Settings,
+        claiming_batch: Option<&str>,
     ) -> Result<(Run, Task, Attempt, Option<Attempt>), String> {
         let recovery_of = match by {
             StartedBy::Recovery(attempt) => Some(attempt),
@@ -3460,12 +3462,29 @@ impl OrchestrationStore {
                 _ => {}
             }
         }
-        scheduling::require_host_slot(data, scheduling.host_cap)?;
+        if claiming_batch.is_none()
+            && scheduling.orientation == crate::scheduling::Orientation::Tasks
+            && data.batches.iter().any(|b| {
+                b.status == batches::BatchStatus::Claiming && b.task_ids.contains(&task.id)
+            })
+        {
+            return Err("QUEUED_FOR_SLOT agent: this task already has a claiming batch.".into());
+        }
+        scheduling::require_host_slot_for(data, scheduling.host_cap, claiming_batch)?;
         let active = data
             .attempts
             .values()
             .filter(|attempt| attempt.run_id == run.id && attempt_is_unsettled(data, attempt))
-            .count();
+            .count()
+            + data
+                .batches
+                .iter()
+                .filter(|b| {
+                    b.run_id == run.id
+                        && b.status == batches::BatchStatus::Claiming
+                        && Some(b.id.as_str()) != claiming_batch
+                })
+                .count();
         if active >= usize::from(run.max_concurrent) {
             return Err(format!(
                 "Run {} already has its {} allowed workers active.",
@@ -5045,6 +5064,19 @@ fn stop_run_in(data: &mut Stored, run_id: &str, reason: String, now: i64) -> Vec
         }
     }
     let mut workers = Vec::new();
+    for batch in data
+        .batches
+        .iter_mut()
+        .filter(|b| b.run_id == run_id && b.status != batches::BatchStatus::Settled)
+    {
+        if let Some(runtime) = data.batch_launches.get(&batch.id) {
+            workers.push(runtime.worker_chat_key.clone());
+        }
+        batch.status = batches::BatchStatus::Settled;
+        batch.settled_at = Some(now);
+    }
+    data.agent_queue
+        .retain(|id, _| data.tasks.get(id).is_some_and(|t| t.run_id != run_id));
     for attempt in data
         .attempts
         .values_mut()
@@ -5075,6 +5107,8 @@ fn stop_run_in(data: &mut Stored, run_id: &str, reason: String, now: i64) -> Vec
     run.status = RunStatus::Stopped;
     run.stopped_reason = Some(reason);
     run.updated_at = now;
+    workers.sort();
+    workers.dedup();
     workers
 }
 

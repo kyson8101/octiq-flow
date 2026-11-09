@@ -81,10 +81,6 @@ pub(super) fn eligible(data: &Stored, task: &Task) -> bool {
     let Some(run) = data.runs.get(&task.run_id) else {
         return false;
     };
-    let person = data
-        .agent_queue
-        .get(&task.id)
-        .is_some_and(|q| matches!(q.by, QueueBy::Person { .. }));
     task.assignee
         .as_ref()
         .is_some_and(|a| !data.removed_agents.contains_key(&a.id))
@@ -97,7 +93,7 @@ pub(super) fn eligible(data: &Stored, task: &Task) -> bool {
         )
         && run.archived_at.is_none()
         && task.superseded_by.is_none()
-        && (task.stopped.is_none() || person)
+        && task.stopped.is_none()
         && held_by_plan(run, task, &|id| data.tasks.get(id)).is_none()
         && workspaces::untold_reopen(task).is_none()
         && !data.gates.values().any(|g| {
@@ -117,6 +113,13 @@ pub(super) fn eligible(data: &Stored, task: &Task) -> bool {
 
 pub(super) fn enqueue(data: &mut Stored, entry: Queued) -> Result<(), String> {
     let id = entry.launch.task_id.clone();
+    if matches!(entry.by, QueueBy::Person { .. }) {
+        // This Start clears the earlier Stop. A later Stop is a new hold and
+        // cannot be bypassed by an old queued person's request.
+        if let Some(task) = data.tasks.get_mut(&id) {
+            task.stopped = None;
+        }
+    }
     // A second host/coordinator start must not replace a person's Start.
     match data.agent_queue.get_mut(&id) {
         Some(old) if matches!(entry.by, QueueBy::Person { .. }) => {
@@ -308,7 +311,7 @@ impl OrchestrationStore {
             // changes no task and consumes no retry, including earlier tasks.
             for id in &task_ids {
                 let queued = data.agent_queue.get(id).cloned().ok_or("The task is no longer queued.")?;
-                let (_, _, mut attempt, _) = Self::reserve_attempt_in(data, &coordinator, &queued.launch, queued.by.borrowed(), &settings)?;
+                let (_, _, mut attempt, _) = Self::reserve_attempt_in(data, &coordinator, &queued.launch, queued.by.borrowed(), &settings, Some(&batch.id))?;
                 attempt.batch_id = Some(batch.id.clone());
                 attempt.worker_chat_key = actor.into();
                 attempt.cwd = runtime.plan.cwd.clone();
@@ -414,6 +417,11 @@ impl OrchestrationStore {
             .values()
             .filter(|a| a.run_id == run.id && attempt_is_unsettled(data, a))
             .count()
+            + data
+                .batches
+                .iter()
+                .filter(|b| b.run_id == run.id && b.status == BatchStatus::Claiming)
+                .count()
             >= usize::from(run.max_concurrent)
         {
             return Ok(None);
@@ -518,6 +526,11 @@ impl OrchestrationStore {
                 .values()
                 .filter(|a| a.run_id == batch.run_id && attempt_is_unsettled(data, a))
                 .count()
+                + data
+                    .batches
+                    .iter()
+                    .filter(|b| b.run_id == batch.run_id && b.status == BatchStatus::Claiming)
+                    .count()
                 >= usize::from(current_run.max_concurrent)
             {
                 return Ok(None);
@@ -1300,5 +1313,119 @@ mod retention_tests {
             scheduling::slot_wait(&inner.data, &inner.data.tasks[&other.id], &capped).unwrap();
         assert_eq!(wait.reason, "host");
         assert_eq!(wait.limit, Some(1));
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::tests::{assigned, settings};
+    use super::*;
+    use crate::test_dir::TestDir;
+
+    #[test]
+    fn claiming_launch_reserves_capacity_and_run_stop_releases_its_worker_identity() {
+        let home = TestDir::new("batch-claiming-cap");
+        let _profile = crate::profile::started_in(&home);
+        let capped = Settings {
+            orientation: Orientation::Agents,
+            host_cap: Some(1),
+        };
+        crate::scheduling::save(capped.clone()).unwrap();
+        let store = OrchestrationStore::default();
+        let run = super::super::tests::run(&store);
+        let first = assigned(&store, &run, 1);
+        let second = assigned(&store, &run, 2);
+        store
+            .mutate(|data| {
+                data.tasks
+                    .get_mut(&second.id)
+                    .unwrap()
+                    .assignee
+                    .as_mut()
+                    .unwrap()
+                    .id = "agent_other".into();
+                Ok(())
+            })
+            .unwrap();
+        store.sync_agent_queue().unwrap();
+        let (_, runtime) = store.begin_batch("agent_test", &capped).unwrap().unwrap();
+        assert!(store
+            .begin_batch("agent_other", &capped)
+            .unwrap_err()
+            .starts_with("QUEUED_FOR_SLOT"));
+        assert_eq!(
+            scheduling::live(&store.inner.lock().unwrap().data),
+            0,
+            "launch promises do not invent live attempts"
+        );
+        let claimed = store
+            .batch_claim(&runtime.worker_chat_key, vec![first.id])
+            .unwrap();
+        assert_eq!(claimed.len(), 1, "a claim replaces its own promise");
+        // A second fixture run stopped BEFORE claiming still names its process.
+        let other_store = OrchestrationStore::default();
+        let other_run = super::super::tests::run(&other_store);
+        assigned(&other_store, &other_run, 1);
+        other_store.sync_agent_queue().unwrap();
+        let (_, unclaimed) = other_store
+            .begin_batch("agent_test", &capped)
+            .unwrap()
+            .unwrap();
+        let workers = other_store
+            .stop_run("chat:master", other_run.id, "Person stopped the run".into())
+            .unwrap();
+        assert_eq!(workers, vec![unclaimed.worker_chat_key]);
+        let inner = other_store.inner.lock().unwrap();
+        assert!(inner.data.agent_queue.is_empty());
+        assert!(inner
+            .data
+            .batches
+            .iter()
+            .all(|b| b.status == BatchStatus::Settled));
+    }
+
+    #[test]
+    fn a_later_stop_is_not_bypassed_by_a_queued_persons_start() {
+        let home = TestDir::new("queue-stop-order");
+        let _profile = crate::profile::started_in(&home);
+        crate::scheduling::save(settings()).unwrap();
+        let store = OrchestrationStore::default();
+        let run = super::super::tests::run(&store);
+        let task = assigned(&store, &run, 1);
+        let launch = WorkerLaunch {
+            task_id: task.id.clone(),
+            agent: ChatAgent::Codex,
+            model: Some("gpt-6.1-sol".into()),
+            effort: Some("high".into()),
+            access: Access::Auto,
+            base_branch: String::new(),
+            new_worktree: None,
+        };
+        let stop = || TaskStop {
+            at: now_ms(),
+            attempt_id: "old-attempt".into(),
+            reason: None,
+        };
+        store
+            .mutate(|data| {
+                data.tasks.get_mut(&task.id).unwrap().stopped = Some(stop());
+                Ok(())
+            })
+            .unwrap();
+        assert!(store
+            .reserve_attempt_for("chat:master", &launch, StartedBy::Page { retry_of: None })
+            .unwrap_err()
+            .starts_with("QUEUED_FOR_SLOT"));
+        assert!(store.inner.lock().unwrap().data.tasks[&task.id]
+            .stopped
+            .is_none());
+        store
+            .mutate(|data| {
+                data.tasks.get_mut(&task.id).unwrap().stopped = Some(stop());
+                Ok(())
+            })
+            .unwrap();
+        let inner = store.inner.lock().unwrap();
+        assert!(queue(&inner.data, "agent_test").is_empty());
     }
 }
