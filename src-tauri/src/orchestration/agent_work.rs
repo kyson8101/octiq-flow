@@ -298,6 +298,15 @@ fn is(assignee: Option<&TaskAssignee>, agent_id: &str) -> bool {
 
 fn running(data: &Stored, run: &Run, task: &Task, agent_id: &str) -> bool {
     let mine = is(task.assignee.as_ref(), agent_id);
+    if mine
+        && data.batches.iter().any(|b| {
+            b.agent_id == agent_id
+                && b.status != batches::BatchStatus::Settled
+                && b.task_ids.contains(&task.id)
+        })
+    {
+        return true;
+    }
     let mut attempts = data
         .attempts
         .values()

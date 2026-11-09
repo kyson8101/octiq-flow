@@ -869,7 +869,14 @@ impl OrchestrationStore {
             .data
             .attempts
             .values()
-            .filter(|a| live.contains(&a.worker_chat_key) && !attempt_is_unsettled(&inner.data, a))
+            .filter(|a| {
+                live.contains(&a.worker_chat_key)
+                    && !attempt_is_unsettled(&inner.data, a)
+                    && !inner.data.attempts.values().any(|other| {
+                        other.worker_chat_key == a.worker_chat_key
+                            && attempt_is_unsettled(&inner.data, other)
+                    })
+            })
             .map(|a| {
                 (
                     a.worker_chat_key.clone(),
@@ -1065,7 +1072,8 @@ impl OrchestrationStore {
                 launch,
                 StartedBy::Recovery(&attempt.id),
             ) {
-                if error.starts_with("Provider choice pending:")
+                if error.starts_with("QUEUED_FOR_SLOT")
+                    || error.starts_with("Provider choice pending:")
                     || error.starts_with("Provider quota pending:")
                 {
                     continue;

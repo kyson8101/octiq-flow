@@ -1386,6 +1386,12 @@ const ORCHESTRATION_WORKER_START = {
   },
 };
 
+const ORCHESTRATION_BATCH_CLAIM = {
+  name: "orchestration_batch_claim",
+  description: "Claim the head task plus up to five queued candidates in your own agent batch. All tasks must be in the same run, repository and base branch. The host checks each task's approval and returns its attemptId. Report each attempt separately with orchestration_worker_report. Only this batch's worker may claim; call once before doing task work.",
+  inputSchema: { type: "object", properties: { taskIds: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 6 } }, required: ["taskIds"] },
+};
+
 const ORCHESTRATION_WORKER_REPORT = {
   name: "orchestration_worker_report",
   description:
@@ -1645,6 +1651,7 @@ const ORCHESTRATION_TOOLS = [
   ORCHESTRATION_SNAPSHOT,
   ORCHESTRATION_WORKER_START,
   ORCHESTRATION_WORKER_REPORT,
+  ORCHESTRATION_BATCH_CLAIM,
   ORCHESTRATION_REPORT_CONFIRM,
   ORCHESTRATION_GATE_CREATE,
   ORCHESTRATION_GATE_RESOLVE,
@@ -1988,7 +1995,7 @@ async function handle(msg) {
               ...FEEDBACK_TOOLS,
               ...(IS_WORKER ? [] : ISLAND_TOOLS),
               ...vaultTools(IS_WORKER),
-              ...ORCHESTRATION_TOOLS.filter(tool => !IS_WORKER || tool !== ORCHESTRATION_WORKSPACE_CLEANUP_REQUEST),
+              ...ORCHESTRATION_TOOLS.filter(tool => IS_WORKER ? tool !== ORCHESTRATION_WORKSPACE_CLEANUP_REQUEST : tool !== ORCHESTRATION_BATCH_CLAIM),
             ]
           : [CREATE_ARTIFACT],
       });

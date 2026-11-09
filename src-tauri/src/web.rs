@@ -1745,6 +1745,7 @@ const ORCHESTRATION_HOOK_ACTIONS: &[(&str, &str)] = &[
     // `orchestration_worker_start`, which is the page's retry.
     ("worker_start", "orchestration_worker_start_in_chat"),
     ("worker_report", "orchestration_worker_report"),
+    ("batch_claim", "orchestration_batch_claim"),
     // The run's coordinator settling a read-only worker from the words the
     // host held for it. Coordinator provenance is this capability's chat.
     ("report_confirm", "orchestration_report_confirm"),

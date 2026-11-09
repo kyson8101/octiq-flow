@@ -296,6 +296,10 @@ impl OrchestrationStore {
             return Ok(Vec::new());
         }
         let settings = crate::scheduling::load()?;
+        if settings.orientation == crate::scheduling::Orientation::Agents {
+            self.sync_agent_queue()?;
+            return Err("QUEUED_FOR_SLOT agent: approved tasks are queued; the host starts idle agent lanes.".into());
+        }
         let all = self.snapshot(None)?;
         let host_room = settings.host_cap.map_or(usize::MAX, |cap| {
             usize::from(cap).saturating_sub(
@@ -490,13 +494,18 @@ pub fn start_scheduler(
         if let Err(error) = store.propose_missing_workspaces() {
             eprintln!("orchestration: workspace planning failed: {error}");
         }
+        if let Err(error) = store.schedule_agent_batches(chats.clone(), &workspaces) {
+            eprintln!("orchestration: agent batch scheduling failed: {error}");
+        }
         let Ok(runs) = store.dispatchable_runs() else {
             continue;
         };
         for (run, coordinator) in runs {
             if let Err(error) = store.dispatch_ready(chats.clone(), &workspaces, &coordinator, &run)
             {
-                eprintln!("orchestration: ready-wave scheduling failed: {error}");
+                if !error.starts_with("QUEUED_FOR_SLOT") {
+                    eprintln!("orchestration: ready-wave scheduling failed: {error}");
+                }
             }
         }
     });

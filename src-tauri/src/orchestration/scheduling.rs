@@ -63,17 +63,35 @@ pub(super) fn slot_wait(data: &Stored, task: &Task, settings: &Settings) -> Opti
 }
 
 impl OrchestrationStore {
+    pub(super) fn scheduling_changed(&self) {
+        let Ok(settings) = crate::scheduling::load() else {
+            return;
+        };
+        let Ok(inner) = self.inner.lock() else {
+            return;
+        };
+        let payload = json!({ "orientation": settings.orientation, "hostCap": settings.host_cap,
+            "live": { "total": live(&inner.data) }, "lanes": batches::lanes(&inner.data, None) });
+        drop(inner);
+        if let Ok(mut last) = self.scheduling_last.lock() {
+            if last.as_ref() != Some(&payload) {
+                *last = Some(payload.clone());
+                crate::bus::emit("scheduling-changed", payload);
+            }
+        }
+    }
+
     pub fn scheduling_get(&self) -> Result<serde_json::Value, String> {
         let settings = crate::scheduling::load()?;
         // Roster first, ledger second. Never call team while holding inner.
-        let _agents = crate::team::list(&crate::team::default_path(), None, true)?;
+        let agents = crate::team::list(&crate::team::default_path(), None, true)?;
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         if let Some(error) = &inner.load_error {
             return Err(error.clone());
         }
         Ok(
             json!({ "orientation": settings.orientation, "hostCap": settings.host_cap,
-            "live": { "total": live(&inner.data) }, "lanes": [] }),
+            "live": { "total": live(&inner.data) }, "lanes": batches::lanes(&inner.data, Some(&agents.into_iter().map(|a| a.id).collect())) }),
         )
     }
 }

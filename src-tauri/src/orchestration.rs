@@ -31,6 +31,7 @@ mod approval_tests;
 mod archive;
 pub mod auto_plan;
 pub mod automation;
+pub mod batches;
 pub mod bridge;
 pub mod brief;
 pub mod cleanup_request;
@@ -768,6 +769,8 @@ pub struct Attempt {
     pub run_id: String,
     pub task_id: String,
     pub number: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
     pub worker_chat_key: String,
     pub agent: ChatAgent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1084,6 +1087,14 @@ struct Stored {
     /// failed, and by `reconcile_removed` when the ledger is loaded.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     removed_agents: BTreeMap<String, i64>,
+    #[serde(default)]
+    batches: Vec<batches::Batch>,
+    #[serde(default)]
+    agent_queue: BTreeMap<String, batches::Queued>,
+    #[serde(default)]
+    batch_launches: BTreeMap<String, batches::BatchLaunch>,
+    #[serde(default)]
+    agent_blocks: BTreeMap<String, String>,
 }
 
 fn store_version() -> u32 {
@@ -1112,6 +1123,10 @@ impl Default for Stored {
             bridges: BTreeMap::new(),
             peer_asks: BTreeMap::new(),
             removed_agents: BTreeMap::new(),
+            batches: Vec::new(),
+            agent_queue: BTreeMap::new(),
+            batch_launches: BTreeMap::new(),
+            agent_blocks: BTreeMap::new(),
         }
     }
 }
@@ -1133,6 +1148,7 @@ pub struct OrchestrationStore {
     workspace_ops: Mutex<()>,
     cleanup_requests: Mutex<BTreeMap<String, cleanup_request::Pending>>,
     auto_plan_delivery: Mutex<()>,
+    scheduling_last: Mutex<Option<serde_json::Value>>,
     /// Coordinator chats whose transcript gave no receipt for a reopen's
     /// notice: how often in a row, and when it is next worth asking
     /// (`workspaces::notice_wait`). In memory only; a restart asks at once.
@@ -1185,7 +1201,7 @@ impl OrchestrationStore {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerLaunch {
     pub task_id: String,
     pub agent: ChatAgent,
@@ -1288,6 +1304,7 @@ impl Default for OrchestrationStore {
             workspace_ops: Mutex::new(()),
             cleanup_requests: Mutex::default(),
             auto_plan_delivery: Mutex::new(()),
+            scheduling_last: Mutex::new(None),
             reopen_waits: Mutex::default(),
             listed_chats: Mutex::default(),
         }
@@ -1344,6 +1361,7 @@ impl OrchestrationStore {
             workspace_ops: Mutex::new(()),
             cleanup_requests: Mutex::default(),
             auto_plan_delivery: Mutex::new(()),
+            scheduling_last: Mutex::new(None),
             reopen_waits: Mutex::default(),
             listed_chats: Mutex::default(),
         };
@@ -1448,7 +1466,12 @@ impl OrchestrationStore {
         change: impl FnOnce(&mut Stored) -> Result<T, String>,
     ) -> Result<T, String> {
         let mut inner = self.inner.lock().map_err(|error| error.to_string())?;
-        self.mutate_locked(&mut inner, regardless, change)
+        let result = self.mutate_locked(&mut inner, regardless, change);
+        drop(inner);
+        if result.is_ok() {
+            self.scheduling_changed();
+        }
+        result
     }
 
     fn mutate_locked<T>(
@@ -1712,6 +1735,19 @@ impl OrchestrationStore {
         let inner = self.inner.lock().map_err(|error| error.to_string())?;
         if let Some(error) = &inner.load_error {
             return Err(error.clone());
+        }
+        if let Some(batch) = inner.data.batches.iter().find(|b| {
+            inner
+                .data
+                .batch_launches
+                .get(&b.id)
+                .is_some_and(|l| l.worker_chat_key == chat_key)
+        }) {
+            return Ok(inner
+                .data
+                .runs
+                .get(&batch.run_id)
+                .map(|r| r.coordinator_chat_key.clone()));
         }
         Ok(inner
             .data
@@ -2551,8 +2587,15 @@ impl OrchestrationStore {
             let inner = self.inner.lock().map_err(|error| error.to_string())?;
             inner.data.runs.get(&run_id).cloned()
         };
-        let proposal = planned_run
-            .map(|run| workspaces::propose(&run, &id, destination.as_ref(), worker.as_ref()));
+        let proposal = planned_run.map(|mut run| {
+            if assignee.is_some()
+                && crate::scheduling::load()
+                    .is_ok_and(|s| s.orientation == crate::scheduling::Orientation::Agents)
+            {
+                run.workspace_mode = WorkspaceMode::Agent;
+            }
+            workspaces::propose(&run, &id, destination.as_ref(), worker.as_ref())
+        });
         self.mutate(|data| {
             let run = match coordinator(data, &run_id, actor_chat_key) {
                 Ok(run) => run,
@@ -3120,7 +3163,58 @@ impl OrchestrationStore {
         launch: &WorkerLaunch,
         by: StartedBy,
     ) -> Result<(Run, Task, Attempt, Option<Attempt>), String> {
-        let scheduling = crate::scheduling::load()?;
+        let settings = crate::scheduling::load()?;
+        let queued = self.mutate(|data| {
+            let task = data
+                .tasks
+                .get(&launch.task_id)
+                .ok_or("The task does not exist.")?;
+            if settings.orientation == crate::scheduling::Orientation::Agents
+                && task.assignee.is_some()
+            {
+                // Validate every normal start gate on a disposable ledger. Capacity
+                // is checked at reservation, and a queue consumes no retry.
+                let mut probe = data.clone();
+                let mut unchecked_capacity = settings.clone();
+                unchecked_capacity.host_cap = None;
+                if let Some(run) = probe
+                    .tasks
+                    .get(&launch.task_id)
+                    .and_then(|t| probe.runs.get_mut(&t.run_id))
+                {
+                    run.max_concurrent = u16::MAX;
+                }
+                for attempt in probe
+                    .attempts
+                    .values_mut()
+                    .filter(|a| a.task_id != launch.task_id)
+                {
+                    attempt.status = AttemptStatus::Cancelled;
+                }
+                Self::reserve_attempt_in(
+                    &mut probe,
+                    actor_chat_key,
+                    launch,
+                    by,
+                    &unchecked_capacity,
+                )?;
+                let entry = batches::Queued::new(launch, by, now_ms());
+                batches::enqueue(data, entry)?;
+                return Ok(None);
+            }
+            Self::reserve_attempt_in(data, actor_chat_key, launch, by, &settings).map(Some)
+        })?;
+        self.scheduling_changed();
+        queued.ok_or_else(|| "QUEUED_FOR_SLOT agent: this task is queued in its agent's lane; no worker was started.".into())
+    }
+
+    fn reserve_attempt_in(
+        data: &mut Stored,
+        actor_chat_key: &str,
+        launch: &WorkerLaunch,
+        by: StartedBy,
+        scheduling: &crate::scheduling::Settings,
+    ) -> Result<(Run, Task, Attempt, Option<Attempt>), String> {
         let recovery_of = match by {
             StartedBy::Recovery(attempt) => Some(attempt),
             _ => None,
@@ -3133,321 +3227,349 @@ impl OrchestrationStore {
             recovery: None,
         }
         .normalized()?;
-        self.mutate(|data| {
-            let task = data
-                .tasks
-                .get(&launch.task_id)
-                .cloned()
-                .ok_or("The task does not exist.")?;
-            let run = coordinator(data, &task.run_id, actor_chat_key)?.clone();
-            // A page/coordinator retry may name the last runtime it saw.
-            // Only the exact host-recorded mapping can stand for its original
-            // settings; arbitrary providers/models still fail every gate.
-            if let Some(previous) = task.active_attempt_id.as_ref().and_then(|id| data.attempts.get(id)) {
-                if let Some(origin) = &previous.execution.provider_origin {
-                    if worker.agent == previous.agent && worker.model == previous.model
-                        && worker.effort == previous.effort && worker.access == previous.access {
-                        worker = origin.clone();
-                    }
+
+        let task = data
+            .tasks
+            .get(&launch.task_id)
+            .cloned()
+            .ok_or("The task does not exist.")?;
+        let run = coordinator(data, &task.run_id, actor_chat_key)?.clone();
+        // A page/coordinator retry may name the last runtime it saw.
+        // Only the exact host-recorded mapping can stand for its original
+        // settings; arbitrary providers/models still fail every gate.
+        if let Some(previous) = task
+            .active_attempt_id
+            .as_ref()
+            .and_then(|id| data.attempts.get(id))
+        {
+            if let Some(origin) = &previous.execution.provider_origin {
+                if worker.agent == previous.agent
+                    && worker.model == previous.model
+                    && worker.effort == previous.effort
+                    && worker.access == previous.access
+                {
+                    worker = origin.clone();
                 }
             }
-            // The one door every start goes through: a first dispatch, a
-            // reopened task, a retry, the page's Start and the host's own
-            // recovery. A pending revision holds only what it has not
-            // approved.
-            if let Some(waiting) = held_by_plan(&run, &task, &|id| data.tasks.get(id)) {
-                return Err(plan_hold_reason(&task, waiting));
-            }
-            // A reopen changes what a task is told to do without a new
-            // approval, so the person is shown each one first: nothing
-            // starts on instructions whose notice is not confirmed on disk yet,
-            // whoever asks (`workspaces::REOPEN_NOT_TOLD`).
-            if workspaces::untold_reopen(&task).is_some() {
-                return Err(workspaces::REOPEN_NOT_TOLD.into());
-            }
-            // No start for an agent that is gone. A removal writes this in
-            // the same hold of this lock that it checks the agent's work in
-            // (`agent_work::Departure`), so the two cannot both go through:
-            // a start that got here first is work in progress, and refuses
-            // the removal; a removal that got here first refuses this.
-            if let Some(gone) = task
+        }
+        // The one door every start goes through: a first dispatch, a
+        // reopened task, a retry, the page's Start and the host's own
+        // recovery. A pending revision holds only what it has not
+        // approved.
+        if let Some(waiting) = held_by_plan(&run, &task, &|id| data.tasks.get(id)) {
+            return Err(plan_hold_reason(&task, waiting));
+        }
+        // A reopen changes what a task is told to do without a new
+        // approval, so the person is shown each one first: nothing
+        // starts on instructions whose notice is not confirmed on disk yet,
+        // whoever asks (`workspaces::REOPEN_NOT_TOLD`).
+        if workspaces::untold_reopen(&task).is_some() {
+            return Err(workspaces::REOPEN_NOT_TOLD.into());
+        }
+        // No start for an agent that is gone. A removal writes this in
+        // the same hold of this lock that it checks the agent's work in
+        // (`agent_work::Departure`), so the two cannot both go through:
+        // a start that got here first is work in progress, and refuses
+        // the removal; a removal that got here first refuses this.
+        if let Some(gone) = task
+            .assignee
+            .as_ref()
+            .filter(|assignee| data.removed_agents.contains_key(&assignee.id))
+        {
+            return Err(agent_work::gone_reason(&gone.name));
+        }
+        // The person stopped it, so the person starts it again.
+        match (&task.stopped, by) {
+            (Some(_), StartedBy::Page { .. }) | (None, _) => {}
+            (Some(_), _) => return Err(STOPPED_BY_PERSON.into()),
+        }
+        // A replaced task is owed nothing more: its replacement is the
+        // work now, and both running would be two answers to one job.
+        if let Some(replacement) = &task.superseded_by {
+            return Err(superseded_reason(data, replacement));
+        }
+        // A failed task has two automatic retries, whoever makes them:
+        // the coordinator, the host's dispatch of a check it reopened,
+        // the host's own recovery. After that, and while a decision the
+        // coordinator opened about it is with the person, only the
+        // person starts it (`retry.rs`). Their Start asks nothing here.
+        let retried = retry::counted(data, &task);
+        // A task the person reopened themselves starts as theirs,
+        // whoever carries the start out: the reopen was their decision,
+        // and its first start is that decision being made, not one of
+        // the coordinator's retries.
+        let attempts = data
+            .attempts
+            .values()
+            .filter(|attempt| attempt.task_id == task.id)
+            .count();
+        let retry_by = match by {
+            StartedBy::Page { .. } => retry::RetryBy::Person,
+            _ if workspaces::persons_reopen(&task, attempts) => retry::RetryBy::Person,
+            StartedBy::Recovery(_) => retry::RetryBy::Host,
+            StartedBy::Coordinator => retry::RetryBy::Coordinator,
+        };
+        if retry_by != retry::RetryBy::Person {
+            retry::allows(data, &task, retried)?;
+        }
+        // Checked here, under the lock that writes `task.worker` below, so
+        // a start the handoff overtook can neither run nor record the
+        // replaced owner's settings as the new owner's.
+        if let StartedBy::Page { retry_of } = by {
+            page_retry_is_current(data, &task, retry_of)?;
+        }
+        if let Some(approved) = unstarted_handoff(data, &task) {
+            let owner = task
                 .assignee
                 .as_ref()
-                .filter(|assignee| data.removed_agents.contains_key(&assignee.id))
-            {
-                return Err(agent_work::gone_reason(&gone.name));
-            }
-            // The person stopped it, so the person starts it again.
-            match (&task.stopped, by) {
-                (Some(_), StartedBy::Page { .. }) | (None, _) => {}
-                (Some(_), _) => return Err(STOPPED_BY_PERSON.into()),
-            }
-            // A replaced task is owed nothing more: its replacement is the
-            // work now, and both running would be two answers to one job.
-            if let Some(replacement) = &task.superseded_by {
-                return Err(superseded_reason(data, replacement));
-            }
-            // A failed task has two automatic retries, whoever makes them:
-            // the coordinator, the host's dispatch of a check it reopened,
-            // the host's own recovery. After that, and while a decision the
-            // coordinator opened about it is with the person, only the
-            // person starts it (`retry.rs`). Their Start asks nothing here.
-            let retried = retry::counted(data, &task);
-            // A task the person reopened themselves starts as theirs,
-            // whoever carries the start out: the reopen was their decision,
-            // and its first start is that decision being made, not one of
-            // the coordinator's retries.
-            let attempts = data
-                .attempts
-                .values()
-                .filter(|attempt| attempt.task_id == task.id)
-                .count();
-            let retry_by = match by {
-                StartedBy::Page { .. } => retry::RetryBy::Person,
-                _ if workspaces::persons_reopen(&task, attempts) => retry::RetryBy::Person,
-                StartedBy::Recovery(_) => retry::RetryBy::Host,
-                StartedBy::Coordinator => retry::RetryBy::Coordinator,
-            };
-            if retry_by != retry::RetryBy::Person {
-                retry::allows(data, &task, retried)?;
-            }
-            // Checked here, under the lock that writes `task.worker` below, so
-            // a start the handoff overtook can neither run nor record the
-            // replaced owner's settings as the new owner's.
-            if let StartedBy::Page { retry_of } = by {
-                page_retry_is_current(data, &task, retry_of)?;
-            }
-            if let Some(approved) = unstarted_handoff(data, &task) {
-                let owner = task.assignee.as_ref().map_or("another agent", |a| a.name.as_str());
-                keeps_to_handoff(approved, &worker, owner)?;
-            }
-            // A peer runs as its registered identity, whoever starts it.
-            if let (Some(_), Some(approved)) = (&task.peer_request, &task.worker) {
-                let peer = task.assignee.as_ref().map_or("a teammate", |a| a.name.as_str());
-                peer_request::keeps_to_identity(approved, &worker, launch.effort.as_deref(), peer)?;
-            }
-            // And from the branch the host planned for it. Only the person's
-            // own start names another: an agent's choice of base would reach
-            // the teammate as its task's branch and checkout.
-            if task.peer_request.is_some()
-                && !launch.base_branch.is_empty()
-                && !matches!(by, StartedBy::Page { .. })
-            {
-                return Err(peer_request::PEERS_BASE.into());
-            }
-            // What the person approved is what runs: the worker, the
-            // assignee, the destination and the base branch that were in
-            // effect at the approval (`approval::Approved`). Asked of every
-            // start alike: the coordinator's, the host's own dispatch and
-            // recovery, and the page's Start, which retries an attempt with
-            // that attempt's settings and is the person changing nothing.
-            // Refused here, before anything is reserved or written.
-            if let Some(approved) = &task.approved {
-                approval::keeps_to(approved, &task, &worker, &launch.base_branch, workspaces::launch_mode(&run, &task, launch))?;
-            }
-            match task.approved.as_ref().and_then(|a| a.worker.as_ref()) {
-                // The approved recovery policy, or none: never one the run's
-                // defaults gained after the approval.
-                Some(approved) => worker.recovery = approved.recovery.clone(),
-                None => {
-                    // The run's defaults are the coordinator's to change at
-                    // any time, and a recovery policy names a fallback model
-                    // in words of its choosing. A peer request takes none of
-                    // them: what came with the task, or the host's default.
-                    let defaults = run
-                        .worker_defaults
-                        .as_ref()
-                        .filter(|_| task.peer_request.is_none());
-                    worker.recovery = task
-                        .worker
-                        .as_ref()
-                        .and_then(|w| w.recovery.clone())
-                        .or_else(|| defaults.and_then(|w| w.recovery.clone()));
-                    let recovery_agent = task
-                        .worker
-                        .as_ref()
-                        .filter(|w| w.recovery.is_some())
-                        .map(|w| w.agent)
-                        .or_else(|| defaults.and_then(|w| w.agent));
-                    if recovery_agent.is_some_and(|agent| agent != worker.agent) {
-                        if let Some(policy) = &mut worker.recovery {
-                            policy.fallback_model = None;
-                        }
-                    }
-                }
-            }
-            worker = worker.normalized()?;
-            if let Some(expected) = recovery_of {
-                if task.active_attempt_id.as_deref() != Some(expected)
-                    || !data.attempts.get(expected).is_some_and(|a| {
-                        a.status == AttemptStatus::Failed
-                            && a.execution.next_retry_at.is_some_and(|at| at <= now_ms())
-                    })
-                {
-                    return Err("This recovery was superseded or is not due.".into());
-                }
-            }
-            if matches!(
-                run.status,
-                RunStatus::Completed | RunStatus::Stopped | RunStatus::Closed
-            ) {
-                return Err("This run no longer accepts workers.".into());
-            }
-            if task.status == TaskStatus::Completed || task.status == TaskStatus::Cancelled {
-                return Err("This task no longer accepts workers.".into());
-            }
-            if task
-                .depends_on
-                .iter()
-                .any(|dependency| !data.tasks.get(dependency).is_some_and(releases_dependants))
-            {
-                return Err("This task is waiting for its dependencies.".into());
-            }
-            let previous = task
-                .active_attempt_id
-                .as_deref()
-                .and_then(|id| data.attempts.get(id))
-                .cloned();
-            if let Some(active) = previous.as_ref() {
-                match active.status {
-                    AttemptStatus::Preparing | AttemptStatus::Running => {
-                        return Err("This task already has an active worker.".into())
-                    }
-                    AttemptStatus::Blocked if attempt_has_open_gate(data, active) => {
-                        return Err("This task is waiting for its open decision gate.".into())
-                    }
-                    AttemptStatus::Blocked => {
-                        if let Some(previous) = data.attempts.get_mut(&active.id) {
-                            previous.finished_at.get_or_insert(previous.updated_at);
-                            previous.status = AttemptStatus::Cancelled;
-                            previous.execution.state = execution::ExecutionState::Cancelled;
-                            previous.updated_at = now_ms();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            scheduling::require_host_slot(data, scheduling.host_cap)?;
-            let active = data
-                .attempts
-                .values()
-                .filter(|attempt| attempt.run_id == run.id && attempt_is_unsettled(data, attempt))
-                .count();
-            if active >= usize::from(run.max_concurrent) {
-                return Err(format!(
-                    "Run {} already has its {} allowed workers active.",
-                    run.id, run.max_concurrent
-                ));
-            }
-            // A mission's writers take turns in its one worktree. Refused here,
-            // before an attempt exists, the task stays ready for its turn;
-            // refused at launch it would settle as failed.
-            if launch.access != Access::Read {
-                if let Some(key) = workspaces::writer_key(&run, &task) {
-                    if let Some(busy) = data.attempts.values().find(|a| a.run_id == run.id
-                        && a.access != Access::Read && attempt_is_unsettled(data, a)
-                        && data.tasks.get(&a.task_id).is_some_and(|t| workspaces::writer_key(&run, t).as_ref() == Some(&key))) {
-                        let title = data.tasks.get(&busy.task_id).map_or("", |t| t.title.as_str());
-                        return Err(format!("\"{title}\" is writing in this shared checkout. This task can start when it finishes."));
-                    }
-                }
-            }
-
-            let number = data
-                .attempts
-                .values()
-                .filter(|attempt| attempt.task_id == task.id)
-                .count()
-                .saturating_add(1) as u32;
-            let id = format!("attempt_{}", compact_id());
-            let now = now_ms();
-            // A peer request's working time carries on from the attempts
-            // before this one, unless the person starts it again.
-            let peer_clock = task
-                .peer_request
+                .map_or("another agent", |a| a.name.as_str());
+            keeps_to_handoff(approved, &worker, owner)?;
+        }
+        // A peer runs as its registered identity, whoever starts it.
+        if let (Some(_), Some(approved)) = (&task.peer_request, &task.worker) {
+            let peer = task
+                .assignee
                 .as_ref()
-                .map(|request| {
-                    let by_person = matches!(by, StartedBy::Page { .. });
-                    peer_request::clock_for(data, &task, request, by_person, now)
+                .map_or("a teammate", |a| a.name.as_str());
+            peer_request::keeps_to_identity(approved, &worker, launch.effort.as_deref(), peer)?;
+        }
+        // And from the branch the host planned for it. Only the person's
+        // own start names another: an agent's choice of base would reach
+        // the teammate as its task's branch and checkout.
+        if task.peer_request.is_some()
+            && !launch.base_branch.is_empty()
+            && !matches!(by, StartedBy::Page { .. })
+        {
+            return Err(peer_request::PEERS_BASE.into());
+        }
+        // What the person approved is what runs: the worker, the
+        // assignee, the destination and the base branch that were in
+        // effect at the approval (`approval::Approved`). Asked of every
+        // start alike: the coordinator's, the host's own dispatch and
+        // recovery, and the page's Start, which retries an attempt with
+        // that attempt's settings and is the person changing nothing.
+        // Refused here, before anything is reserved or written.
+        if let Some(approved) = &task.approved {
+            approval::keeps_to(
+                approved,
+                &task,
+                &worker,
+                &launch.base_branch,
+                workspaces::launch_mode(&run, &task, launch),
+            )?;
+        }
+        match task.approved.as_ref().and_then(|a| a.worker.as_ref()) {
+            // The approved recovery policy, or none: never one the run's
+            // defaults gained after the approval.
+            Some(approved) => worker.recovery = approved.recovery.clone(),
+            None => {
+                // The run's defaults are the coordinator's to change at
+                // any time, and a recovery policy names a fallback model
+                // in words of its choosing. A peer request takes none of
+                // them: what came with the task, or the host's default.
+                let defaults = run
+                    .worker_defaults
+                    .as_ref()
+                    .filter(|_| task.peer_request.is_none());
+                worker.recovery = task
+                    .worker
+                    .as_ref()
+                    .and_then(|w| w.recovery.clone())
+                    .or_else(|| defaults.and_then(|w| w.recovery.clone()));
+                let recovery_agent = task
+                    .worker
+                    .as_ref()
+                    .filter(|w| w.recovery.is_some())
+                    .map(|w| w.agent)
+                    .or_else(|| defaults.and_then(|w| w.agent));
+                if recovery_agent.is_some_and(|agent| agent != worker.agent) {
+                    if let Some(policy) = &mut worker.recovery {
+                        policy.fallback_model = None;
+                    }
+                }
+            }
+        }
+        worker = worker.normalized()?;
+        if let Some(expected) = recovery_of {
+            if task.active_attempt_id.as_deref() != Some(expected)
+                || !data.attempts.get(expected).is_some_and(|a| {
+                    a.status == AttemptStatus::Failed
+                        && a.execution.next_retry_at.is_some_and(|at| at <= now_ms())
                 })
-                .transpose()?;
-            let mut execution = execution::Execution::queued(
-                now,
-                recovery_of
-                    .and(previous.as_ref())
-                    .map_or(0, |a| a.execution.retry_count + 1),
-            );
-            if let Some(previous) = recovery_of.and(previous.as_ref()) {
-                execution.latest_error = previous.execution.latest_error.clone();
-                execution.last_progress = previous.execution.last_progress.clone();
-                execution.last_progress_at = previous.execution.last_progress_at;
-            }
-            let attempt = Attempt {
-                id: id.clone(),
-                run_id: run.id.clone(),
-                task_id: task.id.clone(),
-                number,
-                worker_chat_key: format!("chat:orch-{}", compact_id()),
-                agent: worker.agent,
-                model: worker.model.clone(),
-                effort: worker.effort.clone(),
-                access: launch.access,
-                status: AttemptStatus::Preparing,
-                execution,
-                cwd: String::new(),
-                branch: String::new(),
-                is_worktree: false,
-                summary: None,
-                assignee: task.assignee.clone(),
-                files_modified: Vec::new(),
-                finished_at: None,
-                archived_at: None,
-                proposed_report: None,
-                peer_clock,
-                usage: None,
-                context: None,
-                retry: None,
-                created_at: now,
-                updated_at: now,
-            };
-            if let Some(previous) = previous.as_ref().and_then(|a| data.attempts.get_mut(&a.id)) {
-                previous.execution.next_retry_at = None;
-            }
-            // Counted here, with the reservation, so a start that was
-            // refused above used nothing.
-            let mut attempt = attempt;
-            attempt.retry = retry::started(data, &task.id, retried, retry_by, now);
-            data.attempts.insert(id.clone(), attempt.clone());
-            let reserved_task = data
-                .tasks
-                .get_mut(&task.id)
-                .expect("the task was read above");
-            reserved_task.status = TaskStatus::Running;
-            // A task made before sizes existed that never started takes the
-            // default now, before its first attempt. One already started
-            // keeps none: its worth was never agreed.
-            if number == 1 && reserved_task.size.is_none() {
-                reserved_task.size = Some(TaskSize::default());
-            }
-            // Approved with no worker chosen at all (`Approved::worker`):
-            // this first start is the choice, and every later one keeps it.
-            if let Some(approved) = reserved_task
-                .approved
-                .as_mut()
-                .filter(|approved| approved.worker.is_none())
             {
-                approved.worker = Some(worker.clone());
+                return Err("This recovery was superseded or is not due.".into());
             }
-            reserved_task.worker = Some(worker);
-            reserved_task.stopped = None;
-            reserved_task.active_attempt_id = Some(id);
-            reserved_task.result = None;
-            reserved_task.updated_at = now;
-            let active_run = data.runs.get_mut(&run.id).expect("the run was read above");
-            active_run.status = RunStatus::Running;
-            active_run.updated_at = now;
-            Ok((run, reserved_task.clone(), attempt, previous))
-        })
+        }
+        if matches!(
+            run.status,
+            RunStatus::Completed | RunStatus::Stopped | RunStatus::Closed
+        ) {
+            return Err("This run no longer accepts workers.".into());
+        }
+        if task.status == TaskStatus::Completed || task.status == TaskStatus::Cancelled {
+            return Err("This task no longer accepts workers.".into());
+        }
+        if task
+            .depends_on
+            .iter()
+            .any(|dependency| !data.tasks.get(dependency).is_some_and(releases_dependants))
+        {
+            return Err("This task is waiting for its dependencies.".into());
+        }
+        let previous = task
+            .active_attempt_id
+            .as_deref()
+            .and_then(|id| data.attempts.get(id))
+            .cloned();
+        if let Some(active) = previous.as_ref() {
+            match active.status {
+                AttemptStatus::Preparing | AttemptStatus::Running => {
+                    return Err("This task already has an active worker.".into())
+                }
+                AttemptStatus::Blocked if attempt_has_open_gate(data, active) => {
+                    return Err("This task is waiting for its open decision gate.".into())
+                }
+                AttemptStatus::Blocked => {
+                    if let Some(previous) = data.attempts.get_mut(&active.id) {
+                        previous.finished_at.get_or_insert(previous.updated_at);
+                        previous.status = AttemptStatus::Cancelled;
+                        previous.execution.state = execution::ExecutionState::Cancelled;
+                        previous.updated_at = now_ms();
+                    }
+                }
+                _ => {}
+            }
+        }
+        scheduling::require_host_slot(data, scheduling.host_cap)?;
+        let active = data
+            .attempts
+            .values()
+            .filter(|attempt| attempt.run_id == run.id && attempt_is_unsettled(data, attempt))
+            .count();
+        if active >= usize::from(run.max_concurrent) {
+            return Err(format!(
+                "Run {} already has its {} allowed workers active.",
+                run.id, run.max_concurrent
+            ));
+        }
+        // A mission's writers take turns in its one worktree. Refused here,
+        // before an attempt exists, the task stays ready for its turn;
+        // refused at launch it would settle as failed.
+        if launch.access != Access::Read {
+            if let Some(key) = workspaces::writer_key(&run, &task) {
+                if let Some(busy) = data.attempts.values().find(|a| {
+                    a.run_id == run.id
+                        && a.access != Access::Read
+                        && attempt_is_unsettled(data, a)
+                        && data
+                            .tasks
+                            .get(&a.task_id)
+                            .is_some_and(|t| workspaces::writer_key(&run, t).as_ref() == Some(&key))
+                }) {
+                    let title = data
+                        .tasks
+                        .get(&busy.task_id)
+                        .map_or("", |t| t.title.as_str());
+                    return Err(format!("\"{title}\" is writing in this shared checkout. This task can start when it finishes."));
+                }
+            }
+        }
+
+        let number = data
+            .attempts
+            .values()
+            .filter(|attempt| attempt.task_id == task.id)
+            .count()
+            .saturating_add(1) as u32;
+        let id = format!("attempt_{}", compact_id());
+        let now = now_ms();
+        // A peer request's working time carries on from the attempts
+        // before this one, unless the person starts it again.
+        let peer_clock = task
+            .peer_request
+            .as_ref()
+            .map(|request| {
+                let by_person = matches!(by, StartedBy::Page { .. });
+                peer_request::clock_for(data, &task, request, by_person, now)
+            })
+            .transpose()?;
+        let mut execution = execution::Execution::queued(
+            now,
+            recovery_of
+                .and(previous.as_ref())
+                .map_or(0, |a| a.execution.retry_count + 1),
+        );
+        if let Some(previous) = recovery_of.and(previous.as_ref()) {
+            execution.latest_error = previous.execution.latest_error.clone();
+            execution.last_progress = previous.execution.last_progress.clone();
+            execution.last_progress_at = previous.execution.last_progress_at;
+        }
+        let attempt = Attempt {
+            id: id.clone(),
+            run_id: run.id.clone(),
+            task_id: task.id.clone(),
+            number,
+            batch_id: None,
+            worker_chat_key: format!("chat:orch-{}", compact_id()),
+            agent: worker.agent,
+            model: worker.model.clone(),
+            effort: worker.effort.clone(),
+            access: launch.access,
+            status: AttemptStatus::Preparing,
+            execution,
+            cwd: String::new(),
+            branch: String::new(),
+            is_worktree: false,
+            summary: None,
+            assignee: task.assignee.clone(),
+            files_modified: Vec::new(),
+            finished_at: None,
+            archived_at: None,
+            proposed_report: None,
+            peer_clock,
+            usage: None,
+            context: None,
+            retry: None,
+            created_at: now,
+            updated_at: now,
+        };
+        if let Some(previous) = previous.as_ref().and_then(|a| data.attempts.get_mut(&a.id)) {
+            previous.execution.next_retry_at = None;
+        }
+        // Counted here, with the reservation, so a start that was
+        // refused above used nothing.
+        let mut attempt = attempt;
+        attempt.retry = retry::started(data, &task.id, retried, retry_by, now);
+        data.attempts.insert(id.clone(), attempt.clone());
+        let reserved_task = data
+            .tasks
+            .get_mut(&task.id)
+            .expect("the task was read above");
+        reserved_task.status = TaskStatus::Running;
+        // A task made before sizes existed that never started takes the
+        // default now, before its first attempt. One already started
+        // keeps none: its worth was never agreed.
+        if number == 1 && reserved_task.size.is_none() {
+            reserved_task.size = Some(TaskSize::default());
+        }
+        // Approved with no worker chosen at all (`Approved::worker`):
+        // this first start is the choice, and every later one keeps it.
+        if let Some(approved) = reserved_task
+            .approved
+            .as_mut()
+            .filter(|approved| approved.worker.is_none())
+        {
+            approved.worker = Some(worker.clone());
+        }
+        reserved_task.worker = Some(worker);
+        reserved_task.stopped = None;
+        reserved_task.active_attempt_id = Some(id);
+        reserved_task.result = None;
+        reserved_task.updated_at = now;
+        let active_run = data.runs.get_mut(&run.id).expect("the run was read above");
+        active_run.status = RunStatus::Running;
+        active_run.updated_at = now;
+        Ok((run, reserved_task.clone(), attempt, previous))
     }
 
     fn activate_attempt(
@@ -3609,6 +3731,13 @@ impl OrchestrationStore {
             None => Some(workspace(workspaces, &owning_run.workspace_id)?),
             Some(_) => None,
         };
+        if crate::scheduling::load()?.orientation == crate::scheduling::Orientation::Agents
+            && owned.assignee.is_some()
+        {
+            return self
+                .reserve_attempt_for(actor_chat_key, &launch, by)
+                .map(|(_, _, attempt, _)| attempt);
+        }
         let canonical = automation::settings_for_task(&owning_run, &owned)?;
         let source = crate::provider_failover::Settings {
             agent: canonical.as_ref().map_or(launch.agent, |w| w.agent),

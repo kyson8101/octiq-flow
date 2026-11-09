@@ -324,13 +324,16 @@ pub struct WorkspaceProposal {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceChoice {
+    Agent,
     Worktree,
     Checkout,
 }
 
 impl WorkspaceChoice {
     pub(super) fn of(mode: WorkspaceMode) -> Self {
-        if mode.is_worktree() {
+        if mode == WorkspaceMode::Agent {
+            Self::Agent
+        } else if mode.is_worktree() {
             Self::Worktree
         } else {
             Self::Checkout
@@ -339,6 +342,7 @@ impl WorkspaceChoice {
 
     fn mode(self, run: &Run) -> WorkspaceMode {
         match self {
+            Self::Agent => WorkspaceMode::Agent,
             Self::Checkout => WorkspaceMode::Direct,
             Self::Worktree if run.workspace_mode == WorkspaceMode::Mission => {
                 WorkspaceMode::Mission
@@ -361,6 +365,14 @@ pub struct WorkspaceChoiceFact {
 }
 
 fn advised_first_mode(run: &Run, task: &Task) -> WorkspaceMode {
+    if task
+        .workspace_proposal
+        .as_ref()
+        .and_then(|p| p.plan.as_ref())
+        .is_some_and(|p| p.mode == WorkspaceMode::Agent)
+    {
+        return WorkspaceMode::Agent;
+    }
     let access = approval::worker_of(task)
         .or(task.worker.as_ref())
         .map(|w| w.access)
@@ -390,7 +402,11 @@ pub(super) fn choice_fact(run: &Run, task: &Task, git: bool) -> WorkspaceChoiceF
             .and_then(|a| a.workspace_mode)
             .map(WorkspaceChoice::of),
         options: if git {
-            vec![WorkspaceChoice::Worktree, WorkspaceChoice::Checkout]
+            vec![
+                WorkspaceChoice::Agent,
+                WorkspaceChoice::Worktree,
+                WorkspaceChoice::Checkout,
+            ]
         } else {
             vec![WorkspaceChoice::Checkout]
         },
@@ -617,6 +633,7 @@ pub(super) fn propose(
 
 fn mode_words(mode: WorkspaceMode) -> &'static str {
     match mode {
+        WorkspaceMode::Agent => "Agent worktree",
         WorkspaceMode::Direct => "the current checkout",
         WorkspaceMode::Mission => "the mission's worktree",
         _ => "a new worktree",

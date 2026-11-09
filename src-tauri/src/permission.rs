@@ -60,6 +60,7 @@ pub const HOST_BOOKKEEPING: &[&str] = &[
     "vault_agent_memory_lessons",
     "task_status",
     "orchestration_worker_report",
+    "orchestration_batch_claim",
     "orchestration_message_send",
     "orchestration_gate_create",
     "orchestration_snapshot",

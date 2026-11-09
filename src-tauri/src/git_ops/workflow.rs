@@ -20,12 +20,17 @@ pub enum WorkspaceMode {
     /// Follow-up work lands on the same branch; closing the mission is what
     /// removes it.
     Mission,
+    /// One reused worktree per registered agent and repository.
+    Agent,
 }
 
 impl WorkspaceMode {
     /// A managed linked worktree this workflow created and may remove.
     pub fn is_worktree(self) -> bool {
-        matches!(self, WorkspaceMode::Worktree | WorkspaceMode::Mission)
+        matches!(
+            self,
+            WorkspaceMode::Worktree | WorkspaceMode::Mission | WorkspaceMode::Agent
+        )
     }
 }
 
@@ -254,7 +259,9 @@ pub fn plan(
         .strip_prefix(&checkout)
         .map_err(|e| e.to_string())?;
     Ok(WorkspacePlan {
-        mode: if mission {
+        mode: if mode == WorkspaceMode::Agent {
+            WorkspaceMode::Agent
+        } else if mission {
             WorkspaceMode::Mission
         } else {
             WorkspaceMode::Worktree
@@ -1205,4 +1212,118 @@ pub(crate) mod tests {
         assert!(!target.exists());
         assert!(Path::new(&repo.root).join("two.txt").exists());
     }
+}
+
+/// Deterministic allocation for one agent/repository. The stable id (rather
+/// than its editable display name) keeps renames on the same cached checkout.
+pub fn agent_plan(
+    root: &str,
+    base: &str,
+    agent_id: &str,
+    batch_id: &str,
+    branch: Option<&str>,
+) -> Result<WorkspacePlan, String> {
+    let mut plan = plan(root, base, "task_agent", WorkspaceMode::Worktree)?;
+    let slug = agent_id.strip_prefix("agent_").unwrap_or(agent_id);
+    if slug.is_empty() || !slug.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+        return Err("Invalid registered agent id for a workspace.".into());
+    }
+    let short: String = batch_id
+        .strip_prefix("batch_")
+        .unwrap_or(batch_id)
+        .chars()
+        .take(12)
+        .collect();
+    if short.is_empty() || !short.bytes().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("Invalid batch id.".into());
+    }
+    let relative = Path::new(&plan.cwd)
+        .strip_prefix(&plan.checkout_root)
+        .map_err(|e| e.to_string())?
+        .to_path_buf();
+    let primary = Path::new(&plan.repository_root);
+    let target = primary
+        .parent()
+        .ok_or("Repository has no parent.")?
+        .join(".worktrees")
+        .join(
+            primary
+                .file_name()
+                .ok_or("Repository has no folder name.")?,
+        )
+        .join(format!("agent-{slug}"));
+    plan.mode = WorkspaceMode::Agent;
+    plan.branch = branch
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("agent/{slug}/{short}"));
+    plan.cwd = target.join(relative).to_string_lossy().into_owned();
+    plan.checkout_root = target.to_string_lossy().into_owned();
+    Ok(plan)
+}
+
+/// Switch only an already owned, clean checkout. Git leaves ignored build
+/// output in place. No reset, stash, clean or force option is ever used.
+pub fn provision_agent(plan: &WorkspacePlan) -> Result<(), String> {
+    if plan.mode != WorkspaceMode::Agent {
+        return provision(plan);
+    }
+    if !Path::new(&plan.checkout_root).exists() {
+        return provision(plan);
+    }
+    let mut current = plan.clone();
+    current.cwd = plan.checkout_root.clone();
+    current.branch = current_branch(&plan.checkout_root)?;
+    verify(&current)?;
+    if !owned_here(&current) {
+        return Err("The agent checkout is not owned by OctiqFlow.".into());
+    }
+    if !git(
+        &plan.checkout_root,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    )?
+    .is_empty()
+    {
+        return Err(format!("Agent worktree has tracked or untracked changes: {}. Commit or remove them deliberately before another batch; nothing was discarded.", plan.checkout_root));
+    }
+    let exists = git(
+        &plan.repository_root,
+        &[
+            "show-ref",
+            "--verify",
+            &format!("refs/heads/{}", plan.branch),
+        ],
+    )
+    .is_ok();
+    if exists {
+        let owner = git(
+            &plan.repository_root,
+            &[
+                "config",
+                "--get",
+                &format!("branch.{}.octiqWorkspace", plan.branch),
+            ],
+        )
+        .ok();
+        if owner.as_deref() != Some(&plan.checkout_root) {
+            return Err("The batch branch is not owned by this agent checkout.".into());
+        }
+        run_git_mut(&plan.checkout_root, &["switch", &plan.branch], false)?;
+    } else {
+        run_git_mut(
+            &plan.checkout_root,
+            &["switch", "--no-track", "-c", &plan.branch, &plan.base_sha],
+            false,
+        )?;
+        run_git_mut(
+            &plan.repository_root,
+            &[
+                "config",
+                &format!("branch.{}.octiqWorkspace", plan.branch),
+                &plan.checkout_root,
+            ],
+            false,
+        )?;
+    }
+    prepare_working_directory(plan)?;
+    verify(plan)
 }

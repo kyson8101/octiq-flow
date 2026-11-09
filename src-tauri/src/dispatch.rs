@@ -2459,6 +2459,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg::<Option<bool>>(&args, "abandon")?.unwrap_or(false),
             &arg::<String>(&args, "expectedHead")?,
         )),
+        "orchestration_batch_claim" => to_value(svc.orchestrations.batch_claim(
+            &arg::<String>(&args, "actorChatKey")?,
+            arg(&args, "taskIds")?,
+        )),
         "orchestration_worker_report" => {
             let actor: String = arg(&args, "actorChatKey")?;
             let task = svc.orchestrations.report_worker(
