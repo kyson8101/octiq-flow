@@ -96,6 +96,8 @@ export type Conversation = {
    *  the person has not archived (`IndexEntry.coordinatesRun`). It only ever
    *  holds the run column's place before the ledger is read. */
   coordinatesRun?: boolean;
+  /** Host-owned persistent thread identity. */
+  leadOf?: string;
 };
 
 const KEY = "octiq.v2.conversations";
@@ -371,6 +373,7 @@ export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
       (held.doneAt ?? null) === (c.doneAt ?? null) &&
       (held.generation ?? 0) === (c.generation ?? 0) &&
       !!held.coordinatesRun === !!c.coordinatesRun &&
+      held.leadOf === c.leadOf &&
       !!held.launch === !!c.launch &&
       !!held.synced === !!c.synced
     );

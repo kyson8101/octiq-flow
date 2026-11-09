@@ -276,7 +276,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
         </div>
       </header>
 
-      <SchedulingSettings />
+      <SchedulingSettings agentsMode={on} />
 
       <div className="settings-control-row">
         <div className="settings-control-copy">
