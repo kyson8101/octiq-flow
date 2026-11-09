@@ -4,6 +4,7 @@
 // Split from `theme.ts` on purpose: everything in there is pure and tested in
 // a node runner with no DOM. Everything that touches `document` is here.
 import { MANAGED, mapTokens, parseThemeCss, type Theme } from "./theme";
+import { recall, remember } from "./remember";
 
 import lightCss from "./themes/light.css?raw";
 import funCss from "./themes/fun.css?raw";
@@ -72,30 +73,39 @@ const KEY = "octiq.theme";
 export const THEME_EVENT = "octiq-theme";
 
 export function savedThemeId(): string {
-  try {
-    const saved = localStorage.getItem(KEY);
-    if (saved === LIGHT_MODE || saved === "one-light") return LIGHT_MODE;
-    if (saved === FUN_MODE || saved === "candyland") return FUN_MODE;
-    // `comic` shipped briefly, as an American comic book, before becoming Manga.
-    if (saved === MANGA_MODE || saved === "comic") return MANGA_MODE;
-    if (saved === GUOFENG_MODE) return GUOFENG_MODE;
-    if (saved === XP_MODE) return XP_MODE;
-    if (saved === CYBERPUNK_MODE) return CYBERPUNK_MODE;
-    if (saved === DARK_MODE || saved === "octiq") return DARK_MODE;
-    // Retired custom themes return to the calm default.
-    return DARK_MODE;
-  } catch {
-    return DARK_MODE;
-  }
+  const saved = recall(KEY);
+  if (saved === LIGHT_MODE || saved === "one-light") return LIGHT_MODE;
+  if (saved === FUN_MODE || saved === "candyland") return FUN_MODE;
+  // `comic` shipped briefly, as an American comic book, before becoming Manga.
+  if (saved === MANGA_MODE || saved === "comic") return MANGA_MODE;
+  if (saved === GUOFENG_MODE) return GUOFENG_MODE;
+  if (saved === XP_MODE) return XP_MODE;
+  if (saved === CYBERPUNK_MODE) return CYBERPUNK_MODE;
+  if (saved === DARK_MODE || saved === "octiq") return DARK_MODE;
+  // Retired custom themes return to the calm default.
+  return DARK_MODE;
 }
 
 export function themeById(id: string): Theme {
   return THEMES.find((t) => t.id === id) ?? THEMES.find((t) => t.id === DARK_MODE)!;
 }
 
+/** Shared by Settings and the sidebar, including when the sidebar is absent.
+ *  Ignore retired ids and ids saved under the wrong scheme. */
+export function lastThemeIdForScheme(scheme: Theme["scheme"]): string {
+  const id = recall(`${KEY}.last-${scheme}`);
+  return THEMES.find((theme) => theme.id === id && theme.scheme === scheme)?.id
+    ?? (scheme === "light" ? LIGHT_MODE : DARK_MODE);
+}
+
+export function oppositeThemeId(id = savedThemeId()): string {
+  return lastThemeIdForScheme(themeById(id).scheme === "dark" ? "light" : "dark");
+}
+
 /** Put a theme on the screen and remember it. */
 export function applyTheme(id: string): void {
   const theme = themeById(id);
+  const previous = themeById(savedThemeId());
   const root = document.documentElement;
 
   if (!theme.tokens) {
@@ -110,10 +120,8 @@ export function applyTheme(id: string): void {
   }
   root.setAttribute("data-color-scheme", theme.scheme);
 
-  try {
-    localStorage.setItem(KEY, theme.id);
-  } catch {
-    // A browser with storage blocked still gets the theme, just not next time.
-  }
+  remember(`${KEY}.last-${previous.scheme}`, previous.id);
+  remember(`${KEY}.last-${theme.scheme}`, theme.id);
+  remember(KEY, theme.id);
   window.dispatchEvent(new CustomEvent(THEME_EVENT, { detail: theme.id }));
 }

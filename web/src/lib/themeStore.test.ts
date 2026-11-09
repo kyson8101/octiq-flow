@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MANAGED } from "./theme";
-import { applyTheme, BUILT_IN, CYBERPUNK_MODE, DARK_MODE, FUN_MODE, GUOFENG_MODE, LIGHT_MODE, MANGA_MODE, savedThemeId, THEME_EVENT, THEMES, XP_MODE } from "./themeStore";
+import { applyTheme, BUILT_IN, CYBERPUNK_MODE, DARK_MODE, FUN_MODE, GUOFENG_MODE, lastThemeIdForScheme, LIGHT_MODE, MANGA_MODE, oppositeThemeId, savedThemeId, THEME_EVENT, THEMES, XP_MODE } from "./themeStore";
 
 describe("appearance switching", () => {
   let properties: Map<string, string>;
@@ -92,6 +92,61 @@ describe("appearance switching", () => {
 
   it("only exposes light, dark, fun, manga, 中国风, Windows XP and Cyberpunk", () => {
     expect(THEMES.map(({ id }) => id)).toEqual([LIGHT_MODE, DARK_MODE, FUN_MODE, MANGA_MODE, GUOFENG_MODE, XP_MODE, CYBERPUNK_MODE]);
+  });
+
+  it("defaults each scheme to Light and Dark", () => {
+    expect(lastThemeIdForScheme("light")).toBe(LIGHT_MODE);
+    expect(lastThemeIdForScheme("dark")).toBe(DARK_MODE);
+    expect(oppositeThemeId()).toBe(LIGHT_MODE);
+    expect(oppositeThemeId(LIGHT_MODE)).toBe(DARK_MODE);
+  });
+
+  it("round-trips 中国风 and Manga and remembers newer Settings choices", () => {
+    applyTheme(GUOFENG_MODE);
+    applyTheme(MANGA_MODE);
+    expect(oppositeThemeId()).toBe(GUOFENG_MODE);
+    applyTheme(oppositeThemeId());
+    expect(savedThemeId()).toBe(GUOFENG_MODE);
+    expect(oppositeThemeId()).toBe(MANGA_MODE);
+    // A Settings choice updates the same history without mounting the toggle.
+    applyTheme(XP_MODE);
+    applyTheme(CYBERPUNK_MODE);
+    expect(oppositeThemeId()).toBe(XP_MODE);
+    applyTheme(oppositeThemeId());
+    expect(oppositeThemeId()).toBe(CYBERPUNK_MODE);
+  });
+
+  it("recalls each scheme from persistent storage after module reload", async () => {
+    applyTheme(GUOFENG_MODE);
+    applyTheme(MANGA_MODE);
+    vi.resetModules();
+    const reloaded = await import("./themeStore");
+    expect(reloaded.lastThemeIdForScheme("light")).toBe(MANGA_MODE);
+    expect(reloaded.oppositeThemeId()).toBe(GUOFENG_MODE);
+  });
+
+  it("preserves an existing saved scheme on the first toggle", () => {
+    storage.set("octiq.theme", GUOFENG_MODE);
+    applyTheme(oppositeThemeId());
+    expect(savedThemeId()).toBe(LIGHT_MODE);
+    expect(oppositeThemeId()).toBe(GUOFENG_MODE);
+  });
+
+  it("ignores retired or wrong-scheme history", () => {
+    storage.set("octiq.theme.last-light", "retired");
+    storage.set("octiq.theme.last-dark", MANGA_MODE);
+    expect(lastThemeIdForScheme("light")).toBe(LIGHT_MODE);
+    expect(lastThemeIdForScheme("dark")).toBe(DARK_MODE);
+  });
+
+  it("still applies the palette and announces the change when storage is blocked", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("quota"); },
+    });
+    expect(() => applyTheme(MANGA_MODE)).not.toThrow();
+    expect(attributes.get("data-theme")).toBe(MANGA_MODE);
+    expect(dispatch.mock.calls.at(-1)?.[0].type).toBe(THEME_EVENT);
   });
 
   it("migrates retired theme ids to a supported mode", () => {

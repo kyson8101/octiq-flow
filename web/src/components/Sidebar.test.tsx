@@ -303,11 +303,23 @@ describe("task-oriented Sidebar", () => {
     expect(out).not.toContain("Agents</span>");
     const places = out.indexOf('class="sidebar-places"');
     const list = out.slice(places, out.indexOf("</ul>", places));
-    const items = list.split("<li>").slice(1);
+    const items = list.split(/<li(?: [^>]*)?>/).slice(1);
     expect(items.at(-2)).toContain("Pull requests</span>");
     expect(items.at(-1)).toContain("Settings</span>");
     expect(list.match(/aria-current="page"/g)).toHaveLength(1);
     expect(items.at(-2)).toContain('aria-current="page"');
+  });
+
+  it("pairs Settings with the appearance switch in the phone places and desktop foot", () => {
+    const out = html({ onSettings: () => {} });
+    const places = out.slice(out.indexOf('class="sidebar-places"'), out.indexOf("</ul>"));
+    const footer = out.slice(out.indexOf('class="sidebar-settings-desktop"'));
+    for (const section of [places, footer]) {
+      expect(section).toContain('class="sidebar-appearance-row"');
+      expect(section).toContain("Settings</span>");
+      expect(section).toContain('role="switch" aria-label="Dark mode"');
+    }
+    expect(out.indexOf('class="sidebar-settings-desktop"')).toBeGreaterThan(out.indexOf('class="sidebar-empty"'));
   });
 
   it("groups pinned chats above recent chats without duplicating either row", () => {

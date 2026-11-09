@@ -1,26 +1,59 @@
-import { useEffect, useState } from "react";
-import { applyTheme, DARK_MODE, LIGHT_MODE, savedThemeId, THEME_EVENT, themeById } from "../lib/themeStore";
+import { useEffect, useState, type CSSProperties } from "react";
+import { applyTheme, oppositeThemeId, savedThemeId, THEME_EVENT, themeById } from "../lib/themeStore";
+import "./AppearanceToggle.css";
 
-/** The same appearance control is available from either OS portal. */
+// One physical grid: the same LEDs re-light as the knob travels. Integer
+// centres on an 18px SVG keep the dots distinct at both DPR 1 and DPR 2.
+const MOON = [
+  "000000010",
+  "001100111",
+  "011000010",
+  "111000000",
+  "111000000",
+  "111100000",
+  "011111100",
+  "001111000",
+  "000110000",
+].join("");
+const SUN = [
+  "000010000",
+  "010010010",
+  "001000100",
+  "000111000",
+  "110111011",
+  "000111000",
+  "001000100",
+  "010010010",
+  "000010000",
+].join("");
+
 export function AppearanceToggle() {
   const [id, setId] = useState(savedThemeId);
   useEffect(() => {
     const changed = () => setId(savedThemeId());
     window.addEventListener(THEME_EVENT, changed);
+    // Catch a Settings change between render and subscription too.
+    changed();
     return () => window.removeEventListener(THEME_EVENT, changed);
   }, []);
-  const light = themeById(id).scheme === "light";
-  const label = `Switch to ${light ? "dark" : "light"} mode`;
+  const dark = themeById(id).scheme === "dark";
+  const bitmap = dark ? MOON : SUN;
   return (
-    <button className="appearance-toggle" type="button" title={label} aria-label={label}
-      onClick={() => applyTheme(light ? DARK_MODE : LIGHT_MODE)}>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-        strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        {light ? <path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z" /> : <>
-          <circle cx="12" cy="12" r="4" />
-          <path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" />
-        </>}
-      </svg>
+    <button className="appearance-toggle" type="button" role="switch"
+      aria-label="Dark mode" aria-checked={dark}
+      title={`Switch to ${themeById(oppositeThemeId(id)).name}`}
+      onClick={() => applyTheme(oppositeThemeId())}>
+      <span className="appearance-toggle-track" aria-hidden="true">
+        <span className="appearance-toggle-knob">
+          <svg width="18" height="18" viewBox="0 0 18 18" focusable="false">
+            {Array.from(bitmap, (pixel, index) => (
+              <circle key={index} cx={1 + (index % 9) * 2} cy={1 + Math.floor(index / 9) * 2} r="0.65"
+                className="appearance-toggle-dot" data-lit={pixel === "1"}
+                style={{ "--dot-delay": `${((index % 9) + Math.floor(index / 9)) * 5}ms` } as CSSProperties} />
+            ))}
+          </svg>
+        </span>
+      </span>
     </button>
   );
 }

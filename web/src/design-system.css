@@ -98,26 +98,6 @@
 :where(input[type="checkbox"], input[type="radio"]) { accent-color: var(--accent); }
 ::selection { background: color-mix(in srgb, var(--focus) 25%, transparent); }
 
-:is(.ow, .os-shell) button.appearance-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: var(--control-md);
-  height: var(--control-md);
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  color: var(--fg-1);
-  background: var(--bg-1);
-  cursor: pointer;
-}
-:is(.ow, .os-shell) button.appearance-toggle:hover { background: var(--bg-2); }
-
-@media (pointer: coarse) {
-  :is(.ow, .os-shell) button.appearance-toggle { width: var(--control-touch); height: var(--control-touch); }
-}
-
 /* ---- Entry ---------------------------------------------------------------
    What a late arrival does instead of appearing. Who counts as late is decided
    in `lib/arrival`, never here: a class that is always on would run again
