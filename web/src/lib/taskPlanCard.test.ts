@@ -147,3 +147,8 @@ describe("the standard plan card", () => {
     expect(rows.some((r) => r.key === "model")).toBe(false);
   });
 });
+
+it("names the agent workspace mode on a plan card", () => {
+  const planned = proposal(); planned.plan!.mode = "agent";
+  expect(row(taskCardRows(task({ workspaceProposal: planned, workspaceChoice: { advised: "worktree", options: ["worktree", "checkout"] } }), run, null, names), "worktree").value).toBe("Agent worktree");
+});

@@ -1,7 +1,7 @@
 import type { TaskReport } from "./chatTask";
 import type { TaskAcceptance, TaskSize } from "./agentLevels";
 
-export type WorkspaceMode = "mission" | "auto" | "worktree" | "direct";
+export type WorkspaceMode = "mission" | "auto" | "worktree" | "direct" | "agent";
 export type RecoveryPolicy = { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; fallbackModel?: string | null; stallAfterMs?: number; toolStallAfterMs?: number };
 export type WorkerSettings = { agent: "codex" | "claude" | "antigravity"; access: string; model?: string; effort?: string; recovery?: RecoveryPolicy | null };
 /** Omitting agent lets the main agent select workers individually. */
@@ -46,6 +46,7 @@ export const WORKSPACE_MODES: { value: WorkspaceMode; label: string; description
   { value: "auto", label: "Auto", description: "Isolate writing tasks; let read-only workers use this checkout." },
   { value: "mission", label: "Mission worktree", description: "One branch for the whole mission; tasks take turns writing and follow-ups stay on it." },
   { value: "worktree", label: "New worktree", description: "Give each task an isolated branch and keep it through review." },
+  { value: "agent", label: "Agent worktree", description: "One reused worktree per agent and repository, with a new branch per batch." },
   { value: "direct", label: "Current checkout", description: "Modify this folder directly, one worker at a time." },
 ];
 
@@ -199,6 +200,7 @@ export type OrchestrationTask = {
    *  ordinary new work: on the plan card and approved on its own. */
   splitBy?: string;
   status: TaskStatus;
+  slotWait?: { reason: "agent" | "host"; agentId?: string; ahead: number; running?: number; limit?: number };
   activeAttemptId?: string;
   result?: string;
   /** A review or check's own answer, apart from finishing: "fail" holds
@@ -481,7 +483,13 @@ export function shownRunStatus(run: Pick<OrchestrationRun, "id" | "status">, tas
   return moves.includes("coordinator") ? "running" : run.status;
 }
 
+export type AgentBatch = {
+  id: string; agentId: string; runId: string; repository: string; baseBranch: string; branch: string; worktree: string;
+  taskIds: string[]; status: "claiming" | "working" | "settled"; createdAt: number; settledAt?: number;
+};
+
 export type OrchestrationAttempt = {
+  batchId?: string;
   id: string;
   runId: string;
   taskId: string;
@@ -660,6 +668,7 @@ export type OrchestrationSnapshot = {
   reports?: Record<string, TaskReport>;
   runs: OrchestrationRun[];
   tasks: OrchestrationTask[];
+  batches?: AgentBatch[];
   attempts: OrchestrationAttempt[];
   gates: OrchestrationGate[];
   messages: OrchestrationMessage[];

@@ -1,7 +1,7 @@
 /* The Agents page: every agent and what it is doing now. Token colours only.
    The one moving thing is a working agent's breathing ring; every other state
    is a still, tinted chip. */
-.agents-dashboard-list { padding: 0; }
+.agents-dashboard-list { padding: 0; grid-template-columns: minmax(0, 1fr); }
 /* On its page it shares the Projects page's reading column. */
 .agents-dashboard .agents-dashboard-list { width: 100%; max-width: 860px; margin-inline: auto; }
 
@@ -14,6 +14,7 @@
 /* The indent and the branch mark are shared with Settings' org chart
    (AgentsSettings.css). */
 .dash-agent {
+  min-width: 0;
   padding: 11px 0 11px var(--row-indent);
   border-bottom: 1px solid var(--border);
 }
@@ -141,3 +142,12 @@
   .dash-agent .level-chip { position: relative; }
   .dash-agent .level-chip::after { content: ""; position: absolute; inset: -12px -4px; }
 }
+
+.agent-lane { color: var(--fg-3); margin: 12px 0; font-size: 12px; }
+.agent-lane[data-state="blocked"] { color: var(--warn); }
+.agent-lane[data-executing] .agent-lane-line { color: var(--accent); }
+.agent-lane-line { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.agent-lane p { margin-block: 8px; overflow-wrap: anywhere; }
+.agent-lane-objective { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-lane summary { min-height: 44px; align-content: center; cursor: pointer; }
+.agent-lane-branch { font-family: var(--mono); }

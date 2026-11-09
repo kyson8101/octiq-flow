@@ -19,6 +19,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import { AgentRole } from "./AgentRole";
 import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
 import { AgentProfile, LevelChip } from "./AgentLevel";
+import { useAgentLanes, type AgentLane } from "../lib/agentLanes";
 import { loadLevels, type LevelSummary } from "../lib/agentLevels";
 
 /** How many of an agent's current items show before "Show all". */
@@ -53,6 +54,7 @@ export function AgentsDashboard({
   onManage: () => void;
   onClose: () => void;
 }) {
+  const scheduling = useAgentLanes();
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [openError, setOpenError] = useState("");
   const [levels, setLevels] = useState<ReadonlyMap<string, LevelSummary>>(new Map());
@@ -161,6 +163,7 @@ export function AgentsDashboard({
           <ul className="team-list agents-dashboard-list">
             {rows.map((row) => (
               <AgentRowItem key={row.id} row={row} stale={stale}
+                lane={scheduling.data?.lanes.find(lane => lane.agentId === row.id)} snapshot={snapshot}
                 expanded={expanded.has(row.id)} onToggle={() => toggle(row.id)}
                 appearance={appearance} canOpen={canOpen} onOpen={open}
                 level={levels.get(row.id)} onProfile={() => setProfileId(row.id)}
@@ -197,8 +200,10 @@ export function AgentMeta({ row }: { row: Pick<AgentRow, "detail" | "effort" | "
   </span>;
 }
 
-function AgentRowItem({ row, stale, expanded, onToggle, appearance, canOpen, onOpen, onOpenRecent, level, onProfile }: {
+function AgentRowItem({ row, lane, snapshot, stale, expanded, onToggle, appearance, canOpen, onOpen, onOpenRecent, level, onProfile }: {
   row: AgentRow;
+  lane?: AgentLane;
+  snapshot: OrchestrationSnapshot | null;
   level?: LevelSummary;
   onProfile: () => void;
   stale: boolean;
@@ -238,6 +243,7 @@ function AgentRowItem({ row, stale, expanded, onToggle, appearance, canOpen, onO
           ))}
         </span>
       </div>
+      {lane && <AgentLaneRow lane={lane} snapshot={snapshot} stale={stale} />}
       {row.role && <AgentRole className="dash-agent-role" text={row.role} name={row.name} />}
 
       {row.activities.length > 0 ? (
@@ -277,4 +283,16 @@ function AgentRowItem({ row, stale, expanded, onToggle, appearance, canOpen, onO
       ) : null}
     </li>
   );
+}
+
+export function AgentLaneRow({ lane, snapshot, stale = false }: { lane: AgentLane; snapshot: OrchestrationSnapshot | null; stale?: boolean }) {
+  const run = snapshot?.runs.find(item => item.id === lane.batch?.runId);
+  const executing = !stale && lane.state === "working" && !!lane.batch && !!snapshot?.attempts.some(attempt =>
+    attempt.status === "running" && attempt.batchId === lane.batch?.id && (attempt.execution?.state === "executing" || attempt.execution?.state === "waiting_tool"));
+  return <div className="agent-lane" data-state={lane.state} data-executing={executing || undefined}>
+    <div className="agent-lane-line"><span>{lane.state === "idle" ? "Idle" : lane.state === "blocked" ? "Blocked" : `Working · batch of ${lane.batch?.taskIds.length ?? "—"} tasks`}</span><span>{lane.queued} queued</span></div>
+    {lane.state === "blocked" && <p>{lane.blockedReason ?? "The host has not supplied a reason."}</p>}
+    {lane.state === "working" && run && <p className="agent-lane-objective">{run.objective}</p>}
+    {lane.batch && <details><summary>Batch details</summary>{run && <p>{run.objective}</p>}<p className="agent-lane-branch">{lane.batch.branch}</p></details>}
+  </div>;
 }

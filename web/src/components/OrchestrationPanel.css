@@ -1284,3 +1284,4 @@
 .orch-task-reassign:disabled { opacity: 0.4; cursor: default; }
 .orch-task-reassign:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .orch-task-handoffs { margin: 0 0 10px; padding-left: 16px; color: var(--fg-2); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.orch-task-ledger { overflow-wrap: anywhere; }

@@ -22,6 +22,7 @@ import {
   type OrchestrationTask, type TaskFailure,
 } from "./orchestration";
 import { ledgerWaits, NO_WAITS, openGates, runWaits, UNSAID_NOTE, type RunWaits, type WaitKind, type Waiting, type Waits } from "./runWaits";
+import { taskSlot } from "./taskSlot";
 import { reopenControl, startControl, taskHold, type TaskHold } from "./taskHold";
 
 export type { Waiting } from "./runWaits";
@@ -405,6 +406,9 @@ export function taskReading(
   // nothing failed: it is held until they start it, and waits with what has
   // not started.
   if (hold?.kind === "stopped") return { state: "planned", why: hold.label, tone: hold.tone };
+  if (task.slotWait && (task.status === "pending" || task.status === "ready")) {
+    return { state: "planned", why: taskSlot(task, hold), tone: hold?.tone ?? null };
+  }
   const live = !!attempt && task.activeAttemptId === attempt.id;
   // A retry is at work, or the host has scheduled one: grey, and the word
   // says so. A worker of it that is in trouble keeps the host's own word
@@ -439,7 +443,7 @@ export function taskReading(
   }
   // Not started. A start the host would refuse is said as that, never as a
   // task that is merely waiting its turn.
-  return { state: "planned", why: hold?.label ?? null, tone: hold?.tone ?? null };
+  return { state: "planned", why: taskSlot(task, hold), tone: hold?.tone ?? null };
 }
 
 /** "Needs you" holds what waits on the person, and that includes a failure
