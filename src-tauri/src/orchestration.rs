@@ -1094,6 +1094,10 @@ struct Stored {
     agent_queue: BTreeMap<String, batches::Queued>,
     #[serde(default)]
     batch_launches: BTreeMap<String, batches::BatchLaunch>,
+    /// Process leases survive terminal reports until actual child exit. They
+    /// are not durable: only this server owns these processes.
+    #[serde(skip)]
+    worker_processes: BTreeMap<String, scheduling::ProcessLease>,
     #[serde(default)]
     agent_blocks: BTreeMap<String, String>,
 }
@@ -1127,6 +1131,7 @@ impl Default for Stored {
             batches: Vec::new(),
             agent_queue: BTreeMap::new(),
             batch_launches: BTreeMap::new(),
+            worker_processes: BTreeMap::new(),
             agent_blocks: BTreeMap::new(),
         }
     }
@@ -4129,7 +4134,35 @@ impl OrchestrationStore {
                 )
             }
         };
-        self.finish_dispatch(&active, start_chat())
+        self.begin_worker_spawn(&active)?;
+        let result = self.finish_dispatch(&active, start_chat());
+        self.stop_ended_workers(&chats);
+        result
+    }
+
+    fn begin_worker_spawn(&self, active: &Attempt) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if !inner
+            .data
+            .attempts
+            .get(&active.id)
+            .is_some_and(|a| attempt_is_unsettled(&inner.data, a))
+            || inner
+                .data
+                .runs
+                .get(&active.run_id)
+                .is_none_or(|r| matches!(r.status, RunStatus::Stopped | RunStatus::Closed))
+        {
+            return Err("The attempt ended before its worker could start.".into());
+        }
+        inner.data.worker_processes.insert(
+            active.worker_chat_key.clone(),
+            scheduling::ProcessLease {
+                run_id: active.run_id.clone(),
+                launching: true,
+            },
+        );
+        Ok(())
     }
 
     fn finish_dispatch(
@@ -4137,6 +4170,14 @@ impl OrchestrationStore {
         active: &Attempt,
         start: Result<(), String>,
     ) -> Result<Attempt, String> {
+        // Finish the spawn barrier even if the process reported or failed
+        // before chat_start returned. Never clear the lease on a report/kill.
+        {
+            let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+            if let Some(lease) = inner.data.worker_processes.get_mut(&active.worker_chat_key) {
+                lease.launching = false;
+            }
+        }
         if let Err(error) = start {
             self.fail_preparation(
                 &active.id,
@@ -5092,6 +5133,12 @@ fn stop_run_in(data: &mut Stored, run_id: &str, reason: String, now: i64) -> Vec
         }
     }
     let mut workers = Vec::new();
+    workers.extend(
+        data.worker_processes
+            .iter()
+            .filter(|(_, lease)| lease.run_id == run_id)
+            .map(|(key, _)| key.clone()),
+    );
     for batch in data.batches.iter_mut().filter(|b| b.run_id == run_id) {
         if let Some(runtime) = data.batch_launches.get(&batch.id) {
             workers.push(runtime.worker_chat_key.clone());
@@ -5109,6 +5156,9 @@ fn stop_run_in(data: &mut Stored, run_id: &str, reason: String, now: i64) -> Vec
         .filter(|attempt| attempt.run_id == run_id)
     {
         attempt.execution.next_retry_at = None;
+        // A terminal attempt can still be returning its report. Include its
+        // identity without changing its already recorded outcome.
+        workers.push(attempt.worker_chat_key.clone());
         if matches!(
             attempt.status,
             AttemptStatus::Preparing | AttemptStatus::Running | AttemptStatus::Blocked
@@ -5118,7 +5168,6 @@ fn stop_run_in(data: &mut Stored, run_id: &str, reason: String, now: i64) -> Vec
             attempt.execution.current_operation = None;
             attempt.finished_at.get_or_insert(now);
             attempt.updated_at = now;
-            workers.push(attempt.worker_chat_key.clone());
         }
     }
     for gate in data.gates.values_mut().filter(|gate| gate.run_id == run_id) {

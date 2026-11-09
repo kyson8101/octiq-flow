@@ -286,28 +286,20 @@ impl OrchestrationStore {
             .worker_defaults
             .as_ref()
             .ok_or("Enable automatic dispatch with explicit worker settings first.")?;
-        // Let the reporting process finish its tool response/closing turn
-        // before a next wave transfers its checkout and stops that process.
-        if snapshot.attempts.iter().any(|a| {
-            let has_gate = snapshot.gates.iter().any(|g| {
-                g.status == GateStatus::Open && g.task_id.as_deref() == Some(a.task_id.as_str())
-            });
-            let settled = matches!(
-                a.status,
-                AttemptStatus::Completed | AttemptStatus::Failed | AttemptStatus::Cancelled
-            ) || (a.status == AttemptStatus::Blocked && !has_gate);
-            settled && chats.turn_in_flight(&a.worker_chat_key)
-        }) {
-            return Ok(Vec::new());
-        }
-        let host_live = {
+        // Closing turns use the same machine-wide process lease as active
+        // workers, including those belonging to another run.
+        let (host_live, run_live) = {
             let inner = self.inner.lock().map_err(|e| e.to_string())?;
-            scheduling::live(&inner.data)
+            (
+                scheduling::live(&inner.data),
+                scheduling::run_live(&inner.data, run_id, None),
+            )
         };
         let host_room = settings
             .host_cap
             .map_or(usize::MAX, |cap| usize::from(cap).saturating_sub(host_live));
-        let wave = ready_wave(&snapshot, run).into_iter().take(host_room);
+        let room = host_room.min(usize::from(run.max_concurrent).saturating_sub(run_live));
+        let wave = ready_wave(&snapshot, run).into_iter().take(room);
         let mut started = Vec::new();
         for task in wave {
             let Some(settings) = defaults.settings_for(&task)? else {

@@ -866,6 +866,13 @@ impl OrchestrationStore {
                 .ok_or("The batch disappeared.")?;
             launch.started = true;
             launch.launching = true;
+            data.worker_processes.insert(
+                runtime.worker_chat_key.clone(),
+                scheduling::ProcessLease {
+                    run_id: batch.run_id.clone(),
+                    launching: true,
+                },
+            );
             Ok(())
         })?;
         let started = crate::agent_chat::chat_start_user_impl(
@@ -892,6 +899,9 @@ impl OrchestrationStore {
                 .get_mut(&batch.id)
                 .ok_or("The batch disappeared.")?
                 .launching = false;
+            if let Some(lease) = data.worker_processes.get_mut(&runtime.worker_chat_key) {
+                lease.launching = false;
+            }
             if started.is_ok()
                 && data
                     .batches

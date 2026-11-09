@@ -902,12 +902,27 @@ impl OrchestrationStore {
         let Ok(inner) = self.inner.lock() else {
             return;
         };
+        let launching: BTreeSet<_> = inner
+            .data
+            .worker_processes
+            .iter()
+            .filter(|(_, lease)| lease.launching)
+            .map(|(key, _)| key.clone())
+            .collect();
+        let leases: Vec<_> = inner
+            .data
+            .worker_processes
+            .iter()
+            .filter(|(_, lease)| !lease.launching)
+            .map(|(key, lease)| (key.clone(), lease.run_id.clone()))
+            .collect();
         let mut ended: BTreeMap<String, bool> = inner
             .data
             .attempts
             .values()
             .filter(|a| {
                 live.contains(&a.worker_chat_key)
+                    && !launching.contains(&a.worker_chat_key)
                     && !attempt_is_unsettled(&inner.data, a)
                     && !inner.data.attempts.values().any(|other| {
                         other.worker_chat_key == a.worker_chat_key
@@ -917,7 +932,10 @@ impl OrchestrationStore {
             .map(|a| {
                 (
                     a.worker_chat_key.clone(),
-                    a.status == AttemptStatus::Failed && a.execution.latest_error.is_some(),
+                    (a.status == AttemptStatus::Failed && a.execution.latest_error.is_some())
+                        || inner.data.runs.get(&a.run_id).is_some_and(|r| {
+                            matches!(r.status, RunStatus::Stopped | RunStatus::Closed)
+                        }),
                 )
             })
             .fold(BTreeMap::new(), |mut workers, (key, force)| {
@@ -965,6 +983,16 @@ impl OrchestrationStore {
                 .and_modify(|f| *f |= force)
                 .or_insert(force);
         }
+        for (key, run) in &leases {
+            if inner
+                .data
+                .runs
+                .get(run)
+                .is_some_and(|r| matches!(r.status, RunStatus::Stopped | RunStatus::Closed))
+            {
+                ended.insert(key.clone(), true);
+            }
+        }
         drop(inner);
         let mut exited_keys = BTreeSet::new();
         for (key, force) in ended {
@@ -982,6 +1010,13 @@ impl OrchestrationStore {
                 exited_keys.insert(key);
             }
         }
+        // Natural exit or an earlier server-side kill can have removed the
+        // session already. Recheck every lease, even for an active attempt.
+        for (key, _) in leases {
+            if chats.worker_process_ended(&key) {
+                exited_keys.insert(key);
+            }
+        }
         // Keep the process lease through the actual stop, including while a
         // closing turn is still busy. No chat lock is taken under the ledger.
         let exited: BTreeSet<_> = batches
@@ -989,8 +1024,12 @@ impl OrchestrationStore {
             .filter(|(_, key, _)| exited_keys.contains(key))
             .map(|(id, _, _)| id)
             .collect();
-        if !exited.is_empty() {
+        if !exited_keys.is_empty() {
             if let Ok(mut inner) = self.inner.lock() {
+                inner
+                    .data
+                    .worker_processes
+                    .retain(|key, lease| lease.launching || !exited_keys.contains(key));
                 for id in exited {
                     if let Some(launch) = inner.data.batch_launches.get_mut(&id) {
                         if !launch.launching {
@@ -999,6 +1038,7 @@ impl OrchestrationStore {
                     }
                 }
             }
+            self.scheduling_changed();
         }
     }
 
@@ -1275,6 +1315,7 @@ mod tests {
     ) -> (Run, Attempt, crate::agent_chat::TestChild) {
         let run = run(store);
         let attempt = running_worker(store, &run);
+        store.begin_worker_spawn(&attempt).unwrap();
         let child = chats.test_hold(&attempt.worker_chat_key, ChatAgent::Codex, true);
         store.finish_dispatch(&attempt, Ok(())).unwrap();
         store
@@ -1335,6 +1376,7 @@ mod tests {
         store.stop_ended_workers(&chats);
         assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 0);
         let (_, _, next, _) = store.reserve_attempt("chat:master", &launch).unwrap();
+        store.begin_worker_spawn(&next).unwrap();
         chats.test_launch(&next.worker_chat_key);
         store.finish_dispatch(&next, Ok(())).unwrap();
         assert!(chats.test_child(&next.worker_chat_key).alive());
@@ -1378,6 +1420,119 @@ mod tests {
         assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 1);
         // The portable echo stand-in exits on EOF, without a server kill.
         chats.test_finish(&attempt.worker_chat_key);
+        assert!(child.gone_soon());
+        store.stop_ended_workers(&chats);
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 0);
+    }
+
+    #[test]
+    fn tasks_closing_turn_holds_its_run_limit_with_machine_cap_off() {
+        let home = crate::test_dir::TestDir::new("tasks-closing-run-cap");
+        let _profile = crate::profile::started_in(&home);
+        let store = OrchestrationStore::default();
+        let chats = ChatManager::default();
+        let (run, attempt, child) = closing_tasks_worker(&store, &chats);
+        store
+            .mutate(|data| {
+                data.runs.get_mut(&run.id).unwrap().max_concurrent = 1;
+                Ok(())
+            })
+            .unwrap();
+        let task = store
+            .create_task(
+                "chat:master",
+                run.id,
+                "Next in run".into(),
+                "work".into(),
+                vec![],
+                None,
+                None,
+            )
+            .unwrap();
+        let launch = super::super::tests::launch_for(&task.id);
+        assert!(store.reserve_attempt("chat:master", &launch).is_err());
+        chats.test_finish(&attempt.worker_chat_key);
+        assert!(child.gone_soon());
+        store.stop_ended_workers(&chats);
+        store.reserve_attempt("chat:master", &launch).unwrap();
+    }
+
+    #[test]
+    fn tasks_stopped_spawn_keeps_lease_until_launch_returns_and_child_exits() {
+        let home = crate::test_dir::TestDir::new("tasks-closing-spawn");
+        let _profile = crate::profile::started_in(&home);
+        let store = OrchestrationStore::default();
+        let chats = ChatManager::default();
+        let run = run(&store);
+        let attempt = running_worker(&store, &run);
+        store.begin_worker_spawn(&attempt).unwrap();
+        store
+            .stop_run("chat:master", run.id, "Stop during spawn".into())
+            .unwrap();
+        store.stop_ended_workers(&chats);
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 1);
+        // A spawn already in progress can still publish its child after Stop.
+        let child = chats.test_hold(&attempt.worker_chat_key, ChatAgent::Codex, true);
+        store.stop_ended_workers(&chats);
+        assert!(child.alive());
+        store.finish_dispatch(&attempt, Ok(())).unwrap();
+        store.stop_ended_workers(&chats);
+        assert!(child.gone_soon());
+        store.stop_ended_workers(&chats);
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 0);
+    }
+
+    #[test]
+    fn tasks_failed_spawn_returns_its_runtime_lease_without_a_child() {
+        let home = crate::test_dir::TestDir::new("tasks-failed-spawn");
+        let _profile = crate::profile::started_in(&home);
+        let store = OrchestrationStore::default();
+        let chats = ChatManager::default();
+        let run = run(&store);
+        let attempt = running_worker(&store, &run);
+        store.begin_worker_spawn(&attempt).unwrap();
+        assert!(store
+            .finish_dispatch(&attempt, Err("fixture spawn failure".into()))
+            .is_err());
+        store.stop_ended_workers(&chats);
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 0);
+    }
+
+    #[test]
+    fn tasks_resumed_worker_uses_the_common_spawn_lease_after_reporting() {
+        let home = crate::test_dir::TestDir::new("tasks-resumed-lease");
+        let _profile = crate::profile::started_in(&home);
+        let store = Arc::new(OrchestrationStore::default());
+        let chats = ChatManager::default();
+        let run = run(&store);
+        let attempt = running_worker(&store, &run);
+        // A one-shot follow-up can start through start_session rather than
+        // start_worker_for. It has no initial-dispatch barrier to inherit.
+        let spawn = store
+            .lease_worker_spawn(&attempt.worker_chat_key)
+            .unwrap()
+            .unwrap();
+        let child = chats.test_hold(&attempt.worker_chat_key, ChatAgent::Codex, true);
+        store
+            .report_worker(
+                &attempt.worker_chat_key,
+                WorkerReport {
+                    attempt_id: attempt.id.clone(),
+                    outcome: WorkerOutcome::Completed,
+                    summary: "Resumed turn reported".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        store.stop_ended_workers(&chats);
+        assert!(child.alive());
+        drop(spawn);
+        store.stop_ended_workers(&chats);
+        assert!(child.alive());
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 1);
+        chats.test_busy(&attempt.worker_chat_key, false);
+        store.stop_ended_workers(&chats);
         assert!(child.gone_soon());
         store.stop_ended_workers(&chats);
         assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 0);

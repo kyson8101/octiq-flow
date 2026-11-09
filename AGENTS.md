@@ -2921,6 +2921,14 @@ cannot spawn every agent before their claim tools arrive. `live.total` includes
 these reservations and deduplicates attempts sharing a worker chat. There is
 no per-agent parallel setting.
 
+Every worker process, including ordinary Tasks workers, keeps a runtime lease
+after its attempt reports. A closing turn still counts against `hostCap`,
+`live.total` and its run's `max_concurrent` until `child.try_wait` confirms exit.
+The settled-worker reaper preserves that turn, then releases its process and
+lease. Run Stop also ends terminal attempts' closing processes; recording a
+terminal outcome alone never returns a process slot. Spawn barriers and exit
+checks follow ledger → chat ordering, with all process work outside the ledger.
+
 Only the person's socket exposes `scheduling_get` and
 `scheduling_set { settings: { orientation, hostCap } }`; neither has a hook or
 MCP route. Set replaces and validates the complete value, saving before

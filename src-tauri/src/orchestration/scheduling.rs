@@ -1,6 +1,30 @@
-//! Read-time capacity facts. All counts use the ledger's active definition.
+//! Capacity includes reservations and processes whose attempts already settled.
 use super::*;
 use crate::scheduling::Settings;
+
+/// Runtime-only: a server restart owns none of the old server's children.
+#[derive(Clone, Debug)]
+pub(super) struct ProcessLease {
+    pub run_id: String,
+    pub launching: bool,
+}
+
+/// Declared before the chat's table guard, so every return releases chat
+/// locks before ending a resume/relaunch's spawn barrier.
+pub(crate) struct WorkerSpawn {
+    store: Arc<OrchestrationStore>,
+    key: String,
+}
+
+impl Drop for WorkerSpawn {
+    fn drop(&mut self) {
+        if let Ok(mut inner) = self.store.inner.lock() {
+            if let Some(lease) = inner.data.worker_processes.get_mut(&self.key) {
+                lease.launching = false;
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,7 +40,7 @@ pub struct SlotWait {
 }
 
 /// Count launch/process identities, never the number of tasks sharing them.
-/// Settled batches retain their lease until the chat reaper confirms exit.
+/// Every started worker retains its lease until the chat reaper confirms exit.
 fn worker_keys(data: &Stored, run: Option<&str>, excluding: Option<&str>) -> BTreeSet<String> {
     let excluded_key = excluding
         .and_then(|id| data.batch_launches.get(id))
@@ -30,6 +54,14 @@ fn worker_keys(data: &Stored, run: Option<&str>, excluding: Option<&str>) -> BTr
                 && Some(a.worker_chat_key.as_str()) != excluded_key
         })
         .map(|a| a.worker_chat_key.clone())
+        .chain(
+            data.worker_processes
+                .iter()
+                .filter(|(key, lease)| {
+                    Some(key.as_str()) != excluded_key && run.is_none_or(|id| lease.run_id == id)
+                })
+                .map(|(key, _)| key.clone()),
+        )
         .chain(
             data.batches
                 .iter()
@@ -144,6 +176,58 @@ pub(super) fn slot_wait(data: &Stored, task: &Task, settings: &Settings) -> Opti
 }
 
 impl OrchestrationStore {
+    /// The common chat launch door also covers a worker resumed after a
+    /// natural one-shot exit. Initial task/batch dispatch already owns its
+    /// barrier; that caller alone completes it.
+    pub(crate) fn lease_worker_spawn(
+        self: &Arc<Self>,
+        key: &str,
+    ) -> Result<Option<WorkerSpawn>, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if inner
+            .data
+            .worker_processes
+            .get(key)
+            .is_some_and(|l| l.launching)
+        {
+            return Ok(None);
+        }
+        let run = inner
+            .data
+            .attempts
+            .values()
+            .find(|a| a.worker_chat_key == key)
+            .map(|a| a.run_id.clone())
+            .or_else(|| {
+                inner
+                    .data
+                    .batches
+                    .iter()
+                    .find(|b| {
+                        inner
+                            .data
+                            .batch_launches
+                            .get(&b.id)
+                            .is_some_and(|l| l.worker_chat_key == key)
+                    })
+                    .map(|b| b.run_id.clone())
+            });
+        let Some(run_id) = run else {
+            return Ok(None);
+        };
+        inner.data.worker_processes.insert(
+            key.into(),
+            ProcessLease {
+                run_id,
+                launching: true,
+            },
+        );
+        Ok(Some(WorkerSpawn {
+            store: self.clone(),
+            key: key.into(),
+        }))
+    }
+
     pub(super) fn scheduling_changed(&self) {
         let Ok(payload) = self.scheduling_get() else {
             return;

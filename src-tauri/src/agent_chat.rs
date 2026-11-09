@@ -1293,7 +1293,7 @@ pub struct ChatManager {
     pub(crate) questions: Arc<crate::question_store::QuestionStore>,
     pub(crate) auto_resumes: crate::auto_resume::Store,
     sessions: Mutex<HashMap<String, Arc<Mutex<ChatSession>>>>,
-    /// A batch's capacity lease outlives removal from `sessions`: kill is
+    /// Every worker's capacity lease outlives removal from `sessions`: kill is
     /// asynchronous. Retain the child until the worker reaper observes exit.
     ending_workers: Mutex<HashMap<String, Arc<Mutex<ChatSession>>>>,
     /// Latest real launch per key, retained after a natural one-shot exit.
@@ -4417,6 +4417,10 @@ pub(crate) fn start_session(
         std::iter::once(&cwd),
         access != Some(Access::Read),
     )?;
+    // A worker resumed outside initial dispatch needs the same process
+    // lease. Declared before sessions: its Drop takes only the ledger after
+    // every chat lock below has been released, on success and error alike.
+    let _worker_spawn = manager.orchestrations.lease_worker_spawn(&key)?;
     let manager_for_exit = manager.clone();
     let session_key_for_exit = session_key.clone();
     // Lock audit: legacy admission uses sessions -> ledger (read-only), as
