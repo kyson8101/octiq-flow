@@ -357,7 +357,7 @@ impl OrchestrationStore {
         })
     }
 
-    pub fn batch_claim(&self, actor: &str, task_ids: Vec<String>) -> Result<Vec<Attempt>, String> {
+    pub fn batch_claim(&self, projects: &WorkspaceState, actor: &str, task_ids: Vec<String>) -> Result<Vec<Attempt>, String> {
         if !self.is_worker_chat(actor)? {
             return Err("Only a batch's own worker may claim its tasks.".into());
         }
@@ -766,6 +766,7 @@ impl OrchestrationStore {
 
     fn fallback_claim(
         &self,
+        projects: &WorkspaceState,
         batch: &Batch,
         runtime: &BatchLaunch,
         turn_in_flight: bool,
@@ -773,7 +774,7 @@ impl OrchestrationStore {
         if batch.status != BatchStatus::Claiming || !runtime.started || turn_in_flight {
             return Ok(None);
         }
-        self.batch_claim(&runtime.worker_chat_key, vec![runtime.head.clone()])
+        self.batch_claim(projects, &runtime.worker_chat_key, vec![runtime.head.clone()])
             .map(Some)
     }
 
@@ -812,6 +813,7 @@ impl OrchestrationStore {
                 continue;
             }
             match self.fallback_claim(
+                workspaces,
                 &batch,
                 &runtime,
                 chats.turn_in_flight(&runtime.worker_chat_key),
@@ -995,7 +997,7 @@ mod tests {
             .unwrap()
             .is_none());
         let attempts = store
-            .batch_claim(&runtime.worker_chat_key, vec![older.id.clone()])
+            .batch_claim(&WorkspaceState::load(), &runtime.worker_chat_key, vec![older.id.clone()])
             .unwrap();
         store
             .report_worker(
@@ -1041,14 +1043,14 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(store
-            .batch_claim("chat:master", vec![tasks[0].id.clone()])
+            .batch_claim(&WorkspaceState::load(), "chat:master", vec![tasks[0].id.clone()])
             .is_err());
         assert!(store
-            .batch_claim(&runtime.worker_chat_key, vec![tasks[1].id.clone()])
+            .batch_claim(&WorkspaceState::load(), &runtime.worker_chat_key, vec![tasks[1].id.clone()])
             .unwrap_err()
             .contains("head"));
         assert!(store
-            .batch_claim(
+            .batch_claim(&WorkspaceState::load(), 
                 &runtime.worker_chat_key,
                 tasks.iter().take(7).map(|t| t.id.clone()).collect()
             )
@@ -1086,7 +1088,7 @@ mod tests {
                 .unwrap();
             assert!(
                 store
-                    .batch_claim(
+                    .batch_claim(&WorkspaceState::load(), 
                         &runtime.worker_chat_key,
                         vec![tasks[0].id.clone(), tasks[1].id.clone()]
                     )
@@ -1102,7 +1104,7 @@ mod tests {
                 .unwrap();
         }
         let claims = store
-            .batch_claim(
+            .batch_claim(&WorkspaceState::load(), 
                 &runtime.worker_chat_key,
                 tasks.iter().take(6).map(|t| t.id.clone()).collect(),
             )
@@ -1137,12 +1139,16 @@ mod tests {
             before.agent_queue[&task.id].by,
             QueueBy::Person { .. }
         ));
+        let queued = store.snapshot(Some(&run.id)).unwrap().tasks.into_iter().find(|t| t.id == task.id).unwrap();
+        assert!(queued.slot_wait.is_some());
+        assert!(queued.retrying, "a person Start queued for a slot is retrying");
+        assert_eq!(serde_json::to_value(queued.failure).unwrap()["awaits"], "coordinator");
         let (_, runtime) = store
             .begin_batch("agent_test", &settings())
             .unwrap()
             .unwrap();
         let claims = store
-            .batch_claim(&runtime.worker_chat_key, vec![task.id.clone()])
+            .batch_claim(&WorkspaceState::load(), &runtime.worker_chat_key, vec![task.id.clone()])
             .unwrap();
         assert_eq!(
             store.inner.lock().unwrap().data.tasks[&task.id].retries_used,
@@ -1152,6 +1158,99 @@ mod tests {
             .retry
             .as_ref()
             .is_none_or(|r| r.by == retry::RetryBy::Person));
+    }
+
+    #[test]
+    fn claiming_and_working_batch_tasks_cannot_be_reassigned_or_handed_off() {
+        let home = TestDir::new("batch-reassign-door");
+        let _profile = crate::profile::started_in(&home);
+        let capped = Settings { host_cap: Some(1), ..settings() };
+        crate::scheduling::save(capped.clone()).unwrap();
+        let store = OrchestrationStore::default();
+        let run = super::super::tests::run(&store);
+        let head = assigned(&store, &run, 1);
+        store.sync_agent_queue().unwrap();
+        let (_, runtime) = store.begin_batch("agent_test", &capped).unwrap().unwrap();
+        let handoff = || store.reassign_task("chat:master", &head.id,
+            (Some(worker()), Some(TaskAssignee { id: "agent_b".into(), name: "B".into() }), None),
+            "Same runtime, different agent".into());
+        let error = handoff().unwrap_err();
+        assert!(error.contains("batch"), "{error}");
+        let claim = store.batch_claim(&WorkspaceState::load(), &runtime.worker_chat_key, vec![head.id.clone()]).unwrap();
+        assert_eq!(claim[0].assignee.as_ref().unwrap().id, "agent_test");
+        let error = handoff().unwrap_err();
+        assert!(error.contains("batch"), "{error}");
+    }
+
+    #[test]
+    fn a_claim_binds_its_head_to_the_current_approval_even_after_reapproval() {
+        let home = TestDir::new("batch-reapproved-head");
+        let _profile = crate::profile::started_in(&home);
+        let capped = Settings { host_cap: Some(1), ..settings() };
+        crate::scheduling::save(capped.clone()).unwrap();
+        let store = OrchestrationStore::default();
+        let run = super::super::tests::run(&store);
+        let head = assigned(&store, &run, 1);
+        store.sync_agent_queue().unwrap();
+        let (batch, runtime) = store.begin_batch("agent_test", &capped).unwrap().unwrap();
+        // Simulate the pre-fix door's reassignment and new person approval,
+        // after C's capability has already been issued and before any attempt.
+        let proposal = workspaces::propose_assigned(&run, &head.id, None, Some(&worker()),
+            Some(&TaskAssignee { id: "agent_b".into(), name: "B".into() }));
+        store.mutate(|data| {
+            let task = data.tasks.get_mut(&head.id).unwrap();
+            task.assignee = Some(TaskAssignee { id: "agent_b".into(), name: "B".into() });
+            task.workspace_proposal = Some(proposal);
+            task.approved = Some(approval::Approved::of(None, task, approval::FixedBy::Plan, now_ms()));
+            Ok(())
+        }).unwrap();
+        let error = store.batch_claim(&WorkspaceState::load(), &runtime.worker_chat_key, vec![head.id.clone()]).unwrap_err();
+        assert!(error.contains("approved"), "{error}");
+        let data = &store.inner.lock().unwrap().data;
+        assert!(data.attempts.is_empty());
+        assert!(data.agent_queue.contains_key(&head.id));
+        assert_eq!(data.batches.iter().find(|b| b.id == batch.id).unwrap().status, BatchStatus::Settled);
+    }
+
+    #[test]
+    fn batch_start_and_each_claim_refuse_a_removed_destination_repository() {
+        let home = TestDir::new("batch-destination");
+        let _profile = crate::profile::started_in(&home);
+        crate::scheduling::save(settings()).unwrap();
+        for door in ["start", "head claim", "candidate claim"] {
+            let store = OrchestrationStore::default();
+            let run = super::super::tests::run(&store);
+            let head = assigned(&store, &run, 1);
+            let other = assigned(&store, &run, 2);
+            // The project remains registered, but its formerly approved repo
+            // is now absent from its paths (the H2 reproduction).
+            let projects = WorkspaceState::with_projects(vec![serde_json::from_value(json!({
+                "id": "workspace", "name": "Project", "primary_path": home.to_string_lossy(), "paths": []
+            })).unwrap()]);
+            store.mutate(|data| {
+                let id = if door == "candidate claim" { &other.id } else { &head.id };
+                let task = data.tasks.get_mut(id).unwrap();
+                task.destination = Some(TaskDestination { project_id: "workspace".into(),
+                    project_name: "Project".into(), repository: run.root_path.clone() });
+                task.approved = Some(approval::Approved::of(None, task, approval::FixedBy::Plan, now_ms()));
+                Ok(())
+            }).unwrap();
+            store.sync_agent_queue().unwrap();
+            let (_, runtime) = store.begin_batch("agent_test", &settings()).unwrap().unwrap();
+            let batch = store.inner.lock().unwrap().data.batches[0].clone();
+            let error = if door == "start" {
+                store.start_batch_chat(Arc::new(ChatManager::default()), &projects, &batch, &runtime).unwrap_err()
+            } else {
+                let mut ids = vec![head.id.clone()];
+                if door == "candidate claim" { ids.push(other.id.clone()); }
+                store.batch_claim(&projects, &runtime.worker_chat_key, ids).unwrap_err()
+            };
+            assert!(error.contains("no longer a repository"), "{door}: {error}");
+            let data = &store.inner.lock().unwrap().data;
+            assert!(data.attempts.is_empty(), "{door}");
+            assert!(data.agent_queue.contains_key(&head.id));
+            assert!(!data.batch_launches[&batch.id].started);
+        }
     }
 
     #[test]
@@ -1199,16 +1298,16 @@ mod lifecycle_tests {
             .unwrap()
             .unwrap();
         assert!(store
-            .fallback_claim(&batch, &runtime, false)
+            .fallback_claim(&WorkspaceState::load(), &batch, &runtime, false)
             .unwrap()
             .is_none());
         runtime.started = true;
         assert!(store
-            .fallback_claim(&batch, &runtime, true)
+            .fallback_claim(&WorkspaceState::load(), &batch, &runtime, true)
             .unwrap()
             .is_none());
         let claims = store
-            .fallback_claim(&batch, &runtime, false)
+            .fallback_claim(&WorkspaceState::load(), &batch, &runtime, false)
             .unwrap()
             .unwrap();
         assert_eq!(claims.len(), 1);
@@ -1237,7 +1336,7 @@ mod lifecycle_tests {
             .unwrap();
         crate::git_ops::workflow::provision_agent(&runtime.plan).unwrap();
         let claims = store
-            .batch_claim(&runtime.worker_chat_key, vec![head.id.clone()])
+            .batch_claim(&WorkspaceState::load(), &runtime.worker_chat_key, vec![head.id.clone()])
             .unwrap();
         let dirty = Path::new(&runtime.plan.cwd).join("keep.txt");
         std::fs::write(&dirty, "author work").unwrap();
@@ -1311,7 +1410,7 @@ mod retention_tests {
         let (_, runtime) = store.begin_batch(&agent.id, &settings()).unwrap().unwrap();
         crate::git_ops::workflow::provision_agent(&runtime.plan).unwrap();
         let claims = store
-            .batch_claim(&runtime.worker_chat_key, vec![task.id])
+            .batch_claim(&WorkspaceState::load(), &runtime.worker_chat_key, vec![task.id])
             .unwrap();
         store
             .report_worker(
@@ -1480,7 +1579,7 @@ mod admission_tests {
             "launch promises do not invent live attempts"
         );
         let claimed = store
-            .batch_claim(&runtime.worker_chat_key, vec![first.id])
+            .batch_claim(&WorkspaceState::load(), &runtime.worker_chat_key, vec![first.id])
             .unwrap();
         assert_eq!(claimed.len(), 1, "a claim replaces its own promise");
         // A second fixture run stopped BEFORE claiming still names its process.
@@ -1572,7 +1671,7 @@ mod stop_tests {
             .unwrap()
             .unwrap();
         let claims = store
-            .batch_claim(
+            .batch_claim(&WorkspaceState::load(), 
                 &runtime.worker_chat_key,
                 vec![first.id.clone(), second.id.clone()],
             )
@@ -1634,7 +1733,7 @@ mod switch_tests {
         assert!(runtime.candidates.is_empty());
         assert_eq!(runtime.head, first.id);
         let attempts = store
-            .batch_claim(&runtime.worker_chat_key, vec![first.id.clone()])
+            .batch_claim(&WorkspaceState::load(), &runtime.worker_chat_key, vec![first.id.clone()])
             .unwrap();
         assert_eq!(attempts[0].branch, runtime.plan.branch);
         assert!(matches!(
@@ -1674,7 +1773,7 @@ mod switch_tests {
             .unwrap()
             .unwrap();
         store
-            .batch_claim(
+            .batch_claim(&WorkspaceState::load(), 
                 &runtime.worker_chat_key,
                 vec![first.id.clone(), second.id.clone()],
             )
@@ -1725,7 +1824,7 @@ mod stream_tests {
             .unwrap()
             .unwrap();
         let claims = store
-            .batch_claim(
+            .batch_claim(&WorkspaceState::load(), 
                 &runtime.worker_chat_key,
                 vec![first.id.clone(), second.id.clone()],
             )

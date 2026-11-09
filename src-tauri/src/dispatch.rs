@@ -2370,6 +2370,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "expectedHead")?,
         )),
         "orchestration_batch_claim" => to_value(svc.orchestrations.batch_claim(
+            &svc.workspaces,
             &arg::<String>(&args, "actorChatKey")?,
             arg(&args, "taskIds")?,
         )),
