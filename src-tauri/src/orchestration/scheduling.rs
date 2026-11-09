@@ -36,6 +36,46 @@ pub(super) fn require_host_slot(data: &Stored, cap: Option<u16>) -> Result<(), S
 
 pub(super) fn slot_wait(data: &Stored, task: &Task, settings: &Settings) -> Option<SlotWait> {
     let run = data.runs.get(&task.run_id)?;
+    let running = live(data);
+    if settings.orientation == crate::scheduling::Orientation::Agents
+        && batches::eligible(data, task)
+    {
+        if let Some(agent) = &task.assignee {
+            let queue = batches::queue(data, &agent.id);
+            if let Some(ahead) = queue.iter().position(|t| t.id == task.id) {
+                let busy =
+                    data.batches.iter().any(|b| {
+                        b.agent_id == agent.id && b.status != batches::BatchStatus::Settled
+                    }) || data.attempts.values().any(|a| {
+                        a.assignee
+                            .as_ref()
+                            .is_some_and(|owner| owner.id == agent.id)
+                            && attempt_is_unsettled(data, a)
+                    });
+                if ahead == 0
+                    && !busy
+                    && settings
+                        .host_cap
+                        .is_some_and(|cap| running >= usize::from(cap))
+                {
+                    return Some(SlotWait {
+                        reason: "host".into(),
+                        agent_id: Some(agent.id.clone()),
+                        ahead,
+                        running: Some(running),
+                        limit: settings.host_cap.map(usize::from),
+                    });
+                }
+                return Some(SlotWait {
+                    reason: "agent".into(),
+                    agent_id: Some(agent.id.clone()),
+                    ahead,
+                    running: None,
+                    limit: None,
+                });
+            }
+        }
+    }
     if task.status != TaskStatus::Ready
         || task.held_by_plan == Some(true)
         || task.held_by_reopen
@@ -49,7 +89,6 @@ pub(super) fn slot_wait(data: &Stored, task: &Task, settings: &Settings) -> Opti
     {
         return None;
     }
-    let running = live(data);
     settings
         .host_cap
         .filter(|cap| running >= usize::from(*cap))
@@ -64,15 +103,9 @@ pub(super) fn slot_wait(data: &Stored, task: &Task, settings: &Settings) -> Opti
 
 impl OrchestrationStore {
     pub(super) fn scheduling_changed(&self) {
-        let Ok(settings) = crate::scheduling::load() else {
+        let Ok(payload) = self.scheduling_get() else {
             return;
         };
-        let Ok(inner) = self.inner.lock() else {
-            return;
-        };
-        let payload = json!({ "orientation": settings.orientation, "hostCap": settings.host_cap,
-            "live": { "total": live(&inner.data) }, "lanes": batches::lanes(&inner.data, None) });
-        drop(inner);
         if let Ok(mut last) = self.scheduling_last.lock() {
             if last.as_ref() != Some(&payload) {
                 *last = Some(payload.clone());

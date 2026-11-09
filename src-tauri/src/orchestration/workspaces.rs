@@ -10,6 +10,9 @@ pub(super) fn cleanup_ready(
     ws: &TaskWorkspace,
     abandon: bool,
 ) -> Result<(), String> {
+    if ws.plan.mode == WorkspaceMode::Agent {
+        return Err("Agent worktrees are retained for their registered agent; per-task Cleanup never removes them.".into());
+    }
     if data
         .attempts
         .values()
@@ -401,12 +404,14 @@ pub(super) fn choice_fact(run: &Run, task: &Task, git: bool) -> WorkspaceChoiceF
             .as_ref()
             .and_then(|a| a.workspace_mode)
             .map(WorkspaceChoice::of),
-        options: if git {
+        options: if git && advised_first_mode(run, task) == WorkspaceMode::Agent {
             vec![
                 WorkspaceChoice::Agent,
                 WorkspaceChoice::Worktree,
                 WorkspaceChoice::Checkout,
             ]
+        } else if git {
+            vec![WorkspaceChoice::Worktree, WorkspaceChoice::Checkout]
         } else {
             vec![WorkspaceChoice::Checkout]
         },
@@ -459,7 +464,9 @@ pub(super) fn apply_choices(
             );
         }
         let root = task_root(run, task.destination.as_ref());
-        if *choice == WorkspaceChoice::Worktree && !workflow::has_git(root) {
+        if matches!(choice, WorkspaceChoice::Worktree | WorkspaceChoice::Agent)
+            && !workflow::has_git(root)
+        {
             return Err("This task's folder has no Git history; choose Current checkout.".into());
         }
         let mode = choice.mode(run);
@@ -470,7 +477,15 @@ pub(super) fn apply_choices(
         {
             old.unwrap().plan.clone().unwrap()
         } else {
-            workflow::plan(root, "", workspace_key(run, id, mode), mode)?
+            if mode == WorkspaceMode::Agent {
+                let agent = task
+                    .assignee
+                    .as_ref()
+                    .ok_or("Agent workspace mode requires a registered assignee.")?;
+                workflow::agent_plan(root, "", &agent.id, "batch_pending", None)?
+            } else {
+                workflow::plan(root, "", workspace_key(run, id, mode), mode)?
+            }
         };
         let conflict = workflow::occupied(&plan);
         proposals.push((
@@ -740,7 +755,19 @@ impl OrchestrationStore {
                     ),
                 )
             })
-            .collect())
+            .fold(
+                BTreeMap::<String, (String, bool, bool)>::new(),
+                |mut owners, (key, owner)| {
+                    owners
+                        .entry(key)
+                        .and_modify(|current| {
+                            current.2 &= owner.2;
+                            current.1 &= owner.1;
+                        })
+                        .or_insert(owner);
+                    owners
+                },
+            ))
     }
 
     /// Give every unstarted task that has neither a workspace nor a proposal
@@ -776,11 +803,12 @@ impl OrchestrationStore {
         let proposals: Vec<(String, WorkspaceProposal)> = wanted
             .iter()
             .map(|(run, task)| {
-                let proposal = propose(
+                let proposal = propose_assigned(
                     run,
                     &task.id,
                     task.destination.as_ref(),
                     task.worker.as_ref(),
+                    task.assignee.as_ref(),
                 );
                 (task.id.clone(), proposal)
             })
@@ -1672,6 +1700,12 @@ impl OrchestrationStore {
         }
         if ws.state == WorkspaceState::Cleaned {
             return Ok(task);
+        }
+        if ws.plan.mode == WorkspaceMode::Agent {
+            return Err(
+                "Agent worktrees are reused across batches; per-task Cleanup never removes them."
+                    .into(),
+            );
         }
         if ws.plan.mode == WorkspaceMode::Mission {
             return Err(
@@ -6144,5 +6178,66 @@ mod migration_tests {
         let persisted: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(persisted["version"], STORE_VERSION);
+    }
+}
+
+/// Advice for new assigned work follows the current orientation. Approval
+/// freezes it, so a later switch never rewrites a task's accepted mode.
+pub(super) fn propose_assigned(
+    run: &Run,
+    task_id: &str,
+    destination: Option<&TaskDestination>,
+    worker: Option<&automation::WorkerSettings>,
+    assignee: Option<&TaskAssignee>,
+) -> WorkspaceProposal {
+    let Some(agent) = assignee else {
+        return propose(run, task_id, destination, worker);
+    };
+    let settings = match crate::scheduling::load() {
+        Ok(settings) => settings,
+        Err(error) => {
+            return WorkspaceProposal {
+                plan: None,
+                new_branch: false,
+                conflict: None,
+                error: Some(error),
+                provisional: false,
+                proposed_at: now_ms(),
+            }
+        }
+    };
+    if settings.orientation != crate::scheduling::Orientation::Agents {
+        return propose(run, task_id, destination, worker);
+    }
+    let root = task_root(run, destination);
+    if !workflow::has_git(root) {
+        let mut direct = run.clone();
+        direct.workspace_mode = WorkspaceMode::Direct;
+        return propose(&direct, task_id, destination, worker);
+    }
+    match workflow::agent_plan(root, "", &agent.id, "batch_pending", None) {
+        Ok(mut plan) => {
+            // Its branch is allocated only once the lane chooses a batch.
+            plan.warnings.push(
+                "A new branch and fresh session are allocated when this agent's batch starts."
+                    .into(),
+            );
+            WorkspaceProposal {
+                new_branch: !Path::new(&plan.checkout_root).exists(),
+                conflict: None,
+                plan: Some(plan),
+                error: None,
+                provisional: false,
+                proposed_at: now_ms(),
+            }
+        }
+        Err(error) => WorkspaceProposal {
+            plan: None,
+            new_branch: false,
+            conflict: None,
+            error: Some(error),
+            provisional: false,
+            proposed_at: now_ms(),
+        },
     }
 }

@@ -56,8 +56,8 @@ pub fn save(settings: Settings) -> Result<(), String> {
             &tmp,
             serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?,
         )
-        .map_err(|e| e.to_string())?;
-        fs::rename(&tmp, &path).map_err(|e| e.to_string())
+        .map_err(|e| crate::profile::write_error(&path, e))?;
+        fs::rename(&tmp, &path).map_err(|e| crate::profile::write_error(&path, e))
     })();
     if result.is_err() {
         let _ = fs::remove_file(tmp);

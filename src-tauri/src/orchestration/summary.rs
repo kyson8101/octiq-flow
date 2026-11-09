@@ -74,6 +74,7 @@ pub fn select(
         .filter_map(|r| r["id"].as_str().map(str::to_owned))
         .collect();
     for list in [
+        "batches",
         "runs",
         "tasks",
         "attempts",
@@ -99,6 +100,24 @@ pub fn select(
 /// arrays so runWaits/runProgress remain the single reading on every surface.
 /// Empty text here means "ask for detail", never an edit of the saved text.
 pub fn project(view: &mut Value) {
+    for batch in items(view, "batches") {
+        keep(
+            batch,
+            &[
+                "id",
+                "agentId",
+                "runId",
+                "repository",
+                "baseBranch",
+                "branch",
+                "worktree",
+                "taskIds",
+                "status",
+                "createdAt",
+                "settledAt",
+            ],
+        );
+    }
     let mut counts: BTreeMap<String, Value> = BTreeMap::new();
     for list in [
         "tasks",
@@ -261,6 +280,7 @@ pub fn project(view: &mut Value) {
                 "runId",
                 "taskId",
                 "number",
+                "batchId",
                 "workerChatKey",
                 "agent",
                 "model",
@@ -563,5 +583,24 @@ mod tests {
         assert!(small * 100 < full);
         assert_eq!(view["runs"].as_array().unwrap().len(), 100);
         assert_eq!(view["tasks"].as_array().unwrap().len(), 800);
+    }
+}
+
+#[cfg(test)]
+mod batch_summary_tests {
+    use super::*;
+    #[test]
+    fn keeps_batch_identity_task_ids_and_objective() {
+        let mut value = serde_json::json!({
+            "runs": [{ "id": "r", "objective": "Ship Agents orientation", "status": "running" }],
+            "tasks": [{ "id": "t", "runId": "r", "status": "running", "activeAttemptId": "a" }],
+            "attempts": [{ "id": "a", "taskId": "t", "runId": "r", "batchId": "b", "status": "running" }],
+            "batches": [{ "id": "b", "agentId": "agent", "runId": "r", "branch": "agent/agent/b", "taskIds": ["t"], "status": "working" }]
+        });
+        project(&mut value);
+        assert_eq!(value["runs"][0]["objective"], "Ship Agents orientation");
+        assert_eq!(value["attempts"][0]["batchId"], "b");
+        assert_eq!(value["batches"][0]["taskIds"], serde_json::json!(["t"]));
+        assert_eq!(value["batches"][0]["status"], "working");
     }
 }

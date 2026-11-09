@@ -322,6 +322,7 @@ pub(super) fn clock_for(
 /// what the requester or a coordinator wrote to anyone, and services
 /// registered for other tasks.
 fn own_task_only(mut snapshot: Snapshot, task_id: &str) -> Snapshot {
+    snapshot.batches.clear();
     snapshot.tasks.retain(|task| task.id == task_id);
     snapshot
         .attempts
@@ -873,7 +874,13 @@ impl OrchestrationStore {
         };
         let destination = routed.destination;
         let id = format!("task_{}", compact_id());
-        let proposal = workspaces::propose(&run, &id, destination.as_ref(), Some(&worker));
+        let proposal = workspaces::propose_assigned(
+            &run,
+            &id,
+            destination.as_ref(),
+            Some(&worker),
+            Some(&teammate),
+        );
         let spec = format!("{request}\n\nExpected output\n{output}");
 
         let mut reopened_plan = false;

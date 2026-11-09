@@ -47,6 +47,7 @@ fn may_read(message: &OrchestrationMessage, actor: &str) -> bool {
 
 pub fn agent_snapshot(snapshot: Snapshot, read: &AgentRead) -> Result<Value, String> {
     let Snapshot {
+        batches,
         runs,
         tasks,
         attempts,
@@ -187,6 +188,15 @@ pub fn agent_snapshot(snapshot: Snapshot, read: &AgentRead) -> Result<Value, Str
         out.insert("bridges".into(), to_json(&bridges));
     }
     out.insert("runs".into(), to_json(&runs));
+    out.insert(
+        "batches".into(),
+        to_json(
+            &batches
+                .iter()
+                .filter(|b| scope.contains(&b.run_id))
+                .collect::<Vec<_>>(),
+        ),
+    );
     out.insert(
         "view".into(),
         Value::String(if focus.is_some() { "task" } else { "compact" }.into()),
@@ -690,6 +700,7 @@ mod tests {
             .collect();
         messages.push(message(99, "run_b", "chat:other", "chat:w9"));
         Snapshot {
+            batches: vec![],
             runs: vec![
                 run("run_a", "chat:master", "running"),
                 run("run_b", "chat:other", "running"),

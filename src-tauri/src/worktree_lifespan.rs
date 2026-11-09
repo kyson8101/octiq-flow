@@ -67,6 +67,9 @@ pub(crate) fn validation_removal_proof(path: &str) -> Result<Option<RemovalProof
     }
     require_unprotected(Path::new(path))?;
     real_dir(Path::new(path))?;
+    if registered_agent_worktree(path)? {
+        return Err("A registered agent retains this worktree; folder kept.".into());
+    }
     raw::require_recreatable_config(path, Duration::from_secs(10))?;
     let stamps = raw::Stamps::capture(path)?;
     let head = git::text(path, &["rev-parse", "HEAD"])?;
@@ -79,6 +82,9 @@ pub(crate) fn validation_removal_proof(path: &str) -> Result<Option<RemovalProof
 pub(crate) fn verify_validation_removal(path: &str, proof: &RemovalProof) -> Result<(), String> {
     require_unprotected(Path::new(path))?;
     real_dir(Path::new(path))?;
+    if registered_agent_worktree(path)? {
+        return Err("A registered agent retains this worktree; folder kept.".into());
+    }
     raw::require_recreatable_config(path, git::remaining(Duration::from_secs(10))?)?;
     if git::text(path, &["rev-parse", "HEAD"])? != proof.head {
         return Err("Removal HEAD changed during comparison; folder kept.".into());
@@ -93,6 +99,9 @@ pub(crate) fn remove_proven(repo: &str, path: &str, proof: &RemovalProof) -> Res
     crate::profile::available()?;
     require_unprotected(Path::new(path))?;
     real_dir(Path::new(path))?;
+    if registered_agent_worktree(path)? {
+        return Err("A registered agent retains this worktree; folder kept.".into());
+    }
     raw::require_recreatable_config(path, git::remaining(Duration::from_secs(10))?)?;
     let root = git::text(path, &["rev-parse", "--show-toplevel"])?;
     let common = git::text(
@@ -652,6 +661,23 @@ fn protected(root: &Path, profile: &Path, home: Option<&Path>) -> bool {
         })
     })
 }
+fn registered_agent_worktree(path: &str) -> Result<bool, String> {
+    let path = Path::new(path);
+    let Some(name) = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix("agent-"))
+    else {
+        return Ok(false);
+    };
+    if !path.components().any(|c| c.as_os_str() == ".worktrees") {
+        return Ok(false);
+    }
+    Ok(crate::team::list(&crate::team::default_path(), None, true)?
+        .iter()
+        .any(|a| a.id.strip_prefix("agent_").unwrap_or(&a.id) == name))
+}
+
 fn require_unprotected(root: &Path) -> Result<(), String> {
     let profile = crate::profile::profile_dir();
     let profile = crate::paths::canonical_target(&profile).unwrap_or(profile);
@@ -1372,6 +1398,7 @@ fn observe(
         && status_hash.is_ok()
         && state == "finished"
         && a.owner.kind != "unknown"
+        && a.owner.kind != "agent"
         && usage.known
         && !windows
         && (!windows || !tree.reparse)
@@ -2100,7 +2127,8 @@ fn archive_checked(
     if o.item.status_hash != expected_status_hash {
         return Err("Files or staging changed since the preview. Review the worktree again before archiving.".into());
     }
-    if o.item.state != "abandoned" || o.item.owner.kind == "unknown" {
+    if o.item.state != "abandoned" || o.item.owner.kind == "unknown" || o.item.owner.kind == "agent"
+    {
         return Err("Only an abandoned, host-owned worktree can be archived and removed.".into());
     }
     if o.item.pinned {

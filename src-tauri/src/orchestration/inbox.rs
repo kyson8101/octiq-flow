@@ -255,7 +255,15 @@ fn valid(data: &Stored, n: &Notification) -> bool {
         && n.from_chat_key == "host"
         && n.target_chat_key == run.coordinator_chat_key
         && (n.source.starts_with("cleanup-result:") || n.source.starts_with("cleanup-prepared:"));
-    if run.status == RunStatus::Stopped && n.kind != "plan_rejected" && !cleanup_receipt {
+    let lane_notice = n.kind == "status"
+        && n.from_chat_key == "host"
+        && n.target_chat_key == run.coordinator_chat_key
+        && n.source.starts_with("agent-lane-block:");
+    if run.status == RunStatus::Stopped
+        && n.kind != "plan_rejected"
+        && !cleanup_receipt
+        && !lane_notice
+    {
         return false;
     }
     // Queued before its run settled, or by a build that still sent them.

@@ -1016,6 +1016,7 @@ pub struct OrchestrationMessage {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    pub batches: Vec<batches::Batch>,
     pub runs: Vec<Run>,
     pub tasks: Vec<Task>,
     pub attempts: Vec<Attempt>,
@@ -1662,6 +1663,13 @@ impl OrchestrationStore {
             .collect();
         messages.sort_by_key(|message| (message.created_at, message.id.clone()));
         let mut snapshot = Snapshot {
+            batches: inner
+                .data
+                .batches
+                .iter()
+                .filter(|b| visible.contains(b.run_id.as_str()))
+                .cloned()
+                .collect(),
             runs,
             tasks,
             attempts,
@@ -2587,14 +2595,14 @@ impl OrchestrationStore {
             let inner = self.inner.lock().map_err(|error| error.to_string())?;
             inner.data.runs.get(&run_id).cloned()
         };
-        let proposal = planned_run.map(|mut run| {
-            if assignee.is_some()
-                && crate::scheduling::load()
-                    .is_ok_and(|s| s.orientation == crate::scheduling::Orientation::Agents)
-            {
-                run.workspace_mode = WorkspaceMode::Agent;
-            }
-            workspaces::propose(&run, &id, destination.as_ref(), worker.as_ref())
+        let proposal = planned_run.map(|run| {
+            workspaces::propose_assigned(
+                &run,
+                &id,
+                destination.as_ref(),
+                worker.as_ref(),
+                assignee.as_ref(),
+            )
         });
         self.mutate(|data| {
             let run = match coordinator(data, &run_id, actor_chat_key) {
@@ -2821,7 +2829,13 @@ impl OrchestrationStore {
             let fresh = task.is_some_and(|task| task.workspace.is_none());
             drop(inner);
             run.filter(|_| fresh).map(|run| {
-                workspaces::propose(&run, task_id, destination.as_ref(), worker.as_ref())
+                workspaces::propose_assigned(
+                    &run,
+                    task_id,
+                    destination.as_ref(),
+                    worker.as_ref(),
+                    Some(&assignee),
+                )
             })
         };
         let mut run_id = String::new();
@@ -2940,7 +2954,7 @@ impl OrchestrationStore {
         // A new destination or worker needs a new branch plan, read from Git
         // before the store is locked, exactly as a new task's is.
         let proposal = match &route {
-            Some((worker, _, destination)) => {
+            Some((worker, assignee, destination)) => {
                 let inner = self.inner.lock().map_err(|error| error.to_string())?;
                 let run = inner
                     .data
@@ -2950,7 +2964,13 @@ impl OrchestrationStore {
                     .cloned();
                 drop(inner);
                 run.map(|run| {
-                    workspaces::propose(&run, task_id, destination.as_ref(), worker.as_ref())
+                    workspaces::propose_assigned(
+                        &run,
+                        task_id,
+                        destination.as_ref(),
+                        worker.as_ref(),
+                        assignee.as_ref(),
+                    )
                 })
             }
             None => None,

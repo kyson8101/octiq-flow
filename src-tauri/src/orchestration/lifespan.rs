@@ -10,6 +10,10 @@ fn unfinished(status: TaskStatus) -> bool {
 }
 impl OrchestrationStore {
     pub(crate) fn lifespan_allocations(&self) -> Result<Vec<Allocation>, String> {
+        let registered: BTreeSet<_> = crate::team::list(&crate::team::default_path(), None, true)?
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         if let Some(error) = &inner.load_error {
             return Err(error.clone());
@@ -18,6 +22,22 @@ impl OrchestrationStore {
         let mut found = Vec::new();
         for task in data.tasks.values() {
             let Some(ws) = &task.workspace else { continue };
+            if ws.plan.mode == WorkspaceMode::Agent
+                && data
+                    .batches
+                    .iter()
+                    .rev()
+                    .find(|b| {
+                        b.worktree == ws.plan.checkout_root
+                            && data
+                                .attempts
+                                .values()
+                                .any(|a| a.batch_id.as_deref() == Some(&b.id))
+                    })
+                    .is_some_and(|b| b.branch != ws.plan.branch)
+            {
+                continue;
+            }
             if ws.state == workspaces::WorkspaceState::Cleaned {
                 continue;
             }
@@ -53,7 +73,12 @@ impl OrchestrationStore {
                 Some("A workspace lifecycle operation is in progress.".into())
             } else if open {
                 Some("The owning run has an open decision.".into())
-            } else if !matches!(run.status, RunStatus::Stopped | RunStatus::Closed)
+            } else if !(ws.plan.mode == WorkspaceMode::Agent
+                && task
+                    .assignee
+                    .as_ref()
+                    .is_none_or(|a| !registered.contains(&a.id)))
+                && !matches!(run.status, RunStatus::Stopped | RunStatus::Closed)
                 && data
                     .tasks
                     .values()
@@ -63,7 +88,14 @@ impl OrchestrationStore {
             } else {
                 None
             };
-            let kind = if !ws.plan.is_managed_worktree() {
+            let kind = if ws.plan.mode == WorkspaceMode::Agent
+                && task
+                    .assignee
+                    .as_ref()
+                    .is_some_and(|a| registered.contains(&a.id))
+            {
+                "agent"
+            } else if !ws.plan.is_managed_worktree() {
                 "unknown"
             } else if ws.plan.mode == WorkspaceMode::Mission {
                 "mission"

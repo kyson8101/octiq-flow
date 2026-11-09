@@ -467,7 +467,11 @@ fn verify_checkout(plan: &WorkspacePlan) -> Result<(), String> {
 }
 
 pub fn inspect(plan: &WorkspacePlan, check_remote: bool) -> Result<DeliveryEvidence, String> {
-    verify(plan)?;
+    if plan.mode == WorkspaceMode::Agent {
+        verify_checkout(plan)?;
+    } else {
+        verify(plan)?;
+    }
     let mut result = DeliveryEvidence {
         checked_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -479,12 +483,24 @@ pub fn inspect(plan: &WorkspacePlan, check_remote: bool) -> Result<DeliveryEvide
         result.notes.push("Delivery tracking requires Git.".into());
         return Ok(result);
     }
-    result.head_sha = git(&plan.cwd, &["rev-parse", "HEAD"])?;
-    result.dirty = !git(
+    let branch_ref = format!("refs/heads/{}", plan.branch);
+    result.head_sha = git(
         &plan.cwd,
-        &["status", "--porcelain=v1", "--untracked-files=all"],
-    )?
-    .is_empty();
+        &[
+            "rev-parse",
+            if plan.mode == WorkspaceMode::Agent {
+                &branch_ref
+            } else {
+                "HEAD"
+            },
+        ],
+    )?;
+    result.dirty = (plan.mode != WorkspaceMode::Agent || current_branch(&plan.cwd)? == plan.branch)
+        && !git(
+            &plan.cwd,
+            &["status", "--porcelain=v1", "--untracked-files=all"],
+        )?
+        .is_empty();
     result.has_commits = result.head_sha != plan.base_sha;
     result.remote_branch = git(
         &plan.cwd,
@@ -492,7 +508,7 @@ pub fn inspect(plan: &WorkspacePlan, check_remote: bool) -> Result<DeliveryEvide
             "rev-parse",
             "--abbrev-ref",
             "--symbolic-full-name",
-            "@{upstream}",
+            &format!("{}@{{upstream}}", plan.branch),
         ],
     )
     .ok();
@@ -629,7 +645,10 @@ pub fn merged_into_remote_base(plan: &WorkspacePlan, head: &str) -> Option<bool>
 /// never touched. `Ok(false)` when Git kept it — a squash merge, say — which
 /// is reported, not forced.
 pub fn delete_merged_branch(plan: &WorkspacePlan) -> Result<bool, String> {
-    if !plan.managed || plan.mode != WorkspaceMode::Mission || !owned_here(plan) {
+    if !plan.managed
+        || !matches!(plan.mode, WorkspaceMode::Mission | WorkspaceMode::Agent)
+        || !owned_here(plan)
+    {
         return Ok(false);
     }
     if Path::new(&plan.checkout_root).exists() {
@@ -1326,4 +1345,84 @@ pub fn provision_agent(plan: &WorkspacePlan) -> Result<(), String> {
     }
     prepare_working_directory(plan)?;
     verify(plan)
+}
+
+pub fn agent_checkout_clean(plan: &WorkspacePlan) -> Result<bool, String> {
+    let mut actual = plan.clone();
+    actual.cwd = plan.checkout_root.clone();
+    actual.branch = current_branch(&plan.checkout_root)?;
+    verify(&actual)?;
+    if !owned_here(&actual) {
+        return Err("The agent checkout is not host-owned.".into());
+    }
+    Ok(git(
+        &actual.cwd,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    )?
+    .is_empty())
+}
+
+#[cfg(test)]
+mod agent_tests {
+    use super::*;
+    #[test]
+    fn reused_worktree_keeps_ignored_cache_blocks_dirty_and_inspects_batch_branch() {
+        let repo = tests::Repo::new();
+        repo.commit(&repo.root, ".gitignore", "target/\n");
+        let first = agent_plan(
+            &repo.root,
+            "main",
+            "agent_test",
+            "batch_123456789012abc",
+            None,
+        )
+        .unwrap();
+        provision_agent(&first).unwrap();
+        crate::profile::make_dir(Path::new(&first.cwd).join("target").as_path()).unwrap();
+        let cache = Path::new(&first.cwd).join("target/cache.bin");
+        std::fs::write(&cache, b"keep compiled cache").unwrap();
+        std::fs::write(Path::new(&first.cwd).join("source.txt"), "uncommitted\n").unwrap();
+        std::fs::write(Path::new(&first.cwd).join("new-file"), "untracked\n").unwrap();
+        let second = agent_plan(
+            &repo.root,
+            "main",
+            "agent_test",
+            "batch_abcdef123456xxx",
+            None,
+        )
+        .unwrap();
+        assert_eq!(second.checkout_root, first.checkout_root);
+        assert_ne!(second.branch, first.branch);
+        assert!(provision_agent(&second)
+            .unwrap_err()
+            .contains("tracked or untracked"));
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&first.cwd).join("source.txt")).unwrap(),
+            "uncommitted\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&first.cwd).join("new-file")).unwrap(),
+            "untracked\n"
+        );
+        repo.git(&["-C", &first.cwd, "add", "source.txt", "new-file"]);
+        repo.git(&["-C", &first.cwd, "commit", "-m", "batch one"]);
+        let first_head = repo.git(&["-C", &first.cwd, "rev-parse", "HEAD"]);
+        provision_agent(&second).unwrap();
+        assert_eq!(std::fs::read(&cache).unwrap(), b"keep compiled cache");
+        assert_eq!(inspect(&first, false).unwrap().head_sha, first_head);
+        let reopened = agent_plan(
+            &repo.root,
+            "main",
+            "agent_test",
+            "batch_newretry",
+            Some(&first.branch),
+        )
+        .unwrap();
+        provision_agent(&reopened).unwrap();
+        assert_eq!(
+            repo.git(&["-C", &first.cwd, "rev-parse", "HEAD"]),
+            first_head
+        );
+        assert_eq!(std::fs::read(&cache).unwrap(), b"keep compiled cache");
+    }
 }
