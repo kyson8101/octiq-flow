@@ -101,10 +101,13 @@ try {
         assert.equal(await toggle.getAttribute("aria-checked"), String(dark));
         await settled(page, toggle, dark);
         const geometry = await toggle.boundingBox();
+        assert.equal(await page.locator('button[role="switch"]').count(), 1);
         assert.equal(geometry.width, 60);
         assert.equal(geometry.height, width === 390 ? 44 : 30);
         const row = await toggle.locator("..").boundingBox();
         assert.equal(row.height, geometry.height, "toggle fits a single Settings row");
+        if (width === 1280) assert(geometry.y > 800, "Settings and toggle sit at the desktop foot");
+        else assert(geometry.y < 300, "Settings and toggle stay in the phone places menu");
         const knobs = await toggle.locator("circle").elementHandles();
         assert.equal(knobs.length, 81);
         const before = await toggle.locator("circle").evaluateAll(dots => dots.map(dot => dot.dataset.lit));
@@ -143,7 +146,7 @@ try {
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
         report.scenes.push({ theme, width, dpr, geometry, focus });
       }
-      // Settings (applyTheme) updates both mounted copies. Last-used schemes
+      // Settings (applyTheme) updates the switch. Last-used schemes
       // round-trip even after a page reload.
       await page.evaluate(() => { window.toggleFixture.applyTheme("guofeng"); window.toggleFixture.applyTheme("manga"); });
       const toggle = page.getByRole("switch", { name: "Dark mode" });

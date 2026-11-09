@@ -576,7 +576,7 @@ export function Sidebar({
               aria-current={activeView === "pulls" ? "page" : undefined}>
               <PullRequestIcon /><span>Pull requests</span>
             </button></li>}
-            {onSettings && <li className="sidebar-settings-mobile">{settingsRow()}</li>}
+            {onSettings && <li className="sidebar-settings">{settingsRow()}</li>}
           </ul>
         </div>
 
@@ -605,8 +605,6 @@ export function Sidebar({
           <div className="sidebar-empty"><span>No chats yet</span>{allowEmptyCreate && <button type="button" onClick={onNewChat}>Start your first chat</button>}</div>
         )}
       </div>
-
-      {onSettings && <div className="sidebar-settings-desktop">{settingsRow()}</div>}
 
       {onResize && <span className="nav-resizer" onPointerDown={onResize} role="separator"
         aria-orientation="vertical" aria-label="Resize the chat column" />}

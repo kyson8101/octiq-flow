@@ -93,19 +93,27 @@
 
 .sidebar-appearance-row { display: flex; align-items: center; gap: 8px; }
 .sidebar-appearance-row > .sidebar-place { flex: 1; min-width: 0; }
-.sidebar-settings-mobile { display: none; }
-.sidebar-settings-desktop {
-  flex: 0 0 auto;
+.sidebar-settings {
+  position: absolute;
+  inset: auto 0 0;
   padding: 8px 14px max(8px, env(safe-area-inset-bottom));
   border-top: 1px solid var(--border);
+}
+/* One row, one switch, in keyboard order with the other places. Its desktop
+   containing block is the sidebar, outside the chat list's scroller. */
+@media (min-width: 860px) {
+  .task-sidebar:has(.sidebar-settings) {
+    padding-bottom: calc(46px + env(safe-area-inset-bottom));
+  }
 }
 @media (max-width: 859.98px), (pointer: coarse) {
   .appearance-toggle { height: 44px; }
 }
+@media (min-width: 860px) and (pointer: coarse) {
+  .task-sidebar:has(.sidebar-settings) { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
+}
 @media (max-width: 859.98px) {
-  .sidebar-settings-mobile { display: list-item; }
-  .sidebar-settings-desktop { display: none; }
-  .sidebar-settings-mobile .sidebar-appearance-row { padding-right: 8px; }
+  .sidebar-settings { position: static; padding: 0 8px 0 0; border-top: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .appearance-toggle-track, .appearance-toggle-knob, .appearance-toggle-dot { transition: none; }

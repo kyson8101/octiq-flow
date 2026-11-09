@@ -310,16 +310,14 @@ describe("task-oriented Sidebar", () => {
     expect(items.at(-2)).toContain('aria-current="page"');
   });
 
-  it("pairs Settings with the appearance switch in the phone places and desktop foot", () => {
+  it("pairs Settings with one appearance switch in the responsive places row", () => {
     const out = html({ onSettings: () => {} });
     const places = out.slice(out.indexOf('class="sidebar-places"'), out.indexOf("</ul>"));
-    const footer = out.slice(out.indexOf('class="sidebar-settings-desktop"'));
-    for (const section of [places, footer]) {
-      expect(section).toContain('class="sidebar-appearance-row"');
-      expect(section).toContain("Settings</span>");
-      expect(section).toContain('role="switch" aria-label="Dark mode"');
-    }
-    expect(out.indexOf('class="sidebar-settings-desktop"')).toBeGreaterThan(out.indexOf('class="sidebar-empty"'));
+    expect(places).toContain('class="sidebar-settings"');
+    expect(places).toContain('class="sidebar-appearance-row"');
+    expect(places).toContain("Settings</span>");
+    expect(out.match(/role="switch" aria-label="Dark mode"/g)).toHaveLength(1);
+    expect(out.match(/Settings<\/span>/g)).toHaveLength(1);
   });
 
   it("groups pinned chats above recent chats without duplicating either row", () => {
