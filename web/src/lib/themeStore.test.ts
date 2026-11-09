@@ -149,6 +149,34 @@ describe("appearance switching", () => {
     expect(dispatch.mock.calls.at(-1)?.[0].type).toBe(THEME_EVENT);
   });
 
+  it("toggles twice and preserves this visit's scheme history when storage writes exceed quota", () => {
+    storage.set("octiq.theme", GUOFENG_MODE);
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: () => { throw new DOMException("Full", "QuotaExceededError"); },
+    });
+    applyTheme(MANGA_MODE);
+    applyTheme(oppositeThemeId());
+    expect(attributes.get("data-theme")).toBe(GUOFENG_MODE);
+    applyTheme(oppositeThemeId());
+    expect(attributes.get("data-theme")).toBe(MANGA_MODE);
+    expect(lastThemeIdForScheme("dark")).toBe(GUOFENG_MODE);
+    expect(lastThemeIdForScheme("light")).toBe(MANGA_MODE);
+    expect(storage.get("octiq.theme")).toBe(GUOFENG_MODE);
+  });
+
+  it("can switch both ways when storage reads and writes are blocked", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("blocked"); },
+    });
+    applyTheme(MANGA_MODE);
+    applyTheme(oppositeThemeId());
+    expect(attributes.get("data-color-scheme")).toBe("dark");
+    applyTheme(oppositeThemeId());
+    expect(attributes.get("data-theme")).toBe(MANGA_MODE);
+  });
+
   it("migrates retired theme ids to a supported mode", () => {
     storage.set("octiq.theme", "one-light");
     expect(savedThemeId()).toBe(LIGHT_MODE);
