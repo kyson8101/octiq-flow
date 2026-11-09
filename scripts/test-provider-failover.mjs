@@ -35,6 +35,8 @@ function cli() {
   const out = (data) => process.stdout.write(JSON.stringify(data) + "\n");
   if (process.argv.includes("--version")) { console.log("stub 1.0.0"); return; }
   if (process.argv.includes("models")) { console.log("[]"); return; }
+  // Restricted Codex workers inspect inherited MCP servers before launching.
+  if (process.argv.includes("mcp") && process.argv.includes("list")) { console.log("[]"); return; }
   const thread = `new-${provider}-${process.pid}`;
   log({ argv: process.argv.slice(2), cwd: process.cwd(), attempt: process.env.OCTIQ_ORCHESTRATION_ATTEMPT });
   readline.createInterface({ input: process.stdin }).on("line", (line) => {

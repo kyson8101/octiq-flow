@@ -1,6 +1,6 @@
 // Real server/socket/queue/recovery, deterministic stub CLI providers. No model
 // calls or account credits. Fixtures and their home are removed on every exit.
-// Usage: node scripts/test-registered-runtime.mjs [octiq-server] [evidence-dir]
+// Usage: node scripts/test-registered-runtime.mjs [octiq-server] [evidence-dir] [account-switch|account-switch-fresh-fails|account-switch-quota]
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const binary = process.argv[2] || path.join(root, "src-tauri/target/debug/octiq-server");
 const evidence = process.argv[3] || fs.mkdtempSync(path.join(os.tmpdir(), "octiq-failover-evidence-"));
+const scenario = process.argv[4];
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "octiq-failover-"));
 const taskHome = path.join(fixture, "home"), bin = path.join(fixture, "bin"), repo = path.join(fixture, "repo");
 const mainRepo = path.join(fixture, "ordinary");
@@ -28,6 +29,13 @@ function cli() {
   const out = (data) => process.stdout.write(JSON.stringify(data) + "\n");
   if (process.argv.includes("--version")) { console.log("stub 1.0.0"); return; }
   if (process.argv.includes("models")) { console.log("[]"); return; }
+  // Restricted Codex workers inspect inherited MCP servers before launching.
+  if (process.argv.includes("mcp") && process.argv.includes("list")) { console.log("[]"); return; }
+  if (provider === "claude" && process.argv.includes("--resume") && fs.existsSync(process.env.FAILOVER_ACCOUNT_SWITCH)) {
+    log({ rejectedResume: process.argv[process.argv.indexOf("--resume") + 1] });
+    console.error("No conversation found with session ID: session belongs to previous account");
+    process.exit(1);
+  }
   const thread = `new-${provider}-${process.pid}`;
   log({ argv: process.argv.slice(2), cwd: process.cwd(), attempt: process.env.OCTIQ_ORCHESTRATION_ATTEMPT });
   readline.createInterface({ input: process.stdin }).on("line", (line) => {
@@ -55,11 +63,15 @@ function cli() {
     if (msg.type !== "user") return;
     const text = JSON.stringify(msg.message?.content ?? "");
     log({ text });
+    if (process.env.FAILOVER_FRESH_FAIL === "1" && fs.existsSync(process.env.FAILOVER_ACCOUNT_SWITCH)) {
+      console.error("No conversation found with session ID: fresh launch also failed");
+      process.exit(1);
+    }
     out({ type: "system", subtype: "init", session_id: thread, model: process.argv[process.argv.indexOf("--model") + 1], tools: [] });
     if (text.includes("TRIGGER_MODEL_NOT_FOUND")) {
       return out({ type: "result", subtype: "error_during_execution", is_error: true, session_id: thread, result: "model_not_found: configured Claude model is unavailable" });
     }
-    if (text.includes("TRIGGER_LIMIT")) {
+    if ((text.includes("TRIGGER_LIMIT") && !fs.existsSync(process.env.FAILOVER_ACCOUNT_SWITCH)) || process.env.FAILOVER_FRESH_QUOTA === "1") {
       out({ type: "result", subtype: "error_during_execution", is_error: true, session_id: thread, result: "You've hit your session limit", quotaLimits: { status: "rejected", resetsAt: Math.floor(Date.now() / 1000) + 3600 } });
     } else {
       out({ type: "assistant", session_id: thread, message: { role: "assistant", content: [{ type: "text", text: "Ready for the next instruction." }] } });
@@ -72,6 +84,7 @@ for (const provider of ["claude", "codex"]) fs.writeFileSync(path.join(bin, prov
 const shell = path.join(bin, "fixture-shell");
 fs.writeFileSync(shell, "#!/bin/sh\nif [ \"$1\" = '-lc' ]; then shift; exec /bin/sh -c \"$@\"; fi\nif [ \"$1\" = '-l' ]; then shift; fi\nexec /bin/sh \"$@\"\n", { mode: 0o755 });
 const env = { ...process.env, HOME: taskHome, SHELL: shell, PATH: `${bin}:${process.env.PATH}`, FAILOVER_TEST_LOG: log,
+  FAILOVER_ACCOUNT_SWITCH: path.join(fixture, "new-account"), FAILOVER_FRESH_QUOTA: scenario === "account-switch-quota" ? "1" : "0", FAILOVER_FRESH_FAIL: scenario === "account-switch-fresh-fails" ? "1" : "0",
   OCTIQ_WEB_PORT: String(port), OCTIQ_WEB_TOKEN: token, OCTIQ_CHAT_IDLE_MINS: "0" };
 let server = spawn(binary, [], { env, stdio: ["ignore", "pipe", "pipe"] });
 let serverLog = "", ws, sequence = 0;
@@ -103,20 +116,72 @@ try {
   const start = (id, extra = {}) => invoke("chat_start", { key: `chat:${id}`, cwd: mainRepo, agent: "claude", model: "claude-opus-5-5", access: "full", effort: "high", prompt: "Preserve the exact registered preset", turnId: `${id}-${sequence}`, ...extra });
   const heard = (key, type) => events.filter(e => e.event === "chat-event" && e.payload.key === key && e.payload.event.type === type);
   const starts = provider => calls().filter(c => c.provider === provider && c.argv);
+  if (scenario?.startsWith("account-switch")) {
+    await setup("registered");
+    await invoke("provider_fallback_policy_set", { owner: agent.id, rule: { mode: "ask", backup: null } });
+    await start("registered", { prompt: "TRIGGER_LIMIT", turnId: "old-account-turn" });
+    await wait("old account quota result", () => heard("chat:registered", "result").length === 1);
+    const native = heard("chat:registered", "system")[0].payload.event.session_id;
+    await invoke("chat_restart", { key: "chat:registered" });
+    ws.close(); server.kill("SIGTERM");
+    await new Promise(resolve => server.once("exit", resolve));
+    fs.writeFileSync(env.FAILOVER_ACCOUNT_SWITCH, "new account");
+    server = spawn(binary, [], { env, stdio: ["ignore", "pipe", "pipe"] });
+    server.stdout.on("data", data => { serverLog += data; }); server.stderr.on("data", data => { serverLog += data; });
+    await wait("new account server", async () => { try { return (await fetch(`http://127.0.0.1:${port}/healthz`)).status === 200; } catch { return false; } });
+    await connect();
+    if (scenario === "account-switch-quota") {
+      await invoke("provider_fallback_policy_set", { owner: agent.id, rule: { mode: "auto", backup: null } });
+    }
+    await start("registered", { resume: native, prompt: "CONTINUE_AFTER_ACCOUNT_SWITCH", turnId: "new-account-turn" });
+    await wait("native session rejection", () => calls().some(c => c.rejectedResume === native));
+    const fresh = () => starts("claude").filter(c => !c.argv.includes("--resume"));
+    await wait("one same-provider fresh recovery", () => fresh().length === 2);
+    if (scenario === "account-switch") {
+      await wait("fresh Claude result", () => heard("chat:registered", "result").length === 2);
+      assert.equal(heard("chat:registered", "octiq_native_session_recovered").length, 1);
+      assert.equal(heard("chat:registered", "result").at(-1).payload.event.subtype, "success");
+      const prompt = calls().filter(c => c.text?.includes("CONTINUE_AFTER_ACCOUNT_SWITCH")).at(-1).text;
+      assert(prompt.includes("TRIGGER_LIMIT"), "fresh session must retain previous bounded transcript");
+      assert(prompt.length < 170_000, "fresh transcript context is bounded");
+    }
+    if (scenario === "account-switch-quota") {
+      await wait("fresh quota result", () => heard("chat:registered", "result").length === 2);
+      assert.equal(heard("chat:registered", "octiq_auto_resume_scheduled").length, 1, "fresh recovery cannot schedule another Auto handoff");
+    }
+    await new Promise(resolve => setTimeout(resolve, scenario === "account-switch-quota" ? 16000 : 1000));
+    assert.equal(fresh().length, 2, "fresh launch cannot loop on another missing-session failure");
+    assert.equal(starts("codex").length, 0);
+    assert(fresh()[1].argv.includes("claude-opus-5-5"));
+    assert(fresh()[1].argv.includes("high"));
+    assert(fresh()[1].argv.includes("--dangerously-skip-permissions"));
+    const record = await invoke("chat_since", { key: "chat:registered", after: 0 });
+    assert.equal(record.filter(line => line.event.octiq_user_turn && line.event.uuid === "new-account-turn").length, 1);
+    await invoke("chat_restart", { key: "chat:registered" });
+    const launches = starts("claude").length;
+    await start("registered", { resume: native, prompt: "CONTINUE_AFTER_ACCOUNT_SWITCH", turnId: "new-account-turn" });
+    assert.equal(starts("claude").length, launches, "repeated turnId must not launch again");
+    results.sameClaudeAccountRecovery = true;
+    results.boundedFreshFailure = scenario === "account-switch-fresh-fails";
+  } else {
   await setup("registered");
   await start("registered");
   await wait("registered first result", () => heard("chat:registered", "result").length === 1);
   assert(starts("claude")[0].argv.includes("claude-opus-5-5"));
   assert.equal(starts("codex").length, 0);
   const native = heard("chat:registered", "system").find(e => e.payload.event.subtype === "init").payload.event.session_id;
-  await invoke("team_save", { agent: { ...agent, agent: "codex", model: "gpt-6.1-sol" } });
-  await assert.rejects(invoke("chat_send", { key: "chat:registered", text: "Must not reach the old provider", turnId: "refuse-wrong-live" }), /Stop this chat/);
-  await invoke("team_save", { agent });
+  await invoke("team_save", { agent: { ...agent, agent: "codex", model: "gpt-6.1-sol", effort: "low", access: "read" } });
+  await invoke("chat_send", { key: "chat:registered", text: "Continue this chat with its own settings", turnId: "existing-live" });
+  await wait("existing runtime after roster edit", () => heard("chat:registered", "result").length === 2);
   await invoke("chat_restart", { key: "chat:registered" });
   await start("registered", { resume: native });
-  await wait("registered continued result", () => heard("chat:registered", "result").length === 2);
+  await wait("registered continued result", () => heard("chat:registered", "result").length === 3);
   assert(starts("claude")[1].argv.includes("claude-opus-5-5"));
   assert(starts("claude")[1].argv.includes(native));
+  assert(starts("claude")[1].argv.includes("high"));
+  assert(starts("claude")[1].argv.includes("--dangerously-skip-permissions"));
+  assert.equal(starts("codex").length, 0);
+  await invoke("team_save", { agent });
   await invoke("chat_restart", { key: "chat:registered" });
   await setup("broken", "codex:model:claude-opus-5-5");
   // A cached wrong provider/model and foreign native id are deliberately sent
@@ -176,6 +241,43 @@ try {
   await invoke("chat_restart", { key: "chat:auto" });
   results.autoReceiptMatchesRuntime = true;
 
+  // A recovery Ask after Auto has a different source than its last live
+  // runtime. A CLI disappearing between Choose and dispatch must retain it.
+  await invoke("provider_fallback_policy_set", { owner: agent.id, rule: { mode: "ask", backup: null } });
+  const image = path.join(fixture, "pending.png");
+  fs.writeFileSync(image, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0xQAAAAASUVORK5CYII=", "base64"));
+  await assert.rejects(start("auto", { agent: "codex", model: "claude-opus-5-5", resume: "stale-foreign-session", prompt: "ONLY_PENDING_RECOVERY", images: [image], turnId: "pending-recovery" }), /provider card/);
+  const recoveryChoice = (await invoke("provider_fallback_choices", { key: "chat:auto" }))[0];
+  await invoke("provider_fallback_choose", { key: recoveryChoice.key, id: recoveryChoice.id, selection: { agent: "codex", model: "gpt-5.6-terra", effort: "low" }, remember: false });
+  const originalShell = fs.readFileSync(shell, "utf8");
+  fs.writeFileSync(shell, `#!/bin/sh
+if [ "$1" = '-lic' ]; then
+  printf 'claude\\t%s/claude\\n' '${bin}'
+  exit 0
+fi
+if [ "$1" = '-lc' ]; then shift; exec /bin/sh -c "$@"; fi
+if [ "$1" = '-l' ]; then shift; fi
+exec /bin/sh "$@"
+`, { mode: 0o755 });
+  await invoke("agent_installs", { refresh: true });
+  await wait("selected fallback unavailable", () => heard("chat:auto", "octiq_auto_resume_failed").length === 1);
+  const reopened = (await invoke("provider_fallback_choices", { key: "chat:auto" }))[0];
+  assert(reopened, "the sole pending request must reopen");
+  await assert.rejects(start("auto", { prompt: "ONLY_PENDING_RECOVERY", turnId: "pending-recovery" }), /already saved/);
+  fs.writeFileSync(shell, originalShell, { mode: 0o755 });
+  await invoke("agent_installs", { refresh: true });
+  await invoke("provider_fallback_choose", { key: reopened.key, id: reopened.id, selection: { agent: "codex", model: "gpt-5.6-terra", effort: "low" }, remember: false });
+  await wait("pending recovery delivered", () => calls().some(c => c.method === "turn/start" && JSON.stringify(c.params).includes("ONLY_PENDING_RECOVERY")));
+  await wait("pending recovery completed", () => heard("chat:auto", "turn.completed").length === 2);
+  const delivered = calls().filter(c => c.method === "turn/start" && JSON.stringify(c.params).includes("ONLY_PENDING_RECOVERY"));
+  assert.equal(delivered.length, 1);
+  assert(JSON.stringify(delivered[0].params).includes(image), "original image path retained");
+  const pendingRecord = await invoke("chat_since", { key: "chat:auto", after: 0 });
+  assert.equal(pendingRecord.filter(line => line.event.octiq_user_turn && line.event.uuid === "pending-recovery").length, 1);
+  assert.equal((await invoke("provider_fallback_choices", { key: "chat:auto" })).length, 0);
+  await invoke("chat_restart", { key: "chat:auto" });
+  results.reopenedRecoveryDeliveredOnce = true;
+
   // A blocked FIRST launch under Ask must persist the original message and
   // survive a real server restart without spending a provider call.
   await invoke("provider_fallback_policy_set", { owner: agent.id, rule: { mode: "ask", backup: null } });
@@ -229,6 +331,7 @@ exec /bin/sh "$@"
   assert.equal(starts("claude").length, beforeMissing);
   assert.match(heard("chat:missing-auto", "octiq_provider_switched")[0].payload.event.message, /CLI is unavailable/);
   results.missingCliAskAndExplicitAuto = true;
+  }
   results.pass = true;
 } catch (error) { results.pass = false; results.error = String(error.stack ?? error); }
 finally {

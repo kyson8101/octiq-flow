@@ -2,37 +2,48 @@
 
 ## Registered provider recovery
 
-`chat_start` keeps its existing socket arguments. For a registered lead or
-front desk, the server resolves provider, exact model and effort against its
-registration. A different runtime is retained only when the chat has durable
-`octiq_provider_switched` evidence for that exact selection. Access remains the
-chat's own setting. Unknown model ids remain provider-native; known foreign
-model families are rejected at registration, backup selection and the common
-process launch door.
+`chat_start` keeps its existing socket arguments. Registration configures new
+chats. A valid existing chat keeps its own provider, exact model, effort and
+access across `team_save`, restarts and continuation; the current roster is
+not authority to reject or migrate it. A valid runtime does not need historical
+fallback evidence to remain valid. Unknown model ids remain provider-native;
+known foreign model families are rejected at registration, backup selection
+and the common process launch door.
 
-A cached invalid combination such as `codex:model:claude-opus-5-5`, or a runtime
-with no switch evidence, is recovered on the next `chat_start` in the same chat.
-The server starts the registered preset with bounded transcript context and
-drops the foreign or unverified native session id. It preserves the transcript,
-records `octiq_registered_recovered` with the previous settings/session, and
-publishes the existing `chat-provider-switch` event to align the picker and
-index. `octiq_registered_index_settings` preserves the previous tuple before an
-optimistic browser save, and is not fallback authorization. Repeating a delivered `turnId` does not launch another turn; a stale
-browser retry uses the already recovered native session when it is known.
-Preparation/launch failure leaves prior runtime settings in place and returns
-an actionable error. The browser must never substitute an installed provider
-for an unavailable one on its own.
-
-An already-running process with invalid settings is refused by `chat_send`.
-Stop it before sending again; recovery never kills an in-flight turn implicitly.
+Only a proven invalid provider/model combination such as
+`codex:model:claude-opus-5-5` is repaired from the registered preset on the next
+`chat_start`. A foreign or unverified native session id is never reused across
+providers: a valid runtime with such an id keeps its settings and receives
+bounded transcript context in a fresh own session. The transcript and previous
+settings/session remain recorded; `octiq_registered_recovered` and the existing
+`chat-provider-switch` event disclose the recovered runtime. An optimistic
+browser save first records the previous tuple in
+`octiq_registered_index_settings`; this is not fallback consent. A repeated
+started `turnId` launches nothing. Preparation/launch failure returns an
+actionable error. The browser must never substitute an installed provider.
+An already-running process with a proven invalid tuple is refused by
+`chat_send`; Stop it before recovery, which never kills an in-flight turn.
 
 Unavailable CLIs and known account limits follow the fallback policy. Ask saves
-a durable choice, including an initial send's text, images and turn id, before
-returning a visible waiting error. The existing `provider_fallback_choices` and
-`provider_fallback_choose` socket commands resume it, including after restart.
-Auto may select only a compatible available runtime, preserving Access and the
-registered preset, and emits `octiq_provider_switched`. An unsupported model
-error is not a usage-limit signal and does not authorize a provider change.
+a durable choice with the send's text, images and turn id before returning a
+visible waiting error. `provider_fallback_choices` and `provider_fallback_choose`
+resume it across restart. If the selected CLI disappears before dispatch, the
+same pending request reopens for another choice, including when its source
+runtime differs from its previous live runtime. It is never discarded by
+finishing the failed selection. Auto may select only a compatible available
+runtime, preserving Access, and emits `octiq_provider_switched`. An unsupported
+model error is not a usage-limit signal and does not authorize provider change.
+
+After changing Claude accounts, an old native session may no longer exist.
+Only an explicit missing-session failure before any accepted native output
+allows one fresh Claude session with the same exact model, effort, access,
+original turn id and bounded transcript. This is not cross-provider failover;
+it cannot repeat from the fresh launch or bypass Stop, worker reservation,
+background-work or ordinary launch guards. A fresh recovery's quota failure is
+surfaced without scheduling another retry or automatic provider handoff.
+`octiq_native_session_recovered`
+discloses it. Stub integration verifies this path; real Claude account switching
+has not been tested.
 
 Agents mode is a switch in **Settings → Agents**. When it is off, chats work
 exactly as before. The idea follows [Paperclip](https://paperclip.ing/): you

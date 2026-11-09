@@ -12,37 +12,12 @@ fn same_model(a: &Settings, b: &Settings) -> bool {
     a.agent == b.agent && a.model == b.model && a.effort == b.effort
 }
 
-/// Existing processes from an older build cannot receive another turn under a
-/// mismatched registration. Do not kill an in-flight turn to repair settings.
-pub(super) fn require_current(key: &str, start: &StartContext) -> Result<(), String> {
-    if key.starts_with("chat:orch-") {
-        return Ok(());
-    }
-    let Some(preset) = crate::team::defaults_for_chat(&crate::team::default_path(), key)? else {
-        return crate::agent_provider::validate_model(start.agent, start.model.as_deref());
-    };
-    let preset = Settings {
-        agent: preset.agent,
-        model: Some(preset.model),
-        effort: preset.effort,
-        access: start.settings().access,
-    };
-    crate::agent_provider::validate_model(preset.agent, preset.model.as_deref())?;
-    if same_model(&start.settings(), &preset) {
-        return Ok(());
-    }
-    if select(
-        key,
-        &start.settings(),
-        &preset,
-        start.session_id.clone(),
-        Some(start),
-    )?
-    .recovered
-    {
-        return Err("This running chat's provider/model does not match its registered agent or a recorded fallback. Stop this chat, then send again to recover its registered settings with the existing transcript. No message was sent to the mismatched provider.".into());
-    }
-    Ok(())
+/// Registration configures new chats. An existing process owns its settings;
+/// only a proven foreign provider/model tuple is refused here.
+pub(super) fn require_current(_key: &str, start: &StartContext) -> Result<(), String> {
+    crate::agent_provider::validate_model(start.agent, start.model.as_deref()).map_err(|why| {
+        format!("{why}. Stop this chat, then send again to recover the invalid provider/model with its existing transcript. No message was sent.")
+    })
 }
 
 /// A browser can save its optimistic picker before requesting a start. Retain
@@ -77,7 +52,6 @@ pub(super) fn select(
     resume: Option<String>,
     remembered: Option<&StartContext>,
 ) -> Result<Selection, String> {
-    crate::agent_provider::validate_model(preset.agent, preset.model.as_deref())?;
     let lines = crate::transcript::every_line(key)?;
     let last_change = lines.iter().rev().find(|line| {
         matches!(
@@ -90,10 +64,19 @@ pub(super) fn select(
         .filter(|runtime| {
             crate::agent_provider::validate_model(runtime.agent, runtime.model.as_deref()).is_ok()
         });
-    let allowed = same_model(requested, preset)
-        || evidenced
-            .as_ref()
-            .is_some_and(|runtime| same_model(requested, runtime));
+    let valid =
+        crate::agent_provider::validate_model(requested.agent, requested.model.as_deref()).is_ok();
+    let existing = remembered.is_some()
+        || !lines.is_empty()
+        || key
+            .strip_prefix("chat:")
+            .map(crate::chat_index::find)
+            .transpose()?
+            .flatten()
+            .is_some();
+    // A valid saved chat is not evidence of corruption merely because its
+    // registration changed. Unknown native models remain provider-native.
+    let allowed = valid && (existing || same_model(requested, preset));
     let wrong_session = resume.as_deref().is_some_and(|id| {
         let known = remembered
             .filter(|start| start.session_id.as_deref() == Some(id))
@@ -121,6 +104,16 @@ pub(super) fn select(
             recovered: false,
         });
     }
+    if allowed {
+        // A foreign/unverified session cannot migrate this chat's runtime.
+        // Keep the valid tuple and recover context in a fresh own session.
+        return Ok(Selection {
+            runtime: requested.clone(),
+            resume: None,
+            recovered: true,
+        });
+    }
+    crate::agent_provider::validate_model(preset.agent, preset.model.as_deref())?;
     // Repeated stale browser sends after a successful recovery resume the
     // recovered native session, rather than creating one per stale request.
     let resume = remembered
@@ -187,8 +180,8 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_codex_opus_and_silent_sol_restore_roster_and_drop_foreign_session() {
-        for model in ["claude-opus-5-5", "gpt-5.6-sol"] {
+    fn corrupt_codex_opus_restores_roster_and_drops_foreign_session() {
+        for model in ["claude-opus-5-5"] {
             let key = key();
             let wrong = Settings {
                 agent: ChatAgent::Codex,
@@ -254,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn durable_failover_evidence_allows_exact_runtime_only_and_keeps_access() {
+    fn valid_existing_runtime_keeps_its_settings_after_registration_changes() {
         let key = key();
         let switched = crate::provider_failover::equivalent(&preset(), ChatAgent::Codex).unwrap();
         let mut event = serde_json::to_value(&switched).unwrap();
@@ -279,11 +272,14 @@ mod tests {
             model: Some("gpt-5.6-luna".into()),
             ..switched
         };
-        assert!(
-            select(&key, &changed, &preset(), None, None)
-                .unwrap()
-                .recovered
-        );
+        let kept = select(&key, &changed, &preset(), None, None).unwrap();
+        assert_eq!(kept.runtime, changed);
+        assert!(!kept.recovered);
+        let mut current = StartContext::for_test(ChatAgent::Codex, Some("codex-new-session"));
+        current.model = changed.model.clone();
+        current.effort = Some("low".into());
+        current.access = Some(Access::Read);
+        require_current(&key, &current).unwrap();
     }
 
     #[test]

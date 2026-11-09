@@ -3705,7 +3705,7 @@ fn chat_start_with_user_turn(
     {
         return Ok(());
     }
-    let defaults = registered
+    let mut defaults = registered
         .map(|preset| crate::provider_failover::Settings {
             agent: preset.agent,
             model: Some(preset.model),
@@ -3723,10 +3723,16 @@ fn chat_start_with_user_turn(
         let selected =
             registered_runtime::select(&key, &source, &defaults, resume, previous_start.as_ref())?;
         agent = selected.runtime.agent;
-        model = selected.runtime.model;
-        effort = selected.runtime.effort;
+        model = selected.runtime.model.clone();
+        effort = selected.runtime.effort.clone();
         resume = selected.resume;
         recovered = selected.recovered;
+        if crate::agent_provider::validate_model(source.agent, source.model.as_deref()).is_ok() {
+            defaults = previous_start
+                .as_ref()
+                .map(StartContext::default_settings)
+                .unwrap_or_else(|| selected.runtime.clone());
+        }
         if recovered && resume.is_none() {
             handoff = Some(provider_history(&key)?);
         }
@@ -3895,7 +3901,7 @@ fn chat_start_with_user_turn(
             }
         } else if recovered {
             provider_switch::announce_runtime_change(&manager, &key, &requested_source, &source,
-                "octiq_registered_recovered", "Recovered this registered agent's configured provider and exact model in a fresh compatible session. Earlier transcript and settings remain in the record.", previous_resume.as_deref())?;
+                "octiq_registered_recovered", "Recovered this chat's compatible provider and exact model in a fresh session. Earlier transcript and settings remain in the record.", previous_resume.as_deref())?;
         }
     } else if recovered {
         if let Some(start) = previous_start {
@@ -4497,6 +4503,52 @@ pub(crate) fn start_session(
     // wrapper. `None` means the provider prompt is already the visible turn.
     visible_prompt: Option<String>,
 ) -> Result<(), String> {
+    start_session_with_recovery(
+        manager,
+        voice,
+        cwd,
+        agent,
+        model,
+        access,
+        prompt,
+        resume,
+        extra_dirs,
+        env,
+        effort,
+        images,
+        lite,
+        user_turn_id,
+        record_user_turn,
+        visible_prompt,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_session_with_recovery(
+    manager: Arc<ChatManager>,
+    voice: Voice,
+    cwd: String,
+    agent: ChatAgent,
+    model: Option<String>,
+    access: Option<Access>,
+    prompt: Option<String>,
+    resume: Option<String>,
+    extra_dirs: Option<Vec<String>>,
+    env: Option<std::collections::BTreeMap<String, String>>,
+    effort: Option<String>,
+    images: Option<Vec<String>>,
+    lite: Option<bool>,
+    user_turn_id: Option<String>,
+    // Whether this launch still owes the transcript its canonical user event.
+    // A queued command-line turn records at enqueue time and passes `false`
+    // when its later resume process starts, avoiding a duplicate prompt.
+    record_user_turn: bool,
+    // The person-visible text when the provider receives a larger handoff
+    // wrapper. `None` means the provider prompt is already the visible turn.
+    visible_prompt: Option<String>,
+    mut recovery_fence: Option<claude_session_recovery::Fence>,
+) -> Result<(), String> {
     crate::agent_provider::validate_model(agent, model.as_deref())?;
     let Voice {
         session_key,
@@ -4579,6 +4631,15 @@ pub(crate) fn start_session(
             return Err("The provider switch was cancelled.".into());
         }
     }
+    if let Some(fence) = &recovery_fence {
+        fence.check()?;
+        // Same runtime, fresh native session. Save only after the final Stop
+        // fence under the session-table lock used by ordinary starts.
+        if let Some(mut saved) = manager.start_context(&session_key) {
+            saved.session_id = None;
+            manager.remember_start(&session_key, saved);
+        }
+    }
     let notification_start = user_turn_id
         .as_deref()
         .is_some_and(|id| id.starts_with(crate::orchestration::inbox::RECEIPT_PREFIX));
@@ -4627,6 +4688,43 @@ pub(crate) fn start_session(
         std::iter::once(&cwd).chain(extra_dirs.iter().flatten()),
         access != Some(Access::Read),
     )?;
+
+    let mut native_recovery = (agent == ChatAgent::Claude
+        && !orchestration_worker
+        && !front_desk
+        && session_key == key
+        && resume.is_some()
+        && prompt.is_some()
+        && user_turn_id.is_some())
+    .then(|| {
+        claude_session_recovery::Request::new(
+            &manager,
+            &key,
+            StartContext {
+                cwd: cwd.clone(),
+                agent,
+                model: model.clone(),
+                access,
+                extra_dirs: extra_dirs.clone(),
+                env: env.clone(),
+                effort: effort.clone(),
+                lite,
+                session_id: resume.clone(),
+                defaults: manager
+                    .start_context(&key)
+                    .map(|start| start.default_settings()),
+            },
+            visible_prompt
+                .clone()
+                .or_else(|| prompt.clone())
+                .unwrap_or_default(),
+            images.clone().unwrap_or_default(),
+            user_turn_id.clone().unwrap(),
+        )
+    });
+    let recovery_observation = native_recovery
+        .as_ref()
+        .map(|request| request.observation());
 
     // The folder we start in is already visible to the agent, so naming it
     // again would be noise; blanks and repeats are dropped for the same reason.
@@ -4791,6 +4889,10 @@ pub(crate) fn start_session(
     .map_err(|e| format!("could not start {}: {e}", provider.bin()))?;
     let launch_id = uuid::Uuid::new_v4().to_string();
     let capability = manager.grant_capability(&sessions, &session_key, &key, &launch_id);
+    if let Some(fence) = recovery_fence.as_mut() {
+        fence.after_own_launch();
+        fence.check()?;
+    }
     let project_env = crate::workspaces::resolved_env(&env.unwrap_or_default());
     // `octiq-job` on the agent's PATH, and where its shells reach the host
     // from (`chat_jobs::agent_env`): put before the project's PATH.
@@ -4806,6 +4908,9 @@ pub(crate) fn start_session(
     // (`job_spool.rs`). A front desk keeps no jobs.
     if !front_desk {
         job_env.extend(manager.spools.open(&key, &session_key, &launch_id));
+    }
+    if let Some(fence) = &recovery_fence {
+        fence.check()?;
     }
     let mut child = shell
         .command(&format!("exec {line}"))
@@ -4881,6 +4986,13 @@ pub(crate) fn start_session(
         .spawn()
         .map_err(|e| format!("could not start {}: {e}", provider.bin()))?;
 
+    if let Some(fence) = &recovery_fence {
+        if let Err(why) = fence.check() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(why);
+        }
+    }
     let stdout = child
         .stdout
         .take()
@@ -4962,6 +5074,9 @@ pub(crate) fn start_session(
         leaving: None,
     }));
     sessions.insert(session_key.clone(), session.clone());
+    if let Some(request) = native_recovery.as_mut() {
+        request.arm();
+    }
     manager.remember_binary(&session_key, provider.bin());
     // The level the hook will be answered with, from here until it changes.
     // Unset is the most cautious of the three, matching `OCTIQ_ACCESS` above.
@@ -5015,6 +5130,8 @@ pub(crate) fn start_session(
         let rt = answer_runtime();
         // The reader is where a chat learns its own session id.
         let reading = manager.clone();
+        let recovery_observation = recovery_observation.clone();
+        let mut native_recovery_turn = recovery_fence.is_some();
         thread::spawn(move || {
             let mut output_state = OutputState::default();
             // Kept only when the provider explicitly says a limit is blocking.
@@ -5045,6 +5162,10 @@ pub(crate) fn start_session(
                 }
                 match serde_json::from_str::<Value>(trimmed) {
                     Ok(mut event) => {
+                        if let Some(observation) = &recovery_observation {
+                            observation.event(&event);
+                        }
+
                         if transport.is_app_server() {
                             codex_elicitation::observe(&asking, &mut event);
                             if crate::codex_app_server::is_server_request(&event) {
@@ -5211,13 +5332,21 @@ pub(crate) fn start_session(
                                 quota_reset_hint,
                                 crate::auto_resume::unix_now(),
                             );
-                            schedule_quota_resume(
-                                &reading,
-                                &key,
-                                &session_key,
-                                stream_provider.kind(),
-                                quota_reset_hint,
-                            );
+                            if native_recovery_turn {
+                                // This one recovery is strictly same-provider.
+                                // A fresh failure cannot turn it into another
+                                // automatic retry or cross-provider handoff.
+                                emit_status(stream_provider.kind(), ChatStatus { key: key.clone(), kind: "error".into(),
+                                    text: "The fresh Claude recovery reached its account limit. No further retry or provider switch was started. Check the Claude account before continuing, or explicitly choose a fallback.".into(), code: None });
+                            } else {
+                                schedule_quota_resume(
+                                    &reading,
+                                    &key,
+                                    &session_key,
+                                    stream_provider.kind(),
+                                    quota_reset_hint,
+                                );
+                            }
                         }
                         let observed = stream_provider.observe_event(&event);
                         if let Ok(mut session) = asking.lock() {
@@ -5362,6 +5491,7 @@ pub(crate) fn start_session(
                         let mut wrap_up = None;
                         let mut auto_plan_end = None;
                         if observed.turn_finished {
+                            native_recovery_turn = false;
                             // The full stop is also when the next message the
                             // person already sent is finally handed over. Taken
                             // and written under the SAME lock the turn ends
@@ -5549,6 +5679,9 @@ pub(crate) fn start_session(
                 if line.trim().is_empty() {
                     continue;
                 }
+                if let Some(observation) = &recovery_observation {
+                    observation.stderr(&line);
+                }
                 let disposition = stderr_provider.classify_output(&line, &mut output_state);
                 if disposition == OutputDisposition::Visible {
                     if let Err(error) = observing.orchestrations.observe_worker_output(&key, &line)
@@ -5608,7 +5741,16 @@ pub(crate) fn start_session(
                         // to ride: its stdin died with it, so anything still
                         // waiting is dropped here rather than left to surface
                         // in whatever is started under this key later.
-                        let queued_turn = if manager_for_exit
+                        if native_recovery.is_some() {
+                            manager_for_exit
+                                .handoffs
+                                .lock()
+                                .unwrap()
+                                .insert(session_key_for_exit.clone());
+                        }
+                        let queued_turn = if native_recovery.is_some() {
+                            None
+                        } else if manager_for_exit
                             .auto_resumes
                             .switch_waits(&session_key_for_exit)
                         {
@@ -5650,8 +5792,36 @@ pub(crate) fn start_session(
                 .ok()
                 .flatten()
                 .is_some();
-            let drained = (is_worker || manager_for_exit.background.has_running(&key))
+            let drained = (is_worker
+                || native_recovery.is_some()
+                || manager_for_exit.background.has_running(&key))
                 && (0..2).all(|_| output_drained.recv_timeout(Duration::from_secs(2)).is_ok());
+
+            if let Some(recovery) = native_recovery {
+                let recovered = if was_current && recovery.eligible(code, drained) {
+                    match recovery.run(manager_for_exit.clone(), &key) {
+                        Ok(()) => true,
+                        Err(why) => {
+                            emit_status(agent, ChatStatus { key: key.clone(), kind: "error".into(),
+                                text: format!("Could not recover the Claude session: {why}. No other provider was started."), code: None });
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
+                manager_for_exit
+                    .handoffs
+                    .lock()
+                    .unwrap()
+                    .remove(&session_key_for_exit);
+                if recovered {
+                    return;
+                }
+                if was_current {
+                    manager_for_exit.forget_queued_turns(&session_key_for_exit);
+                }
+            }
 
             // A command-line provider has no second-input channel. If somebody
             // sent a message after its full-stop but before this reaper saw the
@@ -9117,11 +9287,7 @@ pub fn start_auto_resume_scheduler(manager: Arc<ChatManager>) {
                 let result = run_scheduled_resume(manager.clone(), &entry);
                 if let Err(why) = &result {
                     crate::auto_resume::announce_failed(&entry, why);
-                    if entry.user_selected
-                        && manager
-                            .start_context(&entry.chat_key)
-                            .is_none_or(|start| start == entry.start)
-                    {
+                    if entry.user_selected && provider_switch::unchanged_start(&manager, &entry) {
                         match manager.auto_resumes.reopen_switch(&entry) {
                             Ok(Some(pending)) => crate::auto_resume::announce_scheduled(&pending),
                             Ok(None) => {}
@@ -9129,6 +9295,9 @@ pub fn start_auto_resume_scheduler(manager: Arc<ChatManager>) {
                                 eprintln!("[chat] could not restore provider choice: {error}")
                             }
                         }
+                        // Never delete the sole pending request when restoring
+                        // its choice failed to persist. It remains held, not sent.
+                        continue;
                     }
                 }
                 if let Err(why) = manager.auto_resumes.finish(&entry) {
@@ -9230,6 +9399,8 @@ mod ending_tests;
 #[path = "reach_tests.rs"]
 mod reach_tests;
 
+#[path = "claude_session_recovery.rs"]
+mod claude_session_recovery;
 #[path = "provider_switch.rs"]
 mod provider_switch;
 #[path = "registered_runtime.rs"]

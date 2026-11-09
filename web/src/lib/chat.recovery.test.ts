@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { addUserTurn, emptyChat, reduceChat } from "./chat";
 
 describe("recovery exit evidence", () => {
+  it("discloses a fresh same-Claude session and clears the rejected native id", () => {
+    const event = { type: "octiq_native_session_recovered", agent: "claude", model: "claude-opus-5-5", session_id: "fresh-claude", message: "Continued once in a fresh Claude session" };
+    const after = reduceChat({ ...emptyChat(), sessionId: "old-account-session" }, event);
+    expect(after.sessionId).toBe("fresh-claude");
+    expect(after.model).toBe("claude-opus-5-5");
+    expect(after.failure).toBeUndefined();
+    expect(reduceChat(after, event).notices).toEqual([event.message]);
+  });
   it("replays registered recovery without keeping a foreign native session", () => {
     const event = { type: "octiq_registered_recovered", agent: "claude", model: "claude-opus-5-5", session_id: null, message: "Recovered registered settings" };
     const after = reduceChat({ ...emptyChat(), sessionId: "codex-old" }, event);

@@ -125,6 +125,22 @@ pub(super) fn announce_runtime_change(
     Ok(())
 }
 
+/// Initial recovery may have a different source from the last live runtime.
+/// Both preflight and failure restoration must compare the same saved context.
+pub(super) fn unchanged_start(
+    manager: &ChatManager,
+    entry: &crate::auto_resume::ScheduledResume,
+) -> bool {
+    manager.start_context(&entry.chat_key).is_none_or(|start| {
+        start
+            == *entry
+                .pending_turn
+                .as_ref()
+                .and_then(|turn| turn.previous_start.as_ref())
+                .unwrap_or(&entry.start)
+    })
+}
+
 pub(super) fn run_provider_switch(
     manager: Arc<ChatManager>,
     entry: &crate::auto_resume::ScheduledResume,
@@ -210,15 +226,7 @@ pub(super) fn run_provider_switch(
         if !manager.auto_resumes.active_switch(key, &entry.id) {
             return Err("The provider switch was cancelled.".into());
         }
-        if manager.start_context(key).is_some_and(|start| {
-            start
-                != entry
-                    .pending_turn
-                    .as_ref()
-                    .and_then(|turn| turn.previous_start.as_ref())
-                    .unwrap_or(&entry.start)
-                    .clone()
-        }) {
+        if !unchanged_start(&manager, entry) {
             return Err("The chat's settings changed before provider switching.".into());
         }
         if let Some(session) = sessions.get(key).cloned() {
@@ -284,7 +292,15 @@ pub(super) fn run_provider_switch(
         .map_err(|e| e.to_string())?
         .remove(key);
     if result.is_err() {
-        manager.remember_start(key, entry.start.clone());
+        manager.remember_start(
+            key,
+            entry
+                .pending_turn
+                .as_ref()
+                .and_then(|turn| turn.previous_start.as_ref())
+                .unwrap_or(&entry.start)
+                .clone(),
+        );
     }
     result?;
     if let Some(turn) = &entry.pending_turn {
@@ -297,6 +313,60 @@ pub(super) fn run_provider_switch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_selected_recovery_reopens_the_original_pending_turn_after_previous_runtime() {
+        let home = crate::test_dir::TestDir::new("reopen-recovery-choice");
+        let _pin = crate::profile::started_in(&home);
+        let manager = ChatManager::with_saved_questions(home.join("questions.json"));
+        let key = format!("chat:pending-recovery-{}", uuid::Uuid::new_v4());
+        let previous = StartContext::for_test(ChatAgent::Codex, Some("fallback-session"));
+        manager.remember_start(&key, previous.clone());
+        let source = StartContext::for_test(ChatAgent::Claude, Some("original-session"));
+        let target =
+            crate::provider_failover::equivalent(&source.settings(), ChatAgent::Codex).unwrap();
+        let pending = crate::auto_resume::PendingTurn {
+            text: "ONLY_PENDING_REQUEST".into(),
+            images: vec!["/original/image.png".into()],
+            turn_id: "pending-turn".into(),
+            previous_start: Some(previous.clone()),
+        };
+        let scheduled = manager
+            .auto_resumes
+            .schedule_start_choice(
+                &key,
+                source.clone(),
+                target.clone(),
+                100,
+                true,
+                false,
+                Some(pending.clone()),
+            )
+            .unwrap()
+            .unwrap();
+        manager
+            .auto_resumes
+            .choose_switch(&key, &scheduled.id, target)
+            .unwrap();
+        let entry = manager
+            .auto_resumes
+            .claim_due(crate::auto_resume::unix_now())
+            .unwrap()
+            .remove(0);
+        assert_ne!(manager.start_context(&key), Some(source));
+        assert!(unchanged_start(&manager, &entry));
+        let reopened = manager.auto_resumes.reopen_switch(&entry).unwrap().unwrap();
+        manager.auto_resumes.finish(&entry).unwrap();
+        let reloaded = ChatManager::with_saved_questions(home.join("questions.json"));
+        let restored = reloaded.auto_resumes.scheduled().unwrap().pop().unwrap();
+        assert_eq!(restored.id, reopened.id);
+        assert!(restored.awaiting_choice);
+        let restored = restored.pending_turn.unwrap();
+        assert_eq!(restored.text, pending.text);
+        assert_eq!(restored.images, pending.images);
+        assert_eq!(restored.turn_id, pending.turn_id);
+        assert_eq!(restored.previous_start, Some(previous));
+    }
 
     #[test]
     fn handoff_context_does_not_deliver_queued_requests_early() {
