@@ -925,6 +925,44 @@ describe("a failure the coordinator is fixing, and one that is history, is no co
   });
 });
 
+describe("a failed task queued for a slot", () => {
+  // Copies of the recorded exhausted failure, with the queue fields added.
+  // The old host leaves the person's failure behind; the fixed host marks
+  // the retry and hands it to the coordinator. Neither asks the person.
+  const scenes = [false, true].flatMap(fixed => [false, true].map(summary => {
+    const recorded = hostFacts.failureAwaitsPerson();
+    const ledger = placed(summary ? summaryFact(recorded) : recorded);
+    Object.assign(ledger.tasks[0], {
+      slotWait: { reason: "host", ahead: 0, running: 1, limit: 1 },
+      ...(fixed ? { retrying: true, failure: { kind: "failed", awaits: "coordinator" } } : {}),
+    });
+    return { name: `${fixed ? "fixed" : "old"} host, ${summary ? "summary" : "detail"}`, ledger };
+  }));
+
+  it.each(scenes)("$name: every failure surface is quiet and the task is queued", ({ ledger }) => {
+    const { a, counts, line, attention, stripHtml, drawnRows, people, crew, mine, dev } = surfaces(ledger);
+    for (const [surface, said] of Object.entries(counts)) {
+      if (said.failed !== null) expect(said.failed, surface).toBe(0);
+    }
+    expect(a).toMatchObject({ state: "planned", group: "planned", tone: null, decisions: 0,
+      why: "Queued · machine limit (1 of 1 running)", failure: null, flight: false });
+    expect(drawnRows[0]).toContain('data-state="planned"');
+    expect(drawnRows[0]).not.toMatch(/data-tone="danger"|data-attention="true"|orch-task-ask/);
+    expect(runPanelCss).toMatch(/\.orch-task\[data-state="planned"\]\s*\{\s*--task-color:\s*var\(--fg-3\)/);
+    expect(runPanelCss.indexOf('.orch-task[data-state="planned"]')).toBeGreaterThan(runPanelCss.indexOf('.orch-task[data-status="failed"]'));
+    expect(stripHtml).toContain('>Queued</span>');
+    expect(stripHtml).not.toMatch(/data-state="failed"|data-state="needs"/);
+    expect(line).toBe("Queued · 0/1 done");
+    expect(attention).toMatchObject({ decisions: 0, failed: 0, blocked: 0, total: 0 });
+    expect(people.map(person => person.state)).toEqual(["assigned"]);
+    expect(crew.map(person => person.state)).toEqual(["assigned"]);
+    expect(mine).toMatchObject({ state: "queued", label: a.why });
+    expect(mine?.tone).toBeUndefined();
+    expect(dev.state).toBe("queued");
+    expect(failureOf(ledger.tasks[0])).toBeNull();
+  });
+});
+
 describe("whose move a failure is has one reader", () => {
   const task = (over: Partial<OrchestrationTask>) => ({ status: "failed", ...over }) as OrchestrationTask;
 
@@ -1030,7 +1068,7 @@ type Allowed = Record<string, { uses: number; why: string }>;
  *  The counts are exact: one more use in any of them fails this test, and
  *  so does a use anywhere else. */
 const COMPLETED: Allowed = {
-  "./orchestration.ts": { uses: 6, why: "the status types of a run, a task, an attempt and an execution; isSettled, the one comparison of a task's status with the word; and shownRunStatus, of a RUN the host calls completed while a failure in it is still somebody's move" },
+  "./orchestration.ts": { uses: 7, why: "the status types of a run, a task, an attempt and an execution; isSettled, the one comparison of a task's status with the word; and shownRunStatus, of a RUN the host calls completed while work is queued or a failure is still somebody's move" },
   "./taskHold.ts": { uses: 3, why: "a RUN that completed offers no start; an ATTEMPT that completed leaves a ready task its next attempt; the raw ledger status says Completed without claiming the task finished well" },
   "./agentsDashboard.ts": { uses: 1, why: "a RUN that is over has no plan waiting" },
   "./missionPage.ts": { uses: 1, why: "a RUN that has ended hands no task on" },

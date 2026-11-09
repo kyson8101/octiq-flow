@@ -14,17 +14,19 @@ it("names agent, ahead, host and an absent slot wait", () => {
   expect(taskSlot({})).toBeNull();
 });
 it("lets plan, reopen and stopped holds lead", () => {
-  for (const patch of [{ heldByPlan: true }, { heldByReopen: true }, { stopped: { attemptId: "a", at: 1 } }]) {
-    const held = { ...task, ...patch };
+  for (const status of ["ready", "failed"] as const) for (const patch of [{ heldByPlan: true }, { heldByReopen: true }, { stopped: { attemptId: "a", at: 1 } }]) {
+    const held = { ...task, status, ...patch };
     const hold = taskHold(held, run, [held], 1);
     expect(hold).not.toBeNull(); expect(taskSlot(held, hold)).toBe(hold!.label);
+    const snapshot = { runs: [run], tasks: [held], attempts: [], gates: [], messages: [] };
+    expect(runProgress(snapshot, run, 1).rows[0]).toMatchObject({ state: "planned", why: hold!.label, hold });
   }
 });
 it("keeps a queued task Planned and neutral across waits, completion and Agents", () => {
   const snapshot: OrchestrationSnapshot = { runs: [run], tasks: [task], attempts: [], gates: [], messages: [] };
   const waits = runWaits(snapshot, run);
   expect(waits.person).toEqual([]);
-  expect(finishedWell(task)).toBe(false); expect(failureShown(task)).toBeNull();
+  expect(finishedWell(task)).toBe(false); expect(failureShown(task)).toBe("quiet");
   expect(runProgress(snapshot, run, 1).rows[0]).toMatchObject({ state: "planned", group: "planned", tone: null, decisions: 0, why: taskSlot(task), flight: false });
   expect(runProgress({ ...snapshot, tasks: [{ ...task, retrying: true }] }, run, 1).rows[0]).toMatchObject({ state: "planned", tone: null, decisions: 0, why: taskSlot(task) });
   expect(taskState(task, run, undefined, waits.tasks.get(task.id) ?? NO_WAITS, null)).toMatchObject({ state: "queued", label: taskSlot(task) });

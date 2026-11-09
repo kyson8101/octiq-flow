@@ -162,6 +162,14 @@ const OLD_RUN = (() => {
 })();
 
 const SHAPES: Shape[] = [
+  ...[false, true].map(fixed => ({
+    name: `queued exhausted failure, ${fixed ? "fixed" : "old"} host fields`, host: "new" as const, person: 0,
+    ledger: ledger({ runs: [run({ status: "failed" })], tasks: [task("a", {
+      status: "failed", retriesUsed: 2, retryLimit: 2, retrying: fixed,
+      failure: { kind: "failed", awaits: fixed ? "coordinator" : "person", because: "retries_used" },
+      slotWait: { reason: "host", ahead: 0, running: 1, limit: 1 },
+    })], attempts: [attempt("a", { status: "failed", execution: { state: "failed", retryCount: 0 } })] }),
+  })),
   // The reviewer's truth table, on a host that does not say who is waited on.
   { name: "all planned", host: "old", person: 0, ledger: ledger({ tasks: [task("a", { status: "pending", activeAttemptId: undefined })], attempts: [] }) },
   { name: "one executing", host: "old", person: 0, ledger: ledger() },

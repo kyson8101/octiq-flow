@@ -26,7 +26,7 @@ test('browser QA roots and filesystem imports survive spaces and native drive pa
   }
 });
 
-for (const name of ['media-review']) {
+for (const name of ['media-review', 'scheduling-ui']) {
   test(`${name} uses the portable root and module loader`, async () => {
     const script = await readFile(new URL(`./test-${name}.mjs`, import.meta.url), 'utf8');
     assert.match(script, /browserPaths\(import.meta.url\)/);
