@@ -303,8 +303,6 @@ use a 15-minute cooldown. Registered agent defaults and identity do not change.
   worker model restrictions and every normal reservation gate still apply.
   A cancelled worker choice stays held; a new attempt/assignee cannot inherit
   its old one-time answer. These commands have no agent-hook route.
-- Chat portraits render only the island rig's head and head/face accessories
-  (`island/portrait.ts`), with the same cached blink/idle strip.
 - Validate with Rust approval/schedule tests and
   `node scripts/test-provider-failover.mjs`: real server/socket and stub CLIs,
   isolated home and profile, no paid model calls. Add `claude ask` or
@@ -394,7 +392,6 @@ directories, not these file roots. Native cards carry the actual provider.
 | chat record compaction (size when last compacted) | `<chats dir>/.compacted-sizes-v2.json` | `record_trim.rs` |
 | Antigravity plugin, settings backup | `~/.octiqflow/mcp/antigravity/` | `agent_provider.rs` |
 | job spool folders (a sandboxed chat's `octiq-job`; never in the profile) | `$TMPDIR/octiqflow-job-spool-<uid>/` | `job_spool.rs` — see `docs/jobs.md` |
-| the island (plots, 波特, assets, wishes) | `<profile dir>/island.json` | `island.rs` — see `docs/island.md` |
 
 `profile.rs` decides the profile dir; `profile_lock.rs` makes sure only one
 process owns a profile at a time (a second one refuses to start rather than
@@ -2777,68 +2774,6 @@ or shows a process already running with the MCP `job_register`; the page reads
 - **The wrapper never fails the command for the host's sake**: with no hook
   environment, or a host that does not answer, it runs the command, passes
   its output through unchanged and exits with its code.
-
-### The island
-
-A 3D island on its own page (sidebar → Island): every registered agent,
-called 波特 on the island, lives there as a chibi robot, on a honeycomb of
-hexagonal plots round a plaza with a wish tree and a
-playground. The contract is `docs/island.md`; three owners, and nothing
-crosses between them:
-
-- **The host keeps the island** (`island.rs`, `<profile dir>/island.json`):
-  who lives there, plots and homes, assets, placements, looks and wishes. It
-  is the only writer, checks every asset an agent sends, and makes wishes on
-  its own slow clock (a thread, once the island exists, never under test).
-- **Agents build** through `/hook/island` (MCP `island_look`, `island_build`,
-  `island_grant`, `island_style`, `island_place`), as the chat their
-  capability proves. A front desk is refused everything, a worker and a room
-  seat everything but `look`, and only a registered agent's own chat has a
-  robot and a plot to change. The tools' descriptions are short; the whole
-  building guide comes back from `island_look`, so a chat pays for it only
-  when it builds.
-- **The page draws it and makes it live** (`components/IslandPage`,
-  `lib/island/*`), with no agent process behind any of it: walking, sitting,
-  saying hi, chatting, playing on the swings, the seesaw and the slide or at
-  tag, being turned down and crying, getting bored, sleeping at night
-  (`lib/island/sim.ts`). None of that is stored or sent; another tab draws
-  its own.
-
-Rules that hold:
-
-- **Buildings have no roof.** The host refuses a building with a wide part
-  above 1.2 m or too much cover above 1.2 m from parts that do not stand on
-  the floor (`docs/island.md`), so the person
-  can always see inside; the page also fades whatever stands between the
-  camera and the robot being watched. A new way to make a building goes
-  through the same check.
-- **An agent's robot shows its real work, read once.** What it does comes
-  from the app's one reading of the agents (`agentRoster`, through
-  `lib/useAgentRows`, shared with the Agents page): a turn in flight is its
-  desk, a card waiting on the person is a hand up in `--decide`, a failure is
-  trouble. Nothing on the island reads the ledger or the card lists itself;
-  `lib/runWaits.wiring.test.ts` holds `held={pendingHeld}` on the page.
-- **Grant starts a background island task.** The page calls
-  `island_wish_start`; the host reads the stored brief and immediately starts
-  a conversation with an installed provider that has Octiq MCP and guarded
-  Edits access (Claude, Codex or Antigravity). The island stays open; the
-  normal chat lifecycle owns the process, record and permission cards.
-- **Agents' looks are their persona hue and model family until they choose**
-  (`lib/island/model.defaultAgentLook`): the trim is the colour of their face
-  everywhere else in the app.
-- **The playground's cell `(−1, 0)` and the plaza `(0, 0)` are never plots.**
-  波特 are the registered agents. Each team shares an office; unteamed
-  agents share the Agent Tower. Old personal plots are storage anchors,
-  and granted public projects get their own plots.
-- **three.js loads for the island page and for chat portraits** (which use
-  the island rig); the view owns its canvas and lets its context go on dispose
-  (`renderer.forceContextLoss`), because a browser keeps only a few and the
-  terminals need theirs. It pauses when the page is hidden.
-- **Look at it without a server**: `web/island.html` on the Vite dev server
-  draws a made-up island in the host's shape (`?hour=23`, `?follow=<key>`),
-  and `?page` draws the real page with the host's answers made up. The
-  shared Playwright browser is driven by other sessions too; take screenshots
-  in a browser of your own.
 
 ### Attention alerts
 

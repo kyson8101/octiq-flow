@@ -1016,7 +1016,7 @@ body {
 .task-chat-list .chat:focus-within .chat-snippet,
 .task-chat-list .chat.is-pinned .chat-snippet { padding-right: 0; }
 .task-chat-list .chat-workflow-status { margin-top: 1px; line-height: 17px; }
-/* Let the metadata line contain the 28px island portrait and project chips.
+/* Let the metadata line contain the 28px agent avatar and project chips.
    A fixed text-line height clips the avatar and undercounts the card's room. */
 .chat-meta {
   display: flex;

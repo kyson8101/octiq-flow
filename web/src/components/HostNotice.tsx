@@ -9,7 +9,7 @@ import "./HostNotice.css";
 
 function NoticeFace({ persona }: { persona?: Persona | null }) {
   return persona
-    ? <AgentAvatar island name={persona.name} avatar={persona.avatar} id={persona.id ?? persona.name} removed={persona.removed} size={16} decorative />
+    ? <AgentAvatar name={persona.name} avatar={persona.avatar} id={persona.id ?? persona.name} removed={persona.removed} size={16} decorative />
     : <svg className="host-notice-face" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" aria-hidden="true"><rect x="2.5" y="4.5" width="11" height="9" rx="3" /><path d="M8 2v2.5M5.5 8h.01M10.5 8h.01M6 11h4" strokeLinecap="round" /></svg>;
 }
 

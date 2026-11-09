@@ -2374,7 +2374,7 @@ pub(crate) mod tests {
         ] {
             assert!(!line.contains("OCTIQ_FRONT_DESK"), "{line}");
             assert!(!line.contains("route_chat"), "{line}");
-            // Access requests use a card; the three island present tools are host-only.
+            // Access requests use a card.
             assert!(line.contains(ask_access), "{line}");
             assert_eq!(
                 line.matches("approval_mode").count(),

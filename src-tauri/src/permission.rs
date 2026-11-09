@@ -75,10 +75,6 @@ pub const HOST_BOOKKEEPING: &[&str] = &[
     "feedback_get",
     "search_conversations",
     "read_conversation",
-    "island_propose",
-    "island_look",
-    "island_build",
-    "island_grant",
     "pin_file",
     "handover",
     "handover_ask",
@@ -352,22 +348,6 @@ impl Drop for PendingCard {
 
 /// Ask, and wait for an answer.
 pub async fn ask(request: Request) -> Answer {
-    // A Grant authorized these host-only tools. A background island maker
-    // never raises a permission card for unrelated work.
-    if request
-        .chat_key
-        .as_deref()
-        .is_some_and(|key| key.starts_with("chat:island-wish-"))
-    {
-        let allowed = request.tool_name.as_deref().is_some_and(|tool| {
-            matches!(
-                tool,
-                "mcp__octiq__island_look" | "mcp__octiq__island_build" | "mcp__octiq__island_grant"
-            )
-        });
-        return Answer { decision: if allowed { "allow" } else { "deny" },
-            reason: if allowed { "the person requested this island present" } else { "Background island tasks may use only island tools; do not ask the person for more access." }.into() };
-    }
     // Nothing is second-guessed here any more.
     //
     // This used to run FIRST in the permission chain, as a PreToolUse hook, so
@@ -741,45 +721,5 @@ mod tests {
         assert!(!host_bookkeeping("mcp__other__task_status"));
         assert!(!host_bookkeeping("task_status"));
         assert!(!host_bookkeeping("Bash"));
-    }
-
-    #[tokio::test]
-    async fn an_island_present_uses_its_three_host_tools_without_asking_and_refuses_unrelated_work()
-    {
-        let key = format!("chat:island-wish-{}", uuid::Uuid::new_v4());
-        for tool in [
-            "mcp__octiq__island_look",
-            "mcp__octiq__island_build",
-            "mcp__octiq__island_grant",
-        ] {
-            assert!(host_bookkeeping(tool));
-            let answer = ask(Request {
-                chat_key: Some(key.clone()),
-                tool_name: Some(tool.into()),
-                ..Default::default()
-            })
-            .await;
-            assert_eq!(answer.decision, "allow");
-        }
-        for tool in [
-            "Bash",
-            "mcp__octiq__request_access",
-            "mcp__octiq__agent_register",
-            "mcp__other__island_grant",
-        ] {
-            assert_eq!(
-                ask(Request {
-                    chat_key: Some(key.clone()),
-                    tool_name: Some(tool.into()),
-                    ..Default::default()
-                })
-                .await
-                .decision,
-                "deny"
-            );
-        }
-        assert!(!pending()
-            .iter()
-            .any(|ask| ask.request.chat_key.as_deref() == Some(&key)));
     }
 }
