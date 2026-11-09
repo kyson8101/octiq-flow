@@ -103,14 +103,15 @@
    containing block is the sidebar, outside the chat list's scroller. */
 @media (min-width: 860px) {
   .task-sidebar:has(.sidebar-settings) {
-    padding-bottom: calc(46px + env(safe-area-inset-bottom));
+    /* 30px control + 8px top padding + 1px border + the actual bottom padding. */
+    padding-bottom: calc(39px + max(8px, env(safe-area-inset-bottom)));
   }
 }
 @media (max-width: 859.98px), (pointer: coarse) {
   .appearance-toggle { height: 44px; }
 }
 @media (min-width: 860px) and (pointer: coarse) {
-  .task-sidebar:has(.sidebar-settings) { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
+  .task-sidebar:has(.sidebar-settings) { padding-bottom: calc(53px + max(8px, env(safe-area-inset-bottom))); }
 }
 @media (max-width: 859.98px) {
   .sidebar-settings { position: static; padding: 0 8px 0 0; border-top: 0; }

@@ -72,6 +72,16 @@ const KEY = "octiq.theme";
  *  xterm hands its palette to WebGL and cannot read a `var()`. */
 export const THEME_EVENT = "octiq-theme";
 
+// Persistence only seeds a visit. Once a palette is applied, it and the
+// scheme history stay authoritative even when storage is full or blocked.
+let appliedThemeId: string | undefined;
+const appliedByScheme: Partial<Record<Theme["scheme"], string>> = {};
+
+export function currentThemeId(): string {
+  return appliedThemeId ?? savedThemeId();
+}
+
+/** Startup preference only; live UI reads currentThemeId instead. */
 export function savedThemeId(): string {
   const saved = recall(KEY);
   if (saved === LIGHT_MODE || saved === "one-light") return LIGHT_MODE;
@@ -93,19 +103,20 @@ export function themeById(id: string): Theme {
 /** Shared by Settings and the sidebar, including when the sidebar is absent.
  *  Ignore retired ids and ids saved under the wrong scheme. */
 export function lastThemeIdForScheme(scheme: Theme["scheme"]): string {
+  if (appliedByScheme[scheme]) return appliedByScheme[scheme];
   const id = recall(`${KEY}.last-${scheme}`);
   return THEMES.find((theme) => theme.id === id && theme.scheme === scheme)?.id
     ?? (scheme === "light" ? LIGHT_MODE : DARK_MODE);
 }
 
-export function oppositeThemeId(id = savedThemeId()): string {
+export function oppositeThemeId(id = currentThemeId()): string {
   return lastThemeIdForScheme(themeById(id).scheme === "dark" ? "light" : "dark");
 }
 
 /** Put a theme on the screen and remember it. */
 export function applyTheme(id: string): void {
   const theme = themeById(id);
-  const previous = themeById(savedThemeId());
+  const previous = themeById(currentThemeId());
   const root = document.documentElement;
 
   if (!theme.tokens) {
@@ -120,6 +131,9 @@ export function applyTheme(id: string): void {
   }
   root.setAttribute("data-color-scheme", theme.scheme);
 
+  appliedThemeId = theme.id;
+  appliedByScheme[previous.scheme] = previous.id;
+  appliedByScheme[theme.scheme] = theme.id;
   remember(`${KEY}.last-${previous.scheme}`, previous.id);
   remember(`${KEY}.last-${theme.scheme}`, theme.id);
   remember(KEY, theme.id);

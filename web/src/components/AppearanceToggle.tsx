@@ -1,5 +1,6 @@
-import { useEffect, useState, type CSSProperties } from "react";
-import { applyTheme, oppositeThemeId, savedThemeId, THEME_EVENT, themeById } from "../lib/themeStore";
+import type { CSSProperties } from "react";
+import { applyTheme, oppositeThemeId, themeById } from "../lib/themeStore";
+import { useThemeId } from "../lib/useThemeId";
 import "./AppearanceToggle.css";
 
 // One physical grid: the same LEDs re-light as the knob travels. Integer
@@ -28,14 +29,7 @@ const SUN = [
 ].join("");
 
 export function AppearanceToggle() {
-  const [id, setId] = useState(savedThemeId);
-  useEffect(() => {
-    const changed = () => setId(savedThemeId());
-    window.addEventListener(THEME_EVENT, changed);
-    // Catch a Settings change between render and subscription too.
-    changed();
-    return () => window.removeEventListener(THEME_EVENT, changed);
-  }, []);
+  const id = useThemeId();
   const dark = themeById(id).scheme === "dark";
   const bitmap = dark ? MOON : SUN;
   return (

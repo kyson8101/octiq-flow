@@ -9,7 +9,7 @@ import { useState } from "react";
 
 import { askPermission, permissionNow, setOn, supported } from "../lib/notify";
 import * as push from "../lib/push";
-import { applyTheme, preview, THEMES } from "../lib/themeStore";
+import { preview, THEMES } from "../lib/themeStore";
 import { CHAT_WIDTH_DEFAULT, CHAT_WIDTHS, chatWidth as widthOf, type ChatWidthId } from "../lib/chatWidth";
 import type { ProjectDetail } from "./ProjectSettings";
 import { ProjectAvatar } from "./ProjectAvatar";
@@ -33,8 +33,8 @@ function compareProjectNames(left: ProjectDetail, right: ProjectDetail): number 
 }
 
 export function Settings({ current, onPick, chatWidth = CHAT_WIDTH_DEFAULT, onChatWidth, notify, onNotify, projects, onProject, agentsMode = false, onAgentsMode, onFeedback, initialSection = "projects", onClose }: {
-  /** The chosen theme's id. Held by App so the sheet can close and reopen
-   *  without forgetting, and so nothing re-reads localStorage to draw a tick. */
+  /** The applied theme's id. App subscribes to the shared theme store so
+   *  a sidebar choice also updates the selected tile and its ARIA state. */
   current: string;
   onPick: (id: string) => void;
   /** How wide the conversation column is drawn. Held by App, which applies
@@ -60,11 +60,6 @@ export function Settings({ current, onPick, chatWidth = CHAT_WIDTH_DEFAULT, onCh
   initialSection?: SettingsSection;
   onClose: () => void;
 }) {
-  const choose = (id: string) => {
-    applyTheme(id);
-    onPick(id);
-  };
-
   // What the browser has decided, re-read after each ask. Not derived from
   // `notify`: a switch that is on and a browser that says "denied" is exactly
   // the state worth telling somebody about, and one boolean cannot say it.
@@ -326,7 +321,7 @@ export function Settings({ current, onPick, chatWidth = CHAT_WIDTH_DEFAULT, onCh
                         type="button"
                         role="radio"
                         aria-checked={selected}
-                        onClick={() => choose(theme.id)}
+                        onClick={() => onPick(theme.id)}
                       >
                         <span className="thm-shot" style={{ background: p.bg }} aria-hidden="true">
                           <span className="thm-bar" style={{ background: p.sunken }} />

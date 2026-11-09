@@ -24,7 +24,7 @@ const main = {
   cwd: webRoot, createdAt: now - 500_000, updatedAt: now - 1_000,
 };
 const chats = [main, ...Array.from({ length: 80 }, (_, i) => ({
-  ...main, id: `review-${i}`, title: `Review ${i}`, updatedAt: now - 10_000 - i * 1_000,
+  ...main, id: `review-${i}`, sessionId: `session-review-${i}`, title: `Review ${i}`, updatedAt: now - 10_000 - i * 1_000,
 }))];
 function resultFor(request) {
   switch (request.cmd) {
@@ -69,26 +69,45 @@ try {
     });
     await context.route("**/token", r => r.fulfill({ body: "mock-token" }));
     await context.route("**/auth", r => r.fulfill({ body: "ok" }));
+    let appSocket;
     await context.routeWebSocket(/.*/, socket => socket.onMessage(raw => {
       const r = JSON.parse(String(raw));
-      if (r.t === "invoke") socket.send(JSON.stringify({ t: "reply", id: r.id, ok: true, result: resultFor(r) }));
+      if (r.t === "invoke") {
+        appSocket = socket;
+        socket.send(JSON.stringify({ t: "reply", id: r.id, ok: true, result: resultFor(r) }));
+      }
     }));
     const page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.on("pageerror", e => report.errors.push(String(e.stack)));
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/#/p/octiq-flow/c/main`, { waitUntil: "domcontentloaded", timeout: 60_000 });
     await page.locator(".composer-row").first().waitFor();
+    // Refresh after App has subscribed; the deep-link fixture can read the
+    // initial index before its ordinary sidebar subscriber has mounted.
+    appSocket.send(JSON.stringify({ t: "event", event: "chat-index-changed", payload: { id: main.id, gone: false } }));
+    await page.waitForFunction(count => document.querySelectorAll(".task-chat-list > .chat-row").length === count, chats.length);
     const toggle = page.getByRole("switch", { name: "Dark mode" });
     const showSidebar = async () => {
       if (!await toggle.isVisible()) await page.getByRole("button", { name: "Show chats", exact: true }).first().click();
     };
     const assertTheme = async (id, scheme, checked) => {
-      await page.waitForFunction(({ id, scheme, checked }) =>
-        document.documentElement.dataset.colorScheme === scheme
-        && document.querySelector('.thm[aria-checked="true"]')?.dataset.themeId === id
-        && document.querySelector('.appearance-toggle')?.getAttribute("aria-checked") === String(checked),
-      { id, scheme, checked });
-      assert.equal(await page.locator('.thm[aria-checked="true"]').count(), 1);
+      try {
+        await page.waitForFunction(({ id, scheme, checked }) =>
+          document.documentElement.dataset.colorScheme === scheme
+          && document.querySelectorAll('.thm[data-theme-id][aria-checked="true"]').length === 1
+          && document.querySelector('.thm[data-theme-id][aria-checked="true"]')?.dataset.themeId === id
+          && document.querySelector('.appearance-toggle')?.getAttribute("aria-checked") === String(checked),
+        { id, scheme, checked });
+      } catch (error) {
+        report.actual = await page.evaluate(() => ({
+          scheme: document.documentElement.dataset.colorScheme,
+          selected: [...document.querySelectorAll('.thm[data-theme-id][aria-checked="true"]')].map(el => el.dataset.themeId),
+          switches: [...document.querySelectorAll('.appearance-toggle')].map(el => el.getAttribute("aria-checked")),
+        }));
+        await page.screenshot({ path: join(artifacts, `failure-${width}.png`) });
+        throw error;
+      }
+      assert.equal(await page.locator('.thm[data-theme-id][aria-checked="true"]').count(), 1);
     };
     // M1: a real sidebar press while Settings is unmounted, then open it.
     await showSidebar();
@@ -97,12 +116,16 @@ try {
     await page.getByRole("button", { name: /Appearance/ }).first().click();
     await assertTheme("light", "light", false);
     await page.screenshot({ path: join(artifacts, `settings-after-toggle-${width}.png`) });
-    // Keep Settings mounted while a change is made outside its picker.
-    await page.evaluate(async () => { (await import("/src/lib/themeStore.ts")).applyTheme("guofeng"); });
+    // Keep Settings mounted while the sidebar changes its selected tile.
+    await showSidebar();
+    await toggle.click();
+    await assertTheme("dark", "dark", true);
+    if (width === 390) await page.locator(".sidebar-place", { hasText: /^Settings$/ }).click();
+    await page.locator('.thm[data-theme-id="guofeng"]').click();
     await assertTheme("guofeng", "dark", true);
     await page.locator('.thm[data-theme-id="manga"]').click();
     await assertTheme("manga", "light", false);
-    await page.evaluate(async () => { (await import("/src/lib/themeStore.ts")).applyTheme("dark"); });
+    await page.locator('.thm[data-theme-id="dark"]').click();
     await assertTheme("dark", "dark", true);
 
     // M2: persisted Dark stays stale; live palette and both controls still
@@ -117,10 +140,13 @@ try {
     await assertTheme("dark", "dark", true);
     assert.equal(await page.evaluate(() => localStorage.getItem("octiq.theme")), "dark");
     // A fresh last-used choice survives in memory too, with reads blocked.
-    await page.evaluate(async () => {
+    if (width === 390) await page.locator(".sidebar-place", { hasText: /^Settings$/ }).click();
+    await page.evaluate(() => {
       Storage.prototype.getItem = () => { throw new DOMException("Blocked", "SecurityError"); };
-      (await import("/src/lib/themeStore.ts")).applyTheme("xp");
     });
+    await page.locator('.thm[data-theme-id="xp"]').click();
+    await assertTheme("xp", "light", false);
+    await showSidebar();
     await toggle.click();
     await assertTheme("dark", "dark", true);
     await toggle.click();
@@ -129,11 +155,15 @@ try {
     if (width === 1280) {
       layout = await page.evaluate(() => {
         const footer = document.querySelector(".sidebar-settings").getBoundingClientRect();
-        const scroller = document.querySelector(".task-chat-list");
+        const scroller = document.querySelector(".task-chat-content");
         scroller.scrollTop = scroller.scrollHeight;
-        return { footerTop: footer.top, footerHeight: footer.height, scrollerBottom: scroller.getBoundingClientRect().bottom };
+        const rows = [...scroller.querySelectorAll(".chat-row")];
+        return { footerTop: footer.top, footerHeight: footer.height, scrollerBottom: scroller.getBoundingClientRect().bottom,
+          rows: rows.length, lastRowBottom: rows.at(-1).getBoundingClientRect().bottom };
       });
+      assert.equal(layout.rows, chats.length);
       assert.ok(layout.scrollerBottom <= layout.footerTop, JSON.stringify(layout));
+      assert.ok(layout.lastRowBottom <= layout.footerTop, JSON.stringify(layout));
     }
     report.scenes.push({ width, outsideSettings: "pass", quotaRoundTrip: "pass", blockedStorageHistory: "pass", layout });
     await context.close();
