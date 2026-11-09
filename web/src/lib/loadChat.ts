@@ -98,7 +98,7 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
       if (!String(error).includes("not available on this backend")) throw error;
     }
   }
-  const run = page?.events ?? missing ?? await request(from);
+  let run = page?.events ?? missing ?? await request(from);
   if (cancelled()) return;
   // Imported sessions may have a local transcript before the server has any
   // events for this key. An empty answer must not erase those messages.
@@ -108,10 +108,42 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
   const seed = from === 0 && run?.length
     ? { ...emptyChat(), sessionId: before.sessionId, cwd: before.cwd }
     : before;
-  const context = page?.context ?? [];
+  let context = page?.context ?? [];
   let next = await replayChat(seed, context, 0, cancelled);
   next = await replayChat(next, run ?? [], from, cancelled);
   if (cancelled()) return;
+  // A recent page can contain only host bookkeeping, orphan tool results or
+  // subagent lines (MessageList files those under their parent's tool card).
+  // Opening that window used to draw only "Load earlier messages". Read back
+  // until the main conversation has a turn, keeping the newest events too.
+  // A checkpoint with no main turn needs the same fresh-page recovery.
+  const hasTurn = () => pendingAfterReplay(next, getState(), [...context, ...(run ?? [])])
+    .messages.some(message => !message.parent);
+  if (!hasTurn() && !page && recent) {
+    // chat_since may have read newer events than the preceding recent-page read.
+    const tail = recent.events.at(-1)?.seq ?? 0;
+    page = { ...recent, events: [...recent.events, ...(missing ?? []).filter(frame => frame.seq > tail)] };
+    from = 0;
+    run = page.events; context = page.context;
+    next = await replayChat({ ...emptyChat(), sessionId: before.sessionId, cwd: before.cwd }, context, 0, cancelled);
+    next = await replayChat(next, run, 0, cancelled);
+    if (cancelled()) return;
+  }
+  let pages = 1;
+  let bytes = page ? valueBytes(page) : 0;
+  while (page?.before != null && options.requestPage && !hasTurn()
+    && pages < CHAT_WINDOW_PAGES && bytes < CHAT_WINDOW_BYTES) {
+    const older = await options.requestPage(page.before);
+    if (cancelled()) return;
+    if (older.before !== null && older.before >= page.before) throw new Error("History cursor did not advance");
+    bytes += valueBytes(older); pages++;
+    page = { events: [...older.events, ...page.events], context: older.context, before: older.before };
+    run = page.events; context = page.context;
+    // Replay in record order so a newer tool result rejoins its older call.
+    next = await replayChat({ ...emptyChat(), sessionId: before.sessionId, cwd: before.cwd }, context, 0, cancelled);
+    next = await replayChat(next, run, 0, cancelled);
+    if (cancelled()) return;
+  }
   // end includes events held during download AND the yielding replay. Only
   // events beyond the replay's tail still need folding.
   const tail = run?.length ? run[run.length - 1].seq : from;
