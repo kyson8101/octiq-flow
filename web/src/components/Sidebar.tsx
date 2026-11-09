@@ -30,6 +30,7 @@ import { entryClass, useEntry } from "../lib/useArrival";
 import { useRowMotion } from "../lib/rowMotion";
 import { Arrive } from "./Arrive";
 import "./MobileSidebar.css";
+import { AppearanceToggle } from "./AppearanceToggle";
 import "./SidebarArchive.css";
 
 export type Project = ProjectAppearance & {
@@ -568,10 +569,7 @@ export function Sidebar({
               aria-current={activeView === "pulls" ? "page" : undefined}>
               <PullRequestIcon /><span>Pull requests</span>
             </button></li>}
-            {onSettings && <li><button className="sidebar-place" type="button" onClick={onSettings}
-              aria-current={activeView === "settings" ? "page" : undefined}>
-              <SettingsIcon /><span>Settings</span>
-            </button></li>}
+            {onSettings && <li className="sidebar-settings">{settingsRow()}</li>}
           </ul>
         </div>
 
@@ -605,6 +603,16 @@ export function Sidebar({
         aria-orientation="vertical" aria-label="Resize the chat column" />}
     </nav>
   );
+
+  function settingsRow(): ReactNode {
+    return <div className="sidebar-appearance-row">
+      <button className="sidebar-place" type="button" onClick={onSettings}
+        aria-current={activeView === "settings" ? "page" : undefined}>
+        <SettingsIcon /><span>Settings</span>
+      </button>
+      <AppearanceToggle />
+    </div>;
+  }
 
   function emptyRecent(): ReactNode {
     if (showArchived) {

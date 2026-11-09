@@ -180,7 +180,8 @@ import { AgentRosterContext, ChatPersonaContext } from "./lib/agentRoster";
 
 /** Outside agents mode nothing is drawn as a registered agent. */
 const NO_ROSTER: readonly TeamAgent[] = [];
-import { savedThemeId } from "./lib/themeStore";
+import { applyTheme } from "./lib/themeStore";
+import { useThemeId } from "./lib/useThemeId";
 import { Usage, UsageRow } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { OrchestrationPanel } from "./components/OrchestrationPanel";
@@ -819,7 +820,7 @@ export default function App() {
   const workerRequestIds = useMemo(() => conversationId && !workerChat
     ? [...chatParents.keys()].filter((id) => mainChatId(id, chatParents) === conversationId)
     : [], [conversationId, workerChat, chatParents]);
-  const [themeId, setThemeId] = useState(savedThemeId);
+  const themeId = useThemeId();
 
   const [termOpen, setTermOpen] = useState(() => localStorage.getItem(TERM_KEY) === "1");
   // The git column beside the chat. It lives up here rather than inside the
@@ -5654,7 +5655,7 @@ export default function App() {
           {appSettings && (
             <Settings
               current={themeId}
-              onPick={setThemeId}
+              onPick={applyTheme}
               chatWidth={chatWidth}
               onChatWidth={changeChatWidth}
               notify={notifyOn}

@@ -1,0 +1,121 @@
+/* Decorative lights are independent of activity and decision colours.
+   The physical shape stays the same in all seven appearance modes. */
+.appearance-toggle {
+  --toggle-track: #d6d3cd;
+  --toggle-face-top: #fffefa;
+  --toggle-face-bottom: #e5e0d6;
+  --toggle-edge: #b5aea0;
+  --toggle-led: #805018;
+  --toggle-glow: #efb44b;
+  --toggle-highlight: #ffffff;
+  --toggle-focus: #7856a8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 60px;
+  width: 60px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.appearance-toggle[aria-checked="true"] {
+  --toggle-track: #0a0b0f;
+  --toggle-face-top: #34353b;
+  --toggle-face-bottom: #202128;
+  --toggle-edge: #55565f;
+  --toggle-led: #fff7df;
+  --toggle-glow: #8984ff;
+  --toggle-highlight: #c9c9d0;
+  --toggle-focus: #c2afff;
+}
+.appearance-toggle:focus-visible {
+  outline: 2px solid var(--toggle-focus);
+  outline-offset: 3px;
+}
+.appearance-toggle-track {
+  position: relative;
+  display: block;
+  width: 60px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--toggle-track);
+  box-shadow: inset 0 2px 4px rgb(0 0 0 / 38%), 0 1px 0 rgb(255 255 255 / 12%);
+  transition: background-color 220ms ease-out;
+}
+.appearance-toggle-knob {
+  position: absolute;
+  isolation: isolate;
+  top: 2px;
+  left: 2px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--toggle-edge);
+  border-radius: 8px;
+  background: linear-gradient(var(--toggle-face-top), var(--toggle-face-bottom));
+  box-shadow: inset 0 1px 1px color-mix(in srgb, var(--toggle-highlight) 38%, transparent),
+    inset 0 -1px 2px rgb(0 0 0 / 22%), 0 2px 3px rgb(0 0 0 / 30%);
+  transform: translateX(32px);
+  transition: transform 240ms ease-out, border-color 220ms ease-out;
+}
+.appearance-toggle[aria-checked="true"] .appearance-toggle-knob { transform: translateX(0); }
+.appearance-toggle-knob::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  /* Light spills below the face; its source never crosses the LED grid. */
+  top: calc(100% + 1px);
+  left: 3px;
+  right: 3px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--toggle-glow);
+  filter: blur(1px);
+  box-shadow: 0 1px 5px 1px var(--toggle-glow), 0 3px 9px var(--toggle-glow);
+  opacity: 0.65;
+  pointer-events: none;
+}
+.appearance-toggle-knob > svg { display: block; width: 18px; height: 18px; }
+.appearance-toggle-dot {
+  fill: var(--toggle-led);
+  opacity: 0.085;
+  transform: scale(0.7);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: opacity 140ms ease-out var(--dot-delay), transform 140ms ease-out var(--dot-delay);
+}
+.appearance-toggle-dot[data-lit="true"] { opacity: 1; transform: scale(1); }
+
+.sidebar-appearance-row { display: flex; align-items: center; gap: 8px; }
+.sidebar-appearance-row > .sidebar-place { flex: 1; min-width: 0; }
+.sidebar-settings {
+  position: absolute;
+  inset: auto 0 0;
+  padding: 8px 14px max(8px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+}
+/* One row, one switch, in keyboard order with the other places. Its desktop
+   containing block is the sidebar, outside the chat list's scroller. */
+@media (min-width: 860px) {
+  .task-sidebar:has(.sidebar-settings) {
+    /* 30px control + 8px top padding + 1px border + the actual bottom padding. */
+    padding-bottom: calc(39px + max(8px, env(safe-area-inset-bottom)));
+  }
+}
+@media (max-width: 859.98px), (pointer: coarse) {
+  .appearance-toggle { height: 44px; }
+}
+@media (min-width: 860px) and (pointer: coarse) {
+  .task-sidebar:has(.sidebar-settings) { padding-bottom: calc(53px + max(8px, env(safe-area-inset-bottom))); }
+}
+@media (max-width: 859.98px) {
+  .sidebar-settings { position: static; padding: 0 8px 0 0; border-top: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .appearance-toggle-track, .appearance-toggle-knob, .appearance-toggle-dot { transition: none; }
+}
