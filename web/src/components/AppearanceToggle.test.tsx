@@ -34,4 +34,19 @@ describe("AppearanceToggle", () => {
       expect(dots.some((dot) => dot.includes('data-lit="true"'))).toBe(true);
     }
   });
+
+  it("draws a horizontally symmetric filled crescent clear of its sparkle", () => {
+    const pixels = render("dark").match(/<circle[^>]+>/g)!
+      .map(dot => dot.includes('data-lit="true"'));
+    const lit = (row: number, column: number) => pixels[row * 9 + column];
+    for (let row = 0; row < 9; row++) {
+      for (let column = 0; column < 6; column++) {
+        expect(lit(row, column)).toBe(lit(8 - row, column));
+      }
+      expect(lit(row, 5)).toBe(false); // A dark column separates moon and star.
+    }
+    expect([0, 1, 2, 3].every(column => lit(3, column))).toBe(true);
+    expect(lit(4, 3)).toBe(false); // The inner bite.
+    expect(lit(1, 7) && lit(0, 7) && lit(2, 7) && lit(1, 6) && lit(1, 8)).toBe(true);
+  });
 });

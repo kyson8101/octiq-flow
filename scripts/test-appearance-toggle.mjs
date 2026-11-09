@@ -20,6 +20,11 @@ await mkdir(artifacts, { recursive: true });
 const fixture = `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
+import 'lxgw-wenkai-screen-webfont/lxgwwenkaiscreen.css';
+import '@fontsource-variable/inter';
+import '@fontsource/dela-gothic-one';
+import '@fontsource/ma-shan-zheng';
+import '@fontsource/orbitron/700.css';
 import '/src/design-system.css';
 import '/src/styles.css';
 import '/src/manga.css';
@@ -62,6 +67,16 @@ const server = await createServer({
 });
 
 const report = { kind: "real Sidebar scratch fixture; no backend", scenes: [], screenshots: [] };
+async function settled(page, toggle, dark) {
+  await page.waitForFunction(({ button, dark }) => {
+    if (button.getAttribute("aria-checked") !== String(dark)) return false;
+    const knob = button.querySelector(".appearance-toggle-knob");
+    const x = new DOMMatrixReadOnly(getComputedStyle(knob).transform).m41;
+    const expected = button.getAttribute("aria-checked") === "true" ? 0 : 32;
+    return Math.abs(x - expected) < 0.01 && [...button.querySelectorAll("circle")].every(dot =>
+      Math.abs(Number(getComputedStyle(dot).opacity) - (dot.dataset.lit === "true" ? 1 : 0.085)) < 0.001);
+  }, { button: await toggle.elementHandle(), dark });
+}
 let browser;
 try {
   await server.listen();
@@ -84,6 +99,7 @@ try {
         await page.evaluate(id => { localStorage.clear(); window.toggleFixture.applyTheme(id); }, theme);
         const dark = ["dark", "fun", "guofeng", "cyberpunk"].includes(theme);
         assert.equal(await toggle.getAttribute("aria-checked"), String(dark));
+        await settled(page, toggle, dark);
         const geometry = await toggle.boundingBox();
         assert.equal(geometry.width, 60);
         assert.equal(geometry.height, width === 390 ? 44 : 30);
@@ -100,7 +116,7 @@ try {
         // Native button keyboard activation: Enter and Space, in both directions.
         await toggle.focus();
         await page.keyboard.press("Enter");
-        await page.waitForTimeout(280);
+        await settled(page, toggle, !dark);
         assert.equal(await toggle.getAttribute("aria-checked"), String(!dark));
         assert.equal(await page.evaluate(() => window.toggleFixture.savedThemeId()), dark ? "light" : "dark");
         const after = await toggle.locator("circle").evaluateAll(dots => dots.map(dot => dot.dataset.lit));
@@ -113,7 +129,7 @@ try {
           report.screenshots.push(path);
         }
         await page.keyboard.press("Space");
-        await page.waitForTimeout(280);
+        await settled(page, toggle, dark);
         assert.equal(await page.evaluate(() => window.toggleFixture.savedThemeId()), theme);
         const focus = await toggle.evaluate(button => {
           const style = getComputedStyle(button);
