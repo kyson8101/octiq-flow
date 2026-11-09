@@ -301,7 +301,7 @@ fn running(data: &Stored, run: &Run, task: &Task, agent_id: &str) -> bool {
     if mine
         && data.batches.iter().any(|b| {
             b.agent_id == agent_id
-                && b.status != batches::BatchStatus::Settled
+                && batches::occupies_worker(data, b)
                 && b.task_ids.contains(&task.id)
         })
     {

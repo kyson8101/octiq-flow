@@ -1737,6 +1737,29 @@ impl OrchestrationStore {
         Ok(snapshot)
     }
 
+    /// A settled batch loses all hook authority at the ledger transition,
+    /// even while its process is still alive. No chat lock is needed here.
+    pub(crate) fn batch_capability_current(
+        &self,
+        chat_key: &str,
+        session_key: &str,
+    ) -> Result<bool, String> {
+        let inner = self.inner.lock().map_err(|error| error.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        Ok(!inner.data.batches.iter().any(|batch| {
+            batch.status == batches::BatchStatus::Settled
+                && inner
+                    .data
+                    .batch_launches
+                    .get(&batch.id)
+                    .is_some_and(|launch| {
+                        launch.worker_chat_key == chat_key || launch.worker_chat_key == session_key
+                    })
+        }))
+    }
+
     /// Worker ownership outlives an attempt. A completed, stopped, or deleted
     /// master's worker must never become an ordinary writable chat on reload.
     pub fn worker_coordinator(&self, chat_key: &str) -> Result<Option<String>, String> {
@@ -3481,20 +3504,7 @@ impl OrchestrationStore {
             return Err("QUEUED_FOR_SLOT agent: this task already has a claiming batch.".into());
         }
         scheduling::require_host_slot_for(data, scheduling.host_cap, claiming_batch)?;
-        let active = data
-            .attempts
-            .values()
-            .filter(|attempt| attempt.run_id == run.id && attempt_is_unsettled(data, attempt))
-            .count()
-            + data
-                .batches
-                .iter()
-                .filter(|b| {
-                    b.run_id == run.id
-                        && b.status == batches::BatchStatus::Claiming
-                        && Some(b.id.as_str()) != claiming_batch
-                })
-                .count();
+        let active = scheduling::run_live(data, &run.id, claiming_batch);
         if active >= usize::from(run.max_concurrent) {
             return Err(format!(
                 "Run {} already has its {} allowed workers active.",
@@ -5082,16 +5092,14 @@ fn stop_run_in(data: &mut Stored, run_id: &str, reason: String, now: i64) -> Vec
         }
     }
     let mut workers = Vec::new();
-    for batch in data
-        .batches
-        .iter_mut()
-        .filter(|b| b.run_id == run_id && b.status != batches::BatchStatus::Settled)
-    {
+    for batch in data.batches.iter_mut().filter(|b| b.run_id == run_id) {
         if let Some(runtime) = data.batch_launches.get(&batch.id) {
             workers.push(runtime.worker_chat_key.clone());
         }
-        batch.status = batches::BatchStatus::Settled;
-        batch.settled_at = Some(now);
+        if batch.status != batches::BatchStatus::Settled {
+            batch.status = batches::BatchStatus::Settled;
+            batch.settled_at = Some(now);
+        }
     }
     data.agent_queue
         .retain(|id, _| data.tasks.get(id).is_some_and(|t| t.run_id != run_id));

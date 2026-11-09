@@ -300,22 +300,13 @@ impl OrchestrationStore {
         }) {
             return Ok(Vec::new());
         }
-        let all = self.snapshot(None)?;
-        let host_room = settings.host_cap.map_or(usize::MAX, |cap| {
-            usize::from(cap).saturating_sub(
-                all.attempts
-                    .iter()
-                    .filter(|a| {
-                        matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running)
-                            || (a.status == AttemptStatus::Blocked
-                                && all.gates.iter().any(|g| {
-                                    g.status == GateStatus::Open
-                                        && g.task_id.as_deref() == Some(&a.task_id)
-                                }))
-                    })
-                    .count(),
-            )
-        });
+        let host_live = {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            scheduling::live(&inner.data)
+        };
+        let host_room = settings
+            .host_cap
+            .map_or(usize::MAX, |cap| usize::from(cap).saturating_sub(host_live));
         let wave = ready_wave(&snapshot, run).into_iter().take(host_room);
         let mut started = Vec::new();
         for task in wave {
@@ -368,7 +359,16 @@ pub(super) fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
                         g.status == GateStatus::Open && g.task_id.as_deref() == Some(&a.task_id)
                     }))
         })
-        .count();
+        .map(|a| a.batch_id.as_deref().unwrap_or(&a.worker_chat_key))
+        .chain(
+            snapshot
+                .batches
+                .iter()
+                .filter(|b| b.status != batches::BatchStatus::Settled)
+                .map(|b| b.id.as_str()),
+        )
+        .collect::<BTreeSet<_>>()
+        .len();
     let mut writing = shared_writers(snapshot, run);
     snapshot
         .tasks

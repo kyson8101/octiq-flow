@@ -77,6 +77,18 @@ pub(super) struct BatchLaunch {
     #[serde(default)]
     pub destination: Option<TaskDestination>,
     pub started: bool,
+    /// In-memory spawn barrier: a concurrent Stop/reaper cannot release the
+    /// lease while chat_start is still capable of creating this process.
+    #[serde(skip)]
+    pub launching: bool,
+}
+
+pub(super) fn occupies_worker(data: &Stored, batch: &Batch) -> bool {
+    batch.status != BatchStatus::Settled
+        || data
+            .batch_launches
+            .get(&batch.id)
+            .is_some_and(|l| l.started || l.launching)
 }
 
 pub(super) fn agent_workspace(task: &Task) -> bool {
@@ -322,7 +334,7 @@ pub(super) fn lanes(data: &Stored, only: Option<&BTreeSet<String>>) -> Vec<serde
         .collect();
     agents.into_iter().filter_map(|id| {
         let queued = queue(data, &id).len();
-        let batch = data.batches.iter().find(|b| b.agent_id == id && b.status != BatchStatus::Settled);
+        let batch = data.batches.iter().find(|b| b.agent_id == id && occupies_worker(data, b));
         let block = data.agent_blocks.get(&id);
         if queued == 0 && batch.is_none() && block.is_none() { return None; }
         let mut lane = json!({ "agentId": id, "state": if block.is_some() { "blocked" } else if batch.is_some() { "working" } else { "idle" }, "queued": queued });
@@ -575,7 +587,7 @@ impl OrchestrationStore {
         if data
             .batches
             .iter()
-            .any(|b| b.agent_id == agent && b.status != BatchStatus::Settled)
+            .any(|b| b.agent_id == agent && occupies_worker(data, b))
             || data.attempts.values().any(|a| {
                 a.assignee.as_ref().is_some_and(|owner| owner.id == agent)
                     && attempt_is_unsettled(data, a)
@@ -588,18 +600,7 @@ impl OrchestrationStore {
             return Ok(None);
         };
         let run = data.runs[&head.run_id].clone();
-        if data
-            .attempts
-            .values()
-            .filter(|a| a.run_id == run.id && attempt_is_unsettled(data, a))
-            .count()
-            + data
-                .batches
-                .iter()
-                .filter(|b| b.run_id == run.id && b.status == BatchStatus::Claiming)
-                .count()
-            >= usize::from(run.max_concurrent)
-        {
+        if scheduling::run_live(data, &run.id, None) >= usize::from(run.max_concurrent) {
             return Ok(None);
         }
         let id = format!("batch_{}", compact_id());
@@ -675,6 +676,7 @@ impl OrchestrationStore {
             launch: data.agent_queue[&head.id].launch.clone(),
             destination: head.destination.clone(),
             started: false,
+            launching: false,
         };
 
         self.mutate(|data| {
@@ -683,7 +685,7 @@ impl OrchestrationStore {
                 || data
                     .batches
                     .iter()
-                    .any(|b| b.agent_id == agent && b.status != BatchStatus::Settled)
+                    .any(|b| b.agent_id == agent && occupies_worker(data, b))
                 || data.attempts.values().any(|a| {
                     a.assignee.as_ref().is_some_and(|a| a.id == agent)
                         && attempt_is_unsettled(data, a)
@@ -702,16 +704,7 @@ impl OrchestrationStore {
                 return Ok(None);
             }
             let current_run = &data.runs[&batch.run_id];
-            if data
-                .attempts
-                .values()
-                .filter(|a| a.run_id == batch.run_id && attempt_is_unsettled(data, a))
-                .count()
-                + data
-                    .batches
-                    .iter()
-                    .filter(|b| b.run_id == batch.run_id && b.status == BatchStatus::Claiming)
-                    .count()
+            if scheduling::run_live(data, &batch.run_id, None)
                 >= usize::from(current_run.max_concurrent)
             {
                 return Ok(None);
@@ -855,8 +848,28 @@ impl OrchestrationStore {
                 prompt.push_str(&format!("\n\n{brief}"));
             }
         }
-        crate::agent_chat::chat_start_user_impl(
-            chats,
+        self.mutate(|data| {
+            if !data
+                .batches
+                .iter()
+                .any(|b| b.id == batch.id && b.status == BatchStatus::Claiming)
+                || matches!(
+                    data.runs[&batch.run_id].status,
+                    RunStatus::Stopped | RunStatus::Closed
+                )
+            {
+                return Err("The batch ended before its worker could start.".into());
+            }
+            let launch = data
+                .batch_launches
+                .get_mut(&batch.id)
+                .ok_or("The batch disappeared.")?;
+            launch.started = true;
+            launch.launching = true;
+            Ok(())
+        })?;
+        let started = crate::agent_chat::chat_start_user_impl(
+            chats.clone(),
             runtime.worker_chat_key.clone(),
             runtime.plan.cwd.clone(),
             runtime.launch.agent,
@@ -871,15 +884,27 @@ impl OrchestrationStore {
             None,
             Some(false),
             Some(format!("orchestration-batch-{}", batch.id)),
-        )?;
-        self.mutate(|data| {
+        );
+        // Complete the spawn barrier even when persistence fails. A process
+        // that lost its batch during spawn must be stopped after unlocking.
+        let released = self.mutate_regardless("batch worker launch", |data| {
             data.batch_launches
                 .get_mut(&batch.id)
                 .ok_or("The batch disappeared.")?
-                .started = true;
-            data.agent_blocks.remove(&batch.agent_id);
+                .launching = false;
+            if started.is_ok()
+                && data
+                    .batches
+                    .iter()
+                    .any(|b| b.id == batch.id && b.status != BatchStatus::Settled)
+            {
+                data.agent_blocks.remove(&batch.agent_id);
+            }
             Ok(())
-        })
+        });
+        self.stop_ended_workers(&chats);
+        started?;
+        released
     }
 
     fn fallback_claim(
@@ -889,7 +914,11 @@ impl OrchestrationStore {
         runtime: &BatchLaunch,
         turn_in_flight: bool,
     ) -> Result<Option<Vec<Attempt>>, String> {
-        if batch.status != BatchStatus::Claiming || !runtime.started || turn_in_flight {
+        if batch.status != BatchStatus::Claiming
+            || !runtime.started
+            || runtime.launching
+            || turn_in_flight
+        {
             return Ok(None);
         }
         self.batch_claim(
@@ -905,6 +934,8 @@ impl OrchestrationStore {
         chats: Arc<ChatManager>,
         workspaces: &WorkspaceState,
     ) -> Result<(), String> {
+        // Stopping an already settled/refused worker never waits on a save.
+        self.stop_ended_workers(&chats);
         self.settle_batches()?;
         // A shared batch process is released only after its LAST task settled.
         self.stop_ended_workers(&chats);
@@ -962,6 +993,7 @@ impl OrchestrationStore {
                 Err(error) => self.block_batch(&batch, error)?,
             }
         }
+        self.stop_ended_workers(&chats);
         let settings = crate::scheduling::load()?;
         // Already queued starts keep their provenance across a switch. New
         // Tasks-mode work is not added here unless approval fixed Agent mode.
@@ -1022,6 +1054,7 @@ impl OrchestrationStore {
             }
         }
         // Roster changes can remove a lane without mutating this ledger.
+        self.stop_ended_workers(&chats);
         // Publish after both locks have returned; unchanged payloads deduplicate.
         self.scheduling_changed();
         Ok(())
@@ -1997,7 +2030,7 @@ mod admission_tests {
 
     #[test]
     fn refused_batch_holds_process_capacity_until_its_stub_is_ended() {
-        for refusal in ["stale head", "no claim"] {
+        for refusal in ["stale head", "destination", "no claim"] {
             let home = TestDir::new("batch-refusal-process");
             let _profile = crate::profile::started_in(&home);
             let capped = Settings {
@@ -2005,33 +2038,63 @@ mod admission_tests {
                 ..settings()
             };
             crate::scheduling::save(capped.clone()).unwrap();
-            let store = OrchestrationStore::default();
+            let store = Arc::new(OrchestrationStore::default());
             let run = super::super::tests::run(&store);
             let head = assigned(&store, &run, 1);
             let other = assigned(&store, &run, 2);
             other_agent(&store, &other);
+            let next = assigned(&store, &run, 3);
+            let projects = WorkspaceState::with_projects(vec![serde_json::from_value(json!({
+                "id": "workspace", "name": "Project", "primary_path": home.to_string_lossy(), "paths": []
+            })).unwrap()]);
+            if refusal == "destination" {
+                store
+                    .mutate(|data| {
+                        let task = data.tasks.get_mut(&head.id).unwrap();
+                        task.destination = Some(TaskDestination {
+                            project_id: "workspace".into(),
+                            project_name: "Project".into(),
+                            repository: run.root_path.clone(),
+                        });
+                        task.approved = Some(approval::Approved::of(
+                            None,
+                            task,
+                            approval::FixedBy::Plan,
+                            now_ms(),
+                        ));
+                        Ok(())
+                    })
+                    .unwrap();
+            }
             store.sync_agent_queue().unwrap();
             let (batch, runtime) = store.begin_batch("agent_test", &capped).unwrap().unwrap();
-            let chats = ChatManager::default();
-            chats.test_launch(&runtime.worker_chat_key);
+            let mut chats = ChatManager::default();
+            chats.orchestrations = store.clone();
+            let cap = chats.test_launch(&runtime.worker_chat_key);
+            assert!(chats
+                .caller_for_capability(&runtime.worker_chat_key, &cap)
+                .is_some());
             chats.test_busy(&runtime.worker_chat_key, true);
             let child = chats.test_child(&runtime.worker_chat_key);
             store
                 .mutate(|data| {
                     data.batch_launches.get_mut(&batch.id).unwrap().started = true;
                     if refusal == "stale head" {
-                        data.tasks.get_mut(&head.id).unwrap().approved = None;
+                        let task = data.tasks.get_mut(&head.id).unwrap();
+                        task.worker.as_mut().unwrap().effort = Some("low".into());
+                        task.approved = Some(approval::Approved::of(
+                            None,
+                            task,
+                            approval::FixedBy::Plan,
+                            now_ms(),
+                        ));
                     }
                     Ok(())
                 })
                 .unwrap();
-            if refusal == "stale head" {
+            if refusal != "no claim" {
                 assert!(store
-                    .batch_claim(
-                        &WorkspaceState::load(),
-                        &runtime.worker_chat_key,
-                        vec![head.id.clone()]
-                    )
+                    .batch_claim(&projects, &runtime.worker_chat_key, vec![head.id.clone()])
                     .is_err());
             } else {
                 store
@@ -2039,7 +2102,22 @@ mod admission_tests {
                     .unwrap();
             }
             let count = store.scheduling_get().unwrap()["live"]["total"].clone();
+            let cap_revoked = chats
+                .caller_for_capability(&runtime.worker_chat_key, &cap)
+                .is_none();
             let refused = store.begin_batch("agent_other", &capped).is_err();
+            store
+                .mutate(|data| {
+                    data.agent_blocks.remove("agent_test");
+                    // Hold the invalid head so the next valid task can run.
+                    data.tasks.get_mut(&head.id).unwrap().superseded_by = Some(next.id.clone());
+                    Ok(())
+                })
+                .unwrap();
+            let same_lane = store
+                .begin_batch("agent_test", &settings())
+                .unwrap()
+                .is_none();
             store.stop_ended_workers(&chats);
             let gone = child.gone_soon();
             if !gone {
@@ -2053,13 +2131,132 @@ mod admission_tests {
                 refused,
                 "{refusal}: another agent must queue before the process ends"
             );
+            assert!(same_lane, "{refusal}: its agent lane also remains held");
+            assert!(
+                cap_revoked,
+                "{refusal}: capability must be refused before reaping"
+            );
             assert!(
                 gone,
                 "{refusal}: the refused worker process must be ended even with no attempts"
             );
+            store.stop_ended_workers(&chats);
             assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 0);
-            assert!(store.begin_batch("agent_other", &capped).unwrap().is_some());
+            assert!(!chats.turn_in_flight(&runtime.worker_chat_key));
+            let lane = store.inner.lock().unwrap();
+            let lanes = lanes(&lane.data, None);
+            assert_eq!(
+                lanes.iter().find(|l| l["agentId"] == "agent_test").unwrap()["state"],
+                "idle"
+            );
+            drop(lane);
+            let (_, next_runtime) = store.begin_batch("agent_test", &capped).unwrap().unwrap();
+            assert_eq!(next_runtime.head, next.id);
+            assert_ne!(next_runtime.worker_chat_key, runtime.worker_chat_key);
+            chats.test_launch(&next_runtime.worker_chat_key);
+            let claim = store
+                .batch_claim(
+                    &projects,
+                    &next_runtime.worker_chat_key,
+                    vec![next.id.clone()],
+                )
+                .unwrap();
+            assert_eq!(claim.len(), 1);
+            chats.test_end(&next_runtime.worker_chat_key);
         }
+    }
+
+    #[test]
+    fn a_scheduler_pass_cannot_fallback_claim_while_the_batch_is_launching() {
+        let home = TestDir::new("batch-fallback-spawn-barrier");
+        let _profile = crate::profile::started_in(&home);
+        let capped = Settings {
+            host_cap: Some(1),
+            ..settings()
+        };
+        crate::scheduling::save(capped.clone()).unwrap();
+        let store = OrchestrationStore::default();
+        let run = super::super::tests::run(&store);
+        let head = assigned(&store, &run, 1);
+        let candidate = assigned(&store, &run, 2);
+        store.sync_agent_queue().unwrap();
+        let (batch, _) = store.begin_batch("agent_test", &capped).unwrap().unwrap();
+        store
+            .mutate(|data| {
+                let launch = data.batch_launches.get_mut(&batch.id).unwrap();
+                launch.started = true;
+                launch.launching = true;
+                Ok(())
+            })
+            .unwrap();
+        // No provider CLI is launched: the spawn has not created a process
+        // yet, and this isolated profile has no registered agents to start.
+        let chats = Arc::new(ChatManager::default());
+        store
+            .schedule_agent_batches(chats.clone(), &WorkspaceState::load())
+            .unwrap();
+        assert!(chats.process_keys().is_empty());
+        let data = &store.inner.lock().unwrap().data;
+        assert!(
+            data.attempts.is_empty(),
+            "an unfinished spawn is not an idle first turn"
+        );
+        assert!(data.agent_queue.contains_key(&head.id));
+        assert!(data.agent_queue.contains_key(&candidate.id));
+        assert_eq!(data.batches[0].status, BatchStatus::Claiming);
+        assert!(!data
+            .notifications
+            .values()
+            .any(|n| n.source.starts_with("batch-head-fallback:")));
+    }
+
+    #[test]
+    fn a_stopped_batch_cannot_release_a_process_still_being_launched() {
+        let home = TestDir::new("batch-stop-spawn-barrier");
+        let _profile = crate::profile::started_in(&home);
+        let capped = Settings {
+            host_cap: Some(1),
+            ..settings()
+        };
+        crate::scheduling::save(capped.clone()).unwrap();
+        let store = OrchestrationStore::default();
+        let run = super::super::tests::run(&store);
+        assigned(&store, &run, 1);
+        let second_run = super::super::tests::run(&store);
+        let other = assigned(&store, &second_run, 2);
+        other_agent(&store, &other);
+        store.sync_agent_queue().unwrap();
+        let (batch, runtime) = store.begin_batch("agent_test", &capped).unwrap().unwrap();
+        store
+            .mutate(|data| {
+                let launch = data.batch_launches.get_mut(&batch.id).unwrap();
+                launch.started = true;
+                launch.launching = true;
+                Ok(())
+            })
+            .unwrap();
+        let workers = store
+            .stop_run("chat:master", run.id, "Stop while spawning".into())
+            .unwrap();
+        assert!(workers.contains(&runtime.worker_chat_key));
+        let chats = ChatManager::default();
+        store.stop_ended_workers(&chats);
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 1);
+        assert!(store.begin_batch("agent_other", &capped).is_err());
+        // The spawn finishes after Stop's first process lookup found nothing.
+        chats.test_launch(&runtime.worker_chat_key);
+        let child = chats.test_child(&runtime.worker_chat_key);
+        store
+            .mutate(|data| {
+                data.batch_launches.get_mut(&batch.id).unwrap().launching = false;
+                Ok(())
+            })
+            .unwrap();
+        store.stop_ended_workers(&chats);
+        assert!(child.gone_soon());
+        store.stop_ended_workers(&chats);
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 0);
+        assert!(store.begin_batch("agent_other", &capped).unwrap().is_some());
     }
 
     #[test]
@@ -2137,8 +2334,8 @@ mod admission_tests {
             .starts_with("QUEUED_FOR_SLOT"));
         assert_eq!(
             scheduling::live(&store.inner.lock().unwrap().data),
-            0,
-            "launch promises do not invent live attempts"
+            1,
+            "the pre-claim worker occupies one process slot"
         );
         let claimed = store
             .batch_claim(

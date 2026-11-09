@@ -897,15 +897,12 @@ impl OrchestrationStore {
     /// their process after the closing provider turn, without a 5m idle wait.
     /// Read only live candidates and release the ledger before any chat lock.
     /// This pass saves nothing, including while the profile folder is away.
-    pub(super) fn stop_ended_workers(&self, chats: &ChatManager) {
+    pub(crate) fn stop_ended_workers(&self, chats: &ChatManager) {
         let live = chats.process_keys();
-        if live.is_empty() {
-            return;
-        }
         let Ok(inner) = self.inner.lock() else {
             return;
         };
-        let ended: Vec<(String, bool)> = inner
+        let mut ended: BTreeMap<String, bool> = inner
             .data
             .attempts
             .values()
@@ -923,16 +920,84 @@ impl OrchestrationStore {
                     a.status == AttemptStatus::Failed && a.execution.latest_error.is_some(),
                 )
             })
+            .fold(BTreeMap::new(), |mut workers, (key, force)| {
+                workers
+                    .entry(key)
+                    .and_modify(|old| *old |= force)
+                    .or_insert(force);
+                workers
+            });
+        let batches: Vec<_> = inner
+            .data
+            .batches
+            .iter()
+            .filter(|b| b.status == batches::BatchStatus::Settled)
+            .filter_map(|b| {
+                inner
+                    .data
+                    .batch_launches
+                    .get(&b.id)
+                    .filter(|l| !l.launching && (l.started || live.contains(&l.worker_chat_key)))
+                    .map(|l| (b.id.clone(), l.worker_chat_key.clone(), b.run_id.clone()))
+            })
+            .filter(|(_, key, _)| {
+                !inner
+                    .data
+                    .attempts
+                    .values()
+                    .any(|a| a.worker_chat_key == *key && attempt_is_unsettled(&inner.data, a))
+            })
             .collect();
+        for (_, key, run) in &batches {
+            // Invalid/no-claim launches have no task turn to preserve. Run
+            // Stop also ends a worker regardless of its provider's busy bit.
+            let force =
+                !inner
+                    .data
+                    .attempts
+                    .values()
+                    .any(|a| a.worker_chat_key == *key)
+                    || inner.data.runs.get(run).is_some_and(|r| {
+                        matches!(r.status, RunStatus::Stopped | RunStatus::Closed)
+                    });
+            ended
+                .entry(key.clone())
+                .and_modify(|f| *f |= force)
+                .or_insert(force);
+        }
         drop(inner);
+        let mut exited_keys = BTreeSet::new();
         for (key, force) in ended {
-            let stopped = if force {
-                crate::agent_chat::chat_stop_impl(chats, key.clone())
-            } else {
-                chats.reap_settled_worker(&key).map(|_| ())
-            };
-            if let Err(error) = stopped {
-                eprintln!("orchestration: could not stop the ended worker {key}: {error}");
+            if live.contains(&key) {
+                let stopped = if force {
+                    crate::agent_chat::chat_stop_impl(chats, key.clone())
+                } else {
+                    chats.reap_settled_worker(&key).map(|_| ())
+                };
+                if let Err(error) = stopped {
+                    eprintln!("orchestration: could not stop the ended worker {key}: {error}");
+                }
+            }
+            if chats.worker_process_ended(&key) {
+                exited_keys.insert(key);
+            }
+        }
+        // Keep the process lease through the actual stop, including while a
+        // closing turn is still busy. No chat lock is taken under the ledger.
+        let exited: BTreeSet<_> = batches
+            .into_iter()
+            .filter(|(_, key, _)| exited_keys.contains(key))
+            .map(|(id, _, _)| id)
+            .collect();
+        if !exited.is_empty() {
+            if let Ok(mut inner) = self.inner.lock() {
+                for id in exited {
+                    if let Some(launch) = inner.data.batch_launches.get_mut(&id) {
+                        if !launch.launching {
+                            launch.started = false;
+                        }
+                    }
+                }
             }
         }
     }
@@ -1038,29 +1103,16 @@ impl OrchestrationStore {
                 .gates
                 .iter()
                 .any(|g| g.run_id == run.id && g.holds_run() && g.status == GateStatus::Open)
-                || snapshot
-                    .attempts
-                    .iter()
-                    .filter(|a| {
-                        a.run_id == run.id
-                            && (matches!(
-                                a.status,
-                                AttemptStatus::Preparing | AttemptStatus::Running
-                            ) || (a.status == AttemptStatus::Blocked
-                                && snapshot.gates.iter().any(|g| {
-                                    g.task_id.as_deref() == Some(&a.task_id)
-                                        && g.status == GateStatus::Open
-                                })))
-                    })
-                    .count()
-                    >= usize::from(run.max_concurrent)
             {
                 continue;
             }
             {
                 let settings = crate::scheduling::load()?;
                 let inner = self.inner.lock().map_err(|e| e.to_string())?;
-                if scheduling::require_host_slot(&inner.data, settings.host_cap).is_err() {
+                if scheduling::require_host_slot(&inner.data, settings.host_cap).is_err()
+                    || scheduling::run_live(&inner.data, &run.id, None)
+                        >= usize::from(run.max_concurrent)
+                {
                     continue;
                 }
             }

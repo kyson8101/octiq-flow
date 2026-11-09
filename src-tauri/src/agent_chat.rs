@@ -1293,6 +1293,9 @@ pub struct ChatManager {
     pub(crate) questions: Arc<crate::question_store::QuestionStore>,
     pub(crate) auto_resumes: crate::auto_resume::Store,
     sessions: Mutex<HashMap<String, Arc<Mutex<ChatSession>>>>,
+    /// A batch's capacity lease outlives removal from `sessions`: kill is
+    /// asynchronous. Retain the child until the worker reaper observes exit.
+    ending_workers: Mutex<HashMap<String, Arc<Mutex<ChatSession>>>>,
     /// Latest real launch per key, retained after a natural one-shot exit.
     /// Updated under the session table in grant_capability. A buffered clean
     /// full stop can then distinguish that exit from a replacement launch.
@@ -1539,6 +1542,16 @@ impl ChatManager {
             .zip(given.iter())
             .fold(0u8, |diff, (a, b)| diff | (a ^ b))
             != 0
+        {
+            return None;
+        }
+        // Ledger first, then chat locks. Batch settlement revokes every hook
+        // immediately; ending the provider process may happen later.
+        if (known.chat_key.starts_with("chat:orch-") || session_key.starts_with("chat:orch-"))
+            && !self
+                .orchestrations
+                .batch_capability_current(&known.chat_key, session_key)
+                .ok()?
         {
             return None;
         }
@@ -2170,10 +2183,15 @@ impl ChatManager {
     /// Snapshot keys without waiting for a busy session's writer lock. The
     /// worker reaper must not omit a failed process because it is mid-write.
     pub(crate) fn process_keys(&self) -> std::collections::HashSet<String> {
-        self.sessions
+        let mut keys: std::collections::HashSet<_> = self
+            .sessions
             .lock()
             .map(|sessions| sessions.keys().cloned().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Ok(ending) = self.ending_workers.lock() {
+            keys.extend(ending.keys().cloned());
+        }
+        keys
     }
 
     /// A terminal worker may still be returning its report to the provider.
@@ -2181,6 +2199,36 @@ impl ChatManager {
     /// locked recheck (including background work, jobs and held queues).
     pub(crate) fn reap_settled_worker(&self, key: &str) -> Result<bool, String> {
         end_process_when(self, key, Some(Duration::ZERO))
+    }
+
+    /// Called only after releasing the orchestration ledger. A removed table
+    /// entry alone is not evidence that its process has actually exited.
+    pub(crate) fn worker_process_ended(&self, key: &str) -> bool {
+        if self.has_process(key) {
+            return false;
+        }
+        let Ok(ending) = self.ending_workers.lock() else {
+            return false;
+        };
+        let child = ending.get(key).cloned();
+        drop(ending);
+        let Some(child) = child else {
+            return true;
+        };
+        let exited = child.lock().is_ok_and(|mut session| {
+            session
+                .child
+                .try_wait()
+                .is_ok_and(|status| status.is_some())
+        });
+        if exited {
+            if let Ok(mut ending) = self.ending_workers.lock() {
+                if ending.get(key).is_some_and(|old| Arc::ptr_eq(old, &child)) {
+                    ending.remove(key);
+                }
+            }
+        }
+        exited
     }
 
     pub(crate) fn hold_lifespan_checkout(
@@ -8659,6 +8707,17 @@ fn end_process_when(
         // Invalidate under the table lock, before the old Arc can be
         // mistaken for a naturally reaped process by automatic approval.
         manager.revoke_auto_plan(key);
+        if key.starts_with("chat:orch-") {
+            if let Some(session) = sessions.get(key) {
+                // Publish the pending child before removing its table entry.
+                // The reaper takes no ledger lock while checking this map.
+                manager
+                    .ending_workers
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .insert(key.into(), session.clone());
+            }
+        }
         sessions.remove(key)
     };
     // Ending the process on purpose ends a completion in it, running or

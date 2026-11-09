@@ -2911,12 +2911,15 @@ Settings → Orientation is independent of registered agent conversations. The
 `scheduling.rs` store in the pinned profile holds `scheduling.json`:
 `{ "orientation": "tasks", "hostCap": null }` by default. Tasks retains the
 existing task-per-worker policy; Agents queues approved, unheld assigned work
-in FIFO agent lanes. `hostCap` is Off (`null`) or 1–32 and counts the existing
-live-attempt definition across **all runs**, in either orientation. Each run's
-`max_concurrent` also applies. Claiming batches hold internal launch promises
-so one scheduler wave cannot spawn every agent before their claim tools arrive;
-these promises do not invent live attempts in `live.total`. There is no
-per-agent parallel setting.
+in FIFO agent lanes. `hostCap` is Off (`null`) or 1–32 and counts worker process
+identities across **all runs**, in either orientation. Each run's
+`max_concurrent` counts the same identities within that run. A batch uses one
+slot regardless of how many task attempts it claims; its own claim excludes
+that batch from both limits. Tasks orientation keeps one process per attempt.
+Claiming batches reserve a process slot before spawning, so one scheduler wave
+cannot spawn every agent before their claim tools arrive. `live.total` includes
+these reservations and deduplicates attempts sharing a worker chat. There is
+no per-agent parallel setting.
 
 Only the person's socket exposes `scheduling_get` and
 `scheduling_set { settings: { orientation, hostCap } }`; neither has a hook or
@@ -2950,7 +2953,15 @@ Incompatible approved worker
 settings and approved non-Agent workspaces run singly. An unclaimed first turn
 causes the host to claim the head alone. Each claimed task reports its own
 attempt; the shared process is released only after the last one settles.
-Stopping a run also stops its pre-claim worker identities. Stopping one claimed
+Settled or refused batches with no attempts also end their worker process.
+Their process slot and agent lane remain held until the child has actually
+exited, including the gap after removal from the chat session table. A spawn
+barrier keeps a concurrent Stop from releasing a launch still in progress.
+Ledger settlement precedes chat locks; process exit is checked outside the
+ledger. Every hook capability check first refuses an already settled batch
+from ledger state, so revocation does not wait for process reaping. Stopping
+a run also stops its pre-claim worker identities, including
+ones whose batch was already settled. Stopping one claimed
 task stops the shared process and returns its other unfinished tasks to the
 queue without using an additional retry; their changes remain in the checkout.
 The MCP worker role follows the durable `chat:orch-` key even before a claim or

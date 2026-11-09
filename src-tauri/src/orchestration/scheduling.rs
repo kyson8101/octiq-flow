@@ -15,36 +15,63 @@ pub struct SlotWait {
     pub limit: Option<usize>,
 }
 
-pub(super) fn live(data: &Stored) -> usize {
+/// Count launch/process identities, never the number of tasks sharing them.
+/// Settled batches retain their lease until the chat reaper confirms exit.
+fn worker_keys(data: &Stored, run: Option<&str>, excluding: Option<&str>) -> BTreeSet<String> {
+    let excluded_key = excluding
+        .and_then(|id| data.batch_launches.get(id))
+        .map(|l| l.worker_chat_key.as_str());
     data.attempts
         .values()
-        .filter(|a| attempt_is_unsettled(data, a))
-        .count()
+        .filter(|a| {
+            attempt_is_unsettled(data, a)
+                && run.is_none_or(|id| a.run_id == id)
+                && a.batch_id.as_deref().is_none_or(|id| Some(id) != excluding)
+                && Some(a.worker_chat_key.as_str()) != excluded_key
+        })
+        .map(|a| a.worker_chat_key.clone())
+        .chain(
+            data.batches
+                .iter()
+                .filter(|b| {
+                    Some(b.id.as_str()) != excluding
+                        && run.is_none_or(|id| b.run_id == id)
+                        && batches::occupies_worker(data, b)
+                })
+                .map(|b| {
+                    data.batch_launches
+                        .get(&b.id)
+                        .map_or_else(|| b.id.clone(), |l| l.worker_chat_key.clone())
+                }),
+        )
+        .collect()
+}
+
+pub(super) fn live(data: &Stored) -> usize {
+    worker_keys(data, None, None).len()
+}
+
+pub(super) fn run_live(data: &Stored, run: &str, excluding: Option<&str>) -> usize {
+    worker_keys(data, Some(run), excluding).len()
 }
 
 pub(super) fn require_host_slot(data: &Stored, cap: Option<u16>) -> Result<(), String> {
     require_host_slot_for(data, cap, None)
 }
 
-/// A claiming chat has not reserved an attempt yet, but already holds one
-/// launch promise. Keep that promise out of `live.total` while preventing a
-/// scheduler wave from starting every agent before their claim tools arrive.
+/// A claim may reserve several attempts in its existing worker. Exclude its
+/// entire identity, including attempts reserved earlier in this transaction.
 pub(super) fn require_host_slot_for(
     data: &Stored,
     cap: Option<u16>,
     claiming: Option<&str>,
 ) -> Result<(), String> {
     if let Some(limit) = cap {
-        let running = live(data);
-        let promised = data
-            .batches
-            .iter()
-            .filter(|b| {
-                b.status == batches::BatchStatus::Claiming && Some(b.id.as_str()) != claiming
-            })
-            .count();
-        if running + promised >= usize::from(limit) {
-            return Err(format!("QUEUED_FOR_SLOT host: {running} live workers, {promised} claiming launches, limit {limit}."));
+        let running = worker_keys(data, None, claiming).len();
+        if running >= usize::from(limit) {
+            return Err(format!(
+                "QUEUED_FOR_SLOT host: {running} live workers, limit {limit}."
+            ));
         }
     }
     Ok(())
@@ -57,10 +84,11 @@ pub(super) fn slot_wait(data: &Stored, task: &Task, settings: &Settings) -> Opti
         if let Some(agent) = &task.assignee {
             let queue = batches::queue(data, &agent.id);
             if let Some(ahead) = queue.iter().position(|t| t.id == task.id) {
-                let busy =
-                    data.batches.iter().any(|b| {
-                        b.agent_id == agent.id && b.status != batches::BatchStatus::Settled
-                    }) || data.attempts.values().any(|a| {
+                let busy = data
+                    .batches
+                    .iter()
+                    .any(|b| b.agent_id == agent.id && batches::occupies_worker(data, b))
+                    || data.attempts.values().any(|a| {
                         a.assignee
                             .as_ref()
                             .is_some_and(|owner| owner.id == agent.id)
