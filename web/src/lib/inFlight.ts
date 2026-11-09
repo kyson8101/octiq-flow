@@ -54,3 +54,6 @@ export function useInFlight(key: string | null): boolean {
 /** What a gate's answer is asked under: its options and its written answer
  *  share it. */
 export const gateFlight = (gateId: string) => `gate:${gateId}`;
+
+/** Starts and the person's reopen share one task, across chat and panel. */
+export const taskFlight = (taskId: string) => `task-start:${taskId}`;

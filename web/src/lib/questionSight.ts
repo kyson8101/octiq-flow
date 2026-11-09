@@ -19,17 +19,20 @@ export function hiddenQuestions(blocks: Iterable<Sight>): number {
   return hidden;
 }
 
-type Watched = Sight & { el: HTMLElement };
+type Watched = Sight & { el: HTMLElement; kind: "question" | "decision" };
 
 const blocks = new Map<string, Watched>();
 const listeners = new Set<() => void>();
 let observer: IntersectionObserver | null = null;
 let hidden = 0;
+let decisionsHidden = false;
 
 function publish() {
   const next = hiddenQuestions(blocks.values());
-  if (next === hidden) return;
+  const decisions = [...blocks.values()].some(block => block.seen === false && block.kind === "decision");
+  if (next === hidden && decisions === decisionsHidden) return;
   hidden = next;
+  decisionsHidden = decisions;
   for (const listener of listeners) listener();
 }
 
@@ -46,10 +49,10 @@ function watcher(): IntersectionObserver | null {
 }
 
 /** Register a block that still asks `count` questions. Returns its undo. */
-export function watchBlock(key: string, el: HTMLElement, count: number): () => void {
+export function watchBlock(key: string, el: HTMLElement, count: number, kind: "question" | "decision" = "question"): () => void {
   const before = blocks.get(key);
   if (before && before.el !== el) observer?.unobserve(before.el);
-  blocks.set(key, { el, count, seen: before?.el === el ? before.seen : null });
+  blocks.set(key, { el, count, kind, seen: before?.el === el ? before.seen : null });
   if (before?.el !== el) watcher()?.observe(el);
   publish();
   return () => {
@@ -69,6 +72,9 @@ export function subscribeSight(listener: () => void): () => void {
 export function hiddenNow(): number {
   return hidden;
 }
+
+/** A mixed row says "N waiting" rather than calling a run decision a question. */
+export function hasHiddenDecisions(): boolean { return decisionsHidden; }
 
 /** The transcript's own way of going to a block: it owns the scroller, and
  *  has to stop following the stream before it scrolls anywhere. */

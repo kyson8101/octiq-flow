@@ -67,6 +67,16 @@ describe("the app's hand-off of the cards the page holds", () => {
     expect(missing(app.replace("planPending={!!plan?.approvable}", "planPending={!!plan}"))).toEqual(["the tab's plan label"]);
   });
 
+  it("puts run decision cards in the main chat's existing tail only", () => {
+    expect(app).toMatch(/const decisions = conversationId && chatKindOf\(\{ key: keyFor\(conversationId\), worker: workerChat, frontDesk: frontDeskChats.has\(conversationId\) \}\) === "main"/);
+    expect(app).toMatch(/<ChatRunDecisionCards[^>]+snapshot=\{orchestrationState.snapshot\}[^>]+chatKey=\{keyFor\(conversationId\)\}/s);
+    expect(app).toContain("<>{refused}{handed}{plans}{decisions}</>");
+    expect(app).toContain("tail={planTail}");
+    expect(app).toContain("hasChatRunDecisions(orchestrationState.snapshot, keyFor(conversationId))");
+    expect(app).toContain("threadAgentId && chat.messages.length === 0 && !hasRunDecisionCards");
+    expect(app).toContain("chat.messages.length === 0 && !hasRunDecisionCards && currentWorkflow.runs.length > 0");
+  });
+
   it("makes the Agents page's cards a required prop, so dropping them does not compile", () => {
     expect(agentsPage).toMatch(/\n  held: Waiting;\n/);
     expect(agentsPage).not.toMatch(/\bheld\?: Waiting/);

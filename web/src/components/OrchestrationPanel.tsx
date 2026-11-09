@@ -48,11 +48,13 @@ import {
   type ProgressGroup, type ProgressRow, type RowState, type RunTiles as RunTilesData,
 } from "../lib/runProgress";
 import { decisionSummary, gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
-import { queuedStart, taskSlot } from "../lib/taskSlot";
+import { taskSlot } from "../lib/taskSlot";
 import { planHoldsEveryStart, reopenControl, startControl, statusLine, taskHold, type StartControl } from "../lib/taskHold";
-import { gateFlight, IN_FLIGHT, once, useInFlight } from "../lib/inFlight";
+import { gateFlight, taskFlight, IN_FLIGHT, useInFlight } from "../lib/inFlight";
 import { dropHeld, notePress, repeatsAnother } from "../lib/pressGuard";
 import { useCarefulAnswer } from "./Confirm";
+import { resolveRunGate, startRunTask, runWorkspaceAction } from "../lib/runDecisionActions";
+export { retryLaunchArgs } from "../lib/runDecisionActions";
 import { useHoldClock } from "../lib/useHoldClock";
 import "./RunProgress.css";
 
@@ -268,44 +270,18 @@ export function OrchestrationPanel({
     }
   };
 
-  /** Send one gate's answer through the door its controls were drawn for
-   *  (`gateDoor`). One answer to a gate is out at a time, whichever control
-   *  sent it and however often the panel was shut and opened since
-   *  (`lib/inFlight`): the socket's door is the person's own decision, and a
-   *  second one must not follow a first that has not been answered. */
   const resolveGate = async (run: OrchestrationRun, gate: OrchestrationGate, resolution: string, door: GateDoor) => {
-    if (readOnly || door === "none" || !resolution.trim()) return;
-    const sent = await once(gateFlight(gate.id), async () => {
-      setBusy(true);
-      setError(null);
-      try {
-        // A peer request's gate is answered by the person and by no agent, so
-        // the answer goes to the host, not through the main chat. So does the
-        // answer to a decision the coordinator opened about a failed task: the
-        // person's own answer on the page is what gives the task its retries
-        // back, and the host tells the coordinator to carry it out.
-        if (door === "person") {
-          await bridge.invoke("orchestration_gate_resolve", {
-            actorChatKey: run.coordinatorChatKey,
-            gateId: gate.id,
-            resolution: resolution.trim(),
-            resumeTarget: true,
-          });
-          setAnswers((current) => ({ ...current, [gate.id]: "" }));
-          await read();
-          return;
-        }
-        onOpenChat(run.coordinatorChatKey,
-          `For orchestration gate ${gate.id}:\n\n${gate.question}\n\nMy answer: ${resolution.trim()}\n\nReview this answer and coordinate the next step through orchestration_gate_resolve.`);
-        setAnswers((current) => ({ ...current, [gate.id]: "" }));
-        onClose();
-      } catch (problem) {
-        setError(messageOf(problem));
-      } finally {
-        setBusy(false);
-      }
-    });
-    if (sent === IN_FLIGHT) return;
+    if (readOnly) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const sent = await resolveRunGate(run, gate, resolution, door, onOpenChat);
+      if (sent === IN_FLIGHT) return;
+      setAnswers((current) => ({ ...current, [gate.id]: "" }));
+      if (door === "chat") onClose();
+      else await read();
+    } catch (problem) { setError(messageOf(problem)); }
+    finally { setBusy(false); }
   };
 
   const retryTask = async (run: OrchestrationRun, task: OrchestrationTask, attempt: OrchestrationAttempt) => {
@@ -313,20 +289,11 @@ export function OrchestrationPanel({
     setBusy(true);
     setError(null);
     try {
-      const reply = await bridge.invoke("orchestration_worker_start", {
-        actorChatKey: run.coordinatorChatKey,
-        ...retryLaunchArgs(task, attempt),
-      });
-      const wait = queuedStart(reply);
+      const wait = await startRunTask(run, task, attempt);
       await read();
       return wait;
-    } catch (problem) {
-      const wait = queuedStart(problem);
-      if (wait) { await read(); return wait; }
-      else setError(messageOf(problem));
-    } finally {
-      setBusy(false);
-    }
+    } catch (problem) { setError(messageOf(problem)); }
+    finally { setBusy(false); }
   };
 
   const workspaceAction = async (run: OrchestrationRun, command: string, args: Record<string, unknown>) => {
@@ -334,11 +301,10 @@ export function OrchestrationPanel({
     setBusy(true);
     setError(null);
     try {
-      await bridge.invoke(command, { actorChatKey: run.coordinatorChatKey, ...args });
+      await runWorkspaceAction(run, command, args);
       await read();
-    } catch (problem) {
-      setError(messageOf(problem));
-    } finally { setBusy(false); }
+    } catch (problem) { setError(messageOf(problem)); }
+    finally { setBusy(false); }
   };
 
   // The person's own decision, so no coordinator is named as its actor.
@@ -1721,7 +1687,7 @@ export const GATE_DOOR_NOTE: Record<GateDoor, { mine: string; others: string }> 
  *    is off, in this panel and in any other drawing of it (`useInFlight`).
  *  Off is `aria-disabled`, never removed from the keyboard, and the handler
  *  itself refuses. */
-function GateAnswer({ gate, door, mine, busy, value, onChange, onResolve }: {
+export function GateAnswer({ gate, door, mine, busy, value, onChange, onResolve }: {
   gate: OrchestrationGate;
   door: GateDoor;
   mine: boolean;
@@ -1781,17 +1747,19 @@ export function batchLine(snapshot: Pick<OrchestrationSnapshot, "batches">, atte
  *  it (the row's disclosure, its two tabs, its Task details, the group's
  *  fold and "N more") are remembered by the cards' stray-press guard, so a
  *  row that opens or changes under the pointer cannot start a worker. */
-function StartButton({ start, busy, onStart }: {
+export function StartButton({ start, busy, onStart }: {
   start: StartControl<OrchestrationAttempt>;
   busy: boolean;
   onStart: () => Promise<string | null | undefined> | void;
 }) {
   const whyId = useId();
   const [queued, setQueued] = useState<string | null>(null);
+  const flying = useInFlight(taskFlight(start.attempt.taskId));
   return <>
-    <button type="button" className="task-start" disabled={busy} aria-disabled={start.blocked ? true : undefined}
+    <button type="button" className="task-start" disabled={busy || flying} aria-disabled={start.blocked ? true : undefined}
       aria-describedby={start.blocked ? whyId : undefined} onKeyDown={dropHeld}
-      onClick={start.blocked ? undefined : () => {
+      onClick={start.blocked ? undefined : (event) => {
+        if (busy || flying || repeatsAnother(event)) { event.preventDefault(); return; }
         setQueued(null);
         void Promise.resolve(onStart()).then(words => setQueued(words ?? null));
       }}>{start.label}</button>
@@ -1853,6 +1821,7 @@ function DeliveryActions({ task, run, busy, active, onAction }: {
   onAction: (command: string, args: Record<string, unknown>) => void;
 }) {
   const [asking, setAsking] = useState<DeliveryAsk | null>(null);
+  const flying = useInFlight(taskFlight(task.id));
   // The control to give the keyboard back to when its question goes.
   const asked = useRef<DeliveryAsk | null>(null);
   const row = useRef<HTMLDivElement>(null);
@@ -1885,7 +1854,7 @@ function DeliveryActions({ task, run, busy, active, onAction }: {
         check whose retries are used, or whose coordinator is gone, it is
         the one door: a completed task takes no Start. */}
     {reopen && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("reopen"); }}
-      data-asks="reopen" disabled={busy} onKeyDown={dropHeld}>{reopen.label}</button>}
+      data-asks="reopen" disabled={busy || flying} onKeyDown={dropHeld}>{reopen.label}</button>}
     {canCleanup && delivery.merged && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("merged"); }}
       data-asks="merged" disabled={busy} onKeyDown={dropHeld}>Clean up worktree</button>}
     {canAbandon && !delivery.merged && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("abandon"); }}
@@ -1899,14 +1868,15 @@ function DeliveryActions({ task, run, busy, active, onAction }: {
 
 /** The fixes a review asks for, and the reopening that puts the task back to
  *  work with them. Drawn where `Continue after review` stood. */
-function ReopenQuestion({ task, busy, onCancel, onReopen }: {
+export function ReopenQuestion({ task, busy, onCancel, onReopen }: {
   task: OrchestrationTask; busy: boolean; onCancel: () => void; onReopen: (spec: string) => void;
 }) {
   const [spec, setSpec] = useState("");
   const box = useRef<HTMLTextAreaElement>(null);
   // The safe place for the keyboard: Enter in the box is a new line.
   useEffect(() => { box.current?.focus(); }, []);
-  const careful = useCarefulAnswer(() => { if (spec.trim()) onReopen(spec.trim()); });
+  const flying = useInFlight(taskFlight(task.id));
+  const careful = useCarefulAnswer(() => { if (!busy && !flying && spec.trim()) onReopen(spec.trim()); });
   return <div className="orch-followup" role="group" aria-label={`Continue ${task.title} after review`}
     onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onCancel(); } }}>
     <label>Review fixes<textarea ref={box} aria-label={`Review fixes for ${task.title}`} value={spec} onChange={(event) => setSpec(event.target.value)} rows={3}
@@ -1914,7 +1884,7 @@ function ReopenQuestion({ task, busy, onCancel, onReopen }: {
       onKeyDown={(event) => { if (!spec) dropHeld(event); }} /></label>
     <div className="orch-delivery-answers">
       <button type="button" className="orch-delivery-keep" onClick={(event) => { notePress(event); onCancel(); }} disabled={busy} onKeyDown={dropHeld}>Cancel</button>
-      <button type="button" className="orch-delivery-go" disabled={busy || !spec.trim()} onKeyDown={careful.keys} onClick={careful.confirm}>Reopen task in this workspace</button>
+      <button type="button" className="orch-delivery-go" disabled={busy || flying || !spec.trim()} onKeyDown={careful.keys} onClick={careful.confirm}>Reopen task in this workspace</button>
     </div>
   </div>;
 }
@@ -1953,27 +1923,6 @@ function messageOf(problem: unknown): string {
   return String((problem as Error)?.message ?? problem);
 }
 
-export function retryLaunchArgs(task: OrchestrationTask, attempt: OrchestrationAttempt) {
-  // A task that changed hands after this attempt is the new owner's: retrying
-  // it on the old owner's provider and model would start the assignment the
-  // handoff replaced.
-  const handedOn = (task.handoffs ?? []).some((handoff) => handoff.at >= attempt.createdAt);
-  const settings = handedOn && task.worker ? task.worker : attempt;
-  return {
-    taskId: task.id,
-    agent: settings.agent,
-    model: settings.model,
-    effort: settings.effort,
-    access: settings.access,
-    // A prepared retry keeps the exact assigned checkout and its uncommitted
-    // work. A preparation failure has no checkout to reuse, so isolate it anew.
-    newWorktree: !attempt.cwd.trim(),
-    // Which attempt this page showed. The host refuses it once the task has
-    // been handed on and the new owner has started, so a page the handoff
-    // overtook cannot launch the replaced settings under the new owner.
-    retryOf: attempt.id,
-  };
-}
 
 function OrchestratorGlyph() {
   return <div className="orch-glyph" aria-hidden="true"><span /><span /><span /><i /><i /></div>;

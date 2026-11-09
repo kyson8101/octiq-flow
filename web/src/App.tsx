@@ -201,6 +201,7 @@ import {
   type ColumnAtFirstPaint,
 } from "./lib/runColumn";
 import { ChatPlanCards } from "./components/ChatPlanCards";
+import { ChatRunDecisionCards, hasChatRunDecisions } from "./components/ChatRunDecisionCards";
 import { HandoverCards, handoverTranscript } from "./components/HandoverCards";
 import {
   chatIdOf, handoverAnchorKey, handoverLayout, handoverPlaces, handoversFor, handoverTail, isRoute,
@@ -4900,10 +4901,20 @@ export default function App() {
       })),
     };
   }, [conversationId, workerChat, questionsHere, setQuestions]);
+  const hasRunDecisionCards = useMemo(() => !!conversationId
+    && chatKindOf({ key: keyFor(conversationId), worker: workerChat, frontDesk: frontDeskChats.has(conversationId) }) === "main"
+    && hasChatRunDecisions(orchestrationState.snapshot, keyFor(conversationId)),
+    [conversationId, workerChat, frontDeskChats, orchestrationState.snapshot]);
+  const answerRunInChat = useCallback((key: string, message?: string) => {
+    if (message) setPendingGateDecision({ id: chatIdOf(key), text: message });
+  }, []);
   const planTail = useMemo(
     () => {
       const plans = conversationId && chatKindOf({ key: keyFor(conversationId), worker: workerChat, frontDesk: frontDeskChats.has(conversationId) }) === "main"
         ? <ChatPlanCards key={conversationId} chatKey={keyFor(conversationId)} plans={plansHere} drafting={planDrafting} projectName={planProjectName} late={lateTail} /> : null;
+      const decisions = conversationId && chatKindOf({ key: keyFor(conversationId), worker: workerChat, frontDesk: frontDeskChats.has(conversationId) }) === "main" && hasRunDecisionCards
+        ? <ChatRunDecisionCards key={`decisions:${conversationId}`} snapshot={orchestrationState.snapshot}
+            chatKey={keyFor(conversationId)} onOpenChat={answerRunInChat} /> : null;
       const handed = handoverTailHere.length
         ? <HandoverCards outgoing={handoverTailHere} onDecide={decideAndGo} late={lateTail} />
         : null;
@@ -4911,9 +4922,9 @@ export default function App() {
         ? <SafetyLines blocks={safetySplit.folded} reveal={safetyReveal} late={lateTail}
           onSafetyAnswered={answeredSafety} onContinue={continueSafety} />
         : null;
-      return plans || handed || refused ? <>{refused}{handed}{plans}</> : undefined;
+      return plans || decisions || handed || refused ? <>{refused}{handed}{plans}{decisions}</> : undefined;
     },
-    [conversationId, frontDeskChats, plansHere, planDrafting, planProjectName, handoverTailHere, decideAndGo,
+    [conversationId, frontDeskChats, plansHere, planDrafting, planProjectName, orchestrationState.snapshot, hasRunDecisionCards, answerRunInChat, handoverTailHere, decideAndGo,
       workerChat, safetySplit, safetyReveal, answeredSafety, continueSafety, lateTail],
   );
 
@@ -5848,16 +5859,16 @@ export default function App() {
                 ”…
               </p>
             </div>
-          ) : (leadsOnly && !conversationId) || (threadAgentId && chat.messages.length === 0) ? (
+          ) : (leadsOnly && !conversationId) || (threadAgentId && chat.messages.length === 0 && !hasRunDecisionCards) ? (
             <div className="hero"><h1 className="hero-title">{threadAgentId ? `Talk to ${composerIdentity?.name ?? "your lead"}` : "Talk to a lead"}</h1>
               {!conversationId && <div className="hero-links"><button className="hero-link" type="button" disabled={!!openingLead} onClick={() => void startAgentConversation()}>New conversation</button></div>}
               {leadOpenError && <p className="hero-route-error" role="alert">{leadOpenError}</p>}
             </div>
           ) : chat.messages.length === 0 && workerChat ? (
             <div className="hero"><h1 className="hero-title">Agent conversation</h1><p className="hero-sub">The agent's progress will appear here. Send instructions in the main chat.</p></div>
-          ) : chat.messages.length === 0 && currentWorkflow.runs.length > 0 ? (
+          ) : chat.messages.length === 0 && !hasRunDecisionCards && currentWorkflow.runs.length > 0 ? (
             <div className="hero"><h2 className="hero-title">Main chat</h2><p className="hero-sub">Talk with the main agent here. Select a task to follow its conversation.</p></div>
-          ) : chat.messages.length === 0 ? (
+          ) : chat.messages.length === 0 && !hasRunDecisionCards ? (
             <div className={`hero enter-gated ${project ? "" : "hero-start"}${newTask ? " is-agent-welcome" : ""}`}>
               <h1 className="hero-title">{newTask && lead
                 ? `Talk to ${lead.name}`

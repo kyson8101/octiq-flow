@@ -56,6 +56,7 @@ import { TasksButton } from "../components/ChatWorkflowBar";
 import { OrchestrationPanel } from "../components/OrchestrationPanel";
 import { PendingActionsContext, type PendingActionsView } from "../components/PendingActionBadge";
 import { RunProgressStrip } from "../components/RunProgressStrip";
+import { ChatRunDecisionCards } from "../components/ChatRunDecisionCards";
 import { Sidebar } from "../components/Sidebar";
 
 const NOW = 10_000_000;
@@ -405,6 +406,16 @@ describe("every surface says the same of who is waited on", () => {
       if (answer.count !== null) expect(answer.count, `${name} count`).toBe(person);
       expect(answer.asked, `${name} says the person is waited on`).toBe(person > 0);
     }
+  });
+
+  it.each(SHAPES)("chat gate/failure cards use the same host keys: $name", ({ ledger: shape }) => {
+    const expected = shape.runs.filter(run => run.coordinatorChatKey === MAIN)
+      .flatMap(run => runWaits(shape, run).person.filter(wait => wait.kind === "gate" || wait.kind === "failure").map(wait => wait.key)).sort();
+    const html = renderToStaticMarkup(<ChatRunDecisionCards snapshot={shape} chatKey={MAIN} onOpenChat={() => {}} />);
+    const keys = [...html.matchAll(/data-pending-keys="([^"]+)"/g)].map(match => match[1]).sort();
+    expect(keys).toEqual(expected);
+    // A worker or another chat gets no coordinator decision cards.
+    expect(renderToStaticMarkup(<ChatRunDecisionCards snapshot={shape} chatKey="chat:orch-a" onOpenChat={() => {}} />)).toBe("");
   });
 
   // The reviewer's pair: the host says a refusal waits on the person, and the

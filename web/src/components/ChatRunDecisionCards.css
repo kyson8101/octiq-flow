@@ -1,0 +1,31 @@
+.chat-run-decisions { display: grid; gap: 12px; min-width: 0; }
+.chat-run-decision {
+  min-width: 0; padding: 14px 16px;
+  border: 1px solid var(--decide); border-radius: var(--r-md);
+  background: var(--decide-tint); color: var(--fg-1);
+  overflow-wrap: anywhere;
+}
+.chat-run-decision p { margin: 0 0 10px; }
+.chat-run-decision-title { font-weight: 650; }
+.chat-run-decision-ask { white-space: pre-wrap; }
+.chat-run-decision-detail { white-space: pre-wrap; }
+.chat-run-decision .card-fold-line { margin-bottom: 10px; }
+.chat-run-decision .orch-gate-door { margin: 8px 0 0; font-size: 11px; color: var(--fg-2); }
+.chat-run-decision button:not(.card-fold-toggle) {
+  min-height: 44px; max-width: 100%; padding: 8px 12px;
+  border: 1px solid var(--decide); border-radius: var(--r-sm);
+  background: var(--bg-1); color: var(--fg-1); font: inherit;
+  white-space: normal; overflow-wrap: anywhere; cursor: pointer;
+}
+.chat-run-decision button:not(.card-fold-toggle):hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--decide); background: var(--decide-tint);
+}
+.chat-run-decision button:focus-visible,
+.chat-run-decision input:focus-visible,
+.chat-run-decision textarea:focus-visible { outline: 2px solid var(--decide); outline-offset: 2px; }
+.chat-run-decision button:disabled,
+.chat-run-decision button[aria-disabled="true"] { opacity: .5; cursor: default; }
+.chat-run-decision .card-fold-toggle { min-width: 44px; min-height: 44px; }
+.chat-run-decision .orch-gate-write input { min-height: 44px; }
+.chat-run-decision .task-start-why { display: block; margin-top: 8px; }
+.chat-run-decision .chat-run-decision-error { color: var(--danger); margin-top: 10px; }

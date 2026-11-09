@@ -1,8 +1,8 @@
 // Whether the questions waiting in the transcript can be seen. The observer
 // is the browser's; what is counted from its reports is here.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { hiddenNow, hiddenQuestions, revealWaiting, subscribeSight, watchBlock } from "./questionSight";
+import { hasHiddenDecisions, hiddenNow, hiddenQuestions, revealWaiting, subscribeSight, watchBlock } from "./questionSight";
 
 describe("the questions waiting out of view", () => {
   it("counts the questions of every block that is out of view", () => {
@@ -33,5 +33,28 @@ describe("where there is nothing to observe with", () => {
     expect(hiddenNow()).toBe(0);
     expect(told).toBe(0);
     stop();
+  });
+});
+
+describe("run decisions in the same awareness row", () => {
+  it("counts a host key once and uses a generic label only while decisions are hidden", () => {
+    let report!: (entries: { target: HTMLElement; isIntersecting: boolean }[]) => void;
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(callback: typeof report) { report = callback; }
+      observe() {} unobserve() {}
+    });
+    const question = {} as HTMLElement, decision = {} as HTMLElement;
+    const stopQuestion = watchBlock("question:q", question, 1);
+    const stopDecision = watchBlock("gate:host-id", decision, 1, "decision");
+    const stopDuplicate = watchBlock("gate:host-id", decision, 1, "decision");
+    try {
+      report([{ target: question, isIntersecting: false }, { target: decision, isIntersecting: false }]);
+      expect(hiddenNow()).toBe(2);
+      expect(hasHiddenDecisions()).toBe(true);
+      report([{ target: decision, isIntersecting: true }]);
+      expect(hiddenNow()).toBe(1);
+      expect(hasHiddenDecisions()).toBe(false);
+    } finally { stopDuplicate(); stopDecision(); stopQuestion(); vi.unstubAllGlobals(); }
+    expect(hiddenNow()).toBe(0);
   });
 });

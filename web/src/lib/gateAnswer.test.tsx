@@ -10,11 +10,13 @@
 // section), which presses.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import actionsSourceRaw from "./runDecisionActions.ts?raw";
+import chatSourceRaw from "../components/ChatRunDecisionCards.tsx?raw";
 import panelSourceRaw from "../components/OrchestrationPanel.tsx?raw";
 import { lf } from "./sourceText";
 
 // Read with one kind of line end, so a pattern may name `\n` on a CRLF checkout too.
-const panelSource = lf(panelSourceRaw);
+const panelSource = lf([panelSourceRaw, actionsSourceRaw, chatSourceRaw].join("\n"));
 
 vi.mock("./bridge", () => ({
   bridge: { invoke: async () => null, on: () => () => {}, onState: () => () => {} },
@@ -180,10 +182,10 @@ describe("where a gate's answer goes", () => {
 /** A component of the panel's file: from its `function Name(` to the next
  *  thing declared at the start of a line. */
 function local(source: string, name: string): string {
-  const at = source.search(new RegExp(`^(?:export )?function ${name}\\(`, "m"));
+  const at = source.search(new RegExp(`^(?:export )?(?:async )?function ${name}\\(`, "m"));
   if (at < 0) return "";
   const rest = source.slice(at + 1);
-  const end = rest.search(/^(?:export )?(?:function|const|type) /m);
+  const end = rest.search(/^(?:export )?(?:async function|function|const|type) /m);
   return source.slice(at, end < 0 ? undefined : at + 1 + end);
 }
 
@@ -198,17 +200,17 @@ function unguardedGateAnswers(source: string): string[] {
   // One place sends the person's door, inside the one-at-a-time sender.
   const sends = [...source.matchAll(/"orchestration_gate_resolve"/g)];
   if (sends.length !== 1) problems.push(`the person's door is named ${sends.length} times`);
-  const sender = /const resolveGate = async \([\s\S]*?\n  \};\n/.exec(source)?.[0] ?? "";
+  const sender = local(source, "resolveRunGate");
   if (!sender.includes('"orchestration_gate_resolve"')) problems.push("the person's door is sent outside resolveGate");
   if (!/const sent = await once\(gateFlight\(gate\.id\), async \(\) => \{/.test(sender)) problems.push("resolveGate does not hold the gate while its answer is out");
   if (sender.indexOf("once(gateFlight(") > sender.indexOf("bridge.invoke(") || sender.indexOf("once(gateFlight(") > sender.indexOf("onOpenChat(")) {
-    problems.push("resolveGate sends before it takes the gate");
+    problems.push("resolveRunGate sends before it takes the gate");
   }
   if (!/if \(door === "person"\) \{\s*await bridge\.invoke\("orchestration_gate_resolve"/.test(sender)) problems.push("the person's door is not chosen by the gate's door");
 
   // The sender is reached from one prop, and that prop is called in one
   // place: the guarded handler.
-  if ((outside.match(/\bresolveGate\(/g) ?? []).length !== 1) problems.push("resolveGate is called from more than the one prop");
+  if ((source.replace(sender, "").match(/\bresolveRunGate\(/g) ?? []).length !== 2) problems.push("resolveRunGate must serve exactly the panel and chat");
   if (/\bonResolve\(/.test(outside)) problems.push("onResolve is called outside GateAnswer");
   const calls = answer.match(/\bonResolve\(/g) ?? [];
   if (calls.length !== 1) problems.push(`GateAnswer calls onResolve ${calls.length} times`);
@@ -257,7 +259,7 @@ describe("every control that answers a gate", () => {
     expect(mutate("const sent = await once(gateFlight(gate.id), async () => {", "const sent = await (async () => {"))
       .toEqual(expect.arrayContaining([expect.stringContaining("does not hold the gate")]));
     // The person's door for any failure gate, whoever it waits on.
-    expect(mutate('if (door === "person") {\n          await bridge.invoke("orchestration_gate_resolve"', 'if (isFailureGate(gate)) {\n          await bridge.invoke("orchestration_gate_resolve"'))
+    expect(mutate('if (door === "person") {\n      await bridge.invoke("orchestration_gate_resolve"', 'if (isFailureGate(gate)) {\n          await bridge.invoke("orchestration_gate_resolve"'))
       .toEqual([expect.stringContaining("not chosen by the gate's door")]);
     // A second sender of the person's door, written into the row.
     expect(mutate('<p className="orch-gate-door" id={noteId}>{note}</p>', '<p className="orch-gate-door" id={noteId}>{note}</p><button onClick={() => void bridge.invoke("orchestration_gate_resolve", {})}>Answer</button>'))

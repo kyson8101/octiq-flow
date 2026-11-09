@@ -6,6 +6,8 @@
 // ledgers are the host's own (`__fixtures__/host`).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import actionsSourceRaw from "./runDecisionActions.ts?raw";
+import chatSourceRaw from "../components/ChatRunDecisionCards.tsx?raw";
 import panelSourceRaw from "../components/OrchestrationPanel.tsx?raw";
 import { lf } from "./sourceText";
 
@@ -436,7 +438,7 @@ describe("what decides a task's workspace", () => {
     expect(panelSource.match(/className="orch-delivery-keep" onClick=\{\(event\) => \{ notePress\(event\); onCancel\(\); \}\}/g)).toHaveLength(2);
     // The two answers that reopen or remove: a held key is dropped, and a
     // press that repeats the one the question was opened with.
-    expect(panelSource).toMatch(/className="orch-delivery-go" disabled=\{busy \|\| !spec\.trim\(\)\} onKeyDown=\{careful\.keys\} onClick=\{careful\.confirm\}>Reopen task in this workspace</);
+    expect(panelSource).toMatch(/className="orch-delivery-go" disabled=\{busy \|\| flying \|\| !spec\.trim\(\)\} onKeyDown=\{careful\.keys\} onClick=\{careful\.confirm\}>Reopen task in this workspace</);
     expect(panelSource).toMatch(/className="orch-delivery-go" disabled=\{busy \|\| !allowed\} onClick=\{careful\.confirm\}>Confirm removal</);
     expect(panelSource).toMatch(/className="orch-cleanup-confirm"[^>]*\n\s*onKeyDown=\{\(event\) => \{ careful\.keys\(event\);/);
     expect(panelSource.match(/const careful = useCarefulAnswer\(/g)).toHaveLength(2);
@@ -449,7 +451,7 @@ describe("what decides a task's workspace", () => {
     expect(panelSource).toMatch(/onKeyDown=\{dropHeld\}\s*onClick=\{\(\) => onAction\("orchestration_validation_remove"/);
     // One place sends each.
     for (const command of ["orchestration_task_reopen", "orchestration_workspace_cleanup", "orchestration_validation_remove", "orchestration_workspace_refresh"]) {
-      expect(panelSource.match(new RegExp(`"${command}"`, "g")), command).toHaveLength(1);
+      expect((panelSource + chatSourceRaw).match(new RegExp(`"${command}"`, "g")), command).toHaveLength(command === "orchestration_task_reopen" ? 2 : 1);
     }
   });
 });
@@ -457,7 +459,16 @@ describe("what decides a task's workspace", () => {
 describe("every control that starts an attempt", () => {
   it("is drawn by the one component that asks the reader", () => {
     // One place sends the start, and one place calls it.
-    expect(panelSource.match(/"orchestration_worker_start"/g)).toHaveLength(1);
+    expect(lf(actionsSourceRaw).match(/"orchestration_worker_start"/g)).toHaveLength(1);
+    expect(panelSource + chatSourceRaw).not.toContain('"orchestration_worker_start"');
+    expect(panelSource).toContain("await startRunTask(run, task, attempt)");
+    expect(chatSourceRaw).toContain("startRunTask(run, task, start.attempt)");
+    expect(chatSourceRaw.match(/<StartButton /g)).toHaveLength(1);
+    expect(chatSourceRaw).toContain("startControl(task, run,");
+    expect(actionsSourceRaw).toContain("once(taskFlight(task.id), async () => {");
+    expect(panelSource).toContain("if (busy || flying || repeatsAnother(event)) { event.preventDefault(); return; }");
+    expect(chatSourceRaw).not.toMatch(/>Start (retry|next attempt|it again)</);
+    expect(panelSource).toContain("useInFlight(taskFlight(start.attempt.taskId))");
     expect(panelSource.match(/onRetry\(/g)).toHaveLength(1);
     expect(panelSource).toMatch(/const start = startControl\(/);
     // No label of a start is written anywhere but the reader.

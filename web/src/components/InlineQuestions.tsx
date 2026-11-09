@@ -44,7 +44,7 @@ import {
   waitingLabel, withMediaOf, type AnsweredPlacement, type Batch, type Picked, type Placement, type Said,
 } from "../lib/questionBlock";
 import { mediaList } from "../lib/questionMedia";
-import { hiddenNow, revealWaiting, subscribeSight, watchBlock } from "../lib/questionSight";
+import { hasHiddenDecisions, hiddenNow, revealWaiting, subscribeSight, watchBlock } from "../lib/questionSight";
 import {
   missingQuestionCommand, PartialQuestionSubmission, submitLegacyQuestionAnswers, submitQuestionAnswers,
   type QuestionReceipt,
@@ -572,12 +572,13 @@ function LooseBatch({ batch, onDone }: { batch: Batch; onDone: (ids: string[]) =
  *  block and puts the keyboard on its first control. */
 export function QuestionWaitingRow() {
   const hidden = useSyncExternalStore(subscribeSight, hiddenNow, () => 0);
+  const decisions = useSyncExternalStore(subscribeSight, hasHiddenDecisions, () => false);
   if (!hidden) return null;
   return (
     <div className="status-row qa-waiting">
       <button type="button" className="status-row-main" onClick={() => { revealWaiting(); }}>
         <span className="status-row-icon" data-tone="decide" aria-hidden="true"><span className="qa-waiting-dot" /></span>
-        <span className="status-row-label">{waitingLabel(hidden)}</span>
+        <span className="status-row-label">{decisions ? `${hidden} waiting` : waitingLabel(hidden)}</span>
         <span className="status-row-text">Show</span>
       </button>
     </div>
