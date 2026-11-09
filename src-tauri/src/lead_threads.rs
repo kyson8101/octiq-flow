@@ -536,10 +536,8 @@ mod tests {
         agent(&path, "chief", None, Some("p"));
         let opened = open(&path, &[project(&linked)], "chief").unwrap();
         assert_eq!(
-            Path::new(opened.cwd.as_deref().unwrap())
-                .canonicalize()
-                .unwrap(),
-            repo.canonicalize().unwrap()
+            crate::paths::canonicalize(Path::new(opened.cwd.as_deref().unwrap())).unwrap(),
+            crate::paths::canonicalize(&repo).unwrap()
         );
         assert!(crate::git_ops::git_prepare_chat_workspace(
             linked.to_string_lossy().into_owned(),
