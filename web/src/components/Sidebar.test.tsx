@@ -46,10 +46,9 @@ function html(over: Partial<Parameters<typeof Sidebar>[0]> = {}, pendingView: Pe
 }
 
 describe("task-oriented Sidebar", () => {
-  it("offers Disk beside Island without agents mode", () => {
-    const out = html({ onIsland: () => {}, onDisk: () => {}, activeView: "disk" });
+  it("offers Disk without agents mode", () => {
+    const out = html({ onDisk: () => {}, activeView: "disk" });
     expect(out).toContain("<span>Disk</span>");
-    expect(out.indexOf("<span>Island</span>")).toBeLessThan(out.indexOf("<span>Disk</span>"));
     expect(out).toContain('aria-current="page"><svg width="18" height="18"');
     expect(out).not.toContain("<span>Agents</span>");
   });

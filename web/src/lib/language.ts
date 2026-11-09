@@ -40,7 +40,7 @@ const BY_EXTENSION: Record<string, () => Promise<Extension>> = {
 
   html: () => import("@codemirror/lang-html").then((m) => m.html()),
   htm: () => import("@codemirror/lang-html").then((m) => m.html()),
-  // Razor and Vue are not HTML, but the markup around their islands is, and
+  // Razor and Vue are not HTML, but the surrounding markup is, and
   // that is most of the file.
   cshtml: () => import("@codemirror/lang-html").then((m) => m.html()),
   vue: () => import("@codemirror/lang-html").then((m) => m.html()),

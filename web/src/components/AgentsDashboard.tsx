@@ -82,8 +82,7 @@ export function AgentsDashboard({
     return () => { alive = false; };
   }, [connected, accepted, levelsRead]);
 
-  // The roster and what each agent is doing: the one reading the island
-  // takes too (`lib/useAgentRows`).
+  // The roster and what each agent is doing (`lib/useAgentRows`).
   const { rows, team, error } = useAgentRows({
     connected, snapshot, projects, running, busy, waitingOn, held, chatTitle, chatExists,
   });

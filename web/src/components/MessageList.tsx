@@ -1064,7 +1064,7 @@ function TurnView({
             </>
           ) : hostPersona ? (
             <>
-              <AgentAvatar island name={hostPersona.name} avatar={hostPersona.avatar} id={hostPersona.id ?? hostPersona.name} size={40} removed={hostPersona.removed} decorative />
+              <AgentAvatar name={hostPersona.name} avatar={hostPersona.avatar} id={hostPersona.id ?? hostPersona.name} size={40} removed={hostPersona.removed} decorative />
               {hostPersona.name}
             </>
           ) : (
