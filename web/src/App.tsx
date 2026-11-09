@@ -147,6 +147,11 @@ import { SessionSearch } from "./components/SessionSearch";
 import { importSession, isUnder, replaySession, type HistorySession } from "./lib/history";
 import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
 import { Sidebar, type Project } from "./components/Sidebar";
+import { useAgentLanes } from "./lib/agentLanes";
+import { leadThreadAgent, leadsOnlyMode, newConversationLead, type LeadThread, type LeadHistoryEntry } from "./lib/leadThreads";
+import { openLeadThread, useLeadThreads } from "./lib/leadThreadFeed";
+import { fromIndex } from "./lib/notificationOpen";
+import { LeadHistoryButton, LeadHistoryPanel } from "./components/LeadHistory";
 import { ChatSearchPage } from "./components/ChatSearchPage";
 const DiskPage = lazy(() => import("./components/DiskPage"));
 import { WorkspaceSlotsContext, type WorkspaceSlots } from "./components/WorkspaceHeader";
@@ -904,7 +909,17 @@ export default function App() {
   // Agents mode (lib/agentsMode): the primary entry opens the CTO conversation,
   // which plans work and hands approved tasks to registered agents. Off,
   // nothing below changes anything.
+  const scheduling = useAgentLanes();
   const [agentsMode, setAgentsMode] = useState<boolean>(recallAgentsMode);
+  const leadsOnly = leadsOnlyMode(agentsMode, scheduling.data?.orientation);
+  const leadReading = useLeadThreads(leadsOnly);
+  const [leadHistoryFor, setLeadHistoryFor] = useState<string | null>(null);
+  const [openingLead, setOpeningLead] = useState<string | null>(null);
+  const leadOpening = useRef(false);
+  const [leadOpenError, setLeadOpenError] = useState<string | null>(null);
+  const [historyReturn, setHistoryReturn] = useState<{ agentId: string; chatId: string } | null>(null);
+  const threadAgentId = leadThreadAgent(conversations.find(c => c.id === conversationId))
+    ?? (conversationId?.startsWith("lead-") ? conversationId.slice(5) : null);
   const [leadRecordsState, setLeadRecordsState] = useState<"loading" | "ready" | "error">(
     () => agentsMode ? "loading" : "ready",
   );
@@ -2319,11 +2334,15 @@ export default function App() {
     if (!agentsMode || workerChat) return null;
     if (conversationId) {
       if (frontDeskChats.has(conversationId) && frontDesk) return agentIdentity(frontDesk, frontDesk.name, choice);
+      if (threadAgentId) {
+        const agent = roster.find(a => a.id === threadAgentId);
+        return agentIdentity(agent, agent?.name ?? leadReading.threads?.find(t => t.agentId === threadAgentId)?.name ?? "Lead", choice);
+      }
       if (!chatLead) return null;
       return agentIdentity(roster.find((agent) => agent.id === chatLead.leadId), chatLead.leadName, choice);
     }
     return lead ? agentIdentity(lead, lead.name, choice) : null;
-  }, [agentsMode, workerChat, conversationId, chatLead, roster, lead, choice, frontDeskChats, frontDesk]);
+  }, [agentsMode, workerChat, conversationId, chatLead, roster, lead, choice, frontDeskChats, frontDesk, threadAgentId, leadReading.threads]);
   // Agents mode: where a new task runs, chosen automatically (lib/agentExecution).
   // The head coordinates from home, whichever page the conversation was
   // started from; a project lead gets a new worktree. Only what the person
@@ -2363,18 +2382,25 @@ export default function App() {
     return assigneesHeld.current;
   }, [orchestration]);
   const personaForChat = useMemo(
-    () => personaReader(agentsMode, leads, roster, workerAssignees),
-    [agentsMode, leads, roster, workerAssignees],
+    () => {
+      const ordinary = personaReader(agentsMode, leads, roster, workerAssignees);
+      return (key: string) => {
+        const thread = leadReading.threads?.find(t => t.chatKey === key);
+        const agent = roster.find(a => a.id === thread?.agentId);
+        return agentsMode && thread ? { id: thread.agentId, name: agent?.name ?? thread.name, avatar: agent?.avatar } : ordinary(key);
+      };
+    },
+    [agentsMode, leads, roster, workerAssignees, leadReading.threads],
   );
   const persona = useMemo(
     () => agentsMode && conversationId && frontDeskChats.has(conversationId) && composerIdentity
       ? { id: composerIdentity.id, name: composerIdentity.name, avatar: composerIdentity.avatar }
       : agentsMode && conversationId
-      ? personaFor(keyFor(conversationId), leads, roster, workerAssignees)
+      ? personaForChat(keyFor(conversationId))
       : agentsMode && composerIdentity
         ? { id: composerIdentity.id, name: composerIdentity.name, avatar: composerIdentity.avatar }
         : null,
-    [agentsMode, conversationId, leads, roster, workerAssignees, composerIdentity, frontDeskChats],
+    [agentsMode, conversationId, personaForChat, composerIdentity, frontDeskChats],
   );
   // Task details combine the chat's recorded launch plan, the newest worker
   // attempt and registered persona with live host verification.
@@ -3357,12 +3383,12 @@ export default function App() {
         setUnavailableChat(target.conversationId);
         return;
       }
-      if (!conversationsRef.current.some((conversation) => conversation.id === found.id)) {
-        const next = [found, ...conversationsRef.current];
-        conversationsRef.current = next;
-        setConversations(next);
+      setConversations(current => {
+        if (current.some(conversation => conversation.id === found.id)) return current;
+        const next = [found, ...current];
         saveConversations(next);
-      }
+        return next;
+      });
       showConversation(found);
     }).catch(() => {
       // Keep the target pending. A reconnect or the normal index refresh can
@@ -5267,25 +5293,45 @@ export default function App() {
     if (workflowSplit) showTasks(true);
   };
 
-  // Agents mode's creation action always prepares a new conversation, with
-  // the configured head until the person picks someone else on its empty
-  // page — the same page a first load shows. Existing conversations remain
-  // ordinary sidebar navigation; conflating the two made "New conversation"
-  // silently reopen the last one.
+  const showLeadThread = async (agentId: string) => {
+    if (leadOpening.current) return;
+    leadOpening.current = true; setOpeningLead(agentId); setLeadOpenError(null);
+    try {
+      const entry = await openLeadThread(agentId);
+      const cached = conversationsRef.current.find(c => c.id === entry.id);
+      const conversation = { ...fromIndex(entry), messages: cached?.messages ?? [], seq: cached?.seq };
+      setConversations(current => {
+        const next = [conversation, ...current.filter(c => c.id !== entry.id)];
+        saveConversations(next);
+        return next;
+      });
+      setHistoryReturn(null);
+      showConversation(conversation);
+    } catch (error) { setLeadOpenError(String((error as Error).message ?? error)); }
+    finally { leadOpening.current = false; setOpeningLead(null); }
+  };
+  const openLeadHistoryChat = (entry: LeadHistoryEntry) => {
+    if (!threadAgentId) return;
+    setHistoryReturn({ agentId: threadAgentId, chatId: entry.chatKey.replace(/^chat:/, "") });
+    onOpenChat.current({ conversationId: entry.chatKey.replace(/^chat:/, ""), projectId: null });
+  };
   const startAgentConversation = async () => {
-    // Re-read the head and the chart: either may have changed on another device.
-    const [configured, everyone, desk] = await Promise.all([
-      loadHead().catch(() => head),
-      loadTeam(null, true).catch(() => roster),
-      loadFrontDesk().catch(() => frontDeskAgent),
-    ]);
-    setHead(configured);
-    setFrontDeskAgent(desk);
-    setRoster(everyone);
-    if (conversationRecipients(everyone, configured?.id).length === 0) {
-      openAgentsSettings();
+    if (leadsOnly) {
+      setLeadOpenError(null);
+      try {
+        const [configured, threads] = await Promise.all([loadHead(), bridge.invoke<LeadThread[]>("lead_threads")]);
+        setHead(configured);
+        const target = newConversationLead(threads, configured?.id);
+        if (target) await showLeadThread(target.agentId);
+        else openAgentsSettings();
+      } catch (error) { setLeadOpenError(String((error as Error).message ?? error)); }
       return;
     }
+    const [configured, everyone, desk] = await Promise.all([
+      loadHead().catch(() => head), loadTeam(null, true).catch(() => roster), loadFrontDesk().catch(() => frontDeskAgent),
+    ]);
+    setHead(configured); setFrontDeskAgent(desk); setRoster(everyone);
+    if (conversationRecipients(everyone, configured?.id).length === 0) { openAgentsSettings(); return; }
     newChat();
   };
 
@@ -5391,11 +5437,13 @@ export default function App() {
     </button>),
     // Only drawn for a home-screen app, which has no browser chrome.
     push.installed() && act("reload", 40, <InstalledReload />),
+    onChat && threadAgentId && act("history", 55, <LeadHistoryButton onClick={() => setLeadHistoryFor(threadAgentId)} />),
+    onChat && historyReturn?.chatId === conversationId && act("lead-back", 90, <button className="icon-btn" type="button" onClick={() => void showLeadThread(historyReturn.agentId)}><span aria-hidden="true">←</span><span className="topbar-action-label">Back to thread</span></button>),
     onChat && conversationId && act("copy-id", 20, <CopyChatIdButton chatId={conversationId} />),
-    onChat && conversationId && completeChatAction.shown && act("complete", 50, <CompleteChatButton
+    onChat && conversationId && !threadAgentId && completeChatAction.shown && act("complete", 50, <CompleteChatButton
       action={completeChatAction}
       onClick={() => setCompleteAsk(conversationId)} />),
-    onChat && conversationId && !workerChat && act("delete", 10, <ChatDeleteButton deleting={deleting.has(conversationId)} disabled={leaving.has(conversationId)}
+    onChat && conversationId && !threadAgentId && !workerChat && act("delete", 10, <ChatDeleteButton deleting={deleting.has(conversationId)} disabled={leaving.has(conversationId)}
       deleteMs={UNDO_MS} onDelete={() => deleteConversation(conversationId)} />, { separated: true }),
   ].filter((action): action is BarAction => !!action);
   // A chat's page has actions once its facts are in (which project, which
@@ -5439,6 +5487,12 @@ export default function App() {
           phone `.shell-main` dissolves (display: contents) and the list is a
           screen of its own again — see `.app.projects-screen`. */}
       <Sidebar
+        leadsOnly={leadsOnly}
+        navigationReady={!agentsMode || !!scheduling.data || !!scheduling.error}
+        leadReading={leadReading}
+        openingLead={openingLead}
+        leadOpenError={leadOpenError}
+        onOpenLead={lead => { setRecipientId(lead.agentId); void showLeadThread(lead.agentId); }}
         projects={workspaces}
         projectsReady={workspacesLoaded}
         chatsReady={indexReady}
@@ -5496,6 +5550,7 @@ export default function App() {
         activeView={searchPage ? "search" : projectsPage ? "projects" : agentsDashboard && agentsMode ? "agents"
           : prDashboardOpen ? "pulls" : appSettings ? "settings" : diskPage ? "disk" : null}
       />
+      {leadHistoryFor && <LeadHistoryPanel key={leadHistoryFor} agentId={leadHistoryFor} onClose={() => setLeadHistoryFor(null)} onOpen={openLeadHistoryChat} />}
       <div className="shell-main">
       {/* The workspace's ONE top bar. The app's name and logo belong to the
           sidebar's head; this bar names the page — a page's title and way
@@ -5792,6 +5847,11 @@ export default function App() {
                   "the session"}
                 ”…
               </p>
+            </div>
+          ) : (leadsOnly && !conversationId) || (threadAgentId && chat.messages.length === 0) ? (
+            <div className="hero"><h1 className="hero-title">{threadAgentId ? `Talk to ${composerIdentity?.name ?? "your lead"}` : "Talk to a lead"}</h1>
+              {!conversationId && <button className="hero-link" type="button" disabled={!!openingLead} onClick={() => void startAgentConversation()}>New conversation</button>}
+              {leadOpenError && <p className="hero-route-error" role="alert">{leadOpenError}</p>}
             </div>
           ) : chat.messages.length === 0 && workerChat ? (
             <div className="hero"><h1 className="hero-title">Agent conversation</h1><p className="hero-sub">The agent's progress will appear here. Send instructions in the main chat.</p></div>
@@ -6180,7 +6240,7 @@ export default function App() {
 
           {/* A task chat takes no messages: no composer, and no block in its
               place — the Read-only badge by its title says so. */}
-          {!workerChat && <Composer
+          {!workerChat && (!leadsOnly || !!conversationId) && <Composer
             focusMode={focusMode}
             session={conversationId ?? undefined}
             draftStore={composerDrafts.current}

@@ -17,3 +17,8 @@ it("keeps refusal words behind a disclosure and never says Saved", () => {
   expect(html).toContain("one batch at a time");
   expect(html).not.toContain("Parallel tasks");
 });
+
+it("explains orientation when Agents mode is off without merging the settings", () => {
+  expect(renderToStaticMarkup(<SchedulingBlock {...props} agentsMode={false} />)).toContain("Agents orientation takes effect when Agents mode is on.");
+  expect(renderToStaticMarkup(<SchedulingBlock {...props} agentsMode />)).not.toContain("Agents orientation takes effect when Agents mode is on.");
+});

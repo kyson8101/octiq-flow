@@ -2,7 +2,7 @@ import { useState } from "react";
 import { saveScheduling, useAgentLanes, type SchedulingSettings as Settings } from "../lib/agentLanes";
 import "./SchedulingSettings.css";
 
-export function SchedulingSettings() {
+export function SchedulingSettings({ agentsMode = false }: { agentsMode?: boolean }) {
   const { data, error } = useAgentLanes();
   const [draft, setDraft] = useState<Settings | null>(null);
   const [busy, setBusy] = useState(false);
@@ -17,14 +17,14 @@ export function SchedulingSettings() {
     catch (reason) { setRefusal(String((reason as Error).message ?? reason)); }
     finally { setBusy(false); }
   };
-  return <SchedulingBlock settings={settings} unread={!data} loading={!data && !error} busy={busy}
+  return <SchedulingBlock agentsMode={agentsMode} settings={settings} unread={!data} loading={!data && !error} busy={busy}
     running={data?.live.total ?? null} error={error ?? refusal} done={done}
     changed={!!data && !!settings && (settings.orientation !== data.orientation || settings.hostCap !== data.hostCap)}
     onChange={value => { setDone(false); setRefusal(""); setDraft(value); }} onSave={() => void save()} />;
 }
 
-export function SchedulingBlock({ settings, unread, loading, busy, running, error, done, changed, onChange, onSave }: {
-  settings: Settings | null; unread: boolean; loading: boolean; busy: boolean; running: number | null;
+export function SchedulingBlock({ agentsMode = false, settings, unread, loading, busy, running, error, done, changed, onChange, onSave }: {
+  agentsMode?: boolean; settings: Settings | null; unread: boolean; loading: boolean; busy: boolean; running: number | null;
   error: string; done: boolean; changed: boolean; onChange: (value: Settings) => void; onSave: () => void;
 }) {
   return <section className="scheduling-block" aria-labelledby="scheduling-title">
@@ -36,6 +36,7 @@ export function SchedulingBlock({ settings, unread, loading, busy, running, erro
           <span>{value === "tasks" ? "Tasks" : "Agents"}</span>
         </label>)}</div>
         <p className="set-hint">{settings.orientation === "tasks" ? "Every task gets its own worker and worktree, up to each run's limit." : "Each agent works through its own queue one batch at a time, in one worktree per repository."}</p>
+        {!agentsMode && <p className="set-hint">Agents orientation takes effect when Agents mode is on.</p>}
       </fieldset>
       <label className="scheduling-limit">Machine-wide limit<select aria-label="Machine-wide limit" value={settings.hostCap ?? "off"} disabled={busy}
         onChange={event => onChange({ ...settings, hostCap: event.target.value === "off" ? null : Number(event.target.value) })}>

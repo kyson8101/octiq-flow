@@ -1,0 +1,26 @@
+.sidebar-leads { padding: 8px 10px 12px; min-height: 112px; }
+.lead-list, .lead-history-list { list-style: none; padding: 0; margin: 0; }
+.lead-row { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 56px; padding: 8px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg-0); text-align: left; font: inherit; cursor: pointer; }
+.lead-row:hover, .lead-row[aria-current="page"] { background: var(--bg-2); }
+.lead-row:focus-visible, .lead-history-panel button:focus-visible { outline: 2px solid var(--fg-1); outline-offset: -2px; }
+.lead-row:disabled { cursor: wait; }
+.lead-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+.lead-status { display: inline-flex; align-items: center; justify-content: flex-end; gap: 5px; width: 66px; flex: 0 0 66px; font-size: 10px; color: var(--fg-2); white-space: nowrap; }
+.lead-status[data-state="waiting"] { color: var(--decide); }
+.lead-status[data-state="working"] { color: var(--accent); }
+.lead-working { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: lead-working 1.4s ease-in-out infinite alternate; }
+@keyframes lead-working { to { opacity: .35; } }
+.lead-placeholder { min-height: 56px; margin: 0; padding: 18px 8px; color: var(--fg-2); font-size: 12px; }
+.lead-error { padding: 8px; color: var(--fg-1); white-space: normal; overflow-wrap: anywhere; font-size: 12px; }
+.lead-history-panel { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 48px); padding: 16px; border: 1px solid var(--border-strong); border-radius: var(--r-lg); background: var(--bg-1); color: var(--fg-0); }
+.lead-history-panel::backdrop { background: var(--scrim); }
+.lead-history-panel header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lead-history-panel h2 { margin: 0; font-size: 16px; }
+.lead-history-panel button { min-height: 44px; border: 0; border-radius: var(--r-sm); background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.lead-history-panel header button { padding: 0 12px; }
+.lead-history-list button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 8px; text-align: left; }
+.lead-history-panel button:hover { background: var(--bg-2); }
+.lead-history-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.lead-history-list time { color: var(--fg-2); font-size: 11px; white-space: nowrap; }
+.lead-history-done { width: 16px; color: var(--ok); }
+@media (prefers-reduced-motion: reduce) { .lead-working { animation: none; } }

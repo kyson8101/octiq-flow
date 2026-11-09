@@ -8,7 +8,7 @@ export type NotificationTarget = {
 };
 
 /** Turn an index row into the light conversation shell opening a remote chat needs. */
-function fromIndex(entry: IndexEntry): Conversation {
+export function fromIndex(entry: IndexEntry): Conversation {
   return {
     id: entry.id,
     projectId: entry.projectId,
@@ -27,6 +27,9 @@ function fromIndex(entry: IndexEntry): Conversation {
     doneAt: entry.doneAt,
     generation: entry.generation,
     launch: entry.launch,
+    leadOf: entry.leadOf,
+    effort: entry.effort ?? undefined,
+    coordinatesRun: entry.coordinatesRun,
     synced: true,
   };
 }

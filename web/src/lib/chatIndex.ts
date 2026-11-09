@@ -59,6 +59,8 @@ export type IndexEntry = {
    *  Only ever `true`: a chat that coordinates none has no such key. Read
    *  only: a save never carries it, and the host takes none from one. */
   coordinatesRun?: boolean;
+  /** Host-owned persistent thread identity. */
+  leadOf?: string;
   /** The planned launch environment. Written once by the server: a save
    *  that omits it, or carries another, leaves the recorded plan alone. */
   launch?: LaunchPlan;

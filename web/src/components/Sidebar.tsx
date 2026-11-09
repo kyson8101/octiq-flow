@@ -15,6 +15,9 @@ import {
 import { workerArchiveChatList, workerArchiveDisabledReason } from "../lib/workerArchive";
 import "./ChatWorkflowBar.css";
 import type { Conversation } from "../lib/store";
+import type { ChatHold } from "../lib/chatWait";
+import { leadThreadAgent, type LeadThread, type LeadThreadsReading } from "../lib/leadThreads";
+import { LeadList } from "./LeadList";
 import { isUnread } from "../lib/unread";
 import { AgentLogo } from "./AgentLogo";
 import { AgentAvatar } from "./AgentAvatar";
@@ -42,7 +45,7 @@ export type Project = ProjectAppearance & {
 export type SidebarView = "search" | "settings" | "agents" | "projects" | "pulls" | "disk";
 
 const NONE: ReadonlySet<string> = new Set();
-const NO_WAITS: ReadonlyMap<string, unknown> = new Map();
+const NO_WAITS: ReadonlyMap<string, ChatHold> = new Map();
 const NO_PARENTS: ReadonlyMap<string, string> = new Map();
 const COLLAPSED_KEY = "octiq.chat.collapsed-agents";
 const FILTER_KEY = "octiq.chat.filter";
@@ -77,10 +80,17 @@ export function Sidebar({
   branches = {}, chatParents = NO_PARENTS, onResize, onCollapse,
   onSearch, onSettings, onAgents, onProjects, onPullRequests, onDisk, activeView = null,
   projectsReady = true, chatsReady = true,
+  leadsOnly = false, leadReading = { threads: null, error: null }, onOpenLead, openingLead, leadOpenError, navigationReady = true,
 }: {
   /** Whether the project list has been answered. Until it has, a row's
    *  project is not unknown, only not known yet: its name and logo hold their
    *  place and come in together once (`lib/arrival`). */
+  leadsOnly?: boolean;
+  leadReading?: LeadThreadsReading;
+  onOpenLead?: (lead: LeadThread) => void;
+  openingLead?: string | null;
+  leadOpenError?: string | null;
+  navigationReady?: boolean;
   projectsReady?: boolean;
   /** Whether the chat list has been answered. A browser with nothing cached
    *  has no rows until then, which is not the same as having no chats. */
@@ -107,7 +117,7 @@ export function Sidebar({
   busy: Set<string>;
   /** The chats parked on a card for the person (`lib/chatWait`). Their rows
    *  draw no working mark; `busy` still says a turn is on record. */
-  waiting?: ReadonlyMap<string, unknown>;
+  waiting?: ReadonlyMap<string, ChatHold>;
   /** Chats wrapping up to be marked done (`lib/chatComplete`). */
   completing?: ReadonlySet<string>;
   deleting?: ReadonlySet<string>;
@@ -438,7 +448,7 @@ export function Sidebar({
             title={done ? "Double-click or double-tap to mark not done" : "Double-click or double-tap to mark done"}
             aria-label={`${done ? "Mark not done" : "Mark done"}: ${chat.title}`}
             aria-description="Double-click or double-tap. With a keyboard, press Enter or Space."
-            disabled={going || isLeaving}
+            disabled={going || isLeaving || !!leadThreadAgent(chat)}
             onBlur={() => { badgeTap.current = null; }}
             onClick={(event) => {
               event.stopPropagation();
@@ -478,7 +488,7 @@ export function Sidebar({
                 disabled: archiving || !!archiveReason || (!archived && busy.has(chat.id)),
                 title: archiveReason ?? (archived ? "Return this worker to the chat list." : "Hide this worker; its chat and task history are kept."),
                 onSelect: () => void archiveWorker(attempt.id, !archived) }] : []),
-              ...(!isWorkerChat(chat.id, chatParents) ? [{ id: "delete", label: going ? "Cancel delete" : "Delete chat", icon: <TrashIcon />, danger: true, keepOpen: !going, onSelect: () => onDelete(chat.id) }] : []),
+              ...(!isWorkerChat(chat.id, chatParents) && !leadThreadAgent(chat) ? [{ id: "delete", label: going ? "Cancel delete" : "Delete chat", icon: <TrashIcon />, danger: true, keepOpen: !going, onSelect: () => onDelete(chat.id) }] : []),
             ]} />}
           {hasChildren && (
             <button className="chat-children-toggle" type="button"
@@ -528,7 +538,7 @@ export function Sidebar({
   const recentLabel = showArchived ? "Archived" : CHAT_FILTER_LABELS[filter];
 
   return (
-    <nav className={`sidebar task-sidebar${identity === "settled" ? "" : ` ${entryClass(identity)}`}`} aria-label="Chats">
+    <nav className={`sidebar task-sidebar${identity === "settled" ? "" : ` ${entryClass(identity)}`}`} aria-label={leadsOnly ? "Leads" : "Chats"}>
       {/* On a phone this scrolls and the places menu is the first thing in it:
           it leaves with the list and is back only at the top. On a desktop the
           menu stays put and the list under it scrolls. */}
@@ -574,7 +584,8 @@ export function Sidebar({
         </div>
 
         {archiveError && <div className="sidebar-archive-error" role="alert">{archiveError}<button type="button" onClick={() => setArchiveError(null)}>Dismiss</button></div>}
-        {listed === "held" ? null : conversations.length > 0 || showArchived ? (
+        {leadOpenError && <p className="lead-error" role="alert">{leadOpenError}</p>}
+        {!navigationReady ? <div className="lead-placeholder" aria-hidden="true" /> : leadsOnly ? <LeadList reading={leadReading} conversations={everyChat} current={currentConversation} busy={busy} waiting={waiting} opening={openingLead} onOpen={onOpenLead ?? (() => {})} /> : listed === "held" ? null : conversations.length > 0 || showArchived ? (
           <div ref={chatList} className={`task-chat-content${listed === "entering" ? " enter-fade" : ""}`}>
             {pinnedNodes.length > 0 && <section className="sidebar-chat-section" aria-labelledby="sidebar-pinned-heading">
               <h2 id="sidebar-pinned-heading" className="sidebar-section-heading">Pinned</h2>
