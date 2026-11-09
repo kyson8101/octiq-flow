@@ -148,9 +148,6 @@ import { importSession, isUnder, replaySession, type HistorySession } from "./li
 import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
 import { Sidebar, type Project } from "./components/Sidebar";
 import { ChatSearchPage } from "./components/ChatSearchPage";
-// The island draws in 3D: three.js and the island come with the page, the
-// first time it is opened, and with no other page.
-const IslandPage = lazy(() => import("./components/IslandPage"));
 const DiskPage = lazy(() => import("./components/DiskPage"));
 import { WorkspaceSlotsContext, type WorkspaceSlots } from "./components/WorkspaceHeader";
 import type { ChatSearchHit } from "./lib/chatSearch";
@@ -945,16 +942,12 @@ export default function App() {
   const [overrides, setOverrides] = useState<ExecutionOverrides>({});
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("projects");
   const [agentsDashboard, setAgentsDashboard] = useState(false);
-  const [islandPage, setIslandPage] = useState(false);
   const [diskPage, setDiskPage] = useState(false);
-  /** Words a page hands a new chat's box: the island's brief for a wish to
-   *  grant. Taken by the box the way a taken-back message is (`putBack`). */
-  const [seeded, setSeeded] = useState<ReclaimedMessage[] | null>(null);
   /** A main-area page is open in place of the chat. Settings and the Agents
    *  dashboard are pages like Projects and Search: the sidebar stays, and the
    *  page's title sits in the one top bar. */
   const mainPage = prDashboardOpen || projectsPage !== null || searchPage || appSettings
-    || (agentsDashboard && agentsMode) || islandPage || diskPage;
+    || (agentsDashboard && agentsMode) || diskPage;
 
   // Chats that were picked up from an agent's own history, by conversation id.
   // Only so the empty page can say WHICH session it is about to continue —
@@ -2411,7 +2404,6 @@ export default function App() {
   const besideCalls = useMemo(() => withJobCalls(backgroundCalls(besideChat.background), besideJobCalls), [besideChat.background, besideJobCalls]);
   const openAgentsSettings = useCallback(() => {
     setAgentsDashboard(false);
-    setIslandPage(false);
     setDiskPage(false);
     setPrDashboardOpen(false);
     setProjectsPage(null);
@@ -2821,19 +2813,9 @@ export default function App() {
     setSearchPage(false);
     setAppSettings(false);
     setAgentsDashboard(false);
-    setIslandPage(false);
     setDiskPage(false);
     setFocusBox((n) => n + 1);
   }, []);
-
-  /** Ask to build opens a conversation with the selected agent. The words
-   *  wait in the box; granting a wish is handled by the island's backend. */
-  const seedNewChat = useCallback((text: string, agentId: string | null) => {
-    newChat();
-    const agent = agentsMode && agentId ? recipients.find((candidate) => candidate.id === agentId) : undefined;
-    if (agent) pickRecipient(agent);
-    setSeeded([{ text, attachments: [] }]);
-  }, [newChat, agentsMode, recipients, pickRecipient]);
 
   /** Carry on a session the AGENT remembers — one from ~/.claude or ~/.codex,
    *  found through the search on the empty-chat page (components/SessionSearch).
@@ -3021,7 +3003,6 @@ export default function App() {
     setSearchPage(false);
     setAppSettings(false);
     setAgentsDashboard(false);
-    setIslandPage(false);
     setDiskPage(false);
   }, [holdConversation]);
 
@@ -5331,14 +5312,13 @@ export default function App() {
 
 
   /** Opens one main-area page in place of the chat, closing any other. */
-  const showPage = (page: "search" | "projects" | "settings" | "agents" | "pulls" | "island" | "disk") => {
+  const showPage = (page: "search" | "projects" | "settings" | "agents" | "pulls" | "disk") => {
     setProjectsScreen(false);
     setPrDashboardOpen(page === "pulls");
     setProjectsPage(page === "projects" ? { projectId: null } : null);
     setSearchPage(page === "search");
     setAppSettings(page === "settings");
     setAgentsDashboard(page === "agents");
-    setIslandPage(page === "island");
     setDiskPage(page === "disk");
   };
 
@@ -5512,10 +5492,9 @@ export default function App() {
         onAgents={agentsMode ? () => showPage("agents") : undefined}
         onProjects={() => showPage("projects")}
         onPullRequests={() => showPage("pulls")}
-        onIsland={() => showPage("island")}
         onDisk={() => showPage("disk")}
         activeView={searchPage ? "search" : projectsPage ? "projects" : agentsDashboard && agentsMode ? "agents"
-          : prDashboardOpen ? "pulls" : appSettings ? "settings" : islandPage ? "island" : diskPage ? "disk" : null}
+          : prDashboardOpen ? "pulls" : appSettings ? "settings" : diskPage ? "disk" : null}
       />
       <div className="shell-main">
       {/* The workspace's ONE top bar. The app's name and logo belong to the
@@ -5729,31 +5708,6 @@ export default function App() {
           )}
 
           {diskPage && <Suspense fallback={<section className="disk-page" aria-label="Disk report" />}><DiskPage connected={conn === "open"} onClose={() => setDiskPage(false)} /></Suspense>}
-          {islandPage && (
-            <Suspense fallback={<section className="projects-page" aria-label="Island" />}>
-              <IslandPage
-                connected={conn === "open"}
-                snapshot={orchestrationState.snapshot}
-                projects={[...workspaces, ...shelved]}
-                running={running}
-                busy={busySet}
-                held={pendingHeld}
-                waitingOn={(chatKey) => {
-                  const id = chatKey.replace(/^chat:/, "");
-                  return pendingList.filter((action) => action.chatId === id).length;
-                }}
-                chatTitle={(chatKey) => conversations.find((c) => keyFor(c.id) === chatKey)?.title}
-                chatExists={(chatKey) => conversations.some((c) => keyFor(c.id) === chatKey)}
-                onAsk={(agentId, text) => seedNewChat(text, agentId)}
-                onOpenChat={(chatKey) => {
-                  openWorkflowChat(chatKey);
-                  setIslandPage(false);
-                  setDiskPage(false);
-                }}
-                onClose={() => setIslandPage(false)}
-              />
-            </Suspense>
-          )}
           <div className={`chat-app-surface ${entryClass(identity)}`} hidden={!!mainPage}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
           {(!workerChat || workflowVisible) && <ChatWorkflowBar snapshot={runWorkflow} orchestrated={workflowVisible} view={workflowView} focusMode={focusMode} split={workflowSplit}
@@ -6241,8 +6195,8 @@ export default function App() {
             /* What the ✕ took back off a queued bubble, on its way into the
                box. Only this conversation's — another chat's waits until you
                are looking at it. */
-            putBack={(conversationId ? reclaimed[conversationId] : seeded) || undefined}
-            onPutBack={() => { if (conversationId) tookBack(conversationId); else setSeeded(null); }}
+            putBack={conversationId ? reclaimed[conversationId] : undefined}
+            onPutBack={() => { if (conversationId) tookBack(conversationId); }}
             busy={chat.busy && !cutOff}
             installed={installed}
             commands={providerCommands(choice.agent, (projectId && commands[projectId]?.[choice.agent]) || [])}

@@ -382,6 +382,7 @@ impl OrchestrationStore {
     /// What the agent `agent_id` has running, and what it has unfinished. A
     /// ledger that cannot be read answers with its error: a removal is not
     /// made on a question nobody could ask.
+    #[cfg(test)]
     pub fn agent_work(&self, agent_id: &str) -> Result<AgentWork, String> {
         let inner = self.inner.lock().map_err(|error| error.to_string())?;
         if let Some(error) = &inner.load_error {
@@ -392,6 +393,7 @@ impl OrchestrationStore {
 
     /// `agent_work`, as a removal asks it: an error naming what is running,
     /// else what its card should say of the unfinished tasks, if any.
+    #[cfg(test)]
     pub fn removal_of(
         &self,
         agent_id: &str,

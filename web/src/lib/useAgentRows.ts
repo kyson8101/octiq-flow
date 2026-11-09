@@ -1,6 +1,5 @@
 // Every registered agent and what it is doing right now, as the Agents page
-// reads it (`agentRoster`): one reading for every surface that says where an
-// agent is, the Agents page and the island alike. The roster, the lead
+// reads it (`agentRoster`). The roster, the lead
 // records and the peer teams are read on every connect and when the roster
 // changes; which lead conversations are mid-turn is asked when a chat starts,
 // stops or changes turn. Nothing ticks.
