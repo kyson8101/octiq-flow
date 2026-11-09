@@ -4974,6 +4974,7 @@ impl OrchestrationStore {
                 .cloned()
                 .ok_or("No worker is running on this task, so there is nothing to stop.")?;
             let now = now_ms();
+            batches::interrupt_peers(data, &attempt, now);
             let stopped = data.attempts.get_mut(&attempt.id).expect("read above");
             stopped.status = AttemptStatus::Cancelled;
             stopped.execution.state = execution::ExecutionState::Cancelled;

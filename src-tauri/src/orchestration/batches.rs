@@ -229,6 +229,58 @@ pub(super) fn lanes(data: &Stored, only: Option<&BTreeSet<String>>) -> Vec<serde
     }).collect()
 }
 
+pub(super) fn interrupt_peers(data: &mut Stored, stopped: &Attempt, now: i64) {
+    let Some(batch_id) = &stopped.batch_id else {
+        return;
+    };
+    let peer_ids: Vec<_> = data
+        .attempts
+        .values()
+        .filter(|a| {
+            a.id != stopped.id
+                && a.batch_id.as_ref() == Some(batch_id)
+                && attempt_is_unsettled(data, a)
+        })
+        .map(|a| a.id.clone())
+        .collect();
+    let mut titles = Vec::new();
+    for id in peer_ids {
+        let attempt = data.attempts.get_mut(&id).unwrap();
+        attempt.status = AttemptStatus::Cancelled;
+        attempt.execution.state = execution::ExecutionState::Cancelled;
+        attempt.execution.next_retry_at = None;
+        attempt.finished_at.get_or_insert(now);
+        attempt.updated_at = now;
+        let task = data.tasks.get_mut(&attempt.task_id).unwrap();
+        task.status = TaskStatus::Ready;
+        task.result = None;
+        task.updated_at = now;
+        if let Some(ws) = &mut task.workspace {
+            ws.state = workspaces::WorkspaceState::Retained;
+            ws.lease_attempt_id = None;
+        }
+        titles.push(task.title.clone());
+        let task_id = task.id.clone();
+        for gate in data
+            .gates
+            .values_mut()
+            .filter(|g| g.task_id.as_deref() == Some(&task_id) && g.status == GateStatus::Open)
+        {
+            gate.close(GateStatus::Cancelled, now);
+        }
+        // These tasks were interrupted by the shared process stopping, not
+        // failures to retry. The next real reservation uses no extra retry.
+        data.agent_queue.remove(&task_id);
+    }
+    if !titles.is_empty() {
+        if let Some(run) = data.runs.get(&stopped.run_id).cloned() {
+            inbox::enqueue(data, &run.id, "host", &run.coordinator_chat_key,
+                format!("batch-interrupted:{batch_id}:{}", stopped.id), "status",
+                format!("The person stopped one task in batch {batch_id}, which stops its shared worker process. These other tasks returned to the queue without using another retry: {}. Existing work is retained; a dirty worktree blocks the next batch.", titles.join(", ")));
+        }
+    }
+}
+
 impl OrchestrationStore {
     pub(super) fn sync_agent_queue(&self) -> Result<(), String> {
         if crate::scheduling::load()?.orientation != Orientation::Agents {
@@ -1210,13 +1262,12 @@ mod retention_tests {
         let task = assigned(&store, &run, 1);
         store
             .mutate(|data| {
-                data.tasks
-                    .get_mut(&task.id)
-                    .unwrap()
-                    .assignee
-                    .as_mut()
-                    .unwrap()
-                    .id = agent.id.clone();
+                let task = data.tasks.get_mut(&task.id).unwrap();
+                task.assignee.as_mut().unwrap().id = agent.id.clone();
+                let owner = task.assignee.clone();
+                if let Some(approved) = &mut task.approved {
+                    approved.assignee = owner;
+                }
                 Ok(())
             })
             .unwrap();
@@ -1427,5 +1478,46 @@ mod admission_tests {
             .unwrap();
         let inner = store.inner.lock().unwrap();
         assert!(queue(&inner.data, "agent_test").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::tests::{assigned, settings};
+    use super::*;
+    use crate::test_dir::TestDir;
+
+    #[test]
+    fn stopping_one_task_requeues_its_shared_process_peers_without_another_retry() {
+        let home = TestDir::new("batch-stop-peers");
+        let _profile = crate::profile::started_in(&home);
+        crate::scheduling::save(settings()).unwrap();
+        let store = OrchestrationStore::default();
+        let run = super::super::tests::run(&store);
+        let first = assigned(&store, &run, 1);
+        let second = assigned(&store, &run, 2);
+        store.sync_agent_queue().unwrap();
+        let (_, runtime) = store
+            .begin_batch("agent_test", &settings())
+            .unwrap()
+            .unwrap();
+        let claims = store
+            .batch_claim(
+                &runtime.worker_chat_key,
+                vec![first.id.clone(), second.id.clone()],
+            )
+            .unwrap();
+        let (_, key) = store.stop_task(&first.id, None).unwrap();
+        assert_eq!(key, runtime.worker_chat_key);
+        store.sync_agent_queue().unwrap();
+        store.settle_batches().unwrap();
+        let inner = store.inner.lock().unwrap();
+        assert!(inner.data.tasks[&first.id].stopped.is_some());
+        assert_eq!(inner.data.tasks[&second.id].status, TaskStatus::Ready);
+        assert_eq!(inner.data.tasks[&second.id].retries_used, 0);
+        assert_eq!(queue(&inner.data, "agent_test")[0].id, second.id);
+        assert!(claims
+            .iter()
+            .all(|a| inner.data.attempts[&a.id].status == AttemptStatus::Cancelled));
     }
 }

@@ -1059,7 +1059,9 @@ function callHandoverHook(args) {
 /** An orchestration worker settles its attempt instead; reassigning the task
  *  is its coordinator's call. The host refuses it too, but the tool is not
  *  even offered there. */
-const IS_WORKER = !!String(process.env.OCTIQ_ORCHESTRATION_ATTEMPT || "").trim();
+// A claiming batch has no attempt yet, and saved resume environments omit
+// the marker. Host-owned worker chat keys keep their durable role in both.
+const IS_WORKER = CHAT_KEY.startsWith("chat:orch-") || !!String(process.env.OCTIQ_ORCHESTRATION_ATTEMPT || "").trim();
 
 const SEARCH_CONVERSATIONS = {
   name: "search_conversations",

@@ -50,6 +50,7 @@ const KINDS = [
   ["a chat with ask_user (Claude)", {}, []],
   ["a chat without ask_user (Codex)", {}, ["--disable-ask-user"]],
   ["a worker", { OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" }, []],
+  ["a claiming worker without an attempt", { OCTIQ_CHAT_KEY: "chat:orch-batch", OCTIQ_ORCHESTRATION_ATTEMPT: "" }, []],
   ["a worker without ask_user", { OCTIQ_ORCHESTRATION_ATTEMPT: "attempt_1" }, ["--disable-ask-user"]],
   ["a front desk", { OCTIQ_FRONT_DESK: "1" }, []],
 ];
@@ -145,6 +146,21 @@ test("batch cleanup is a coordinator proposal, never a socket answer tool", asyn
       assert.deepEqual(Object.keys(offered.inputSchema.properties), ["runId"]);
       assert.match(offered.description, /removes nothing/);
       assert.match(offered.description, /host notification/);
+    }
+  }
+});
+
+
+test("batch claim is worker-only and scheduling settings stay socket-only", async () => {
+  for (const [kind, env, flags] of KINDS) {
+    const { tools } = await ask("tools/list", env, flags);
+    const claim = tools.find(tool => tool.name === "orchestration_batch_claim");
+    assert.equal(Boolean(claim), kind.includes("worker"), kind);
+    assert.ok(!tools.some(tool => /scheduling_(get|set)/.test(tool.name)), kind);
+    if (claim) {
+      assert.deepEqual(Object.keys(claim.inputSchema.properties), ["taskIds"]);
+      assert.equal(claim.inputSchema.properties.taskIds.maxItems, 6);
+      assert.ok(claim.description.length < 4096);
     }
   }
 });
