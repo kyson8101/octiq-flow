@@ -47,6 +47,74 @@ socket-only `scheduling_get` / `scheduling_set` and `scheduling-changed`; starts
 that queue answer with `QUEUED_FOR_SLOT`. See the scheduling subsection in
 [AGENTS.md](../AGENTS.md) for the persistence and worker claim contract.
 
+## A lead's thread
+
+Settings → Orientation defaults to **Tasks**, keeping today's conversations
+and task workspaces. **Agents** gives the person one ongoing thread per lead:
+a registered agent with no `reportsTo`, excluding the front desk. The Agents
+sidebar shows those leads; their older task conversations are history.
+
+The host reserves `lead-<agentId>` (`chat:lead-<agentId>` as a chat key).
+`leadOf?: string` is written by the host on exactly that lead's thread row.
+Client saves preserve it and cannot create a reserved chat or attach this
+field to another chat. Opening is lazy and idempotent, including concurrent
+opens. No process starts until the person sends a message or a confirmed
+route/handover delivers its brief.
+
+Socket commands (no MCP tools or hook routes):
+
+- `lead_threads` → `[{ agentId, name, chatKey, cwd, project?, exists }]`, leads
+  in roster order. `project` is the workspace id; `exists` says the thread
+  already has an index row.
+- `lead_thread_open { agentId }` → the thread's chat index entry. Non-leads
+  are refused. It opens with the registered provider, model, effort and
+  Access, and preserves the existing native session on subsequent opens.
+- `lead_history { agentId }` → `[{ chatKey, title, updatedAt, done }]`, the
+  lead's other active chats newest first. Its thread and worker chats are
+  excluded, including workers known by ledger identity.
+
+The location rule is **the lead's scoped registered project first; team home
+for an all-projects lead**, with the existing General fallback. Within that
+project, use the primary checkout of its primary repository, resolving a
+registered linked worktree back to the primary Git checkout. A non-Git home
+folder runs in place. No per-conversation branch or worktree is made. The
+thread is never a chat worktree lifespan candidate and recovery never rebuilds
+or relocates it. If its folder is missing, `chat_start` names the missing home
+and asks for the folder to be restored.
+
+Complete and Trash refuse an ongoing thread; `/clear` still clears history.
+The normal idle reaper ends its process and the next message resumes its
+native session id. A confirmed route or handover targeting a lead in Agents
+orientation delivers to that same thread, resuming its session or queuing a
+message in its running process. The front desk routes there too. Tasks
+orientation keeps the existing new-chat flow. Worker chats are unchanged.
+The thread can create and coordinate ordinary runs and receives their usual
+notifications. There is no proactive outreach.
+
+The lead retains its registered Access. Every provider launch/resume receives
+this host conduct rule: “You are in the project's main checkout: do not edit
+source here; dispatch code changes to a worker.” The host does not narrow
+permissions. MCP instructions stay unchanged under 4,096 characters.
+
+### Long context
+
+Claude's persistent process uses `claude -p --input-format stream-json
+--output-format stream-json` and `--resume` when restarting a session. Codex
+normally uses `app-server` with `thread/start` or `thread/resume`; its exec
+fallback resumes the native session too. OctiqFlow sets no flag or config
+that disables automatic compaction and does not set a compaction threshold.
+Both therefore retain their provider's native automatic compaction under its
+normal defaults; inherited user configuration/environment may change that.
+
+Claude summarizes context near the limit; repeated immediate refills can end
+with a provider error ([Claude context management](https://code.claude.com/docs/en/how-claude-code-works#when-context-fills-up)).
+Codex's `model_auto_compact_token_limit` uses model defaults when unset
+([Codex configuration reference](https://developers.openai.com/codex/config-reference/)).
+If native compaction fails or input still exceeds the model limit, the turn
+fails through the existing provider error path. OctiqFlow keeps the thread
+and transcript; it neither creates a replacement thread nor promises unlimited
+lossless context. `/clear` remains the deliberate way to start its history over.
+
 ## Who a new conversation is with
 
 A new conversation can only be with an agent who **reports directly to you**:

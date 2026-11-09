@@ -1927,3 +1927,31 @@ fn a_record_written_before_outcome_receipts_still_loads_and_keeps_its_retries() 
         .collect();
     assert_eq!(ids, ["o1", "o2", "o3", "o4"]);
 }
+
+#[test]
+fn handover_to_lead_in_agents_orientation_reuses_thread() {
+    let home = scratch("lead-thread-handover-profile");
+    let _profile = crate::profile::started_in(&home);
+    let w = world();
+    let host = FakeHost::of(&w);
+    crate::scheduling::save(crate::scheduling::Settings {
+        orientation: crate::scheduling::Orientation::Agents,
+        host_cap: None,
+    })
+    .unwrap();
+    let handed = request(
+        &w.store,
+        &host,
+        source("chat:sender"),
+        ask("Mango", "lead-handover"),
+    )
+    .unwrap();
+    assert_eq!(handed.workspace.mode, "folder");
+    let result = confirm(&w.store, &handed.id, &host).unwrap();
+    assert_eq!(
+        result.target_chat_key.as_deref(),
+        Some(crate::lead_threads::key(&w.scoped.id).as_str())
+    );
+    assert_eq!(*host.worktrees.lock().unwrap(), 0);
+    assert_eq!(host.starts.lock().unwrap()[0].access, w.scoped.access);
+}

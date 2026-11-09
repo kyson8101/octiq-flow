@@ -1064,6 +1064,7 @@ mod tests {
 
     fn add_chat(id: &str) {
         crate::chat_index::upsert(ChatMeta {
+            lead_of: None,
             id: id.into(),
             project_id: format!("project-{id}"),
             title: "Workflow origin".into(),

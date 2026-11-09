@@ -1118,6 +1118,7 @@ fn chats_in(path: &str) -> Vec<crate::chat_index::ChatMeta> {
     crate::chat_index::list()
         .into_iter()
         .chain(crate::chat_index::deleted())
+        .filter(|c| c.lead_of.is_none() && !crate::lead_threads::is_id(&c.id))
         .filter(|c| {
             c.cwd
                 .as_ref()

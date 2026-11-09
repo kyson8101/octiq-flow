@@ -147,7 +147,7 @@ struct Placed {
     cross_project: bool,
 }
 
-fn folder_plan(path: &str) -> WorkspacePlan {
+pub(super) fn folder_plan(path: &str) -> WorkspacePlan {
     WorkspacePlan {
         mode: "folder".into(),
         path: path.to_owned(),
@@ -182,8 +182,16 @@ fn place(
             .iter()
             .find(|p| p.id == spec || p.name.eq_ignore_ascii_case(spec))
     };
-    let cross_project = head.is_some_and(|h| h.id == agent.id);
-    let project_id = if cross_project {
+    let thread = crate::scheduling::load()?.orientation == crate::scheduling::Orientation::Agents
+        && agent.reports_to.is_none();
+    let cross_project = !thread && head.is_some_and(|h| h.id == agent.id);
+    let project_id = if thread {
+        agent
+            .project_id
+            .clone()
+            .or_else(|| home.clone())
+            .ok_or("This lead needs a team home workspace in Settings, Agents.")?
+    } else if cross_project {
         // The head's conversation lives at home and routes each task it
         // hands out itself, whichever project the request is about.
         home.clone().ok_or(
@@ -252,7 +260,9 @@ fn place(
     }
     // At home nothing is prepared, as for a conversation started there; in
     // a code project a new worktree keeps the primary checkout untouched.
-    let workspace = if cross_project || home.as_deref() == Some(destination.project_id.as_str()) {
+    let workspace = if thread {
+        folder_plan(&crate::lead_threads::primary(&project.primary_path)?)
+    } else if cross_project || home.as_deref() == Some(destination.project_id.as_str()) {
         folder_plan(&destination.repository)
     } else {
         plan_workspace(&destination, &BriefState::default(), None)?
@@ -1016,6 +1026,56 @@ mod tests {
 
     fn records(w: &Desk) -> Vec<Public> {
         list(&w.store).unwrap()
+    }
+
+    #[test]
+    fn agents_routes_reuse_the_leads_thread_tasks_routes_keep_new_chat() {
+        let home = scratch("lead-thread-route-profile");
+        let _profile = crate::profile::started_in(&home);
+        let w = desk_world();
+        let host = host(&w);
+        crate::scheduling::save(crate::scheduling::Settings {
+            orientation: crate::scheduling::Orientation::Agents,
+            host_cap: None,
+        })
+        .unwrap();
+        let first = request(
+            &w.store,
+            &host,
+            source(&w, "chat:desk1"),
+            ask("Mango", "lead-route-1"),
+        )
+        .unwrap();
+        assert_eq!(first.workspace.mode, "folder");
+        let one = confirm(&w.store, &first.id, &host).unwrap();
+        assert_eq!(
+            one.target_chat_key.as_deref(),
+            Some(crate::lead_threads::key(&w.scoped.id).as_str())
+        );
+        let two = request(
+            &w.store,
+            &host,
+            source(&w, "chat:desk2"),
+            ask("Mango", "lead-route-2"),
+        )
+        .unwrap();
+        let two = confirm(&w.store, &two.id, &host).unwrap();
+        assert_eq!(one.target_chat_key, two.target_chat_key);
+        assert_eq!(*host.worktrees.lock().unwrap(), 0);
+        assert_eq!(crate::chat_index::list().len(), 1);
+        assert_eq!(host.starts.lock().unwrap()[0].access, w.scoped.access);
+        crate::scheduling::save(crate::scheduling::Settings::default()).unwrap();
+        let task = request(
+            &w.store,
+            &host,
+            source(&w, "chat:desk3"),
+            ask("Mango", "task-route-1"),
+        )
+        .unwrap();
+        assert_eq!(task.workspace.mode, "worktree");
+        let task = confirm(&w.store, &task.id, &host).unwrap();
+        assert_ne!(task.target_chat_key, one.target_chat_key);
+        assert_eq!(*host.worktrees.lock().unwrap(), 1);
     }
 
     /// What a discussion's first message said before the note changed.

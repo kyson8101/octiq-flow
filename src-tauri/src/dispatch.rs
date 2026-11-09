@@ -222,6 +222,7 @@ fn start_chat(
     turn_id: String,
 ) -> Result<(), String> {
     let mut cwd: String = arg(args, "cwd")?;
+    crate::lead_threads::validate_start(key, &cwd)?;
     let resume: Option<String> = arg(args, "resume")?;
     // A chat outlives the worktree it ran in. Put the folder back, or
     // move the chat to one that exists, before anything reads it: the
@@ -2089,6 +2090,20 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "front_desk_unfinished" => to_value(crate::handover::route::unfinished_desks(
             &svc.handovers.store,
             &svc.handovers.team,
+        )),
+        "lead_threads" => to_value(crate::lead_threads::list(
+            &svc.handovers.team,
+            &crate::workspaces::list_workspaces_impl(&svc.workspaces)?,
+        )),
+        "lead_thread_open" => to_value(crate::lead_threads::open(
+            &svc.handovers.team,
+            &crate::workspaces::list_workspaces_impl(&svc.workspaces)?,
+            &arg::<String>(&args, "agentId")?,
+        )),
+        "lead_history" => to_value(crate::lead_threads::history(
+            &svc.handovers.team,
+            &svc.orchestrations,
+            &arg::<String>(&args, "agentId")?,
         )),
         "team_leads" => to_value(crate::team::leads(&crate::team::default_path())),
         "team_brief" => {

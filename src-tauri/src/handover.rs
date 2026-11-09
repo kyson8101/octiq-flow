@@ -1001,19 +1001,57 @@ pub fn request(path: &Path, host: &dyn Host, source: Source, ask: Ask) -> Result
     let team = team::list(&host.team_path(), None, true)?;
     let projects = host.projects()?;
     let projects = projects.as_slice();
-    let resolved = resolve(
-        &team,
-        projects,
-        &source,
-        &ask.recipient,
-        ask.project.as_deref(),
-        ask.repository.as_deref(),
-    )?;
-    let workspace = plan_workspace(
-        &resolved.destination,
-        &ask.brief.state,
-        source.cwd.as_deref(),
-    )?;
+    // An Agents lead has one home even when no project was named. Resolve
+    // that identity before the task-oriented destination picker.
+    let registered = if ask.recipient.trim().eq_ignore_ascii_case(SELF) {
+        source
+            .lead
+            .as_ref()
+            .and_then(|r| team.iter().find(|a| a.id == r.lead_id))
+    } else {
+        Some(find_agent(&team, &ask.recipient)?)
+    };
+    let thread_location = registered
+        .map(|a| crate::lead_threads::routing_target(&host.team_path(), projects, &a.id))
+        .transpose()?
+        .flatten();
+    let (resolved, workspace) = if let Some((project, cwd)) = thread_location {
+        let agent = registered.ok_or("A lead thread needs a registered lead.")?;
+        let repository = destination::repositories(&project)
+            .into_iter()
+            .next()
+            .ok_or("The lead's project has no primary folder.")?;
+        (
+            Resolved {
+                to: Party {
+                    agent_id: Some(agent.id.clone()),
+                    name: agent.name.clone(),
+                },
+                settings: settings_of(agent),
+                destination: TaskDestination {
+                    project_id: project.id,
+                    project_name: project.name,
+                    repository,
+                },
+            },
+            route::folder_plan(&cwd),
+        )
+    } else {
+        let resolved = resolve(
+            &team,
+            projects,
+            &source,
+            &ask.recipient,
+            ask.project.as_deref(),
+            ask.repository.as_deref(),
+        )?;
+        let workspace = plan_workspace(
+            &resolved.destination,
+            &ask.brief.state,
+            source.cwd.as_deref(),
+        )?;
+        (resolved, workspace)
+    };
     if workspace.mode == "continue" {
         host.checkout_free(&workspace.path, &[&source.chat_key])?;
     }
@@ -1469,6 +1507,25 @@ pub(crate) const NOT_RECORDED: &str =
 fn prepare(record: &mut Handover, host: &dyn Host) -> Result<Checked, String> {
     let team = team::list(&host.team_path(), None, true)?;
     let projects = host.projects()?;
+    if let Some(id) = record.to.agent_id.as_deref() {
+        if let Some((project, cwd)) =
+            crate::lead_threads::routing_target(&host.team_path(), &projects, id)?
+        {
+            record.destination = TaskDestination {
+                project_id: project.id.clone(),
+                project_name: project.name.clone(),
+                repository: destination::repositories(&project)
+                    .into_iter()
+                    .next()
+                    .ok_or("The lead's project has no primary folder.")?,
+            };
+            record.workspace = route::folder_plan(&cwd);
+            record.target_chat_key = Some(crate::lead_threads::key(id));
+            if let Some(route) = record.route.as_mut() {
+                route.cross_project = false;
+            }
+        }
+    }
     let project = destination::verify(&projects, &record.destination)?.clone();
     // The recipient as registered NOW: removed, rescoped or changed since the
     // card was drawn is refused, and its settings are the registry's.
@@ -1532,7 +1589,13 @@ fn prepare(record: &mut Handover, host: &dyn Host) -> Result<Checked, String> {
         host.checkout_free(&record.workspace.path, &[&record.source_chat_key, &key])?;
     }
     // A route's source is the front desk, which has no tool that writes.
-    let fence = if record.workspace.mode == "worktree" || record.kind == Kind::Route {
+    let fence = if record
+        .target_chat_key
+        .as_deref()
+        .is_some_and(crate::lead_threads::is_key)
+        || record.workspace.mode == "worktree"
+        || record.kind == Kind::Route
+    {
         Fence::NotShared
     } else if source_waiting(&record.id)? {
         Fence::Waiting
@@ -1644,6 +1707,19 @@ fn launch(
         .clone()
         .ok_or("This handover has no chat id to start.")?;
     let chat_id = key.strip_prefix("chat:").unwrap_or(&key).to_owned();
+    let thread = if crate::lead_threads::is_key(&key) {
+        Some(crate::lead_threads::open(
+            &host.team_path(),
+            &checked.projects,
+            record
+                .to
+                .agent_id
+                .as_deref()
+                .ok_or("A lead thread needs a registered lead.")?,
+        )?)
+    } else {
+        None
+    };
 
     // What `prepare` read from the roster and the mark that this build
     // starts the chat (`lift_settled`), in one write, before the start. A
@@ -1711,31 +1787,34 @@ fn launch(
     let now = now_ms();
     let title: String = record.brief.objective.chars().take(80).collect();
     let settings = record.settings.clone();
-    host.save_index(crate::chat_index::ChatMeta {
-        id: chat_id.clone(),
-        project_id: checked.project.id.clone(),
-        title: title.lines().next().unwrap_or("Handover").to_owned(),
-        latest_response: None,
-        custom_title: false,
-        agent_title: false,
-        session_id: None,
-        cwd: Some(cwd.clone()),
-        model_id: Some(crate::orchestration::model_id(
-            settings.agent,
-            settings.model.as_deref(),
-        )),
-        access: Some(crate::orchestration::access_id(settings.access).into()),
-        effort: settings.effort.clone(),
-        created_at: now,
-        updated_at: now,
-        read_at: None,
-        pinned: false,
-        done_at: None,
-        done_held: false,
-        deleted_at: None,
-        generation: 0,
-        launch: None,
-    })?;
+    if thread.is_none() {
+        host.save_index(crate::chat_index::ChatMeta {
+            lead_of: None,
+            id: chat_id.clone(),
+            project_id: checked.project.id.clone(),
+            title: title.lines().next().unwrap_or("Handover").to_owned(),
+            latest_response: None,
+            custom_title: false,
+            agent_title: false,
+            session_id: None,
+            cwd: Some(cwd.clone()),
+            model_id: Some(crate::orchestration::model_id(
+                settings.agent,
+                settings.model.as_deref(),
+            )),
+            access: Some(crate::orchestration::access_id(settings.access).into()),
+            effort: settings.effort.clone(),
+            created_at: now,
+            updated_at: now,
+            read_at: None,
+            pinned: false,
+            done_at: None,
+            done_held: false,
+            deleted_at: None,
+            generation: 0,
+            launch: None,
+        })?;
+    }
     let mut extra_dirs = destination::repositories(&checked.project);
     extra_dirs.retain(|dir| dir != &record.destination.repository);
     // A route's files are copied to a folder of their own, which the new
@@ -1833,7 +1912,11 @@ pub fn abandon(path: &Path, id: &str, host: &dyn Host) -> Result<Handover, Strin
     record.abandonable = false;
     if record.kind == Kind::Route {
         // Nothing started, and the person gave up: no chat row, no record.
-        if let Some(key) = &record.target_chat_key {
+        if let Some(key) = record
+            .target_chat_key
+            .as_ref()
+            .filter(|k| !crate::lead_threads::is_key(k))
+        {
             host.remove_index(key.strip_prefix("chat:").unwrap_or(key))?;
         }
         let mut stored = read(path)?;
@@ -1959,31 +2042,34 @@ fn finish_route(path: &Path, id: &str, host: &dyn Host) -> Result<Option<String>
     let chat_id = key.strip_prefix("chat:").unwrap_or(&key).to_owned();
     let now = now_ms();
     let title: String = record.brief.objective.chars().take(80).collect();
-    host.save_index(crate::chat_index::ChatMeta {
-        id: chat_id,
-        project_id: record.destination.project_id.clone(),
-        title: title.lines().next().unwrap_or("Routed chat").to_owned(),
-        latest_response: None,
-        custom_title: false,
-        agent_title: false,
-        session_id: None,
-        cwd: record.workspace.prepared_cwd.clone(),
-        model_id: Some(crate::orchestration::model_id(
-            record.settings.agent,
-            record.settings.model.as_deref(),
-        )),
-        access: Some(crate::orchestration::access_id(record.settings.access).into()),
-        effort: record.settings.effort.clone(),
-        created_at: now,
-        updated_at: now,
-        read_at: None,
-        pinned: false,
-        done_at: None,
-        done_held: false,
-        deleted_at: None,
-        generation: 0,
-        launch: None,
-    })?;
+    if !crate::lead_threads::is_key(&key) {
+        host.save_index(crate::chat_index::ChatMeta {
+            lead_of: None,
+            id: chat_id,
+            project_id: record.destination.project_id.clone(),
+            title: title.lines().next().unwrap_or("Routed chat").to_owned(),
+            latest_response: None,
+            custom_title: false,
+            agent_title: false,
+            session_id: None,
+            cwd: record.workspace.prepared_cwd.clone(),
+            model_id: Some(crate::orchestration::model_id(
+                record.settings.agent,
+                record.settings.model.as_deref(),
+            )),
+            access: Some(crate::orchestration::access_id(record.settings.access).into()),
+            effort: record.settings.effort.clone(),
+            created_at: now,
+            updated_at: now,
+            read_at: None,
+            pinned: false,
+            done_at: None,
+            done_held: false,
+            deleted_at: None,
+            generation: 0,
+            launch: None,
+        })?;
+    }
     host.note_start_failed(&key, &route::failure_text(&record, &error));
     record.target_chat_key = Some(key);
     record.status = Status::Abandoned;
@@ -2180,7 +2266,32 @@ impl Host for Live<'_> {
         crate::agent_chat::chat_index_save(meta)
     }
 
-    fn start(&self, start: Start) -> Result<(), String> {
+    fn start(&self, mut start: Start) -> Result<(), String> {
+        let thread = crate::lead_threads::is_key(&start.key);
+        if thread && self.0.chats.has_process(&start.key) {
+            return crate::agent_chat::chat_send_user_impl(
+                self.0.chats.clone(),
+                start.key,
+                start.prompt,
+                Some(start.images),
+                None,
+                Some(start.turn_id),
+                Some(true),
+            );
+        }
+        let resume = if thread {
+            let meta = crate::chat_index::find(start.key.trim_start_matches("chat:"))?
+                .ok_or("The lead thread is not in the index.")?;
+            let settings = crate::lead_threads::saved_settings(&meta)?;
+            start.agent = settings.agent;
+            start.model = settings.model;
+            start.access = settings.access;
+            start.effort = settings.effort;
+            meta.session_id
+        } else {
+            None
+        };
+        let retry = thread.then(|| start.clone());
         match crate::agent_chat::chat_start_user_impl(
             self.0.chats.clone(),
             start.key,
@@ -2190,16 +2301,28 @@ impl Host for Live<'_> {
             Some(start.access),
             Some(start.prompt),
             None,
-            None,
+            resume,
             Some(start.extra_dirs),
             Some(start.env),
             start.effort,
-            None,
+            if thread { Some(start.images) } else { None },
             None,
             Some(start.turn_id),
         ) {
             // A retry after the start went through but the record did not:
             // the chat is there, which is all a confirm promises.
+            Err(why) if why.contains("already running") && retry.is_some() => {
+                let start = retry.unwrap();
+                crate::agent_chat::chat_send_user_impl(
+                    self.0.chats.clone(),
+                    start.key,
+                    start.prompt,
+                    Some(start.images),
+                    None,
+                    Some(start.turn_id),
+                    Some(true),
+                )
+            }
             Err(why) if why.contains("already running") => Ok(()),
             other => other,
         }

@@ -3990,6 +3990,7 @@ impl OrchestrationStore {
             .to_string();
         let now = now_ms();
         let meta = crate::chat_index::ChatMeta {
+            lead_of: None,
             id: chat_id.clone(),
             project_id: workspace.id.clone(),
             title: format!("Worker: {}", task.title),

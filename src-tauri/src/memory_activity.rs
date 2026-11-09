@@ -1531,7 +1531,7 @@ mod tests {
 
         /// A direct chat with `agent` as its lead.
         fn lead(&self, agent: &TeamAgent) -> String {
-            let chat = unique("lead");
+            let chat = unique("ordinary-lead");
             crate::team::brief(&self.team, &chat, "p1", &agent.id, "Do it", false, &[]).unwrap();
             index(&chat);
             chat
