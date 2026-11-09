@@ -1902,6 +1902,208 @@ mod admission_tests {
     use super::*;
     use crate::test_dir::TestDir;
 
+    fn other_agent(store: &OrchestrationStore, task: &Task) {
+        store
+            .mutate(|data| {
+                data.tasks
+                    .get_mut(&task.id)
+                    .unwrap()
+                    .assignee
+                    .as_mut()
+                    .unwrap()
+                    .id = "agent_other".into();
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn host_cap_one_claims_three_tasks_as_one_process_and_queues_another_agent() {
+        let home = TestDir::new("batch-process-cap");
+        let _profile = crate::profile::started_in(&home);
+        let capped = Settings {
+            host_cap: Some(1),
+            ..settings()
+        };
+        crate::scheduling::save(capped.clone()).unwrap();
+        let store = OrchestrationStore::default();
+        let run = super::super::tests::run(&store);
+        store
+            .mutate(|data| {
+                data.runs.get_mut(&run.id).unwrap().max_concurrent = 3;
+                Ok(())
+            })
+            .unwrap();
+        let tasks: Vec<_> = (1..=3).map(|at| assigned(&store, &run, at)).collect();
+        let other = assigned(&store, &run, 4);
+        other_agent(&store, &other);
+        store.sync_agent_queue().unwrap();
+        let (_, runtime) = store.begin_batch("agent_test", &capped).unwrap().unwrap();
+        let claims = store
+            .batch_claim(
+                &WorkspaceState::load(),
+                &runtime.worker_chat_key,
+                tasks.iter().map(|task| task.id.clone()).collect(),
+            )
+            .unwrap();
+        assert_eq!(claims.len(), 3);
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 1);
+        assert!(store
+            .begin_batch("agent_other", &capped)
+            .unwrap_err()
+            .starts_with("QUEUED_FOR_SLOT host"));
+        let data = &store.inner.lock().unwrap().data;
+        assert_eq!(
+            data.attempts
+                .values()
+                .filter(|a| attempt_is_unsettled(data, a))
+                .count(),
+            3,
+            "all three task attempts are reserved in the one worker"
+        );
+        assert!(data.agent_queue.contains_key(&other.id));
+        assert_eq!(data.tasks[&other.id].retries_used, 0);
+    }
+
+    #[test]
+    fn run_cap_four_claims_six_tasks_in_one_worker() {
+        let home = TestDir::new("batch-run-process-cap");
+        let _profile = crate::profile::started_in(&home);
+        crate::scheduling::save(settings()).unwrap();
+        let store = OrchestrationStore::default();
+        let run = super::super::tests::run(&store);
+        store
+            .mutate(|data| {
+                data.runs.get_mut(&run.id).unwrap().max_concurrent = 4;
+                Ok(())
+            })
+            .unwrap();
+        let tasks: Vec<_> = (1..=6).map(|at| assigned(&store, &run, at)).collect();
+        store.sync_agent_queue().unwrap();
+        let (_, runtime) = store
+            .begin_batch("agent_test", &settings())
+            .unwrap()
+            .unwrap();
+        let claims = store
+            .batch_claim(
+                &WorkspaceState::load(),
+                &runtime.worker_chat_key,
+                tasks.iter().map(|task| task.id.clone()).collect(),
+            )
+            .unwrap();
+        assert_eq!(claims.len(), 6);
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 1);
+    }
+
+    #[test]
+    fn refused_batch_holds_process_capacity_until_its_stub_is_ended() {
+        for refusal in ["stale head", "no claim"] {
+            let home = TestDir::new("batch-refusal-process");
+            let _profile = crate::profile::started_in(&home);
+            let capped = Settings {
+                host_cap: Some(1),
+                ..settings()
+            };
+            crate::scheduling::save(capped.clone()).unwrap();
+            let store = OrchestrationStore::default();
+            let run = super::super::tests::run(&store);
+            let head = assigned(&store, &run, 1);
+            let other = assigned(&store, &run, 2);
+            other_agent(&store, &other);
+            store.sync_agent_queue().unwrap();
+            let (batch, runtime) = store.begin_batch("agent_test", &capped).unwrap().unwrap();
+            let chats = ChatManager::default();
+            chats.test_launch(&runtime.worker_chat_key);
+            chats.test_busy(&runtime.worker_chat_key, true);
+            let child = chats.test_child(&runtime.worker_chat_key);
+            store
+                .mutate(|data| {
+                    data.batch_launches.get_mut(&batch.id).unwrap().started = true;
+                    if refusal == "stale head" {
+                        data.tasks.get_mut(&head.id).unwrap().approved = None;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            if refusal == "stale head" {
+                assert!(store
+                    .batch_claim(
+                        &WorkspaceState::load(),
+                        &runtime.worker_chat_key,
+                        vec![head.id.clone()]
+                    )
+                    .is_err());
+            } else {
+                store
+                    .block_batch(&batch, "No claim can be reserved".into())
+                    .unwrap();
+            }
+            let count = store.scheduling_get().unwrap()["live"]["total"].clone();
+            let refused = store.begin_batch("agent_other", &capped).is_err();
+            store.stop_ended_workers(&chats);
+            let gone = child.gone_soon();
+            if !gone {
+                chats.test_end(&runtime.worker_chat_key);
+            }
+            assert_eq!(
+                count, 1,
+                "{refusal}: the live pre-claim process keeps its slot"
+            );
+            assert!(
+                refused,
+                "{refusal}: another agent must queue before the process ends"
+            );
+            assert!(
+                gone,
+                "{refusal}: the refused worker process must be ended even with no attempts"
+            );
+            assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 0);
+            assert!(store.begin_batch("agent_other", &capped).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn run_stop_includes_already_settled_preclaim_worker_and_ends_its_stub() {
+        let home = TestDir::new("batch-settled-stop");
+        let _profile = crate::profile::started_in(&home);
+        crate::scheduling::save(settings()).unwrap();
+        let store = OrchestrationStore::default();
+        let run = super::super::tests::run(&store);
+        assigned(&store, &run, 1);
+        store.sync_agent_queue().unwrap();
+        let (batch, runtime) = store
+            .begin_batch("agent_test", &settings())
+            .unwrap()
+            .unwrap();
+        let chats = ChatManager::default();
+        chats.test_launch(&runtime.worker_chat_key);
+        let child = chats.test_child(&runtime.worker_chat_key);
+        store
+            .mutate(|data| {
+                data.batch_launches.get_mut(&batch.id).unwrap().started = true;
+                Ok(())
+            })
+            .unwrap();
+        store
+            .block_batch(&batch, "Destination no longer available".into())
+            .unwrap();
+        let workers = store
+            .stop_run("chat:master", run.id, "Stop run".into())
+            .unwrap();
+        for key in &workers {
+            crate::agent_chat::chat_stop_impl(&chats, key.clone()).unwrap();
+        }
+        let gone = child.gone_soon();
+        if !gone {
+            chats.test_end(&runtime.worker_chat_key);
+        }
+        assert!(
+            workers.contains(&runtime.worker_chat_key),
+            "Stop must include settled batches with no attempts"
+        );
+        assert!(gone, "Stop must kill the actual stub");
+    }
+
     #[test]
     fn claiming_launch_reserves_capacity_and_run_stop_releases_its_worker_identity() {
         let home = TestDir::new("batch-claiming-cap");
