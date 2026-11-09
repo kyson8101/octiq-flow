@@ -1326,11 +1326,22 @@ pub fn provision_agent(plan: &WorkspacePlan) -> Result<(), String> {
         if owner.as_deref() != Some(&plan.checkout_root) {
             return Err("The batch branch is not owned by this agent checkout.".into());
         }
-        run_git_mut(&plan.checkout_root, &["switch", &plan.branch], false)?;
+        run_git_mut(
+            &plan.checkout_root,
+            &["switch", "--no-overwrite-ignore", &plan.branch],
+            false,
+        )?;
     } else {
         run_git_mut(
             &plan.checkout_root,
-            &["switch", "--no-track", "-c", &plan.branch, &plan.base_sha],
+            &[
+                "switch",
+                "--no-overwrite-ignore",
+                "--no-track",
+                "-c",
+                &plan.branch,
+                &plan.base_sha,
+            ],
             false,
         )?;
         run_git_mut(
@@ -1424,5 +1435,37 @@ mod agent_tests {
             first_head
         );
         assert_eq!(std::fs::read(&cache).unwrap(), b"keep compiled cache");
+    }
+}
+
+#[cfg(test)]
+mod agent_ignored_tests {
+    use super::*;
+    #[test]
+    fn an_ignored_output_colliding_with_the_next_base_is_never_overwritten() {
+        let repo = tests::Repo::new();
+        repo.commit(&repo.root, ".gitignore", "target/\n");
+        let first =
+            agent_plan(&repo.root, "main", "agent_test", "batch_123456789012", None).unwrap();
+        provision_agent(&first).unwrap();
+        crate::profile::make_dir(&Path::new(&first.cwd).join("target")).unwrap();
+        let cache = Path::new(&first.cwd).join("target/cache");
+        std::fs::write(&cache, b"kept cached bytes").unwrap();
+        crate::profile::make_dir(&Path::new(&repo.root).join("target")).unwrap();
+        std::fs::write(
+            Path::new(&repo.root).join("target/cache"),
+            b"new tracked content",
+        )
+        .unwrap();
+        repo.git(&["add", "-f", "target/cache"]);
+        repo.git(&["commit", "-m", "base now tracks a colliding path"]);
+        let next =
+            agent_plan(&repo.root, "main", "agent_test", "batch_abcdef123456", None).unwrap();
+        assert!(provision_agent(&next).is_err());
+        assert_eq!(std::fs::read(cache).unwrap(), b"kept cached bytes");
+        assert_eq!(
+            repo.git(&["-C", &first.cwd, "branch", "--show-current"]),
+            first.branch
+        );
     }
 }

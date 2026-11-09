@@ -2978,7 +2978,10 @@ Settings → Orientation is independent of registered agent conversations. The
 existing task-per-worker policy; Agents queues approved, unheld assigned work
 in FIFO agent lanes. `hostCap` is Off (`null`) or 1–32 and counts the existing
 live-attempt definition across **all runs**, in either orientation. Each run's
-`max_concurrent` also applies. There is no per-agent parallel setting.
+`max_concurrent` also applies. Claiming batches hold internal launch promises
+so one scheduler wave cannot spawn every agent before their claim tools arrive;
+these promises do not invent live attempts in `live.total`. There is no
+per-agent parallel setting.
 
 Only the person's socket exposes `scheduling_get` and
 `scheduling_set { settings: { orientation, hostCap } }`; neither has a hook or
@@ -3004,6 +3007,11 @@ through the shared reservation gates atomically. Incompatible approved worker
 settings and approved non-Agent workspaces run singly. An unclaimed first turn
 causes the host to claim the head alone. Each claimed task reports its own
 attempt; the shared process is released only after the last one settles.
+Stopping a run also stops its pre-claim worker identities. Stopping one claimed
+task stops the shared process and returns its other unfinished tasks to the
+queue without using an additional retry; their changes remain in the checkout.
+The MCP worker role follows the durable `chat:orch-` key even before a claim or
+after a saved resume environment drops its attempt marker.
 
 `WorkspaceMode::Agent` is offered on the plan card and fixed by approval.
 New assigned proposals in Agents orientation advise it. Git worktrees live
@@ -3012,7 +3020,7 @@ agent/repository; batches take `agent/<slug>/<batch short id>` branches from
 the approved base, with a fresh session in the reused checkout. Reopened or
 retried tasks return to their original batch branch and may group only with
 that original batch's tasks. Before switching, tracked and untracked changes
-must be clean; ignored build output is kept. A dirty checkout blocks the lane
+must be clean; ignored build output is kept, with `--no-overwrite-ignore` on branch switches. A dirty checkout blocks the lane
 and durably tells the coordinator whose batch left it. Nothing stashes, resets
 or discards changes. The lane can proceed once the checkout is clean again.
 
