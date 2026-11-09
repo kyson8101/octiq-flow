@@ -28,6 +28,25 @@ When it is on:
   settings. Ordinary chats, and every chat when agents mode is off, keep the
   pickers and the location shelf exactly as before.
 
+Settings → **Orientation** separately chooses **Tasks** (the default, existing
+behaviour) or **Agents**. Agents orientation puts approved, unheld tasks in
+FIFO queues: each agent works one batch at a time, picks the head plus up to
+five compatible queued tasks from the same run, repository and base branch,
+and reports each task's own attempt. The host reuses one managed worktree per
+agent/repository, creates a new branch and fresh session for each batch, and
+keeps ignored build caches. Retry/reopen work returns to its original batch
+branch; a dirty checkout blocks the lane and tells the responsible coordinator,
+without stashing or discarding anything. Approved alternative workspace modes
+remain single-task batches in their approved workspace. The configurable
+machine-wide worker cap is **Off** by default or **1–32**, applies across all
+runs in both orientations, and supplements each run's concurrency limit; there
+is no per-agent parallel setting. Orientation switches leave running work
+alone. Agent worktrees remain while their agent is registered, and per-task
+Cleanup or mission Close never removes them. Policy and lane state come from
+socket-only `scheduling_get` / `scheduling_set` and `scheduling-changed`; starts
+that queue answer with `QUEUED_FOR_SLOT`. See the scheduling subsection in
+[AGENTS.md](../AGENTS.md) for the persistence and worker claim contract.
+
 ## Who a new conversation is with
 
 A new conversation can only be with an agent who **reports directly to you**:

@@ -2970,6 +2970,66 @@ mode; approval without a choice re-plans them as Direct and fixes that mode.
 The main chat coordinates while a
 worker owns the write lease; it must not also edit that checkout.
 
+### Scheduling orientation and agent batches
+
+Settings → Orientation is independent of registered agent conversations. The
+`scheduling.rs` store in the pinned profile holds `scheduling.json`:
+`{ "orientation": "tasks", "hostCap": null }` by default. Tasks retains the
+existing task-per-worker policy; Agents queues approved, unheld assigned work
+in FIFO agent lanes. `hostCap` is Off (`null`) or 1–32 and counts the existing
+live-attempt definition across **all runs**, in either orientation. Each run's
+`max_concurrent` also applies. There is no per-agent parallel setting.
+
+Only the person's socket exposes `scheduling_get` and
+`scheduling_set { settings: { orientation, hostCap } }`; neither has a hook or
+MCP route. Set replaces and validates the complete value, saving before
+publishing. An unavailable profile refuses in the profile's own words.
+`scheduling-changed` carries the get payload after policy or lane changes.
+`Task.slotWait` is read-time only (`agent` or `host`, queue position and, for
+host capacity, running/limit); it is never accepted or stored in the ledger.
+Snapshot and summary retain `batches` and each attempt's `batchId`.
+
+In Agents orientation every start door queues without spawning, answering with
+`QUEUED_FOR_SLOT`; the 2-second scheduler alone starts an idle agent's oldest
+queued task. Holds (plan, reopen notice, person Stop, supersession, removed
+agent) are checked before a lane gets work. The queue retains `StartedBy`:
+a person's Start stays theirs, `persons_reopen` stays effective, and only an
+actual reservation uses retry budget. A claiming batch records durable worker
+identity before any attempt exists. Its fresh worker session sees the full
+head task and candidates from the same agent, run, repository and base branch.
+Only that worker's own capability may call
+`orchestration_batch_claim { taskIds }` through `/hook/orchestration`; the
+claim must include the head, contain 1–6 distinct tasks, and passes each task
+through the shared reservation gates atomically. Incompatible approved worker
+settings and approved non-Agent workspaces run singly. An unclaimed first turn
+causes the host to claim the head alone. Each claimed task reports its own
+attempt; the shared process is released only after the last one settles.
+
+`WorkspaceMode::Agent` is offered on the plan card and fixed by approval.
+New assigned proposals in Agents orientation advise it. Git worktrees live
+under the existing managed root as `agent-<stable agent id slug>`, one per
+agent/repository; batches take `agent/<slug>/<batch short id>` branches from
+the approved base, with a fresh session in the reused checkout. Reopened or
+retried tasks return to their original batch branch and may group only with
+that original batch's tasks. Before switching, tracked and untracked changes
+must be clean; ignored build output is kept. A dirty checkout blocks the lane
+and durably tells the coordinator whose batch left it. Nothing stashes, resets
+or discards changes. The lane can proceed once the checkout is clean again.
+
+Per-task Cleanup and mission Close never remove agent worktrees. While their
+agent is registered, lifespan may strip idle build output but cannot remove or
+archive the checkout; the physical removal door rechecks registration. Once
+removed from the roster, the agent's checkout follows the ordinary merged,
+clean, ignored-inventory and `remove_proven` rules. Delivery reads the task's
+batch branch even when another batch is checked out. Git refuses deletion of
+a batch branch still checked out by any worktree.
+
+Keep roster → ledger lock order. Copy ledger state before Git or chat work;
+never read `team.rs` under the ledger, and never take chat locks while holding
+it. Scheduling change publication runs after the ledger is released. All Git
+operations use the existing cross-platform helpers; no POSIX-only spawn is
+introduced. Switching orientation leaves running attempts and batches alone.
+
 **Coordinator batch cleanup is a proposal, never removal permission.**
 `orchestration_workspace_cleanup_request { runId? }` (MCP / hook action
 `workspace_cleanup_request`) refreshes delivery and proposes one card containing
