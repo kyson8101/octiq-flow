@@ -3193,6 +3193,13 @@ impl OrchestrationStore {
                 || data.agent_queue.contains_key(&task.id))
                 && task.assignee.is_some()
             {
+                let queued_at = if task.status == TaskStatus::Ready && task.stopped.is_none() {
+                    task.approved_at
+                        .unwrap_or(task.updated_at)
+                        .max(task.updated_at)
+                } else {
+                    now_ms()
+                };
                 // Validate every normal start gate on a disposable ledger. Capacity
                 // is checked at reservation, and a queue consumes no retry.
                 let mut probe = data.clone();
@@ -3221,7 +3228,7 @@ impl OrchestrationStore {
                     &unchecked_capacity,
                     None,
                 )?;
-                let entry = batches::Queued::new(launch, by, now_ms());
+                let entry = batches::Queued::new(launch, by, queued_at);
                 batches::enqueue(data, entry)?;
                 return Ok(None);
             }

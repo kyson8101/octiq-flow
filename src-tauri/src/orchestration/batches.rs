@@ -973,6 +973,9 @@ mod tests {
         let run2 = super::super::tests::run(&store);
         let older = assigned(&store, &run1, 1);
         let newer = assigned(&store, &run2, 2);
+        // An explicit Start retains the task's ready time, so a later scheduler
+        // sync cannot put a newer ready task ahead of it.
+        queued_start(&store, &older, StartedBy::Coordinator);
         store.sync_agent_queue().unwrap();
         let (first, runtime) = store
             .begin_batch("agent_test", &settings())
@@ -1374,6 +1377,23 @@ mod retention_tests {
             .unwrap();
         let other_run = super::super::tests::run(&store);
         let other = assigned(&store, &other_run, 2);
+        store
+            .mutate(|data| {
+                let task = data.tasks.get_mut(&other.id).unwrap();
+                task.workspace_proposal
+                    .as_mut()
+                    .unwrap()
+                    .plan
+                    .as_mut()
+                    .unwrap()
+                    .mode = WorkspaceMode::Worktree;
+                if let Some(approved) = &mut task.approved {
+                    approved.workspace_mode = Some(WorkspaceMode::Worktree);
+                }
+                Ok(())
+            })
+            .unwrap();
+
         assert!(store
             .reserve_attempt("chat:master", &launch(other.id.clone()))
             .unwrap_err()
