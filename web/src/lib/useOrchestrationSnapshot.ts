@@ -26,6 +26,7 @@ const longText = (small: string, full?: string) => full !== undefined
 
 export function detailedRun(summary: OrchestrationSnapshot, detail: OrchestrationSnapshot, id: string): OrchestrationSnapshot {
   return { ...detail, summary: false,
+    batches: summary.batches?.filter(batch => batch.runId === id),
     runs: summary.runs.filter(r => r.id === id).map(small => {
       const full = detail.runs.find(r => r.id === small.id);
       const run = evidence(small, full, ["workerDefaults", "stoppedReason", "missionDelivery"]);

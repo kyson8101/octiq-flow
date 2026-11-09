@@ -5,7 +5,7 @@ import type { TaskStatus } from "./chatTask";
 import { seeHolds } from "./taskHold";
 
 const unavailable = (e: unknown) => String(e).includes("not available on this backend");
-export const RUN_LISTS = ["runs", "tasks", "attempts", "gates", "nativeDecisions", "messages", "notifications", "services", "bridges", "peerAsks"] as const;
+export const RUN_LISTS = ["runs", "tasks", "attempts", "batches", "gates", "nativeDecisions", "messages", "notifications", "services", "bridges", "peerAsks"] as const;
 
 /** Replace one run, including records removed by its latest read. All global
  * readers retain the summary; detail text is never injected into this value. */

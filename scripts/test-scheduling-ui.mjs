@@ -114,6 +114,7 @@ try {
     await lane.locator(".agent-lane-line", { hasText: "Working · batch of 2 tasks" }).waitFor();
     await lane.locator('.agent-lane[data-executing="true"]').waitFor();
     assert.match(await page.locator('.agent-lane[data-state="blocked"]').innerText(), /Restore its folder/);
+    assert.equal(await page.locator('.dash-agent[data-state="blocked"] .dash-agent-status').count(), 0, "lane state is not contradicted by a task-state chip");
     assert.equal(await lane.locator(".agent-lane-branch").isVisible(), false);
     await lane.locator(".agent-lane summary").click();
     await lane.locator(".agent-lane-branch").waitFor();

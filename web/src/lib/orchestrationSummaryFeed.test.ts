@@ -6,7 +6,7 @@ vi.mock("./bridge", () => ({ bridge: {
   on: (kind: string, fn: (p: never) => void) => { const set = mock.handlers.get(kind) ?? new Set(); set.add(fn); mock.handlers.set(kind, set); return () => set.delete(fn); },
   onState: (fn: (s: string) => void) => { mock.states.add(fn); fn(mock.state); return () => mock.states.delete(fn); },
 } }));
-import { createOrchestrationFeed } from "./orchestrationSummaryFeed";
+import { createOrchestrationFeed, replaceRun } from "./orchestrationSummaryFeed";
 import { EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "./orchestration";
 import { detailedRun } from "./useOrchestrationSnapshot";
 import { useRunDetail } from "./useOrchestrationSnapshot";
@@ -155,4 +155,15 @@ it("requests held chat candidates and removes them after their cards are answere
   mock.reads.at(-1)!.resolve(summary("r","stopped"));await tick();
   feed.holdChats([]);mock.reads.at(-1)!.resolve({...EMPTY_ORCHESTRATION,summary:true});await tick();
   expect(feed.getState().snapshot?.runs).toEqual([]);off();
+});
+
+
+it("replaces a run's batches on a lane change and preserves other runs", () => {
+  const batch = (id: string, runId: string) => ({ id, runId, agentId: "fe", repository: "/repo", baseBranch: "develop", branch: `feature/${id}`, worktree: "/w", taskIds: ["t"], status: "working" as const, createdAt: 1 });
+  const before = { ...summary(), batches: [batch("old", "r"), batch("other", "u")] };
+  const next = { ...summary(), batches: [batch("new", "r")] };
+  expect(replaceRun(before, next, "r").batches?.map(b => b.id)).toEqual(["new", "other"]);
+  expect(replaceRun(before, summary(), "r").batches?.map(b => b.id)).toEqual(["other"]);
+  expect(detailedRun(next, before, "r").batches?.map(b => b.id)).toEqual(["new"]);
+  expect(detailedRun(summary(), before, "r").batches).toBeUndefined();
 });

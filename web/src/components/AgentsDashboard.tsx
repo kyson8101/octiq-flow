@@ -89,7 +89,10 @@ export function AgentsDashboard({
   const { rows, team, error } = useAgentRows({
     connected, snapshot, projects, running, busy, waitingOn, held, chatTitle, chatExists,
   });
-  const summary = rosterSummary(rows);
+  const summary = rosterSummary(rows.map(row => {
+    const lane = scheduling.data?.lanes.find(item => item.agentId === row.id);
+    return lane && row.state !== "needs_you" && row.state !== "failed" ? { ...row, state: lane.state } : row;
+  }));
   const stale = !connected || !!ledgerError;
   const appearance = (id: string) => projects.find((project) => project.id === id);
 
@@ -214,18 +217,19 @@ function AgentRowItem({ row, lane, snapshot, stale, expanded, onToggle, appearan
   onOpen: (activity: AgentActivity) => void;
   onOpenRecent: (chatKey: string) => void;
 }) {
-  const working = row.state === "working" && !stale;
+  const working = lane ? laneIsExecuting(lane, snapshot, stale) : row.state === "working" && !stale;
   const shown = expanded ? row.activities : row.activities.slice(0, SHOWN);
   const others = (Object.entries(row.counts) as [AgentRow["state"], number][])
     .filter(([state]) => state !== row.state);
   const stateText = AGENT_STATE_LABELS[row.state];
+  const faceState = lane ? AGENT_STATE_LABELS[lane.state] : stateText;
   return (
-    <li className="dash-agent" data-state={row.state} style={{ "--team-depth": row.depth } as React.CSSProperties}>
+    <li className="dash-agent" data-state={lane?.state ?? row.state} style={{ "--team-depth": row.depth } as React.CSSProperties}>
       <div className="dash-agent-head">
         {row.depth > 0 && <span className="team-row-branch" aria-hidden="true">└</span>}
         <AgentAvatar name={row.name} avatar={row.avatar} id={row.id} size={28} removed={row.removed}
           className={working ? "dash-avatar is-working" : "dash-avatar"}
-          label={`${row.name}, ${stateText.toLowerCase()}`} />
+          label={`${row.name}, ${faceState.toLowerCase()}`} />
         <span className="team-row-copy">
           <span className="team-row-name"><bdi>{row.name}</bdi>
             {!row.removed && <LevelChip name={row.name} progress={level} onOpen={onProfile} />}
@@ -233,7 +237,7 @@ function AgentRowItem({ row, lane, snapshot, stale, expanded, onToggle, appearan
           </span>
           <AgentMeta row={row} />
         </span>
-        <span className="dash-agent-status">
+        {(!lane || row.state === "needs_you" || row.state === "failed") && <span className="dash-agent-status">
           <span className={`dash-state is-${row.state}${stale ? " is-stale" : ""}`}
             title={stale ? `Last known: ${row.stateLabel}` : row.stateLabel}>
             {stale ? `${stateText} (last known)` : stateText}
@@ -241,7 +245,7 @@ function AgentRowItem({ row, lane, snapshot, stale, expanded, onToggle, appearan
           {others.map(([state, count]) => (
             <span key={state} className={`dash-count is-${state}`}>{count} {AGENT_STATE_LABELS[state].toLowerCase()}</span>
           ))}
-        </span>
+        </span>}
       </div>
       {lane && <AgentLaneRow lane={lane} snapshot={snapshot} stale={stale} />}
       {row.role && <AgentRole className="dash-agent-role" text={row.role} name={row.name} />}
@@ -285,10 +289,14 @@ function AgentRowItem({ row, lane, snapshot, stale, expanded, onToggle, appearan
   );
 }
 
+function laneIsExecuting(lane: AgentLane, snapshot: OrchestrationSnapshot | null, stale: boolean): boolean {
+  return !stale && lane.state === "working" && !!lane.batch && !!snapshot?.attempts.some(attempt =>
+    attempt.status === "running" && attempt.batchId === lane.batch?.id && (attempt.execution?.state === "executing" || attempt.execution?.state === "waiting_tool"));
+}
+
 export function AgentLaneRow({ lane, snapshot, stale = false }: { lane: AgentLane; snapshot: OrchestrationSnapshot | null; stale?: boolean }) {
   const run = snapshot?.runs.find(item => item.id === lane.batch?.runId);
-  const executing = !stale && lane.state === "working" && !!lane.batch && !!snapshot?.attempts.some(attempt =>
-    attempt.status === "running" && attempt.batchId === lane.batch?.id && (attempt.execution?.state === "executing" || attempt.execution?.state === "waiting_tool"));
+  const executing = laneIsExecuting(lane, snapshot, stale);
   return <div className="agent-lane" data-state={lane.state} data-executing={executing || undefined}>
     <div className="agent-lane-line"><span>{lane.state === "idle" ? "Idle" : lane.state === "blocked" ? "Blocked" : `Working · batch of ${lane.batch?.taskIds.length ?? "—"} tasks`}</span><span>{lane.queued} queued</span></div>
     {lane.state === "blocked" && <p>{lane.blockedReason ?? "The host has not supplied a reason."}</p>}
