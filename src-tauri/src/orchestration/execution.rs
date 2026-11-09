@@ -1269,6 +1269,120 @@ mod tests {
             .unwrap()
     }
 
+    fn closing_tasks_worker(
+        store: &OrchestrationStore,
+        chats: &ChatManager,
+    ) -> (Run, Attempt, crate::agent_chat::TestChild) {
+        let run = run(store);
+        let attempt = running_worker(store, &run);
+        let child = chats.test_hold(&attempt.worker_chat_key, ChatAgent::Codex, true);
+        store.finish_dispatch(&attempt, Ok(())).unwrap();
+        store
+            .report_worker(
+                &attempt.worker_chat_key,
+                WorkerReport {
+                    attempt_id: attempt.id.clone(),
+                    outcome: WorkerOutcome::Completed,
+                    summary: "Done; closing turn still busy".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        (run, attempt, child)
+    }
+
+    #[test]
+    fn tasks_closing_turn_holds_machine_and_run_slots_until_exit() {
+        let home = crate::test_dir::TestDir::new("tasks-closing-cap");
+        let _profile = crate::profile::started_in(&home);
+        crate::scheduling::save(crate::scheduling::Settings {
+            orientation: crate::scheduling::Orientation::Tasks,
+            host_cap: Some(1),
+        })
+        .unwrap();
+        let store = OrchestrationStore::default();
+        let chats = ChatManager::default();
+        let (first, attempt, child) = closing_tasks_worker(&store, &chats);
+        let second = run(&store);
+        let task = store
+            .create_task(
+                "chat:master",
+                second.id,
+                "Next".into(),
+                "work".into(),
+                vec![],
+                None,
+                None,
+            )
+            .unwrap();
+        let launch = super::super::tests::launch_for(&task.id);
+        let blocked = store.reserve_attempt("chat:master", &launch).unwrap_err();
+        assert!(blocked.starts_with("QUEUED_FOR_SLOT"));
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 1);
+        assert_eq!(
+            scheduling::run_live(&store.inner.lock().unwrap().data, &first.id, None),
+            1
+        );
+        store.stop_ended_workers(&chats);
+        assert!(
+            child.alive(),
+            "closing turn must finish before settled-worker release"
+        );
+        chats.test_busy(&attempt.worker_chat_key, false);
+        store.stop_ended_workers(&chats);
+        assert!(child.gone_soon());
+        store.stop_ended_workers(&chats);
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 0);
+        let (_, _, next, _) = store.reserve_attempt("chat:master", &launch).unwrap();
+        chats.test_launch(&next.worker_chat_key);
+        store.finish_dispatch(&next, Ok(())).unwrap();
+        assert!(chats.test_child(&next.worker_chat_key).alive());
+        chats.test_end(&next.worker_chat_key);
+    }
+
+    #[test]
+    fn tasks_run_stop_kills_terminal_attempt_closing_turn_and_releases_slot() {
+        let home = crate::test_dir::TestDir::new("tasks-closing-stop");
+        let _profile = crate::profile::started_in(&home);
+        let store = OrchestrationStore::default();
+        let chats = ChatManager::default();
+        let (run, attempt, child) = closing_tasks_worker(&store, &chats);
+        let keys = store
+            .stop_run("chat:master", run.id, "Stop".into())
+            .unwrap();
+        for key in &keys {
+            chats.test_end(key);
+        }
+        let gone = child.gone_soon();
+        if !gone {
+            chats.test_end(&attempt.worker_chat_key);
+        }
+        assert!(
+            keys.contains(&attempt.worker_chat_key),
+            "Stop must name terminal workers too"
+        );
+        assert!(gone, "Stop must kill the closing turn");
+        store.stop_ended_workers(&chats);
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 0);
+        assert_eq!(latest(&store, &attempt.id).status, AttemptStatus::Completed);
+    }
+
+    #[test]
+    fn tasks_natural_process_exit_releases_terminal_worker_lease() {
+        let home = crate::test_dir::TestDir::new("tasks-closing-exit");
+        let _profile = crate::profile::started_in(&home);
+        let store = OrchestrationStore::default();
+        let chats = ChatManager::default();
+        let (_, attempt, child) = closing_tasks_worker(&store, &chats);
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 1);
+        // The portable echo stand-in exits on EOF, without a server kill.
+        chats.test_finish(&attempt.worker_chat_key);
+        assert!(child.gone_soon());
+        store.stop_ended_workers(&chats);
+        assert_eq!(store.scheduling_get().unwrap()["live"]["total"], 0);
+    }
+
     #[test]
     fn a_settled_worker_finishes_its_closing_turn_before_its_process_is_freed() {
         let store = OrchestrationStore::default();
