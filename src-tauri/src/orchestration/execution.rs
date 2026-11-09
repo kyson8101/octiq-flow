@@ -1010,6 +1010,13 @@ impl OrchestrationStore {
             {
                 continue;
             }
+            {
+                let settings = crate::scheduling::load()?;
+                let inner = self.inner.lock().map_err(|e| e.to_string())?;
+                if scheduling::require_host_slot(&inner.data, settings.host_cap).is_err() {
+                    continue;
+                }
+            }
             // Return through the approved/default settings; start_worker_for
             // alone chooses an available equivalent runtime after its gates.
             let canonical = snapshot

@@ -1223,9 +1223,10 @@ fn who_reads_what_a_failure_is_shown_as() {
 // ---- derived facts are not stored (review of 16e4188, H3) ----------------
 
 /// What a read derives for a task, a gate and an attempt, by its key.
-const DERIVED_ON_A_TASK: [&str; 6] = [
+const DERIVED_ON_A_TASK: [&str; 7] = [
     "retryLimit",
     "failure",
+    "slotWait",
     "retrying",
     "heldByPlan",
     "heldByReopen",

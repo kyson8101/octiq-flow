@@ -891,6 +891,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "args")?,
         ),
         // Browser-only: no agent hook reaches this table.
+        "scheduling_get" => svc.orchestrations.scheduling_get(),
+        "scheduling_set" => {
+            crate::scheduling::save(arg(&args, "settings")?)?;
+            let payload = svc.orchestrations.scheduling_get()?;
+            crate::bus::emit("scheduling-changed", payload.clone());
+            Ok(payload)
+        }
         "personal_preferences" => to_value(crate::personal_preferences::load(
             &crate::personal_preferences::default_path(),
         )),

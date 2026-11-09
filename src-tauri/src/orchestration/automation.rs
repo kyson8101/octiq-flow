@@ -295,7 +295,24 @@ impl OrchestrationStore {
         }) {
             return Ok(Vec::new());
         }
-        let wave = ready_wave(&snapshot, run);
+        let settings = crate::scheduling::load()?;
+        let all = self.snapshot(None)?;
+        let host_room = settings.host_cap.map_or(usize::MAX, |cap| {
+            usize::from(cap).saturating_sub(
+                all.attempts
+                    .iter()
+                    .filter(|a| {
+                        matches!(a.status, AttemptStatus::Preparing | AttemptStatus::Running)
+                            || (a.status == AttemptStatus::Blocked
+                                && all.gates.iter().any(|g| {
+                                    g.status == GateStatus::Open
+                                        && g.task_id.as_deref() == Some(&a.task_id)
+                                }))
+                    })
+                    .count(),
+            )
+        });
+        let wave = ready_wave(&snapshot, run).into_iter().take(host_room);
         let mut started = Vec::new();
         for task in wave {
             let Some(settings) = defaults.settings_for(&task)? else {

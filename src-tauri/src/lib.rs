@@ -69,6 +69,7 @@ mod record_storage;
 mod record_trim;
 mod retired_features;
 mod safety_block;
+mod scheduling;
 mod team;
 mod team_tools;
 #[cfg(test)]

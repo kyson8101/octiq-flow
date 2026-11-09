@@ -191,6 +191,7 @@ pub fn project(view: &mut Value) {
                 "heldByReopen",
                 "retriesUsed",
                 "retryLimit",
+                "slotWait",
                 "retrying",
                 "failure",
                 "reopens",

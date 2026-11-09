@@ -957,6 +957,7 @@ impl OrchestrationStore {
                 retry_limit: None,
                 retrying: false,
                 failure: None,
+                slot_wait: None,
                 created_at: now,
                 updated_at: now,
             };

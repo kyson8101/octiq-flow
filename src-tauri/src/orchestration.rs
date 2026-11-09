@@ -56,6 +56,7 @@ mod retention;
 pub mod retry;
 #[cfg(test)]
 pub(crate) mod retry_tests;
+pub mod scheduling;
 pub mod summary;
 mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
@@ -550,6 +551,8 @@ pub struct Task {
     /// with no decision open, or completed with a failing verdict.
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub failure: Option<retry::Failure>,
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub slot_wait: Option<scheduling::SlotWait>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -1541,6 +1544,7 @@ impl OrchestrationStore {
         reports: bool,
     ) -> Result<Snapshot, String> {
         self.capture_native_decisions()?;
+        let scheduling = crate::scheduling::load().ok();
         let inner = self.inner.lock().map_err(|error| error.to_string())?;
         if let Some(error) = &inner.load_error {
             return Err(error.clone());
@@ -1603,6 +1607,9 @@ impl OrchestrationStore {
             task.held_by_reopen = workspaces::untold_reopen(task).is_some();
             // Its retries, and whose move its failure is.
             retry::derive(&inner.data, task, &mut reach, now);
+            task.slot_wait = scheduling
+                .as_ref()
+                .and_then(|settings| scheduling::slot_wait(&inner.data, task, settings));
         }
         let mut attempts: Vec<_> = inner
             .data
@@ -2656,6 +2663,7 @@ impl OrchestrationStore {
                 retry_limit: None,
                 retrying: false,
                 failure: None,
+                slot_wait: None,
                 created_at: now,
                 updated_at: now,
             };
@@ -3112,6 +3120,7 @@ impl OrchestrationStore {
         launch: &WorkerLaunch,
         by: StartedBy,
     ) -> Result<(Run, Task, Attempt, Option<Attempt>), String> {
+        let scheduling = crate::scheduling::load()?;
         let recovery_of = match by {
             StartedBy::Recovery(attempt) => Some(attempt),
             _ => None,
@@ -3318,6 +3327,7 @@ impl OrchestrationStore {
                     _ => {}
                 }
             }
+            scheduling::require_host_slot(data, scheduling.host_cap)?;
             let active = data
                 .attempts
                 .values()
