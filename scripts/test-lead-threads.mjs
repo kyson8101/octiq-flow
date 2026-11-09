@@ -148,6 +148,21 @@ try {
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
     await context.close();results.push({width,leads:true,history:true,orientationLive:true,workerReachable:true});
   }
+  // An empty Agents-oriented page only offers a lead thread, with phone targets.
+  {
+    scheduling={...scheduling,orientation:'agents'};
+    const context=await browser.newContext({viewport:{width:390,height:960},reducedMotion:'reduce'});
+    await context.addInitScript(()=>{localStorage.setItem('octiq.agentsMode','on');localStorage.setItem('octiq.v2.gitColumn','0');});
+    await context.route('**/token',r=>r.fulfill({body:'mock-token'}));await context.route('**/auth',r=>r.fulfill({body:'ok'}));
+    await context.routeWebSocket(/\/ws(?:\?|$)/,ws=>{socket=ws;ws.onMessage(raw=>{const r=JSON.parse(String(raw));if(r.t==='invoke')reply(r,answer(r));});});
+    const page=await context.newPage();page.on('pageerror',e=>errors.push(String(e)));
+    await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/`,{waitUntil:'domcontentloaded'});
+    const start=page.locator('.hero-links').getByRole('button',{name:'New conversation',exact:true});
+    await start.waitFor();assert.ok((await start.boundingBox()).height>=44);
+    assert.equal(await page.locator('.composer').count(),0);
+    await start.click();await page.waitForURL('**/c/lead-head');
+    await context.close();
+  }
   // Agents mode OFF keeps today's list under either scheduling orientation.
   const context=await browser.newContext({viewport:{width:1280,height:960},reducedMotion:'reduce'});
   await context.addInitScript(()=>{localStorage.setItem('octiq.agentsMode','off');localStorage.setItem('octiq.v2.gitColumn','0');});

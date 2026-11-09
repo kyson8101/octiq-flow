@@ -5850,7 +5850,7 @@ export default function App() {
             </div>
           ) : (leadsOnly && !conversationId) || (threadAgentId && chat.messages.length === 0) ? (
             <div className="hero"><h1 className="hero-title">{threadAgentId ? `Talk to ${composerIdentity?.name ?? "your lead"}` : "Talk to a lead"}</h1>
-              {!conversationId && <button className="hero-link" type="button" disabled={!!openingLead} onClick={() => void startAgentConversation()}>New conversation</button>}
+              {!conversationId && <div className="hero-links"><button className="hero-link" type="button" disabled={!!openingLead} onClick={() => void startAgentConversation()}>New conversation</button></div>}
               {leadOpenError && <p className="hero-route-error" role="alert">{leadOpenError}</p>}
             </div>
           ) : chat.messages.length === 0 && workerChat ? (
