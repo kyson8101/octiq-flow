@@ -151,7 +151,7 @@ function whereRows(task: OrchestrationTask, attempt?: OrchestrationAttempt | nul
     copy: { text: dir, name: "work directory path" },
   });
 
-  const kind = plan.managed ? (workspace ? "Worktree" : "New worktree") : "Current checkout";
+  const kind = plan.mode === "agent" ? "Agent worktree" : plan.managed ? (workspace ? "Worktree" : "New worktree") : "Current checkout";
   rows.push({
     key: "worktree",
     label: "Worktree",

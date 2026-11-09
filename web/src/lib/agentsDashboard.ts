@@ -23,6 +23,7 @@
 import { failureShown, isRetrying, type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask } from "./orchestration";
 import { RETRYING_WORD, taskReading } from "./runProgress";
 import { ledgerWaits, NO_WAITS, planWaits, type LedgerWaits, type Waiting, type Waits } from "./runWaits";
+import { taskSlot } from "./taskSlot";
 import { taskHold, type TaskHold } from "./taskHold";
 // Types only: agentsMode opens the socket bridge on import, and this module
 // is pure.
@@ -230,6 +231,7 @@ export function taskState(
   // A failure its coordinator is fixing, and a retry at work, are quiet
   // here as on the row: the row's own word, and no colour. Between attempts
   // the task waits for its next one; a retry is working once it executes.
+  if (task.slotWait && reading.state === "planned") return { state: "queued", label: taskSlot(task, hold)!, detail: hold?.detail, ...(hold?.tone ? { tone: hold.tone } : {}) };
   const quiet = failureShown(task) === "quiet";
   if (quiet || isRetrying(task)) {
     const executing = !quiet && !!attempt && (attempt.execution?.state === "executing" || attempt.execution?.state === "waiting_tool");
@@ -248,6 +250,8 @@ export function taskState(
   // Blocked with a decision on record that the host put no name to: the
   // panel does not call that failed either. (A task that failed is never
   // here: the reading above called it failed, the coordinator's or held.)
+  const slot = taskSlot(task);
+  if (slot) return { state: "queued", label: slot };
   if (task.status === "blocked") return { state: "blocked", label: "Blocked" };
   if (task.status === "pending" || task.status === "ready") {
     return { state: "queued", label: task.status === "ready" ? "Ready to start" : "Queued" };

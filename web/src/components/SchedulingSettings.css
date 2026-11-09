@@ -1,0 +1,12 @@
+.scheduling-block { padding-block: 16px; border-bottom: 1px solid var(--border); }
+.scheduling-block h3 { margin: 0 0 12px; }
+.scheduling-orientation { border: 0; padding: 0; margin: 0 0 12px; min-width: 0; }
+.scheduling-segments { display: flex; gap: 8px; margin-block: 8px; }
+.scheduling-segments label { display: flex; align-items: center; gap: 8px; padding-inline: 12px; min-height: 44px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+.scheduling-segments label:has(:checked) { background: var(--bg-2); border-color: var(--accent); }
+.scheduling-limit { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.scheduling-limit select { min-height: 44px; min-width: 80px; color: var(--fg-0); background: var(--bg-1); border: 1px solid var(--border); border-radius: 8px; padding-inline: 8px; }
+.scheduling-block > button, .scheduling-refusal summary { min-height: 44px; }
+.scheduling-refusal { color: var(--fg-2); overflow-wrap: anywhere; }
+.scheduling-refusal summary { display: list-item; align-content: center; cursor: pointer; }
+.scheduling-block > [role="status"] { margin-inline-start: 8px; }

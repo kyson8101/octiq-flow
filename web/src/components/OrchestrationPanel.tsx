@@ -48,6 +48,7 @@ import {
   type ProgressGroup, type ProgressRow, type RowState, type RunTiles as RunTilesData,
 } from "../lib/runProgress";
 import { decisionSummary, gateWaitsOn, openGates, pendingDecisions, runWaits, UNSAID_NOTE, type WaitsOn } from "../lib/runWaits";
+import { queuedStart, taskSlot } from "../lib/taskSlot";
 import { planHoldsEveryStart, reopenControl, startControl, statusLine, taskHold, type StartControl } from "../lib/taskHold";
 import { gateFlight, IN_FLIGHT, once, useInFlight } from "../lib/inFlight";
 import { dropHeld, notePress, repeatsAnother } from "../lib/pressGuard";
@@ -312,13 +313,17 @@ export function OrchestrationPanel({
     setBusy(true);
     setError(null);
     try {
-      await bridge.invoke("orchestration_worker_start", {
+      const reply = await bridge.invoke("orchestration_worker_start", {
         actorChatKey: run.coordinatorChatKey,
         ...retryLaunchArgs(task, attempt),
       });
+      const wait = queuedStart(reply);
       await read();
+      return wait;
     } catch (problem) {
-      setError(messageOf(problem));
+      const wait = queuedStart(problem);
+      if (wait) { await read(); return wait; }
+      else setError(messageOf(problem));
     } finally {
       setBusy(false);
     }
@@ -465,7 +470,7 @@ export function OrchestrationPanel({
       onArchive={(archived) => void archiveRun(run, archived)}
       onAnswer={(gateId, answer) => setAnswers((current) => ({ ...current, [gateId]: answer }))}
       onResolve={(gate, answer, door) => void resolveGate(run, gate, answer, door)}
-      onRetry={(task, attempt) => void retryTask(run, task, attempt)}
+      onRetry={(task, attempt) => retryTask(run, task, attempt)}
       onWorkspaceAction={(command, args) => void workspaceAction(run, command, args)}
       onBridge={(command, args) => void bridgeAction(run, command, args)}
       onOpenChat={onOpenChat}
@@ -801,7 +806,7 @@ function RunDetail({
   onArchive: (archived: boolean) => void;
   onAnswer: (gateId: string, answer: string) => void;
   onResolve: (gate: OrchestrationGate, answer: string, door: GateDoor) => void;
-  onRetry: (task: OrchestrationTask, attempt: OrchestrationAttempt) => void;
+  onRetry: (task: OrchestrationTask, attempt: OrchestrationAttempt) => Promise<string | null | undefined> | void;
   onWorkspaceAction: (command: string, args: Record<string, unknown>) => void;
   onBridge: (command: string, args: Record<string, unknown>) => void;
   onOpenChat: (chatKey: string) => void;
@@ -1399,7 +1404,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, taskNames, gate
   readOnly: boolean;
   archiveControl: (attempt: OrchestrationAttempt) => ReactNode;
   onOpenChat: (chatKey: string) => void;
-  onRetry: (task: OrchestrationTask, attempt: OrchestrationAttempt) => void;
+  onRetry: (task: OrchestrationTask, attempt: OrchestrationAttempt) => Promise<string | null | undefined> | void;
   onWorkspaceAction: (command: string, args: Record<string, unknown>) => void;
   open: boolean;
 }) {
@@ -1469,7 +1474,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, taskNames, gate
   // a task they stopped, the next attempt of one that is ready again, or a
   // retry. A read-only view offers none.
   const start = startControl(task, run, snapshot.tasks, attempts, gateBlockedTasks.has(task.id));
-  const begin = () => { if (start) onRetry(task, start.attempt); };
+  const begin = () => start ? onRetry(task, start.attempt) : undefined;
   const provider = attempt?.agent ?? task.worker?.agent;
   const who = assigneeFace?.name ?? task.assignee?.name ?? (provider ? AGENT_NAME[provider] : null);
   const branch = task.workspace?.plan.branch || attempt?.branch;
@@ -1633,6 +1638,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, taskNames, gate
             prepares it), who owns it on which model, and what done means. */}
         <TaskPlanCard task={task} run={run} attempt={attempt} projectName={projectName} />
         <PeerHelpLog asks={taskPeerAsks(snapshot, task.id)} ago={(at) => agoLabel(at, now)} />
+        {attempt?.batchId && <p className="orch-task-ledger">{batchLine(snapshot, attempt)}</p>}
         <details className="orch-task-more">
           <summary className="orch-task-more-summary" onClick={(event) => { notePress(event); }}>Task details</summary>
           <TaskLifecycleEvidence snapshot={snapshot} taskId={task.id} now={now} />
@@ -1640,7 +1646,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, taskNames, gate
               holds the task when something does (`statusLine`). Asked of
               the hold itself: a row that waits on the person keeps none. */}
           {attempt?.execution && <>
-            <p className="orch-task-ledger">{statusLine(task, (row.hold ?? taskHold(task, run, snapshot.tasks, now))?.label ?? null)}</p>
+            <p className="orch-task-ledger">{statusLine(task, taskSlot(task, row.hold ?? taskHold(task, run, snapshot.tasks, now)))}</p>
             <WorkerExecutionEvidence execution={attempt.execution} />
           </>}
           {task.dependsOn.length > 0 && <p className="orch-task-after">After {task.dependsOn.map((id) => taskNames.get(id) ?? id).join(", ")}</p>}
@@ -1759,6 +1765,11 @@ function GateAnswer({ gate, door, mine, busy, value, onChange, onResolve }: {
   </>;
 }
 
+export function batchLine(snapshot: Pick<OrchestrationSnapshot, "batches">, attempt: Pick<OrchestrationAttempt, "batchId" | "branch">): string {
+  const batch = snapshot.batches?.find(item => item.id === attempt.batchId);
+  return `Batch · ${batch?.taskIds.length ?? "—"} tasks · ${batch?.branch ?? attempt.branch}`;
+}
+
 /** Every control of the panel that starts an attempt. What it starts and
  *  whether the host would take it are `lib/taskHold.startControl`'s to say:
  *  a start the host would refuse stays on the page, switched off, with the
@@ -1773,13 +1784,18 @@ function GateAnswer({ gate, door, mine, busy, value, onChange, onResolve }: {
 function StartButton({ start, busy, onStart }: {
   start: StartControl<OrchestrationAttempt>;
   busy: boolean;
-  onStart: () => void;
+  onStart: () => Promise<string | null | undefined> | void;
 }) {
   const whyId = useId();
+  const [queued, setQueued] = useState<string | null>(null);
   return <>
     <button type="button" className="task-start" disabled={busy} aria-disabled={start.blocked ? true : undefined}
       aria-describedby={start.blocked ? whyId : undefined} onKeyDown={dropHeld}
-      onClick={start.blocked ? undefined : onStart}>{start.label}</button>
+      onClick={start.blocked ? undefined : () => {
+        setQueued(null);
+        void Promise.resolve(onStart()).then(words => setQueued(words ?? null));
+      }}>{start.label}</button>
+    {queued && <span className="task-start-why" role="status">{queued}</span>}
     {start.blocked && <span id={whyId} className="task-start-why">{start.blocked}</span>}
   </>;
 }

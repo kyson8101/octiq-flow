@@ -8,6 +8,7 @@ export const WORKSPACE_CHOICE_LABEL = { worktree: "New worktree", checkout: "Cur
 export const CHECKOUT_WRITER_NOTE = "Works in this chat's folder; one writer at a time.";
 
 export function readWorkspaceChoice(task: OrchestrationTask) {
+  if ((task.workspace?.plan ?? task.workspaceProposal?.plan)?.mode === "agent") return null;
   const choice = task.workspaceChoice;
   if (!choice) return null;
   return {

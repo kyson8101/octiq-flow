@@ -16,6 +16,7 @@ import {
   type AgentTeam, type AgentTeamDraft, type TeamAgent, type TeamDraft,
 } from "../lib/agentsMode";
 import { orgChart, teamBadge } from "../lib/agentsDashboard";
+import { SchedulingSettings } from "./SchedulingSettings";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentAvatarEditor } from "./AgentAvatarEditor";
 import { rolePreview } from "./AgentRole";
@@ -274,6 +275,8 @@ export function AgentsSettings({ on, onToggle, projects }: {
           <p>Register agents, then hand a task to one. It does the task, passes it on, or splits it across the others.</p>
         </div>
       </header>
+
+      <SchedulingSettings />
 
       <div className="settings-control-row">
         <div className="settings-control-copy">
