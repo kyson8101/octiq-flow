@@ -22,7 +22,7 @@ jobs:
       matrix:
         include:
           - platform: darwin-arm64
-            runner: macos-14
+            runner: macos-15
             target: aarch64-apple-darwin
             binary: src-tauri/target/aarch64-apple-darwin/release/octiq-server
           - platform: darwin-x64
