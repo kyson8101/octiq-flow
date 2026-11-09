@@ -4,10 +4,10 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
-const require = createRequire(new URL("../web/package.json", import.meta.url));
-const { createServer } = await import(require.resolve("vite"));
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || "playwright");
+import { browserPaths } from "./browser-paths.mjs";
+const { webRoot, require, moduleUrl } = browserPaths(import.meta.url);
+const { createServer } = await import(moduleUrl(require.resolve('vite')));
+const { chromium } = await import(moduleUrl(process.env.PLAYWRIGHT_MODULE || "playwright"));
 const artifacts = process.env.OCTIQ_EVIDENCE_DIR || await mkdtemp(join(tmpdir(), "octiq-scheduling-"));
 await mkdir(artifacts, { recursive: true });
 const now = Date.now();
@@ -31,7 +31,9 @@ const snapshot = {
   tasks: [
     { ...base, id: "active", title: "Scheduling implementation", status: "running", activeAttemptId: "a1", assignee: { id: "fe", name: "OCTIQ FE" } },
     { ...base, id: "queued", title: "Render queued tasks without decision badges", status: "ready", assignee: { id: "fe", name: "OCTIQ FE" }, slotWait: { reason: "agent", agentId: "fe", ahead: 2 } },
-    { ...base, id: "host", title: "Wait for machine capacity", status: "ready", assignee: { id: "be", name: "OCTIQ BE" }, slotWait: { reason: "host", ahead: 0, running: 3, limit: 3 } },
+    { ...base, id: "host", title: "Queued failed retry after person Start", status: "failed", activeAttemptId: "a3", retriesUsed: 2, retryLimit: 2,
+      failure: { kind: "failed", awaits: "person", because: "retries_used" },
+      assignee: { id: "be", name: "OCTIQ BE" }, slotWait: { reason: "host", ahead: 0, running: 3, limit: 3 } },
     { ...base, id: "restart", title: "Continue after the batch settles", status: "ready", activeAttemptId: "a2", assignee: { id: "fe", name: "OCTIQ FE" } },
   ],
   attempts: [
@@ -40,6 +42,9 @@ const snapshot = {
       execution: { state: "executing", retryCount: 0, lastActivityAt: now } },
     { id: "a2", runId: run.id, taskId: "restart", number: 1, workerChatKey: "chat:orch-previous", agent: "claude", access: "auto", status: "completed",
       cwd: "/repo/.worktrees/agent-fe", branch: "feature/previous", isWorktree: true, filesModified: [], createdAt: now, updatedAt: now },
+    { id: "a3", runId: run.id, taskId: "host", number: 3, workerChatKey: "chat:orch-failed", agent: "claude", access: "auto", status: "failed",
+      cwd: "/repo/.worktrees/agent-be", branch: "feature/previous-be", isWorktree: true, filesModified: [], createdAt: now, updatedAt: now,
+      execution: { state: "failed", retryCount: 2 } },
   ],
   batches: [{ id: "batch-1", agentId: "fe", runId: run.id, repository: run.rootPath, baseBranch: "develop", branch: "feature/fe-batch-1", worktree: "/repo/.worktrees/agent-fe", taskIds: ["active", "related"], status: "working", createdAt: now }],
   gates: [], messages: [],
@@ -80,7 +85,7 @@ function resultFor({ cmd, args = {} }) {
     default: return null;
   }
 }
-const server = await createServer({ root: new URL("../web", import.meta.url).pathname,
+const server = await createServer({ root: webRoot,
   server: { host: "127.0.0.1", port: 0, strictPort: false } });
 let browser;
 try {
@@ -139,6 +144,16 @@ try {
     assert.equal(await queued.locator(".orch-attention,.pending-badge").count(), 0);
     await queued.scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(artifacts, `queued-row-${width}.png`), fullPage: true });
+    const failed = page.locator('[data-task-id="host"]');
+    await failed.getByText("Queued · machine limit (3 of 3 running)", { exact: true }).waitFor();
+    assert.equal(await failed.getAttribute("data-state"), "planned");
+    assert.equal(await failed.getAttribute("data-tone"), null);
+    assert.equal(await failed.evaluate(el => getComputedStyle(el).getPropertyValue("--task-color").trim()),
+      await failed.evaluate(el => getComputedStyle(el).getPropertyValue("--fg-3").trim()), "queued failure uses the neutral ink");
+    assert.equal(await failed.locator('.orch-task-ask,[data-attention="true"],.pending-action-badge').count(), 0);
+    assert.equal(await page.locator('.orch-attention,.tasks-toggle-owed').count(), 0);
+    await failed.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(artifacts, `queued-failed-row-${width}.png`), fullPage: true });
     // Details derives its batch count and branch from the ledger.
     const active = page.locator('[data-task-id="active"]');
     await active.getByRole("button", { name: /^Expand task progress:/ }).click();

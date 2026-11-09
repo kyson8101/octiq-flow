@@ -66,7 +66,7 @@ export const REOPEN_LASTED_DETAIL = "It has stayed held: the coordinator's chat 
 
 export const PLAN_DETAIL = "The plan is with you, and your approval does not cover this task yet. It starts once you approve the plan.";
 
-type Held = Pick<OrchestrationTask, "id" | "runId" | "status" | "supersededBy" | "stopped" | "heldByPlan" | "heldByReopen" | "reopens">;
+type Held = Pick<OrchestrationTask, "id" | "runId" | "status" | "supersededBy" | "stopped" | "heldByPlan" | "heldByReopen" | "reopens" | "slotWait">;
 
 /** When the oldest reopen whose notice is still owed was made, by the
  *  host's clock. `null` when the ledger names none. */
@@ -158,7 +158,7 @@ export function taskHold(
   now: number,
 ): TaskHold | null {
   if (task.supersededBy) return null;
-  const waiting = task.status === "pending" || task.status === "ready";
+  const waiting = task.status === "pending" || task.status === "ready" || !!task.slotWait;
   // A stopped task is left failed by the host, and is held whatever became
   // of it since: put back on a plan it is the plan's to release.
   const stopped = !!task.stopped && (waiting || task.status === "failed");

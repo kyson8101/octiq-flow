@@ -379,6 +379,8 @@ export function finishedWell(task: Ended): boolean {
  *                                archived: listed with what finished, muted,
  *                                counted nowhere.
  *                 "none"         the host says the task is not in failure.
+ *                 "queued"       its Start waits for capacity: the previous
+ *                                failure asks nobody for a decision.
  *                 "unsaid"       an older host, which says none of this:
  *                                the surface reads the task as it did
  *                                before (`isStuck`, `checkFailed`).
@@ -390,7 +392,7 @@ export function finishedWell(task: Ended): boolean {
 
 export type FailureMove = "coordinator" | "person" | "history";
 
-type Failing = Pick<OrchestrationTask, "failure" | "retryLimit">;
+type Failing = Pick<OrchestrationTask, "failure" | "retryLimit" | "slotWait">;
 
 const MOVE: Record<Awaits, FailureMove> = { coordinator: "coordinator", person: "person", nobody: "history" };
 
@@ -401,7 +403,10 @@ export function saysFailures(task: Pick<OrchestrationTask, "retryLimit">): boole
 }
 
 /** Whose move the task's failure is, as the host says. */
-export function failureMove(task: Failing): FailureMove | "none" | "unsaid" {
+export function failureMove(task: Failing): FailureMove | "none" | "unsaid" | "queued" {
+  // A Start already queued for capacity asks nobody to decide the previous
+  // failure, even on a host that still sends its exhausted failure fields.
+  if (task.slotWait) return "queued";
   if (!saysFailures(task)) return "unsaid";
   if (!task.failure) return "none";
   // A word this page does not know is not guessed at: read as before.
@@ -413,12 +418,13 @@ export function failureMove(task: Failing): FailureMove | "none" | "unsaid" {
  *  the coordinator put to the person about it. */
 export function failureOf(task: Failing): (TaskFailure & { move: FailureMove }) | null {
   const move = failureMove(task);
-  return task.failure && move !== "none" && move !== "unsaid" ? { ...task.failure, move } : null;
+  return task.failure && move !== "none" && move !== "unsaid" && move !== "queued" ? { ...task.failure, move } : null;
 }
 
 /** How a surface that shows failures draws this task: `red` is a failure
  *  that is counted and coloured as one, `quiet` one its coordinator is
- *  fixing, `history` one nothing is owed for, `null` no failure at all. On
+ *  fixing or whose Start is queued, `history` one nothing is owed for,
+ *  `null` no failure at all. On
  *  a host that does not say, a task that failed, is blocked or completed
  *  with a failed check is red, as it was (a caller that knows an open
  *  decision holds the task asks that first, as before). */
@@ -427,7 +433,7 @@ export function failureShown(
 ): "red" | "quiet" | "history" | null {
   const move = failureMove(task);
   if (move === "unsaid") return isStuck(task) || checkFailed(task) ? "red" : null;
-  return move === "person" ? "red" : move === "coordinator" ? "quiet" : move === "history" ? "history" : null;
+  return move === "person" ? "red" : move === "coordinator" || move === "queued" ? "quiet" : move === "history" ? "history" : null;
 }
 
 /** A retry of the task is at work or scheduled, as the host says. */
@@ -476,11 +482,19 @@ export function gateDoor(
  *  failure in it is somebody's move. It is drawn failed only when a failure
  *  waits on the person, and running while its coordinator is on one. A host
  *  that does not say whose move a failure is leaves the status as it is. */
-export function shownRunStatus(run: Pick<OrchestrationRun, "id" | "status">, tasks: readonly (Failing & Pick<OrchestrationTask, "runId">)[]): RunStatus {
+export function shownRunStatus(run: Pick<OrchestrationRun, "id" | "status" | "planApproval">, tasks: readonly (Failing & Pick<OrchestrationTask, "runId" | "status" | "supersededBy" | "heldByPlan" | "heldByReopen" | "stopped">)[]): RunStatus | "queued" {
+  const own = tasks.filter((task) => task.runId === run.id);
+  const moves = own.map(failureMove);
+  // Keep a run whose unfinished work is all waiting for capacity neutral,
+  // including when the host still calls the run failed. Holds lead.
+  if (["planning", "running", "waiting", "failed", "completed"].includes(run.status)
+    && run.planApproval?.status !== "pending" && !moves.includes("person") && !moves.includes("coordinator")
+    && moves.includes("queued")
+    && own.every((task) => task.supersededBy || isSettled(task) || task.status === "cancelled"
+      || (failureMove(task) === "queued" && !task.heldByPlan && !task.heldByReopen && !task.stopped))) return "queued";
   if (run.status !== "failed" && run.status !== "completed") return run.status;
-  const moves = tasks.filter((task) => task.runId === run.id).map(failureMove);
   if (moves.includes("person")) return "failed";
-  return moves.includes("coordinator") ? "running" : run.status;
+  return moves.includes("coordinator") || moves.includes("queued") ? "running" : run.status;
 }
 
 export type AgentBatch = {

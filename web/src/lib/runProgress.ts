@@ -17,7 +17,7 @@ import {
   taskElapsed, taskStepSummary, type TaskStepSummary,
 } from "./agentTaskBoard";
 import {
-  CHECK_FAILED_LABEL, checkFailed, FAILURE_WORD, failureMove, failureOf, finishedWell, isRetrying, isSettled, saysFailures,
+  CHECK_FAILED_LABEL, checkFailed, FAILURE_WORD, failureMove, failureOf, finishedWell, isRetrying, isSettled, saysFailures, shownRunStatus,
   type AttemptUsage, type FailureKind, type FailureMove, type OrchestrationAttempt, type OrchestrationRun, type OrchestrationSnapshot,
   type OrchestrationTask, type TaskFailure,
 } from "./orchestration";
@@ -317,7 +317,7 @@ const retries = (count: number) => `${count} automatic ${count === 1 ? "retry" :
  *  A failure that waits on the person never says only that it failed: the
  *  sentence ends in what moves it. */
 export function failureNote(
-  task: Pick<OrchestrationTask, "failure" | "retryLimit" | "retriesUsed">,
+  task: Pick<OrchestrationTask, "failure" | "retryLimit" | "retriesUsed" | "slotWait">,
   start: { label: string; blocked: string | null } | null,
   question: string | null,
   /** The person's own reopen of a settled task, when the page offers one
@@ -381,6 +381,9 @@ export function taskReading(
   // the task's own failure follows, and is the row's reading below.
   const card = waits.person.find((wait) => !wait.failure);
   if (card) return { state: "needs", why: PERSON_WORD[card.kind], tone: "decide" };
+  if (failureMove(task) === "queued" && run.status !== "stopped" && run.status !== "closed") {
+    return { state: "planned", why: taskSlot(task, hold), tone: hold?.tone ?? null };
+  }
   // The task's failure, where the host says whose move it is
   // (`orchestration.failureMove`). The person's is the one that is red. The
   // coordinator's is quiet: no danger colour and no warning colour, with
@@ -406,9 +409,6 @@ export function taskReading(
   // nothing failed: it is held until they start it, and waits with what has
   // not started.
   if (hold?.kind === "stopped") return { state: "planned", why: hold.label, tone: hold.tone };
-  if (task.slotWait && (task.status === "pending" || task.status === "ready")) {
-    return { state: "planned", why: taskSlot(task, hold), tone: hold?.tone ?? null };
-  }
   const live = !!attempt && task.activeAttemptId === attempt.id;
   // A retry is at work, or the host has scheduled one: grey, and the word
   // says so. A worker of it that is in trouble keeps the host's own word
@@ -760,7 +760,7 @@ export function runProgress(
     const counts = { state, needs, failures, planOnly: needs === 1 && waits.person[0].kind === "plan", failed, stopped, working, runs: 1 };
     strip = {
       ...counts,
-      word: STRIP_WORD[state],
+      word: state === "running" && shownRunStatus(run, tasks) === "queued" ? "Queued" : STRIP_WORD[state],
       done, total,
       percent: total ? Math.round(done / total * 100) : 0,
       // Nothing to count: a run with no task yet, or one whose tasks are all
@@ -841,7 +841,7 @@ export function chatStrip(
     run: picked.run,
     strip: {
       ...picked.strip, ...counts,
-      word: STRIP_WORD[state],
+      word: state === picked.strip.state ? picked.strip.word : STRIP_WORD[state],
       side: stripSide(counts, null),
       notes: [
         `The bar is one of ${live.length} ${allLive ? "live runs" : "runs"} of this chat${picked.strip.needs ? ", the one that waits on you" : ""}.`,

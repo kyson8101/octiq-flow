@@ -711,6 +711,8 @@
    of one that finished well, and one blocked with nothing open to wait for
    is not a warning (lib/runProgress.taskReading). */
 .orch-task[data-state="failed"] { --task-color: var(--danger); }
+/* A queued retry has not started, whatever status its last worker left. */
+.orch-task[data-state="planned"] { --task-color: var(--fg-3); }
 /* Whose move a failure is, where the host says (orchestration.failureMove).
    One its coordinator is fixing, and one that is history, is not a colour:
    the ledger still calls the task failed or blocked, and the row is quiet.

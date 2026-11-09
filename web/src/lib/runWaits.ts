@@ -182,6 +182,8 @@ export function runWaits(snapshot: OrchestrationSnapshot, run: OrchestrationRun,
   }
   // A failure the host says waits on the person is a decision of theirs.
   // With no gate that asks it, the failure is the decision itself.
+  // failureMove also makes a queued Start quiet on hosts that leave the
+  // previous failure's fields behind while it waits for capacity.
   for (const task of own) {
     if (failureMove(task) === "person" && !asked.has(task.id)) {
       add({ key: `failure:${task.id}`, kind: "failure", on: "person", runId: run.id, taskId: task.id, failure: true });
