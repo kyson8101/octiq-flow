@@ -2333,3 +2333,12 @@ durable inbox. When an agent creates a run through the MCP hook, the host
 returns the master brief in the response (`masterBrief`), because nothing else
 delivers it. Tasks record `assignee { id, name }`, which the task board and the
 Run view show.
+
+Batch safety: a claim checks every task, including its head, against the current
+approval and the actual batch agent/settings/workspace. Claiming and working
+batch tasks cannot change hands until the batch stops or settles. Batch start
+and each claim reverify registered destinations. A refused stale head leaves
+the tasks queued and reports the host's reason on the lane; an incompatible
+extra selection can be omitted on retry. While a failed task's
+accepted Start waits for a slot, snapshots derive `retrying: true` and
+`failure.awaits: "coordinator"`; no retry counter changes until reservation.

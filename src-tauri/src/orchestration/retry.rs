@@ -340,19 +340,20 @@ fn ended(run: &Run) -> bool {
 /// Put on `task` what a read says of its retries and its failure.
 pub(super) fn derive(data: &Stored, task: &mut Task, reach: &mut Reach, now: i64) {
     task.retry_limit = Some(RETRY_LIMIT);
-    let attempt = latest(data, task);
-    task.retrying = attempt.is_some_and(|attempt| {
-        let executing = matches!(
-            attempt.status,
-            AttemptStatus::Preparing | AttemptStatus::Running
-        );
-        // A retry at work, or the one the host has scheduled.
-        (attempt.retry.is_some() && executing)
-            || (task.status == TaskStatus::Blocked
-                && attempt.status == AttemptStatus::Failed
-                && attempt.execution.next_retry_at.is_some())
-    });
     task.failure = failure(data, task, reach, now);
+    let attempt = latest(data, task);
+    task.retrying = (task.slot_wait.is_some() && task.failure.is_some())
+        || attempt.is_some_and(|attempt| {
+            let executing = matches!(
+                attempt.status,
+                AttemptStatus::Preparing | AttemptStatus::Running
+            );
+            // A retry at work, or the one the host has scheduled.
+            (attempt.retry.is_some() && executing)
+                || (task.status == TaskStatus::Blocked
+                    && attempt.status == AttemptStatus::Failed
+                    && attempt.execution.next_retry_at.is_some())
+        });
 }
 
 fn failure(data: &Stored, task: &Task, reach: &mut Reach, now: i64) -> Option<Failure> {
@@ -371,6 +372,11 @@ fn failure(data: &Stored, task: &Task, reach: &mut Reach, now: i64) -> Option<Fa
     }
     if ended(run) {
         return says(Awaits::Nobody, Some(Because::RunEnded), None);
+    }
+    if task.slot_wait.is_some() {
+        // Start has already been accepted into the host queue. Reservation,
+        // including the person's budget reset, happens when a slot opens.
+        return says(Awaits::Coordinator, None, None);
     }
     if let Some(gate) = escalation(data, &task.id) {
         return says(

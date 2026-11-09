@@ -2938,7 +2938,15 @@ head task and candidates from the same agent, run, repository and base branch.
 Only that worker's own capability may call
 `orchestration_batch_claim { taskIds }` through `/hook/orchestration`; the
 claim must include the head, contain 1–6 distinct tasks, and passes each task
-through the shared reservation gates atomically. Incompatible approved worker
+through the shared reservation gates atomically. Every claim (including the
+head) binds the batch agent, runtime settings and workspace plan to the current
+approval. A stale head reserves nothing and keeps tasks queued with the host
+reason on the lane; an incompatible extra selection can be omitted on retry. Claiming and working batch tasks cannot be reassigned or
+handed off until the batch stops or settles. Batch start and each claimed task
+reverify the destination's project/repository registration. A queued failure's
+read-time `retrying` is true and `failure.awaits` is `coordinator`, including a
+person's Start after retries were used; the budget resets only on reservation.
+Incompatible approved worker
 settings and approved non-Agent workspaces run singly. An unclaimed first turn
 causes the host to claim the head alone. Each claimed task reports its own
 attempt; the shared process is released only after the last one settles.

@@ -1630,10 +1630,10 @@ impl OrchestrationStore {
             // And the other thing that holds a task whatever asks for it.
             task.held_by_reopen = workspaces::untold_reopen(task).is_some();
             // Its retries, and whose move its failure is.
-            retry::derive(&inner.data, task, &mut reach, now);
             task.slot_wait = scheduling
                 .as_ref()
                 .and_then(|settings| scheduling::slot_wait(&inner.data, task, settings));
+            retry::derive(&inner.data, task, &mut reach, now);
         }
         let mut attempts: Vec<_> = inner
             .data
@@ -2852,6 +2852,7 @@ impl OrchestrationStore {
             if task.peer_request.is_some() {
                 return Err("This is a peer request to one named teammate and cannot change hands. Withdraw it, or let whoever asked make another.".into());
             }
+            batches::require_no_batch(data, task_id)?;
             if let Some(active) = task.active_attempt_id.as_deref().and_then(|id| data.attempts.get(id)) {
                 if matches!(active.status, AttemptStatus::Preparing | AttemptStatus::Running) {
                     return Err(format!(
