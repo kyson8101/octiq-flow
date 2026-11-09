@@ -3629,6 +3629,10 @@ pub fn chat_start_answering_impl(
     turn_id: Option<String>,
     answering: Option<String>,
 ) -> Result<(), String> {
+    let turn_id = fresh_turn_id(turn_id);
+    if manager.auto_resumes.holds_pending_turn(&key, &turn_id) {
+        return Err("This message is already saved with its provider choice. Use the provider card to continue or cancel it.".into());
+    }
     cancel_auto_resume(&manager, &key, "superseded by a user message");
     let chat = key.clone();
     crate::safety_block::person_turn(&chat, answering.as_deref(), || {
@@ -3647,7 +3651,7 @@ pub fn chat_start_answering_impl(
             effort,
             images,
             lite,
-            Some(fresh_turn_id(turn_id)),
+            Some(turn_id),
         )
     })
 }
@@ -3671,6 +3675,12 @@ fn chat_start_with_user_turn(
     user_turn_id: Option<String>,
 ) -> Result<(), String> {
     let _claim = manager.hold_start(&key)?;
+    if manager.has_process(&key) {
+        return Err(format!("chat '{key}' is already running"));
+    }
+    let previous_start = manager.start_context(&key);
+    let previous_resume = resume.clone();
+    let mut recovered = false;
     let mut agent = agent;
     let mut model = model;
     let mut effort = effort;
@@ -3687,6 +3697,14 @@ fn chat_start_with_user_turn(
     } else {
         None
     };
+    let registered_chat = registered.is_some();
+    if registered_chat
+        && user_turn_id
+            .as_deref()
+            .is_some_and(|id| turn_was_started(&key, id))
+    {
+        return Ok(());
+    }
     let defaults = registered
         .map(|preset| crate::provider_failover::Settings {
             agent: preset.agent,
@@ -3701,28 +3719,129 @@ fn chat_start_with_user_turn(
                 .map(|start| start.default_settings())
         })
         .unwrap_or_else(|| source.clone());
+    if registered_chat {
+        let selected =
+            registered_runtime::select(&key, &source, &defaults, resume, previous_start.as_ref())?;
+        agent = selected.runtime.agent;
+        model = selected.runtime.model;
+        effort = selected.runtime.effort;
+        resume = selected.resume;
+        recovered = selected.recovered;
+        if recovered && resume.is_none() {
+            handoff = Some(provider_history(&key)?);
+        }
+    }
+    crate::agent_provider::validate_model(agent, model.as_deref())?;
+    let requested_source = source;
+    let source = crate::provider_failover::Settings {
+        agent,
+        model: model.clone(),
+        effort: effort.clone(),
+        access: defaults.access,
+    };
     let mut switched = None;
+    let unavailable = registered_chat
+        .then(|| registered_runtime::require_installed(agent).err())
+        .flatten();
     if !key.starts_with("chat:orch-")
-        && manager
-            .failover
-            .blocked(source.agent, crate::auto_resume::unix_now())
+        && (unavailable.is_some()
+            || manager
+                .failover
+                .blocked(source.agent, crate::auto_resume::unix_now()))
     {
         let owner = crate::failover_policy::owner(&key)?;
         let (rule, target) =
             crate::failover_policy::route(&manager.failover, &source, &defaults, owner.as_deref())?;
+        let target = target.or_else(|| {
+            unavailable.as_ref().and_then(|_| {
+                manager.failover.unavailable_alternative_using(
+                    &source,
+                    &defaults,
+                    crate::auto_resume::unix_now(),
+                )
+            })
+        });
+        if rule.mode == crate::failover_policy::Mode::Ask {
+            let target = target
+                .or_else(|| {
+                    [ChatAgent::Claude, ChatAgent::Codex, ChatAgent::Antigravity]
+                        .into_iter()
+                        .find_map(|agent| {
+                            crate::provider_failover::equivalent_using(&source, &defaults, agent)
+                        })
+                })
+                .ok_or(
+                    "No compatible fallback provider is available. The registered model was kept.",
+                )?;
+            let start = StartContext {
+                defaults: Some(defaults),
+                cwd,
+                agent,
+                model,
+                access,
+                extra_dirs,
+                env,
+                effort,
+                lite,
+                session_id: resume,
+            };
+            let pending_turn = prompt.map(|text| crate::auto_resume::PendingTurn {
+                text,
+                images: images.unwrap_or_default(),
+                turn_id: fresh_turn_id(user_turn_id),
+                previous_start: previous_start.clone(),
+            });
+            if let Some(entry) = manager.auto_resumes.schedule_start_choice(
+                &key,
+                start,
+                target,
+                crate::auto_resume::unix_now(),
+                true,
+                false,
+                pending_turn,
+            )? {
+                crate::auto_resume::announce_scheduled(&entry);
+            }
+            return Err("The configured provider is unavailable. Choose a fallback on the provider card to continue; your message is saved with that choice and no provider was started.".into());
+        }
         if let Some(target) = target.filter(|_| {
             rule.mode == crate::failover_policy::Mode::Auto
-                && manager
-                    .failover
-                    .blocked(source.agent, crate::auto_resume::unix_now())
+                && (unavailable.is_some()
+                    || manager
+                        .failover
+                        .blocked(source.agent, crate::auto_resume::unix_now()))
         }) {
             handoff = Some(provider_history(&key)?);
             agent = target.agent;
             model = target.model.clone();
             effort = target.effort.clone();
             resume = None;
-            switched = Some((source, target));
+            switched = Some((source.clone(), target));
+        } else {
+            return Err(unavailable.unwrap_or_else(|| "The configured provider has reached its usage limit and no compatible fallback is available. No provider was started.".into()));
         }
+    }
+    if registered_chat {
+        registered_runtime::require_installed(agent)?;
+    }
+    if recovered || switched.is_some() {
+        let target = crate::provider_failover::Settings {
+            agent,
+            model: model.clone(),
+            effort: effort.clone(),
+            access: source.access,
+        };
+        provider_switch::prepare_runtime_change(
+            &key,
+            &requested_source,
+            &target,
+            if switched.is_some() {
+                "Auto fallback policy"
+            } else {
+                "registered preset recovery"
+            },
+            previous_resume.as_deref(),
+        )?;
     }
     let visible_prompt = prompt.clone();
     let prompt = match (prompt, handoff.filter(|history| !history.trim().is_empty())) {
@@ -3768,7 +3887,21 @@ fn chat_start_with_user_turn(
     );
     if result.is_ok() {
         if let Some((source, target)) = switched {
-            announce_provider_switch(&manager, &key, &source, &target)?;
+            if unavailable.is_some() {
+                provider_switch::announce_runtime_change(&manager, &key, &source, &target, "octiq_provider_switched",
+                    "The configured provider CLI is unavailable. Continuing with the compatible runtime allowed by your Auto fallback policy. The registered preset is unchanged.", previous_resume.as_deref())?;
+            } else {
+                announce_provider_switch(&manager, &key, &source, &target)?;
+            }
+        } else if recovered {
+            provider_switch::announce_runtime_change(&manager, &key, &requested_source, &source,
+                "octiq_registered_recovered", "Recovered this registered agent's configured provider and exact model in a fresh compatible session. Earlier transcript and settings remain in the record.", previous_resume.as_deref())?;
+        }
+    } else if recovered {
+        if let Some(start) = previous_start {
+            manager.remember_start(&key, start);
+        } else if let Ok(mut starts) = manager.starts.lock() {
+            starts.remove(&key);
         }
     }
     result
@@ -4364,6 +4497,7 @@ pub(crate) fn start_session(
     // wrapper. `None` means the provider prompt is already the visible turn.
     visible_prompt: Option<String>,
 ) -> Result<(), String> {
+    crate::agent_provider::validate_model(agent, model.as_deref())?;
     let Voice {
         session_key,
         stream_key: key,
@@ -6620,6 +6754,7 @@ fn send_turn(
     // As for a start: a message whose record cannot be kept is not sent.
     crate::profile::available()?;
     if let Some(start) = manager.start_context(&key) {
+        registered_runtime::require_current(&key, &start)?;
         manager.admit_beside_writers(
             &key,
             &key,
@@ -9097,6 +9232,8 @@ mod reach_tests;
 
 #[path = "provider_switch.rs"]
 mod provider_switch;
+#[path = "registered_runtime.rs"]
+mod registered_runtime;
 use provider_switch::{announce_provider_switch, provider_history, run_provider_switch};
 
 #[path = "codex_elicitation.rs"]
@@ -9222,6 +9359,7 @@ pub fn chat_index_save(meta: crate::chat_index::ChatMeta) -> Result<(), String> 
     if crate::team::is_front_desk_chat(&crate::team::default_path(), &format!("chat:{id}")) {
         return Ok(());
     }
+    registered_runtime::audit_index_change(&meta)?;
     crate::chat_index::upsert(meta)?;
     // Only once it is actually on disk. Announcing a write that failed would
     // send every other device to fetch a list that has not changed.
@@ -13794,6 +13932,7 @@ mod question_delivery_tests {
         let key = format!("question-live-{}", uuid::Uuid::new_v4());
         let mut origin = test_origin(&key);
         origin.start.agent = ChatAgent::Claude;
+        origin.start.model = Some("claude-test".into());
         manager.remember_start(&key, origin.start.clone());
         let mut child = stand_in::echo()
             .stdin(Stdio::piped())

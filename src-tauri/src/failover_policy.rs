@@ -31,6 +31,7 @@ impl Selection {
         if self.model.trim().is_empty() || safe_model(&self.model).is_none() {
             return Err("Choose a valid, explicit provider-native model.".into());
         }
+        crate::agent_provider::validate_model(self.agent, Some(&self.model))?;
         if self.agent == AgentKind::Antigravity && self.effort.is_some() {
             return Err(
                 "Antigravity effort is included in its model. Choose model default.".into(),
@@ -130,6 +131,7 @@ pub(crate) fn rule(owner: Option<&str>) -> Result<Rule, String> {
 }
 pub(crate) fn save_rule(owner: Option<String>, rule: Option<Rule>) -> Result<(), String> {
     if let Some(backup) = rule.as_ref().and_then(|r| r.backup.as_ref()) {
+        crate::agent_provider::validate_model(backup.agent, Some(&backup.model))?;
         if backup.model.trim().is_empty() || safe_model(&backup.model).is_none() {
             return Err("Choose a valid backup model.".into());
         }

@@ -1,5 +1,39 @@
 # Agents mode
 
+## Registered provider recovery
+
+`chat_start` keeps its existing socket arguments. For a registered lead or
+front desk, the server resolves provider, exact model and effort against its
+registration. A different runtime is retained only when the chat has durable
+`octiq_provider_switched` evidence for that exact selection. Access remains the
+chat's own setting. Unknown model ids remain provider-native; known foreign
+model families are rejected at registration, backup selection and the common
+process launch door.
+
+A cached invalid combination such as `codex:model:claude-opus-5-5`, or a runtime
+with no switch evidence, is recovered on the next `chat_start` in the same chat.
+The server starts the registered preset with bounded transcript context and
+drops the foreign or unverified native session id. It preserves the transcript,
+records `octiq_registered_recovered` with the previous settings/session, and
+publishes the existing `chat-provider-switch` event to align the picker and
+index. `octiq_registered_index_settings` preserves the previous tuple before an
+optimistic browser save, and is not fallback authorization. Repeating a delivered `turnId` does not launch another turn; a stale
+browser retry uses the already recovered native session when it is known.
+Preparation/launch failure leaves prior runtime settings in place and returns
+an actionable error. The browser must never substitute an installed provider
+for an unavailable one on its own.
+
+An already-running process with invalid settings is refused by `chat_send`.
+Stop it before sending again; recovery never kills an in-flight turn implicitly.
+
+Unavailable CLIs and known account limits follow the fallback policy. Ask saves
+a durable choice, including an initial send's text, images and turn id, before
+returning a visible waiting error. The existing `provider_fallback_choices` and
+`provider_fallback_choose` socket commands resume it, including after restart.
+Auto may select only a compatible available runtime, preserving Access and the
+registered preset, and emits `octiq_provider_switched`. An unsupported model
+error is not a usage-limit signal and does not authorize a provider change.
+
 Agents mode is a switch in **Settings → Agents**. When it is off, chats work
 exactly as before. The idea follows [Paperclip](https://paperclip.ing/): you
 manage a team of agents instead of prompting one.

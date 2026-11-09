@@ -448,6 +448,31 @@ pub(crate) fn safe_model(model: &str) -> Option<String> {
     }
 }
 
+/// Keep exact/custom model ids, but refuse known foreign-provider families.
+/// Antigravity intentionally also offers Claude models; Pi uses Codex models.
+pub(crate) fn validate_model(agent: AgentKind, model: Option<&str>) -> Result<(), String> {
+    let Some(model) = model else { return Ok(()) };
+    if safe_model(model).is_none() {
+        return Err("Choose a valid explicit model; no default model was substituted.".into());
+    }
+    let name = model.to_ascii_lowercase();
+    let claude = name.starts_with("claude-")
+        || ["opus", "sonnet", "haiku", "fable"]
+            .iter()
+            .any(|family| name == *family || name.starts_with(&format!("{family}-")));
+    let codex = name.starts_with("gpt-") || name.starts_with("codex-");
+    let gemini = name.starts_with("gemini-");
+    let foreign = match agent {
+        AgentKind::Claude => codex || gemini,
+        AgentKind::Codex | AgentKind::Pi => claude || gemini,
+        AgentKind::Antigravity => false,
+    };
+    if foreign {
+        return Err(format!("Model {model} does not belong to provider {}. Choose its provider or an explicit compatible model; nothing was started.", agent.id()));
+    }
+    Ok(())
+}
+
 /// Session ids are agent-owned identifiers that also reach a command line.
 pub(crate) fn safe_session_id(id: &str) -> Option<String> {
     let ok = id.len() <= 64

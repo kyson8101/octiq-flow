@@ -52,7 +52,19 @@ pub(crate) struct ScheduledResume {
     pub awaiting_choice: bool,
     #[serde(default)]
     pub user_selected: bool,
+    /// A send held BEFORE its first provider launch, retained across restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_turn: Option<PendingTurn>,
     delivery: Delivery,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct PendingTurn {
+    pub text: String,
+    pub images: Vec<String>,
+    pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_start: Option<StartContext>,
 }
 
 impl ScheduledResume {
@@ -174,6 +186,7 @@ impl Store {
             fallback: None,
             awaiting_choice: false,
             user_selected: false,
+            pending_turn: None,
             delivery: Delivery::Scheduled,
         };
         let mut next = state.entries.clone();
@@ -203,6 +216,28 @@ impl Store {
         awaiting_choice: bool,
         user_selected: bool,
     ) -> Result<Option<ScheduledResume>, String> {
+        self.schedule_start_choice(
+            key,
+            start,
+            fallback,
+            now,
+            awaiting_choice,
+            user_selected,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn schedule_start_choice(
+        &self,
+        key: &str,
+        start: StartContext,
+        fallback: crate::provider_failover::Settings,
+        now: i64,
+        awaiting_choice: bool,
+        user_selected: bool,
+        pending_turn: Option<PendingTurn>,
+    ) -> Result<Option<ScheduledResume>, String> {
         let mut state = self.state.lock().map_err(|e| e.to_string())?;
         Self::check(&state)?;
         if state
@@ -222,6 +257,7 @@ impl Store {
             fallback: Some(fallback),
             awaiting_choice,
             user_selected,
+            pending_turn,
             delivery: Delivery::Scheduled,
         };
         let mut next = state.entries.clone();
@@ -314,6 +350,18 @@ impl Store {
             s.entries
                 .get(key)
                 .is_some_and(|e| e.fallback.is_some() && e.delivery != Delivery::Cancelled)
+        })
+    }
+
+    pub(crate) fn holds_pending_turn(&self, key: &str, turn_id: &str) -> bool {
+        self.state.lock().is_ok_and(|state| {
+            state.entries.get(key).is_some_and(|entry| {
+                entry.delivery != Delivery::Cancelled
+                    && entry
+                        .pending_turn
+                        .as_ref()
+                        .is_some_and(|turn| turn.turn_id == turn_id)
+            })
         })
     }
 

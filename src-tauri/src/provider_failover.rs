@@ -87,6 +87,15 @@ impl State {
         if !self.blocked(source.agent, now) {
             return None;
         }
+        self.unavailable_alternative_using(source, defaults, now)
+    }
+
+    pub(crate) fn unavailable_alternative_using(
+        &self,
+        source: &Settings,
+        defaults: &Settings,
+        now: i64,
+    ) -> Option<Settings> {
         let installed = crate::agents::agent_installs(None);
         self.choose_using(source, defaults, now, |agent| {
             installed

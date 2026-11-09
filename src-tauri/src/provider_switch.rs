@@ -54,12 +54,52 @@ pub(super) fn announce_provider_switch(
     from: &Settings,
     to: &Settings,
 ) -> Result<(), String> {
-    let message = format!("{} reached its usage limit. Continuing with {} / {} at {} effort and {} access. The agent's defaults are unchanged.",
+    let message = format!("{} is unavailable. Continuing with {} / {} at {} effort and {} access. The agent's defaults are unchanged.",
         from.agent.id(), to.agent.id(), to.model.as_deref().unwrap_or("default"), to.effort.as_deref().unwrap_or("model default"), to.access.as_env());
-    record_chat_event(
+    announce_runtime_change(
+        manager,
         key,
-        json!({ "type": "octiq_provider_switched", "from": from.agent, "agent": to.agent, "model": to.model, "effort": to.effort, "access": to.access, "session_id": manager.provider_session(key), "message": message }),
-    );
+        from,
+        to,
+        "octiq_provider_switched",
+        &message,
+        None,
+    )
+}
+
+/// Consent/settings must be on disk before changing a runtime. A prepared
+/// change is an intent, never evidence that a process successfully started.
+pub(super) fn prepare_runtime_change(
+    key: &str,
+    from: &Settings,
+    to: &Settings,
+    reason: &str,
+    previous_session: Option<&str>,
+) -> Result<(), String> {
+    record_chat_event_synced(
+        key,
+        json!({
+            "type":"octiq_runtime_change_prepared", "from":from, "to":to,
+            "reason":reason, "previousSessionId":previous_session,
+        }),
+    )
+    .ok_or("The runtime recovery/fallback could not be saved. No provider was started.")?;
+    Ok(())
+}
+
+pub(super) fn announce_runtime_change(
+    manager: &ChatManager,
+    key: &str,
+    from: &Settings,
+    to: &Settings,
+    kind: &str,
+    message: &str,
+    previous_session: Option<&str>,
+) -> Result<(), String> {
+    record_chat_event_synced(
+        key,
+        json!({ "type": kind, "from": from.agent, "previousSettings": from, "previousSessionId": previous_session, "agent": to.agent, "model": to.model, "effort": to.effort, "access": to.access, "session_id": manager.provider_session(key), "message": message }),
+    ).ok_or("The runtime change could not be recorded. Inspect the chat before continuing.")?;
     if let Some(id) = key.strip_prefix("chat:") {
         if let Some(mut meta) = crate::chat_index::list()
             .into_iter()
@@ -148,18 +188,37 @@ pub(super) fn run_provider_switch(
         requested.clone()
     };
     let history = provider_history(key)?;
-    let prompt = model_handoff_prompt(&history,
-        "The previous provider reached its account limit. Continue the latest unfinished request. Read the current workspace, task ledger and any running job outputs first; preserve completed work and do not replay tools or external actions blindly. Keep the same agent identity, plan approvals and scope.");
+    let prompt = model_handoff_prompt(&history, entry.pending_turn.as_ref().map_or(
+        "The previous provider reached its account limit. Continue the latest unfinished request. Read the current workspace, task ledger and any running job outputs first; preserve completed work and do not replay tools or external actions blindly. Keep the same agent identity, plan approvals and scope.",
+        |turn| turn.text.as_str()));
     let prompt = crate::team::refresh_turn_brief(&crate::team::default_path(), key, prompt, &[])?;
+    crate::agent_provider::validate_model(target.agent, target.model.as_deref())?;
+    registered_runtime::require_installed(target.agent)?;
+    prepare_runtime_change(
+        key,
+        &entry.start.settings(),
+        &target,
+        if entry.user_selected {
+            "person-selected fallback"
+        } else {
+            "Auto fallback policy"
+        },
+        entry.start.session_id.as_deref(),
+    )?;
     {
         let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         if !manager.auto_resumes.active_switch(key, &entry.id) {
             return Err("The provider switch was cancelled.".into());
         }
-        if manager
-            .start_context(key)
-            .is_some_and(|start| start != entry.start)
-        {
+        if manager.start_context(key).is_some_and(|start| {
+            start
+                != entry
+                    .pending_turn
+                    .as_ref()
+                    .and_then(|turn| turn.previous_start.as_ref())
+                    .unwrap_or(&entry.start)
+                    .clone()
+        }) {
             return Err("The chat's settings changed before provider switching.".into());
         }
         if let Some(session) = sessions.get(key).cloned() {
@@ -213,7 +272,7 @@ pub(super) fn run_provider_switch(
         saved.extra_dirs.clone(),
         saved.env.clone(),
         saved.effort.clone(),
-        None,
+        entry.pending_turn.as_ref().map(|turn| turn.images.clone()),
         saved.lite,
         Some(format!("octiq-provider-switch-{}", entry.id)),
         false,
@@ -228,6 +287,10 @@ pub(super) fn run_provider_switch(
         manager.remember_start(key, entry.start.clone());
     }
     result?;
+    if let Some(turn) = &entry.pending_turn {
+        record_durable_user_turn(key, &turn.turn_id, &turn.text, &turn.images);
+        record_delivery(key, Some(&turn.turn_id), "dispatched");
+    }
     announce_provider_switch(&manager, key, &entry.start.settings(), &target)
 }
 

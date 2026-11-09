@@ -1412,19 +1412,8 @@ export default function App() {
     [agents],
   );
 
-  /* A saved choice can name an agent this machine does not have — you picked
-   * Codex on the laptop, and this is the desktop that never had it. Left alone
-   * it starts a chat that spawns a shell, prints "command not found" and dies,
-   * which reads as the app being broken. So the choice moves to something that
-   * is actually here. Only the PICKER moves; no chat is touched. */
-  useEffect(() => {
-    if (!installed || installed.length === 0) return;
-    if (installed.includes(choice.agent)) return;
-    const next = MODELS.find((m) => installed.includes(m.agent));
-    if (!next) return;
-    setChoice(next);
-    remember(CHOICE_KEY, next.id);
-  }, [installed, choice.agent]);
+  // An unavailable CLI never changes a conversation's provider. The composer
+  // shows availability; only the host's durable fallback policy may switch it.
 
   // The chat list lives on the server, so a chat started on the phone shows up
   // on the laptop. The local copy is a cache: it paints immediately, and the

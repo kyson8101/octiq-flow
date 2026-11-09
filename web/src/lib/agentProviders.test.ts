@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
 
+it("never interprets a reported Claude model as Codex after a missing-CLI picker change", () => {
+  expect(modelFromReported("codex", "claude-opus-5-5")).toBeUndefined();
+  expect(modelFromId("codex:model:claude-opus-5-5")).toBeUndefined();
+  expect(modelChoiceForFlag("claude", "gpt-5.6-sol")).toBeUndefined();
+  expect(modelChoiceForFlag("antigravity", "claude-opus-4-6-thinking")?.agent).toBe("antigravity");
+});
+
 import {
   accessFor,
   claudeModelName,

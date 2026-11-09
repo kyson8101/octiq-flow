@@ -430,6 +430,7 @@ fn apply(
     {
         return Err("Choose an explicit model for the agent.".into());
     }
+    crate::agent_provider::validate_model(draft.agent, Some(&model))?;
     let effort = draft
         .effort
         .map(|e| e.trim().to_owned())

@@ -393,6 +393,12 @@ export function modelChoiceForFlag(
 ): ModelChoice | undefined {
   const wanted = flag.trim();
   if (!validModelFlag(wanted)) return undefined;
+  const lower = wanted.toLowerCase();
+  const claude = /^(claude-|(?:opus|sonnet|haiku|fable)(?:-|$))/.test(lower);
+  const codex = /^(gpt-|codex-)/.test(lower);
+  const gemini = lower.startsWith("gemini-");
+  if ((provider === "claude" && (codex || gemini))
+    || ((provider === "codex" || provider === "pi") && (claude || gemini))) return undefined;
   const known = providerFor(provider).models.find((model) => model.flag === wanted);
   if (known) return known;
   return {

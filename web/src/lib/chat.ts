@@ -1090,7 +1090,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     };
   }
 
-  if (type === "octiq_provider_switched") {
+  if (type === "octiq_provider_switched" || type === "octiq_registered_recovered") {
     const message = asStr(e.message);
     return { ...state, model: asStr(e.model) || state.model, sessionId: asStr(e.session_id) || undefined, failure: undefined, autoResume: undefined,
       notices: message && !state.notices.includes(message) ? [...state.notices, message].slice(-8) : state.notices };

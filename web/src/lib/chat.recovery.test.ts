@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { addUserTurn, emptyChat, reduceChat } from "./chat";
 
 describe("recovery exit evidence", () => {
+  it("replays registered recovery without keeping a foreign native session", () => {
+    const event = { type: "octiq_registered_recovered", agent: "claude", model: "claude-opus-5-5", session_id: null, message: "Recovered registered settings" };
+    const after = reduceChat({ ...emptyChat(), sessionId: "codex-old" }, event);
+    expect(after.sessionId).toBeUndefined();
+    expect(after.model).toBe("claude-opus-5-5");
+    expect(reduceChat(after, event).notices).toEqual(["Recovered registered settings"]);
+  });
   it("records a provider handoff without keeping the old native session or quota failure", () => {
     const event = { type: "octiq_provider_switched", agent: "codex", model: "gpt-5.6-sol", session_id: "new-codex", message: "Continuing with Codex" };
     const before = { ...emptyChat(), sessionId: "old-claude" };
