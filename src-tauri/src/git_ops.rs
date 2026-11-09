@@ -113,6 +113,9 @@ pub fn git_prepare_chat_workspace(
     prompt: String,
     chat_id: String,
 ) -> Result<PreparedWorkspace, String> {
+    if crate::lead_threads::is_id(&chat_id) {
+        return Err("Lead threads use the main checkout without preparing a branch or worktree. Open the lead thread instead.".into());
+    }
     let Some(root) = run_git(&path, &["rev-parse", "--show-toplevel"])
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())

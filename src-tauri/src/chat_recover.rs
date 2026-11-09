@@ -240,6 +240,10 @@ pub(crate) fn recover_from<'a>(
     cwd: &str,
     known: impl FnOnce() -> Remembered,
 ) -> Result<Option<Held<'a>>, String> {
+    if crate::lead_threads::is_key(key) {
+        crate::lead_threads::validate_start(key, cwd)?;
+        return Ok(None);
+    }
     if cwd.trim().is_empty() || Path::new(cwd).is_dir() {
         return Ok(None);
     }
@@ -1187,6 +1191,7 @@ mod tests {
     fn listed_chat(name: &str, project: &str) -> String {
         let chat = format!("recover-{name}-{}", uuid::Uuid::new_v4().simple());
         crate::chat_index::upsert(crate::chat_index::ChatMeta {
+            lead_of: None,
             id: chat.clone(),
             project_id: project.into(),
             title: "task".into(),

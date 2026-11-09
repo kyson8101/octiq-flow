@@ -34,6 +34,9 @@ pub const DELETED_CHAT_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 #[serde(rename_all = "camelCase")]
 pub struct ChatMeta {
     pub id: String,
+    /// Host-owned identity of the one ongoing thread for a lead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead_of: Option<String>,
     pub project_id: String,
     #[serde(default)]
     pub title: String,
@@ -364,10 +367,26 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             Index::default()
         }
     };
+    // The browser cannot create or adopt a reserved lead identity.
+    let existing_lead = index
+        .chats
+        .iter()
+        .find(|c| c.id == meta.id)
+        .and_then(|c| c.lead_of.clone());
+    if crate::lead_threads::is_id(&meta.id) && existing_lead.is_none() {
+        return Err(
+            "Lead thread ids are reserved for the host. Open the lead thread instead.".into(),
+        );
+    }
+    meta.lead_of = existing_lead;
     match index.chats.iter_mut().find(|c| c.id == meta.id) {
         // `created_at` is historical identity, not activity. A later save may
         // move `updated_at`, but can never rewrite when the chat began.
         Some(existing) => {
+            if existing.lead_of.is_some() {
+                meta.cwd = existing.cwd.clone();
+                meta.project_id = existing.project_id.clone();
+            }
             // A browser may still hold the first-message title when an agent
             // renames the chat. Only an explicit user rename can replace a
             // managed title; ordinary transcript/pin saves cannot rewind it.
@@ -567,6 +586,7 @@ pub fn mark_read(id: &str, at: i64) -> Result<(), String> {
 /// arrived. `None` clears it. A chat the index does not know about is not an
 /// error: as with `mark_read`, the mark simply has nothing to attach to.
 pub fn set_done(id: &str, at: Option<i64>) -> Result<(), String> {
+    crate::lead_threads::require_disposable(id)?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut index = match read_checked() {
         Ok(index) => index,
@@ -679,6 +699,7 @@ fn trash_at(
     fallback: Option<ChatMeta>,
     deleted_at: i64,
 ) -> Result<bool, String> {
+    crate::lead_threads::require_disposable(id)?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
     let chat = match index.chats.iter_mut().find(|chat| chat.id == id) {
@@ -691,6 +712,7 @@ fn trash_at(
             let Some(mut chat) = fallback.filter(|chat| chat.id == id) else {
                 return Ok(false);
             };
+            chat.lead_of = None;
             chat.deleted_at = Some(deleted_at);
             chat.generation = expected_generation.unwrap_or(0);
             index.chats.push(chat);
@@ -796,6 +818,7 @@ fn now_ms() -> i64 {
 /// entry in the list. Outside tests, only a route given up on before its
 /// chat ever started uses it (`handover::abandon`).
 pub fn remove(id: &str) -> Result<(), String> {
+    crate::lead_threads::require_disposable(id)?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // An index we cannot read is not a list to delete one entry from. Refuse,
     // rather than writing an "everything except this one" that is really an
@@ -930,6 +953,7 @@ pub(crate) mod tests {
 
     fn meta(id: &str, created: i64) -> ChatMeta {
         ChatMeta {
+            lead_of: None,
             id: id.into(),
             project_id: "p1".into(),
             title: format!("chat {id}"),
@@ -962,6 +986,7 @@ pub(crate) mod tests {
         cleanup(&[id]);
         let effort = || list().into_iter().find(|c| c.id == id).unwrap().effort;
         upsert(ChatMeta {
+            lead_of: None,
             effort: Some("high".into()),
             ..meta(id, 1)
         })
@@ -971,6 +996,7 @@ pub(crate) mod tests {
         assert_eq!(effort().as_deref(), Some("high"));
         // The person choosing another level does move it.
         upsert(ChatMeta {
+            lead_of: None,
             effort: Some("low".into()),
             ..meta(id, 1)
         })
@@ -999,6 +1025,7 @@ pub(crate) mod tests {
             decided_at: 1,
         };
         upsert(ChatMeta {
+            lead_of: None,
             launch: Some(plan("robot", "main")),
             ..meta(id, 1)
         })
@@ -1006,6 +1033,7 @@ pub(crate) mod tests {
         let found = || list().into_iter().find(|c| c.id == id).unwrap();
         assert_eq!(found().launch, None, "an unknown decider is not recorded");
         upsert(ChatMeta {
+            lead_of: None,
             launch: Some(plan("auto", "develop")),
             ..meta(id, 1)
         })
@@ -1014,6 +1042,7 @@ pub(crate) mod tests {
         // A stale browser save without it, or with another plan, changes nothing.
         upsert(meta(id, 1)).unwrap();
         upsert(ChatMeta {
+            lead_of: None,
             launch: Some(plan("advanced", "main")),
             ..meta(id, 1)
         })
@@ -1686,4 +1715,44 @@ pub(crate) mod tests {
         // A genuinely fresh machine. Allowed, and there is nothing to delete.
         assert!(may_delete_orphans(0, 0));
     }
+}
+
+/// Host-only lazy insertion; an index that cannot be read is never replaced.
+pub(crate) fn ensure_lead(meta: ChatMeta) -> Result<ChatMeta, String> {
+    crate::profile::available()?;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut index = read_checked().map_err(|_| "the chat index could not be read".to_owned())?;
+    if let Some(existing) = index.chats.iter().find(|c| c.id == meta.id) {
+        if existing.lead_of != meta.lead_of || existing.deleted_at.is_some() {
+            return Err(
+                "The reserved lead thread has conflicting metadata; nothing was changed.".into(),
+            );
+        }
+        return Ok(existing.clone());
+    }
+    if index.chats.iter().any(|c| c.lead_of == meta.lead_of) {
+        return Err("This lead already has a different thread; nothing was changed.".into());
+    }
+    index.chats.push(meta.clone());
+    write(&index)?;
+    Ok(meta)
+}
+
+/// Persist native identity for an ongoing thread even without an open browser.
+pub(crate) fn lead_session(id: &str, session_id: &str) -> Result<(), String> {
+    crate::profile::available()?;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut index = read_checked().map_err(|_| "the chat index could not be read".to_owned())?;
+    let Some(row) = index
+        .chats
+        .iter_mut()
+        .find(|r| r.id == id && r.lead_of.is_some())
+    else {
+        return Err("The lead thread is not in the chat index.".into());
+    };
+    if row.session_id.as_deref() == Some(session_id) {
+        return Ok(());
+    }
+    row.session_id = Some(session_id.into());
+    write(&index)
 }

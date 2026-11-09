@@ -1881,6 +1881,13 @@ impl ChatManager {
     /// The agent named its own conversation. Kept so its next process can
     /// resume it rather than beginning a new one.
     fn remember_session(&self, session_key: &str, session_id: &str) {
+        if crate::lead_threads::is_key(session_key) {
+            let id = session_key.trim_start_matches("chat:");
+            match crate::chat_index::lead_session(id, session_id) {
+                Ok(()) => crate::bus::emit("chat-index-changed", &json!({"id":id,"gone":false})),
+                Err(error) => eprintln!("lead thread: could not save provider session: {error}"),
+            }
+        }
         if let Ok(mut m) = self.starts.lock() {
             if let Some(start) = m.get_mut(session_key) {
                 start.session_id = Some(session_id.to_string());
@@ -4313,6 +4320,7 @@ pub(crate) fn start_session(
         session_key,
         stream_key: key,
     } = voice;
+    crate::lead_threads::validate_start(&key, &cwd)?;
     {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         manager.lifespan_refusal(&cwd, extra_dirs.as_ref())?;
@@ -4494,6 +4502,15 @@ pub(crate) fn start_session(
     // Read at every process start, so a change in Settings reaches a chat
     // the next time it starts or is resumed.
     let preferences = crate::personal_preferences::launch_prompt();
+    let preferences = if crate::lead_threads::is_key(&key) {
+        Some(format!(
+            "{}\n\n{}",
+            preferences.unwrap_or_default(),
+            crate::lead_threads::CONDUCT
+        ))
+    } else {
+        preferences
+    };
     let launch = AgentCommand {
         model: model.as_deref(),
         access,
@@ -7865,6 +7882,7 @@ pub fn chat_complete_impl(
     key: &str,
     text: &str,
 ) -> Result<Option<Completing>, String> {
+    crate::lead_threads::require_disposable(key.strip_prefix("chat:").unwrap_or(key))?;
     cancel_auto_resume(manager, key, "superseded by completing the chat");
     let turn_id = completion_turn_id();
     let state = {

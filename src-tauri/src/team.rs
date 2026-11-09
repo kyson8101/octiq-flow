@@ -1416,6 +1416,12 @@ pub fn record_lead(
     project_id: &str,
     cross_project: bool,
 ) -> Result<(), String> {
+    if crate::lead_threads::is_key(chat_key) {
+        let row = crate::chat_index::find(chat_key.trim_start_matches("chat:"))?;
+        if row.as_ref().and_then(|r| r.lead_of.as_deref()) != Some(&lead.id) {
+            return Err("Lead thread ids are reserved for the host.".into());
+        }
+    }
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let mut stored = read(path)?;
     if let Some(existing) = stored.leads.iter().find(|r| r.chat_key == chat_key) {
@@ -3046,6 +3052,16 @@ pub fn refresh_turn_brief(
     let Some(record) = lead_for_chat(path, chat_key)? else {
         return Ok(text);
     };
+    if crate::lead_threads::is_key(chat_key) {
+        return handover_brief(
+            path,
+            chat_key,
+            &record.project_id,
+            &record.lead_id,
+            &text,
+            projects,
+        );
+    }
     let mut team = list(path, None, true)?;
     let Some(lead) = team
         .iter()
@@ -3894,7 +3910,7 @@ mod tests {
         let lead_only = save(&path, lead_only).unwrap();
         let text = brief(
             &path,
-            "chat:lead-only-report",
+            "chat:solo-with-lead-only-report",
             "p1",
             &solo.id,
             "Tidy it again",

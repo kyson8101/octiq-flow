@@ -690,6 +690,7 @@ impl OrchestrationStore {
 
         let now = now_ms();
         crate::agent_chat::chat_index_save(crate::chat_index::ChatMeta {
+            lead_of: None,
             id: runtime.worker_chat_key.trim_start_matches("chat:").into(),
             project_id,
             title: format!("Batch: {}", head.title),
