@@ -277,6 +277,11 @@ impl OrchestrationStore {
         if run.coordinator_chat_key != actor {
             return Err("Only the coordinator can dispatch this run.".into());
         }
+        let settings = crate::scheduling::load()?;
+        if settings.orientation == crate::scheduling::Orientation::Agents {
+            self.sync_agent_queue()?;
+            return Err("QUEUED_FOR_SLOT agent: approved tasks are queued; the host starts idle agent lanes.".into());
+        }
         let defaults = run
             .worker_defaults
             .as_ref()
@@ -294,11 +299,6 @@ impl OrchestrationStore {
             settled && chats.turn_in_flight(&a.worker_chat_key)
         }) {
             return Ok(Vec::new());
-        }
-        let settings = crate::scheduling::load()?;
-        if settings.orientation == crate::scheduling::Orientation::Agents {
-            self.sync_agent_queue()?;
-            return Err("QUEUED_FOR_SLOT agent: approved tasks are queued; the host starts idle agent lanes.".into());
         }
         let all = self.snapshot(None)?;
         let host_room = settings.host_cap.map_or(usize::MAX, |cap| {
