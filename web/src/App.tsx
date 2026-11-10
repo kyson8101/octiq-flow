@@ -40,7 +40,7 @@ import { valueBytes } from "./lib/valueBytes";
 import { loadChat, loadEarlierChat, CHAT_WINDOW_BYTES } from "./lib/loadChat";
 import { ChatHistory, type ChatPage } from "./lib/chatHistory";
 import { ChatWindowCache } from "./lib/chatWindowCache";
-import { ChatRecordClears, invalidateChatRecord, type ChatRecordHead } from "./lib/chatRecord";
+import { ChatRecordClears, chatSessionFor, clearedConversation, invalidateChatRecord, type ChatRecordHead } from "./lib/chatRecord";
 import {
   addUserTurn,
   emptyChat,
@@ -1742,7 +1742,12 @@ export default function App() {
           recentChatWindows.current.forget(id);
           nowPlaying.forget(id);
           forgetChatPlace(id);
-          setConversations(rows => rows.map(row => row.id === id ? { ...row, messages: [], seq: undefined } : row));
+          setConversations(rows => {
+            const next = rows.map(row => row.id === id ? clearedConversation(row) : row);
+            conversationsRef.current = next;
+            saveConversations(next);
+            return next;
+          });
         },
         requestPage: (before) => bridge.invoke<ChatPage>("chat_page", { key, before }),
         getState: () => chatsRef.current[id] ?? EMPTY,
@@ -1770,7 +1775,8 @@ export default function App() {
       getState: () => chatsRef.current[id] ?? EMPTY, publish: state => patch(id, () => state) });
     forgetChatPlace(id);
     setConversations(rows => {
-      const next = rows.map(row => row.id === id ? { ...row, messages: [], seq: 0, updatedAt: Date.now() } : row);
+      const next = rows.map(row => row.id === id ? clearedConversation(row) : row);
+      conversationsRef.current = next;
       saveConversations(next);
       return next;
     });
@@ -3902,15 +3908,9 @@ export default function App() {
       }
       if (!conversationId) setConversationId(id);
 
-      /* `/clear` empties the conversation here as well as in the agent.
-       *
-       * The agent handles it locally and answers with nothing, so without this
-       * the agent forgets the conversation while the screen still shows every
-       * word of it — the two disagree about what has been said, which is worse
-       * than either state on its own.
-       *
-       * The transcript goes too, or a reload brings it all back. Resetting
-       * `seen` is not optional: `transcript::forget` drops the server's
+      /* `chat_forget` ends the process and removes its record. Clear the
+       * native session id too, so the next send starts a fresh session.
+       * Resetting `seen` is not optional: `transcript::forget` drops the server's
        * sequence counter to zero, and a client still holding the old high
        * number would discard every event after this as already seen. */
       if (text.trim() === "/clear") {
@@ -3920,11 +3920,6 @@ export default function App() {
         return chatClears.current.clear({
           key,
           forget: () => bridge.invoke("chat_forget", { key }),
-          clearAgent: () => {
-            if (runningRef.current.has(id)) {
-              void bridge.invoke("chat_send", { key, text, recordUser: false }).catch(() => undefined);
-            }
-          },
           reset: () => {
             resetChatRecord(id);
             catchUp.current.own(key);
@@ -4120,9 +4115,7 @@ export default function App() {
         // the stored conversation otherwise.
         const resume = switchingModel
           ? null
-          : chatsRef.current[id]?.sessionId ??
-            conversationsRef.current.find((c) => c.id === id)?.sessionId ??
-            null;
+          : chatSessionFor(chatsRef.current[id], conversationsRef.current.find((c) => c.id === id));
 
         // Speaking into a chat whose record this page does not hold. A brand-new
         // one has no record to hold, so it is simply ours from here. Anything

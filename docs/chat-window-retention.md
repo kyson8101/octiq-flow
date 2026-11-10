@@ -26,15 +26,34 @@ conservative estimator. This cap bounds retained reducer data, not browser RSS.
 
 ## Record invalidation
 
-`/clear` is save-first: await `chat_forget` before clearing the agent or local
-history; a failure keeps the history, checkpoint, sequence mark and composer
-command, and displays the host's reason verbatim for retry.
+`/clear` is save-first: await `chat_forget` before clearing local history or
+native session identity; a failure keeps the session ID, history, checkpoint,
+sequence mark and composer command, and displays the host's reason verbatim
+for retry.
+
+Successful `/clear` begins a **new native session** on the next send, including
+in a `chat:lead-*` thread. The host already stops the old process, so the client
+does not send an agent `/clear` command. It clears `sessionId` in both reducer
+state and the saved conversation, so `chat_start.resume` is `null`. This is the
+same path for Claude session IDs, Codex thread IDs, Pi session IDs and
+Antigravity conversation IDs. Thread identity, cwd, model and access stay with
+the application chat.
+
+The host must clear its own native identity too: `ChatMeta.session_id` (also
+used by lead threads), `ChatManager.starts` and saved orchestration resume
+contexts must not retain the old ID. Stop cancels scheduled auto-resume and
+provider-switch work; stale browser index saves/resume requests also need host
+protection. FE-only clearing cannot enforce these host-owned paths. These
+requirements were handed to OCTIQ BE for the companion M2 fix; real-host
+fresh-start verification follows that commit, rather than being claimed from
+the socket fixture below.
 
 `chat-forgotten { key }` invalidates that chat in every tab, including tabs on
 Settings with no transcript subscription. Cancel its active read, remove its
 recent-window slot and history/scroll provenance, clear the CatchUp mark and
 generation, invalidate its IndexedDB checkpoint, and discard the old reducer
-projection. A visible pane immediately requests `chat_page` from the beginning;
+projection and native session ID, including its saved conversation fallback.
+A visible pane immediately requests `chat_page` from the beginning;
 an offscreen chat waits until opened. Old downloads and pending IDB writes must
 not resurrect the discarded record.
 
@@ -60,12 +79,14 @@ missed reset, changed generation despite a larger sequence, stale checkpoint,
 and a reset while visible. It also covers a rejected `/clear` through the
 actual composer (history and input retained, host error visible, no agent
 command) and a held successful
-forget (duplicate Enter refused, agent command sent only after success,
-own broadcast plus racing new-record events applied without a second reset).
+forget (duplicate Enter refused, no agent `/clear` command, native ID removed
+from memory and storage, next send starts without resume, own broadcast plus
+racing new-record events applied without a second reset).
 Run it serially with the other browser probes:
 
 ```sh
 node scripts/test-chat-record-reset.mjs
+CHAT_CLEAR_LEAD=1 CHAT_RESET_SCENARIOS=clear-save-first node scripts/test-chat-record-reset.mjs
 ```
 
 These are real App/bridge/IndexedDB checks against an isolated socket fixture;

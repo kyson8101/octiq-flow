@@ -4,8 +4,19 @@ import { forgetChatCheckpoint } from "./chatCache";
 import type { ChatHistory } from "./chatHistory";
 import type { ChatWindowCache } from "./chatWindowCache";
 import { once, IN_FLIGHT } from "./inFlight";
+import type { Conversation } from "./store";
 
 export type ChatRecordHead = { lastSeq: number; generation: string };
+
+/** Clearing the host record also ends its process. No saved native session
+ * may be used as the fallback for the next browser start. */
+export function clearedConversation(chat: Conversation): Conversation {
+  return { ...chat, sessionId: undefined, messages: [], seq: 0, updatedAt: Date.now() };
+}
+
+export function chatSessionFor(state: Pick<ChatState, "sessionId"> | undefined, chat: Pick<Conversation, "sessionId"> | undefined): string | null {
+  return state?.sessionId ?? chat?.sessionId ?? null;
+}
 
 /** A tab receives both its forget reply and the host's broadcast, in either
  * order. Defer its own broadcast until the save answers, then reset once.
@@ -30,7 +41,7 @@ export class ChatRecordClears {
   disconnected(): void { this.acknowledgements.clear(); }
 
   async clear(options: {
-    key: string; forget: () => Promise<unknown>; clearAgent: () => void;
+    key: string; forget: () => Promise<unknown>;
     reset: () => void; refresh: () => void;
   }): Promise<boolean> {
     const result = await once(`chat-clear:${options.key}`, async () => {
@@ -42,7 +53,6 @@ export class ChatRecordClears {
         if (this.acknowledgements.get(options.key) === own) this.acknowledgements.delete(options.key);
         throw error;
       }
-      options.clearAgent();
       options.reset();
       own.committed = true;
       if (own.notified) this.acknowledgements.delete(options.key);
@@ -67,6 +77,6 @@ export function invalidateChatRecord(options: {
   catchUp.forget(key);
   history?.forget(id);
   void forgetChatCheckpoint(id);
-  const { sessionId, cwd } = getState();
-  publish({ ...emptyChat(), sessionId, cwd });
+  const { cwd } = getState();
+  publish({ ...emptyChat(), cwd });
 }

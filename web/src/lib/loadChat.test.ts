@@ -435,6 +435,7 @@ it.each(["retained", "checkpoint", "past"])("replaces a stale %s record when the
   for (const changedGeneration of [false, true]) {
     const options = setup(), history = new ChatHistory();
     const saved = await replayChat(emptyChat(), [frame(20)], 0, () => false);
+    saved.sessionId = "stale-native-session";
     if (source === "checkpoint") {
       await saveChatCheckpoint({ id: "a", state: saved, seq: 20, generation: "old", updatedAt: 1 });
     } else {
@@ -458,6 +459,7 @@ it.each(["retained", "checkpoint", "past"])("replaces a stale %s record when the
     resolveHead({ lastSeq: changedGeneration ? 100 : 1, generation: changedGeneration ? "new" : "old" });
     await loading; // must not wait for the obsolete page to return
     expect(options.getState().messages.map(m => m.id)).toEqual(["m1"]);
+    expect(options.getState().sessionId).toBeUndefined();
     expect(options.catchUp.mark(options.key)).toBe(1);
     expect(options.catchUp.generation(options.key)).toBe(changedGeneration ? "new" : "old");
     expect(history.isPast("a")).toBe(false);
