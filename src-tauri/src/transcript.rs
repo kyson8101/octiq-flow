@@ -1435,9 +1435,30 @@ pub fn forget(key: &str) {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static FORGET_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn while_forget_fails<T>(work: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FORGET_FAILS.set(self.0);
+        }
+    }
+    let _restore = Restore(FORGET_FAILS.replace(true));
+    work()
+}
+
 /// The browser's clear command must not announce success if deletion failed.
 pub(crate) fn forget_checked(key: &str) -> Result<(), String> {
     crate::profile::available()?;
+    #[cfg(test)]
+    if FORGET_FAILS.get() {
+        return Err("the chat record could not be removed".into());
+    }
     if !safe_key(key) {
         return Err("invalid chat key".into());
     }

@@ -363,8 +363,13 @@ impl OrchestrationStore {
             return Ok(());
         }
         self.mutate_as(regardless, |data| {
-            data.resume_contexts
-                .insert(key.into(), context.without_env());
+            let mut context = context.without_env();
+            if crate::chat_index::usable_session(key, context.session_id().map(str::to_string))?
+                .is_none()
+            {
+                context.forget_session();
+            }
+            data.resume_contexts.insert(key.into(), context);
             Ok(())
         })
     }
@@ -418,6 +423,17 @@ impl OrchestrationStore {
             Ok(())
         })
     }
+    /// /clear keeps launch settings for notifications, without native memory.
+    /// This uses save-first mutation, unlike ending an action or retargeting.
+    pub(crate) fn clear_resume_session(&self, key: &str) -> Result<(), String> {
+        self.mutate(|data| {
+            if let Some(start) = data.resume_contexts.get_mut(key) {
+                start.forget_session();
+            }
+            Ok(())
+        })
+    }
+
     /// Choose only a recorded coordinator location, never a worker checkout
     /// leaked into start settings by a rejected duplicate browser launch.
     pub(crate) fn notification_resume_cwd(

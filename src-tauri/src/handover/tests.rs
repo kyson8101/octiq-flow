@@ -1495,6 +1495,26 @@ fn an_ask_back_is_paired_from_the_record_and_answered_by_a_read_only_fork() {
 }
 
 #[test]
+fn a_cleared_source_cannot_be_forked_from_a_handovers_saved_origin() {
+    let home = TestDir::new("handover-cleared-native");
+    let _pin = crate::profile::started_in(&home);
+    let w = world();
+    let host = FakeHost::of(&w);
+    let (_, key) = handed_over(&w, &host);
+    host.sessions.lock().unwrap().clear();
+    crate::chat_index::forget_sessions("chat:s1", vec!["session-1".into()]).unwrap();
+    let error = back::ask(
+        &w.store,
+        &host,
+        &key,
+        question("after-clear", "Old context?"),
+    )
+    .unwrap_err();
+    assert!(error.contains("no saved conversation"), "{error}");
+    assert!(host.answered.lock().unwrap().is_empty());
+}
+
+#[test]
 fn an_ask_back_is_refused_unless_the_caller_received_a_confirmed_handover() {
     let w = world();
     let host = FakeHost::of(&w);

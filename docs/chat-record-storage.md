@@ -41,6 +41,45 @@ unavailability is returned in the profile's own words, never as an empty head.
 | Tool diff | `tool_use_result.filePath`, `structuredPatch`, `type`, and `content` for newly created files |
 | Failure origin | `tool_use_result._meta`, including `octiq/outcome` |
 
+## Clearing native sessions
+
+`chat_forget` (`/clear`) stops the provider first, reserves the chat against
+concurrent starts, saves native-session revocations and clears the index session
+(including a lead's session), clears the ledger and auto-resume native ids, then
+clears the in-memory `StartContext` id. Only then does it forget the transcript
+and emit `chat-forgotten`. Claude sessions, Codex threads, Pi sessions and
+Antigravity conversations all use this same native-id boundary. Model, effort,
+access, cwd, defaults, registered identity and `leadOf` remain intact. Host
+notifications may start a fresh native session with those retained settings.
+
+The index keeps host-only `forgotten_sessions`, keyed by chat and exact native
+id. It includes the index, remembered/ledger/scheduled contexts, pending fallback
+rollback contexts and all provider init ids in the record. It survives restart
+and browser metadata saves without changing the public metadata shape or its
+restore generation. Stale saves cannot restore a revoked id or overwrite a newer
+session with one; stale `chat_start.resume`, registered recovery from transcript,
+late init events and provider-switch rollback contexts cannot resume it.
+Native init learning and recording also share Stop's session lock: an init
+first read after the old process ended is discarded even if its id was unknown
+at clear. Handover ask-back refuses to fork a revoked id from its saved origin.
+A new provider-owned id remains usable. The final common launch boundary checks again
+under the session-table lock, including notifications and cloned auto-resumes.
+
+These stores are separate files, not a transaction. Each write is save-first:
+a failure returns the original profile/store error, retains the transcript, and
+emits no `chat-forgotten`. Stop still takes effect and can cancel queued work,
+questions or schedules (including their normal cancellation records). Revocations
+or stores already saved remain cleared on a later store failure; a retry finishes
+the remaining work. If transcript deletion itself fails, native sessions have
+already been revoked and settings retained, while history stays visible and the
+command reports the deletion error. The next start is fresh even before retry.
+Deleting history first would allow old native memory to return silently after a
+failed session write. Tombstones contain ids only, not conversation text. They
+retain the latest eight distinct revoked ids per chat (current contexts take
+precedence over older init events), and purge/permanent deletion removes that
+chat's tombstones. This bounds repeated clears; protection for tabs carrying
+more than eight revoked native ids behind the current chat is not retained.
+
 ## Disk format
 
 An unchanged init or commands list is omitted after its material source, and

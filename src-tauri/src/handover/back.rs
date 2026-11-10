@@ -363,9 +363,11 @@ pub fn ask(
             .origin
             .clone()
             .ok_or("The original chat left no record of how it runs, so it cannot be asked.")?;
-        let session_id = host
-            .session_of(&record.source_chat_key)
-            .or_else(|| origin.session_id().map(str::to_owned))
+        let session_id = crate::chat_index::usable_session(
+            &record.source_chat_key,
+            host.session_of(&record.source_chat_key)
+                .or_else(|| origin.session_id().map(str::to_owned)),
+        )?
             .ok_or_else(|| {
                 format!(
                     "{}'s chat has no saved conversation to answer from. Read it with read_conversation instead.",

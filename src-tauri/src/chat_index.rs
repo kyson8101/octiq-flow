@@ -199,6 +199,9 @@ impl ChatMeta {
 struct Index {
     #[serde(default)]
     chats: Vec<ChatMeta>,
+    /// Host-only revocations: stale tabs must never restore a cleared native id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    forgotten_sessions: BTreeMap<String, Vec<String>>,
 }
 
 /// Serialises writes. Two devices can save at the same moment, and a
@@ -295,6 +298,57 @@ fn write(index: &Index) -> Result<(), String> {
     fs::rename(&temp, &path).map_err(|e| crate::profile::write_error(&path, e))
 }
 
+/// Native ids revoked by /clear, retained across restarts and browser saves.
+/// The chat key is kept verbatim, including non-sidebar host chat keys.
+pub(crate) fn forgotten_sessions(key: &str) -> Result<std::collections::BTreeSet<String>, String> {
+    crate::profile::available()?;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let index = read_checked().map_err(|_| "the chat index could not be read".to_owned())?;
+    Ok(index
+        .forgotten_sessions
+        .get(key)
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect())
+}
+
+pub(crate) fn usable_session(key: &str, session: Option<String>) -> Result<Option<String>, String> {
+    let Some(session) = session else {
+        return Ok(None);
+    };
+    Ok((!forgotten_sessions(key)?.contains(&session)).then_some(session))
+}
+
+/// Save the revocation before removing any history. Only native ids change;
+/// lead identity, runtime settings and registration remain exactly as recorded.
+pub(crate) fn forget_sessions(key: &str, mut sessions: Vec<String>) -> Result<(), String> {
+    crate::profile::available()?;
+    if crate::transcript::path_for(key).is_none() {
+        crate::profile::available()?;
+        return Err("invalid chat key".into());
+    }
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut index = read_checked().map_err(|_| "the chat index could not be read".to_owned())?;
+    if let Some(row) = key
+        .strip_prefix("chat:")
+        .and_then(|id| index.chats.iter_mut().find(|c| c.id == id))
+    {
+        sessions.extend(row.session_id.take());
+    }
+    let revoked = index.forgotten_sessions.entry(key.into()).or_default();
+    for session in sessions {
+        // Refresh duplicates, preserving revocation order rather than id order.
+        revoked.retain(|id| *id != session);
+        revoked.push(session);
+    }
+    const RETAINED_NATIVE_IDS: usize = 8;
+    if revoked.len() > RETAINED_NATIVE_IDS {
+        revoked.drain(..revoked.len() - RETAINED_NATIVE_IDS);
+    }
+    write(&index)
+}
+
 /// Whether the list has the chat `id` and it is not in the trash: the only
 /// chats a person can open. An index that cannot be read is an error, never
 /// "no": what is unknown is not gone.
@@ -367,6 +421,20 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             Index::default()
         }
     };
+    let key = format!("chat:{}", meta.id);
+    if meta.session_id.as_ref().is_some_and(|id| {
+        index
+            .forgotten_sessions
+            .get(&key)
+            .is_some_and(|ids| ids.contains(id))
+    }) {
+        // Keep a newer provider-owned identity when a stale tab saves an old one.
+        meta.session_id = index
+            .chats
+            .iter()
+            .find(|row| row.id == meta.id)
+            .and_then(|row| row.session_id.clone());
+    }
     // The browser cannot create or adopt a reserved lead identity.
     let existing_lead = index
         .chats
@@ -796,6 +864,10 @@ fn purge_expired_at(now: i64) -> Result<Vec<String>, String> {
     }
     let expired_set: std::collections::HashSet<_> = expired.iter().cloned().collect();
     index.chats.retain(|chat| !expired_set.contains(&chat.id));
+    index.forgotten_sessions.retain(|key, _| {
+        !key.strip_prefix("chat:")
+            .is_some_and(|id| expired_set.contains(id))
+    });
     for id in &expired {
         crate::transcript::forget(&format!("chat:{id}"));
     }
@@ -825,6 +897,7 @@ pub fn remove(id: &str) -> Result<(), String> {
     // empty file — the caller asked to forget one chat, not all of them.
     let mut index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
     index.chats.retain(|c| c.id != id);
+    index.forgotten_sessions.remove(&format!("chat:{id}"));
     write(&index)
 }
 
@@ -1080,6 +1153,36 @@ pub(crate) mod tests {
         let _restore = Restore;
         WRITES_FAIL.set(true);
         work()
+    }
+
+    #[test]
+    fn forgotten_native_ids_are_bounded_host_owned_and_removed_with_the_chat() {
+        let home = crate::test_dir::TestDir::new("native-id-retention");
+        let _pin = crate::profile::started_in(&home);
+        let id = "bounded-native";
+        let key = format!("chat:{id}");
+        upsert(meta(id, 1)).unwrap();
+        for number in 0..12 {
+            forget_sessions(&key, vec![format!("session-{number}")]).unwrap();
+        }
+        let ids = forgotten_sessions(&key).unwrap();
+        assert_eq!(ids.len(), 8);
+        for number in 4..12 {
+            assert!(ids.contains(&format!("session-{number}")));
+        }
+        assert!(!ids.contains("session-3"));
+        // A normal save has no field through which it could drop the barrier.
+        upsert(meta(id, 2)).unwrap();
+        assert_eq!(forgotten_sessions(&key).unwrap(), ids);
+        remove(id).unwrap();
+        assert!(forgotten_sessions(&key).unwrap().is_empty());
+        upsert(meta(id, 3)).unwrap();
+        forget_sessions(&key, vec!["purged-session".into()]).unwrap();
+        trash_at(id, None, None, 0).unwrap();
+        assert_eq!(purge_expired_at(DELETED_CHAT_TTL_MS + 1).unwrap(), vec![id]);
+        assert!(forgotten_sessions(&key).unwrap().is_empty());
+        let old: Index = serde_json::from_str(r#"{"chats":[]}"#).unwrap();
+        assert!(old.forgotten_sessions.is_empty());
     }
 
     #[test]
@@ -1743,6 +1846,13 @@ pub(crate) fn lead_session(id: &str, session_id: &str) -> Result<(), String> {
     crate::profile::available()?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut index = read_checked().map_err(|_| "the chat index could not be read".to_owned())?;
+    if index
+        .forgotten_sessions
+        .get(&format!("chat:{id}"))
+        .is_some_and(|ids| ids.iter().any(|id| id == session_id))
+    {
+        return Ok(());
+    }
     let Some(row) = index
         .chats
         .iter_mut()

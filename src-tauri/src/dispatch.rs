@@ -1338,9 +1338,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "chat_index_restore" => to_value(crate::agent_chat::chat_index_restore(arg(&args, "id")?)),
         "chat_forget" => {
             let key: String = arg(&args, "key")?;
-            crate::agent_chat::chat_stop_impl(&svc.chats, key.clone())?;
-            crate::agent_chat::chat_forget(key.clone())?;
-            crate::bus::emit("chat-forgotten", &json!({"key": key}));
+            crate::agent_chat::chat_forget_impl(&svc.chats, key)?;
             Ok(Value::Null)
         }
         "media_comments_list" => {
