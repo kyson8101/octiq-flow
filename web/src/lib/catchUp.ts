@@ -43,6 +43,10 @@ const HELD_MAX = 20000;
 export class CatchUp {
   /** The newest event folded in, per chat. */
   private seenAt = new Map<string, number>();
+  /** Record identity travels with the retained window, never with live deltas. */
+  private generations = new Map<string, string>();
+  generation(key: string): string | undefined { return this.generations.get(key); }
+  setGeneration(key: string, generation: string): void { this.generations.set(key, generation); }
   /** Chats whose messages this page holds from the first event. */
   private whole = new Set<string>();
   /** Events that arrived while a chat's catch-up was in the air. */
@@ -68,6 +72,7 @@ export class CatchUp {
    *  Also how `/clear` is reported — the server's counter goes back to zero, so
    *  a page still holding the old high number would discard everything after. */
   own(key: string): void {
+    this.generations.delete(key);
     this.whole.add(key);
     this.seenAt.set(key, 0);
     this.held.delete(key);
@@ -77,6 +82,7 @@ export class CatchUp {
 
   /** Forget a chat entirely, on delete. */
   forget(key: string): void {
+    this.generations.delete(key);
     this.seenAt.delete(key);
     this.whole.delete(key);
     this.held.delete(key);

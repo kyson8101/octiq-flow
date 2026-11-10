@@ -37,6 +37,9 @@ export type Conversation = {
   customTitle?: boolean;
   /** The agent's session id, for --resume. Absent until the agent reports it. */
   sessionId?: string;
+  /** Transcript identity for the saved native session, distinct from the
+   * server index's numeric Trash/restore generation below. */
+  recordGeneration?: string;
   /** The exact directory the agent runs in. Worktree chats must resume here,
    *  not in the parent project's primary checkout. */
   cwd?: string;
@@ -362,6 +365,7 @@ export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
       held.latestResponse === c.latestResponse &&
       !!held.customTitle === !!c.customTitle &&
       held.sessionId === c.sessionId &&
+      held.recordGeneration === c.recordGeneration &&
       held.cwd === c.cwd &&
       held.modelId === c.modelId &&
       held.permission === c.permission &&

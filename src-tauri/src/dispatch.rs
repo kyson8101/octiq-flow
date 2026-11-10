@@ -763,6 +763,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
     // Browser-facing mutation routes never drive an orchestration worker.
     // The coordinator's internal launch/message/report paths call their
     // implementations directly, without a client-controlled bypass flag.
+    // require_user_chat reads the durable identity snapshot, never the ledger
+    // mutex: Stop/interrupt/clear must reach the epoch veto while a native-id
+    // writer is blocked on profile I/O inside a ledger mutation.
     match cmd {
         "chat_start"
         | "chat_send"
@@ -1184,6 +1187,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "after")?,
             )))
         }
+        "chat_record_head" => to_value(crate::transcript::record_head(&arg::<String>(
+            &args, "key",
+        )?)),
         "chat_page" => {
             crate::profile::available()?;
             to_value(crate::transcript::page(
@@ -1335,8 +1341,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "chat_index_restore" => to_value(crate::agent_chat::chat_index_restore(arg(&args, "id")?)),
         "chat_forget" => {
             let key: String = arg(&args, "key")?;
-            crate::agent_chat::chat_stop_impl(&svc.chats, key.clone())?;
-            crate::agent_chat::chat_forget(key);
+            crate::agent_chat::chat_forget_impl(&svc.chats, key)?;
             Ok(Value::Null)
         }
         "media_comments_list" => {
@@ -2708,6 +2713,54 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
 mod tests {
     use super::*;
 
+    #[test]
+    fn forgetting_a_chat_announces_its_cleared_record() {
+        let home = crate::test_dir::TestDir::new("dispatch-chat-forget");
+        let _process = crate::profile::started_in(&home);
+        let services = editing_in(&home);
+        let key = format!("chat:forget-{}", uuid::Uuid::new_v4().simple());
+        crate::transcript::append(&key, &json!({"type":"result"})).unwrap();
+        let tap = crate::bus::tap::Tap::on(&key);
+        dispatch(&services, "chat_forget", json!({"key":key})).unwrap();
+        assert!(crate::transcript::since(&key, 0).is_empty());
+        assert_eq!(
+            tap.heard()
+                .into_iter()
+                .filter(|(event, _)| event == "chat-forgotten")
+                .collect::<Vec<_>>(),
+            vec![("chat-forgotten".into(), json!({"key":key}))]
+        );
+    }
+
+    #[test]
+    fn a_failed_clear_does_not_announce_a_forgotten_record() {
+        let home = crate::test_dir::TestDir::new("dispatch-chat-forget-failed");
+        let _process = crate::profile::started_in(&home);
+        let services = editing_in(&home);
+        let key = format!("chat:forget-failed-{}", uuid::Uuid::new_v4().simple());
+        let path = crate::transcript::path_for(&key).unwrap();
+        crate::profile::make_dir(&path).unwrap();
+        let tap = crate::bus::tap::Tap::on(&key);
+        assert!(dispatch(&services, "chat_forget", json!({"key":key})).is_err());
+        assert!(tap
+            .heard()
+            .iter()
+            .all(|(event, _)| event != "chat-forgotten"));
+    }
+
+    #[test]
+    fn record_head_has_the_browser_contract() {
+        let home = crate::test_dir::TestDir::new("dispatch-chat-head");
+        let _process = crate::profile::started_in(&home);
+        let services = editing_in(&home);
+        let key = "chat:head";
+        crate::transcript::append(key, &json!({"type":"result"})).unwrap();
+        let head = dispatch(&services, "chat_record_head", json!({"key":key})).unwrap();
+        assert_eq!(head["lastSeq"], 1);
+        assert!(head["generation"].is_string());
+        assert_eq!(head.as_object().unwrap().len(), 2);
+    }
+
     #[tokio::test]
     async fn team_save_checks_the_edit_version_without_changing_approval_errors() {
         let home = crate::test_dir::TestDir::new("settings-team-version").canonicalized();
@@ -3346,6 +3399,7 @@ mod tests {
             ("chat_since", json!({ "key": key, "after": 0 })),
             ("chat_page", json!({ "key": key })),
             ("chat_task", json!({ "chatId": "read" })),
+            ("chat_record_head", json!({ "key": key })),
         ];
         let answers = |when: &str| -> Vec<Value> {
             reads

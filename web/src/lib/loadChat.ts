@@ -6,6 +6,7 @@ import { replayChat } from "./replayChat";
 import { type ChatHistory, type ChatPage, type HistorySlice } from "./chatHistory";
 import { restoredTurn } from "./turnClock";
 import { withLocalPrompts } from "./chatRetention";
+import { invalidateChatRecord, type ChatRecordHead } from "./chatRecord";
 
 /** Reconcile only identified host facts against local-only words. Historical
  * replay is identity-only even when a checkpoint seed already contains those
@@ -38,10 +39,14 @@ export type ChatLoadOptions = {
   id: string;
   key: string;
   storedSeq?: number;
+  storedGeneration?: string;
   catchUp: CatchUp;
   getState: () => ChatState;
   publish: (state: ChatState) => void;
   request: (after: number) => Promise<Frame[]>;
+  requestHead?: () => Promise<ChatRecordHead>;
+  onInvalidated?: () => void;
+  onRecordGeneration?: (generation: string, previousGeneration?: string, checkpointSessionId?: string | null) => void;
   cancelled: () => boolean;
   history?: ChatHistory;
   requestPage?: (before: number | null) => Promise<ChatPage>;
@@ -50,11 +55,12 @@ export type ChatLoadOptions = {
 };
 
 export async function loadChat(options: ChatLoadOptions): Promise<void> {
-  const { id, key, catchUp, getState, publish, request, cancelled } = options;
-  // A retained older window still belongs to the reader's scroll anchor.
-  // Only explicit Return to latest forgets that window before calling here.
-  if (catchUp.holds(key) && options.history?.isPast(id)) return;
+  const { id, key, catchUp, getState, publish, cancelled } = options;
+  // Start alongside IDB/replay. Neither the retained first frame nor checkpoint
+  // publication waits for this small capability probe.
+  const headRead = options.requestHead?.().then(head => ({ head }), error => ({ error }));
   let { storedSeq } = options;
+  let generation = catchUp.generation(key) ?? options.storedGeneration;
   if (!catchUp.holds(key)) {
     const cached = await readChatCheckpoint(id);
     if (cancelled()) return;
@@ -63,9 +69,57 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
       // left off its clock: nobody saw it (`turnClock.restoredTurn`).
       publish(withLocalPrompts(restoredTurn(cached.state, cached.updatedAt), getState(), true));
       storedSeq = cached.seq;
+      if (cached.generation !== undefined) {
+        options.onRecordGeneration?.(cached.generation, generation, cached.state.sessionId ?? null);
+        generation = cached.generation;
+        catchUp.setGeneration(key, cached.generation);
+      }
     }
   }
   if (cancelled()) return;
+  const mark = catchUp.holds(key) ? catchUp.mark(key) : (storedSeq ?? 0);
+  let superseded = false;
+  const syncing = loadChatWindow({ ...options, storedSeq, cancelled: () => cancelled() || superseded })
+    .then(() => ({}), error => ({ error }));
+  const result = await headRead;
+  if (cancelled()) return;
+  if (result && "error" in result && !String(result.error).includes("not available on this backend")) {
+    superseded = true; catchUp.abandon(key); throw result.error;
+  }
+  const head = result && "head" in result ? result.head : undefined;
+  // An unrecognized capability reply cannot establish a record identity.
+  if (head && Number.isSafeInteger(head.lastSeq) && typeof head.generation === "string") {
+    options.onRecordGeneration?.(head.generation, generation);
+    if (head.lastSeq < mark || (generation !== undefined && generation !== head.generation)) {
+      superseded = true;
+      options.onInvalidated?.();
+      invalidateChatRecord(options);
+      // Do not wait for an obsolete page/since request to finish. Its replay
+      // checks superseded before every commit and cannot mix the two records.
+      await loadChatWindow({ ...options, storedSeq: 0 });
+    } else {
+      const synced = await syncing;
+      if ("error" in synced) throw synced.error;
+    }
+  } else {
+    const synced = await syncing;
+    if ("error" in synced) throw synced.error;
+  }
+  if (cancelled()) return;
+  if (head && Number.isSafeInteger(head.lastSeq) && typeof head.generation === "string") {
+    catchUp.setGeneration(key, head.generation);
+    options.onRecordGeneration?.(head.generation, generation);
+  }
+  if (catchUp.holds(key) && !options.history?.isPartial(id)) {
+    void saveChatCheckpoint({ id, state: getState(), seq: catchUp.mark(key), generation: catchUp.generation(key), updatedAt: Date.now() });
+  }
+}
+
+async function loadChatWindow(options: ChatLoadOptions): Promise<void> {
+  const { id, key, catchUp, getState, publish, request, cancelled } = options;
+  // Past windows still get the head check above while preserving their anchor.
+  if (catchUp.holds(key) && options.history?.isPast(id)) return;
+  const { storedSeq } = options;
   let from = catchUp.begin(key, storedSeq);
   const before = getState();
   let missing: Frame[] | undefined;
@@ -159,9 +213,6 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
   const live = getState();
   if (live.busy && next.busy && live.turnStartedAt !== undefined) next = { ...next, turnStartedAt: live.turnStartedAt, turnWaits: live.turnWaits, activityTurnId: live.activityTurnId };
   publish(next);
-  if (!options.history?.isPartial(id)) {
-    void saveChatCheckpoint({ id, state: next, seq: catchUp.mark(key), updatedAt: Date.now() });
-  }
 }
 
 /** Reduced history windows are bounded too. Explicit earlier reads may slide the
@@ -301,5 +352,5 @@ export async function loadEarlierChat(options: ChatLoadOptions): Promise<void> {
   const next = { ...now, messages: retained, agents, pendingOutcomes: Object.keys(outcomes).length ? outcomes : undefined,
     notices: allNotices.slice(0, kept.reduce((n, slice) => n + (slice.notices ?? 0), 0)) };
   publish(next);
-  if (!history!.isPartial(id)) void saveChatCheckpoint({ id, state: next, seq: catchUp.mark(key), updatedAt: Date.now() });
+  if (!history!.isPartial(id)) void saveChatCheckpoint({ id, state: next, seq: catchUp.mark(key), generation: catchUp.generation(key), updatedAt: Date.now() });
 }

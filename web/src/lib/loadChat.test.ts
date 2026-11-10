@@ -8,6 +8,8 @@ import { valueBytes } from "./valueBytes";
 import * as chatReducer from "./chat";
 import { replayChat } from "./replayChat";
 import { ChatHistory } from "./chatHistory";
+import { conversationForRecord } from "./chatRecord";
+import { loadConversations, saveConversations, type Conversation } from "./store";
 
 beforeEach(() => vi.stubGlobal("indexedDB", new IDBFactory()));
 afterEach(() => vi.unstubAllGlobals());
@@ -428,4 +430,131 @@ it("evicts historical agent and unmatched outcome projections with their page", 
   expect(options.getState().agents).toHaveLength(CHAT_WINDOW_PAGES);
   expect(Object.keys(options.getState().pendingOutcomes ?? {})).toHaveLength(CHAT_WINDOW_PAGES);
   expect(options.getState().agents.some(a => a.id === "agent-1000")).toBe(false);
+});
+
+
+it.each(["retained", "checkpoint", "past"])("replaces a stale %s record when the head shrinks or generation changes", async source => {
+  for (const changedGeneration of [false, true]) {
+    const options = setup(), history = new ChatHistory();
+    const saved = await replayChat(emptyChat(), [frame(20)], 0, () => false);
+    saved.sessionId = "stale-native-session";
+    if (source === "checkpoint") {
+      await saveChatCheckpoint({ id: "a", state: saved, seq: 20, generation: "old", updatedAt: 1 });
+    } else {
+      options.publish(saved);
+      options.catchUp.begin(options.key); options.catchUp.end(options.key, [frame(20)]);
+      options.catchUp.setGeneration(options.key, "old");
+      if (source === "past") history.set("a", 10, 20);
+    }
+    let resolveHead!: (head: { lastSeq: number; generation: string }) => void;
+    let obsoletePage!: (page: { events: Frame[]; context: Frame[]; before: null }) => void;
+    let pages = 0;
+    const requestPage = vi.fn(() => ++pages === 1 && source !== "past"
+      ? new Promise<{ events: Frame[]; context: Frame[]; before: null }>(resolve => { obsoletePage = resolve; })
+      : Promise.resolve({ events: [frame(1)], context: [], before: null }));
+    const request = vi.fn(async () => []);
+    const loading = loadChat({ ...options, history, request, requestPage,
+      requestHead: () => new Promise(resolve => { resolveHead = resolve; }) });
+    await vi.waitFor(() => expect(options.getState().messages.map(m => m.id)).toEqual(["m20"]));
+    // Both transcript and validation requests start while the old window stays visible.
+    if (source !== "past") expect(requestPage).toHaveBeenCalledOnce();
+    resolveHead({ lastSeq: changedGeneration ? 100 : 1, generation: changedGeneration ? "new" : "old" });
+    await loading; // must not wait for the obsolete page to return
+    expect(options.getState().messages.map(m => m.id)).toEqual(["m1"]);
+    expect(options.getState().sessionId).toBeUndefined();
+    expect(options.catchUp.mark(options.key)).toBe(1);
+    expect(options.catchUp.generation(options.key)).toBe(changedGeneration ? "new" : "old");
+    expect(history.isPast("a")).toBe(false);
+    expect(request).not.toHaveBeenCalled();
+    obsoletePage?.({ events: [frame(20)], context: [], before: null });
+    await Promise.resolve();
+    expect(options.getState().messages.map(m => m.id)).toEqual(["m1"]);
+    await vi.waitFor(async () => expect((await readChatCheckpoint("a"))?.generation).toBe(changedGeneration ? "new" : "old"));
+  }
+});
+
+it("keeps a restored checkpoint visible and syncs its tail while the head request waits", async () => {
+  const options = setup();
+  await saveChatCheckpoint({ id: "a", state: await replayChat(emptyChat(), [frame(1)], 0, () => false), seq: 1, generation: "g", updatedAt: 1 });
+  let resolveHead!: (head: { lastSeq: number; generation: string }) => void;
+  const request = vi.fn(async () => [frame(2)]);
+  const loading = loadChat({ ...options, request, requestHead: () => new Promise(resolve => { resolveHead = resolve; }) });
+  await vi.waitFor(() => expect(options.getState().messages.map(m => m.id)).toEqual(["m1", "m2"]));
+  expect(request).toHaveBeenCalledWith(1);
+  resolveHead({ lastSeq: 2, generation: "g" }); await loading;
+  expect(options.catchUp.generation(options.key)).toBe("g");
+});
+
+it("uses the existing catch-up unchanged when an old host has no head command", async () => {
+  const options = setup();
+  await loadChat({ ...options, request: async () => [frame(1)] });
+  const old = options.getState();
+  const request = vi.fn(async () => [frame(2)]);
+  const loading = loadChat({ ...options, request,
+    requestHead: async () => { throw new Error("'chat_record_head' is not available on this backend"); } });
+  expect(options.getState()).toBe(old);
+  await loading;
+  expect(request).toHaveBeenCalledExactlyOnceWith(1);
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m1", "m2"]);
+});
+
+it("discards a stale checkpoint even when the replacement record is empty", async () => {
+  const options = setup();
+  await saveChatCheckpoint({ id: "a", state: await replayChat(emptyChat(), [frame(20)], 0, () => false), seq: 20, updatedAt: 1 });
+  await loadChat({ ...options, request: async () => [], requestPage: async () => ({ events: [], context: [], before: null }),
+    requestHead: async () => ({ lastSeq: 0, generation: "new" }) });
+  expect(options.getState().messages).toEqual([]);
+  expect(options.catchUp.mark(options.key)).toBe(0);
+});
+
+it.each(["checkpoint-before-head", "head-before-checkpoint", "legacy-row"])("clears a saved native ID when another tab's seq0 checkpoint wins the reset race: %s", async timing => {
+  const values = new Map<string, string>();
+  vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value) });
+  let chat: Conversation = { id: "a", projectId: "p", title: "A", messages: [], createdAt: 1, updatedAt: 2,
+    sessionId: "old-native", recordGeneration: "before", modelId: "claude:sonnet", permission: "read", effort: "high" };
+  const options = setup();
+  if (timing === "legacy-row") delete chat.recordGeneration;
+  options.publish({ ...emptyChat(), sessionId: chat.sessionId });
+  // Tab B's asynchronous save has replaced A's stale checkpoint. Its record
+  // already matches the head, so onInvalidated is deliberately never called.
+  await saveChatCheckpoint({ id: "a", seq: 0, state: emptyChat(), generation: "after", updatedAt: 1 });
+  let finish!: (head: { generation: string; lastSeq: number }) => void;
+  const head = { generation: "after", lastSeq: 1 };
+  const onInvalidated = vi.fn();
+  const loading = loadChat({ ...options, storedGeneration: chat.recordGeneration,
+    onRecordGeneration: (generation, previous, native) => { chat = conversationForRecord(chat, generation, previous, native); saveConversations([chat]); },
+    onInvalidated, request: async () => [frame(1)],
+    requestHead: () => timing === "head-before-checkpoint" ? Promise.resolve(head) : new Promise(resolve => { finish = resolve; }) });
+  if (timing !== "head-before-checkpoint") {
+    await vi.waitFor(() => expect(options.getState().messages).toHaveLength(1));
+    expect(chat.sessionId).toBeUndefined();
+    finish(head);
+  }
+  await loading;
+  expect(onInvalidated).not.toHaveBeenCalled();
+  expect(options.getState().sessionId).toBeUndefined();
+  expect(chat).toMatchObject({ recordGeneration: "after", modelId: "claude:sonnet", permission: "read", effort: "high" });
+  expect(chat.sessionId).toBeUndefined();
+  // Same fallback as the delayed App metadata save, then a full reload.
+  chat = { ...chat, sessionId: options.getState().sessionId ?? chat.sessionId };
+  saveConversations([chat]);
+  expect(loadConversations()[0].sessionId).toBeUndefined();
+});
+
+it.each(["reload", "retained-switch", "settings-return"])("keeps native resume for the same generation on %s", async source => {
+  const options = setup();
+  let chat: Conversation = { id: "a", projectId: "p", title: "A", messages: [], createdAt: 1, updatedAt: 2,
+    sessionId: "current-native", recordGeneration: "stable", modelId: "claude:sonnet", permission: "read" };
+  const state = { ...emptyChat(), sessionId: chat.sessionId };
+  if (source === "reload") await saveChatCheckpoint({ id: "a", seq: 0, state, generation: "stable", updatedAt: 1 });
+  else {
+    options.publish(state); options.catchUp.own(options.key); options.catchUp.setGeneration(options.key, "stable");
+  }
+  const onInvalidated = vi.fn();
+  await loadChat({ ...options, storedGeneration: chat.recordGeneration, onInvalidated,
+    onRecordGeneration: (generation, previous) => { chat = conversationForRecord(chat, generation, previous); },
+    requestHead: async () => ({ lastSeq: 1, generation: "stable" }), request: async () => [frame(1)] });
+  expect(onInvalidated).not.toHaveBeenCalled();
+  expect(chat.sessionId).toBe("current-native"); expect(options.getState().sessionId).toBe("current-native");
 });

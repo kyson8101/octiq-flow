@@ -337,6 +337,15 @@ impl Store {
         Ok(())
     }
 
+    pub(crate) fn active_dispatch(&self, key: &str, id: &str) -> bool {
+        self.state.lock().is_ok_and(|state| {
+            state
+                .entries
+                .get(key)
+                .is_some_and(|entry| entry.id == id && entry.delivery == Delivery::Dispatching)
+        })
+    }
+
     pub(crate) fn active_switch(&self, key: &str, id: &str) -> bool {
         self.state.lock().is_ok_and(|s| {
             s.entries.get(key).is_some_and(|e| {
@@ -395,6 +404,50 @@ impl Store {
             return Err("chat record still owes an auto-resume cancellation".into());
         }
         Ok(())
+    }
+
+    /// Ids in both the current continuation and a provider-switch rollback.
+    pub(crate) fn session_ids(&self, key: &str) -> Result<Vec<String>, String> {
+        let state = self.state.lock().map_err(|e| e.to_string())?;
+        Self::check(&state)?;
+        Ok(state
+            .entries
+            .get(key)
+            .into_iter()
+            .flat_map(|entry| {
+                entry
+                    .start
+                    .session_id()
+                    .into_iter()
+                    .chain(
+                        entry
+                            .pending_turn
+                            .as_ref()
+                            .and_then(|turn| turn.previous_start.as_ref())
+                            .and_then(StartContext::session_id),
+                    )
+                    .map(str::to_string)
+            })
+            .collect())
+    }
+
+    /// /clear must save even a cancellation Stop could only keep in memory.
+    pub(crate) fn clear_session(&self, key: &str) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        Self::check(&state)?;
+        let mut next = state.entries.clone();
+        if let Some(entry) = next.get_mut(key) {
+            entry.start.forget_session();
+            if let Some(previous) = entry
+                .pending_turn
+                .as_mut()
+                .and_then(|turn| turn.previous_start.as_mut())
+            {
+                previous.forget_session();
+            }
+            entry.delivery = Delivery::Cancelled;
+        }
+        self.save(&mut state, next)
     }
 
     /// Whether a cancel is kept here that is not on disk.

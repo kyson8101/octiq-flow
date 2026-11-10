@@ -363,8 +363,18 @@ impl OrchestrationStore {
             return Ok(());
         }
         self.mutate_as(regardless, |data| {
-            data.resume_contexts
-                .insert(key.into(), context.without_env());
+            let mut context = context.without_env();
+            match crate::chat_index::usable_session(key, context.session_id().map(str::to_string)) {
+                Ok(Some(_)) => {}
+                Ok(None) => context.forget_session(),
+                // A lowering already happened. An unavailable revocation
+                // store must neither veto it nor bless an unverified id.
+                // Keep the narrower settings with no native continuation;
+                // mutate_regardless still says unsaved and owes the write.
+                Err(_) if regardless.is_some() => context.forget_session(),
+                Err(why) => return Err(why),
+            }
+            data.resume_contexts.insert(key.into(), context);
             Ok(())
         })
     }
@@ -418,6 +428,37 @@ impl OrchestrationStore {
             Ok(())
         })
     }
+    /// /clear keeps launch settings for notifications, without native memory.
+    /// This uses save-first mutation, unlike ending an action or retargeting.
+    pub(crate) fn clear_resume_session(&self, key: &str) -> Result<(), String> {
+        self.mutate(|data| {
+            if let Some(start) = data.resume_contexts.get_mut(key) {
+                start.forget_session();
+            }
+            Ok(())
+        })
+    }
+
+    /// A native init lost its Stop epoch during store I/O. Keep the
+    /// revocation in memory even if its file cannot be saved; settle_owed
+    /// retries it, like every other ending action.
+    pub(crate) fn revoke_late_session(&self, key: &str, session: &str) -> Result<(), String> {
+        if self
+            .saved_resume_context(key)
+            .is_none_or(|start| start.session_id() != Some(session))
+        {
+            return Ok(());
+        }
+        self.mutate_regardless("the stopped provider session", |data| {
+            if let Some(start) = data.resume_contexts.get_mut(key) {
+                if start.session_id() == Some(session) {
+                    start.forget_session();
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// Choose only a recorded coordinator location, never a worker checkout
     /// leaked into start settings by a rejected duplicate browser launch.
     pub(crate) fn notification_resume_cwd(

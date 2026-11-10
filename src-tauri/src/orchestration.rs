@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,8 @@ pub mod retry;
 pub(crate) mod retry_tests;
 pub mod scheduling;
 pub mod summary;
+#[cfg(test)]
+mod worker_identity_tests;
 mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
 pub use destination::TaskDestination;
@@ -1148,9 +1150,36 @@ struct Inner {
 /// The ledger, in the list of what still owes a save (`profile_status`).
 pub(crate) const OWED: &str = "the ledger";
 
+/// Durable worker identity, independently readable while the ledger does I/O.
+/// This is not an active-worker cache: settled attempts remain workers until
+/// the ledger itself prunes them. No reader holds this lock to acquire another
+/// lock or do I/O; publication holds it only across the two memory assignments.
+#[derive(Default)]
+struct WorkerChats {
+    keys: BTreeSet<String>,
+    load_error: Option<String>,
+}
+
+impl WorkerChats {
+    fn of(data: &Stored, load_error: Option<String>) -> Self {
+        let keys = data
+            .attempts
+            .values()
+            .map(|attempt| attempt.worker_chat_key.clone())
+            .chain(data.batches.iter().filter_map(|batch| {
+                data.batch_launches
+                    .get(&batch.id)
+                    .map(|launch| launch.worker_chat_key.clone())
+            }))
+            .collect();
+        Self { keys, load_error }
+    }
+}
+
 pub struct OrchestrationStore {
     path: Option<PathBuf>,
     inner: Mutex<Inner>,
+    worker_chats: RwLock<WorkerChats>,
     workspace_ops: Mutex<()>,
     cleanup_requests: Mutex<BTreeMap<String, cleanup_request::Pending>>,
     auto_plan_delivery: Mutex<()>,
@@ -1307,6 +1336,7 @@ impl Default for OrchestrationStore {
         Self {
             path: None,
             inner: Mutex::new(Inner::default()),
+            worker_chats: RwLock::default(),
             workspace_ops: Mutex::new(()),
             cleanup_requests: Mutex::default(),
             auto_plan_delivery: Mutex::new(()),
@@ -1363,6 +1393,7 @@ impl OrchestrationStore {
         }
         let store = Self {
             path: Some(path),
+            worker_chats: RwLock::new(WorkerChats::of(&inner.data, inner.load_error.clone())),
             inner: Mutex::new(inner),
             workspace_ops: Mutex::new(()),
             cleanup_requests: Mutex::default(),
@@ -1382,6 +1413,11 @@ impl OrchestrationStore {
                     inner.load_error = Some(format!(
                         "Interrupted workers were recovered in memory, but the orchestration store could not be updated: {error}"
                     ));
+                    store
+                        .worker_chats
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .load_error = inner.load_error.clone();
                 }
             }
         }
@@ -1523,8 +1559,24 @@ impl OrchestrationStore {
             }
             (Err(why), None) => return Err(why),
         }
-        inner.data = next;
+        self.publish_data(inner, next);
         Ok(result)
+    }
+
+    /// Called under the ledger mutex, after any fallible work. A new attempt
+    /// and its identity become visible at the same publication point: neither
+    /// ledger readers nor identity readers can observe half the change. Build
+    /// the snapshot before taking its leaf lock; nothing under it waits on I/O
+    /// or a chat lock. Failed save-first mutations never publish either value.
+    fn publish_data(&self, inner: &mut Inner, next: Stored) {
+        let next_workers = WorkerChats::of(&next, inner.load_error.clone());
+        let mut workers = self.worker_chats.write().unwrap_or_else(|e| e.into_inner());
+        let previous = std::mem::replace(&mut inner.data, next);
+        let previous_workers = std::mem::replace(&mut *workers, next_workers);
+        drop(workers);
+        // Destruction can be proportional to the ledger's size, too.
+        drop(previous_workers);
+        drop(previous);
     }
 
     /// Read only the host's recorded allocations; disk inventory never reads ledger files.
@@ -1850,7 +1902,14 @@ impl OrchestrationStore {
     /// for it. A hook that can write asks this, never `active_task`, which is
     /// `None` once the attempt has settled while its capability still works.
     pub fn is_worker_chat(&self, chat_key: &str) -> Result<bool, String> {
-        Ok(chat_key.starts_with("chat:orch-") || self.worker_coordinator(chat_key)?.is_some())
+        if chat_key.starts_with("chat:orch-") {
+            return Ok(true);
+        }
+        let workers = self.worker_chats.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(error) = &workers.load_error {
+            return Err(error.clone());
+        }
+        Ok(workers.keys.contains(chat_key))
     }
 
     pub fn require_user_chat(&self, chat_key: &str) -> Result<(), String> {
@@ -1861,6 +1920,14 @@ impl OrchestrationStore {
             );
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_ledger_locked(&self) -> bool {
+        matches!(
+            self.inner.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        )
     }
 
     /// Native and legacy question tools use the same coordinator gate as the
@@ -7115,12 +7182,15 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-        let mut inner = store.inner.lock().unwrap();
-        let attempt = inner.data.attempts.get_mut(&worker.id).unwrap();
-        if let Some(key) = legacy_key {
-            attempt.worker_chat_key = key.into();
-        }
-        attempt.clone()
+        store
+            .mutate(|data| {
+                let attempt = data.attempts.get_mut(&worker.id).unwrap();
+                if let Some(key) = legacy_key {
+                    attempt.worker_chat_key = key.into();
+                }
+                Ok(attempt.clone())
+            })
+            .unwrap()
     }
 
     /// A real `claude -p` stream (2.1.292, the flag set `build_command` uses)
@@ -10231,14 +10301,12 @@ pub(crate) mod tests {
             .unwrap();
         // Legacy keys have no reserved prefix, but still belong to the ledger.
         store
-            .inner
-            .lock()
-            .unwrap()
-            .data
-            .attempts
-            .get_mut(&worker.id)
-            .unwrap()
-            .worker_chat_key = "chat:legacy-worker".into();
+            .mutate(|data| {
+                data.attempts.get_mut(&worker.id).unwrap().worker_chat_key =
+                    "chat:legacy-worker".into();
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(
             store
                 .worker_coordinator("chat:legacy-worker")

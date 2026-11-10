@@ -364,6 +364,83 @@ pub fn generation(key: &str) -> Option<Generation> {
     Some(generation_of(&appending, &record))
 }
 
+/// A cheap freshness check for a browser retaining a chat window. Unlike a
+/// durability receipt, the wire generation names the physical file and stays
+/// stable across server restarts where creation time is available.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RecordHead {
+    pub last_seq: u64,
+    pub generation: String,
+}
+
+pub(crate) fn record_head(key: &str) -> Result<RecordHead, String> {
+    crate::profile::available()?;
+    if !safe_key(key) {
+        return Err("invalid chat key".into());
+    }
+    let path = chats_folder()?.join(file_name(key));
+    let record = identity(&path);
+    // An old record has no stored seq field. Count it once, outside the
+    // append lock, and publish only if no append/clear/rewrite intervened.
+    for _ in 0..3 {
+        let (file, stamp, seen) = {
+            let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+            crate::profile::available()?;
+            let stamp = match record_stamp(&path) {
+                Ok(stamp) => stamp,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    crate::profile::available()?;
+                    return Ok(RecordHead {
+                        last_seq: 0,
+                        generation: "missing".into(),
+                    });
+                }
+                Err(e) => return Err(record_read_error(e)),
+            };
+            if let Some(next) = appending.as_ref().and_then(|counts| counts.get(&record)) {
+                return Ok(RecordHead {
+                    last_seq: next - 1,
+                    generation: stamp.generation(),
+                });
+            }
+            let file = File::open(&path).map_err(record_read_error)?;
+            (file, stamp, generation_of(&appending, &record))
+        };
+        #[cfg(test)]
+        HEAD_SCAN.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() {
+                hook();
+            }
+        });
+        let mut last_seq = 0;
+        try_each_stored_line(file, |seq, _| last_seq = seq).map_err(record_read_error)?;
+        let mut appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+        crate::profile::available()?;
+        if source_unchanged(&path, &stamp, &seen, &appending).is_ok() {
+            appending
+                .get_or_insert_with(HashMap::new)
+                .insert(record.clone(), last_seq + 1);
+            return Ok(RecordHead {
+                last_seq,
+                generation: stamp.generation(),
+            });
+        }
+    }
+    Err("the chat's record changed while reading its head; try again".into())
+}
+
+fn record_read_error(error: std::io::Error) -> String {
+    crate::profile::available()
+        .err()
+        .unwrap_or_else(|| format!("the chat's record could not be read: {error}"))
+}
+
+#[cfg(test)]
+thread_local! {
+    static HEAD_SCAN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
 /// Record an event and return its sequence number.
 ///
 /// Best-effort: if this cannot write, the event still reaches anyone currently
@@ -1123,7 +1200,7 @@ fn page_with_budget(
     turns: usize,
 ) -> Result<Page, String> {
     let path = path_for(key).ok_or("invalid chat key")?;
-    let file = match File::open(path) {
+    let file = match File::open(&path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Page {
@@ -1134,8 +1211,22 @@ fn page_with_budget(
         }
         Err(e) => return Err(e.to_string()),
     };
+    let stamp = file
+        .metadata()
+        .and_then(stamp_from_metadata)
+        .map_err(record_read_error)?;
     let limit = before.map_or(u64::MAX, |cursor| cursor.saturating_sub(1));
     let index = LineIndex::scan(&file, limit).map_err(|e| e.to_string())?;
+    if before.is_none() {
+        let mut appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+        // The scan is already needed for paging. Reuse its complete count,
+        // but never publish an old open inode after a clear/rewrite/append.
+        if record_stamp(&path).is_ok_and(|current| current == stamp) {
+            appending
+                .get_or_insert_with(HashMap::new)
+                .insert(identity(&path), index.seqs.last().copied().unwrap_or(0) + 1);
+        }
+    }
     let read = |seq| index.read(&file, seq).map_err(|e| e.to_string());
 
     // Newest first; `sums[i]` is the byte total of `seen[..i]`.
@@ -1344,6 +1435,38 @@ pub fn forget(key: &str) {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static FORGET_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn while_forget_fails<T>(work: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FORGET_FAILS.set(self.0);
+        }
+    }
+    let _restore = Restore(FORGET_FAILS.replace(true));
+    work()
+}
+
+/// The browser's clear command must not announce success if deletion failed.
+pub(crate) fn forget_checked(key: &str) -> Result<(), String> {
+    crate::profile::available()?;
+    #[cfg(test)]
+    if FORGET_FAILS.get() {
+        return Err("the chat record could not be removed".into());
+    }
+    if !safe_key(key) {
+        return Err("invalid chat key".into());
+    }
+    try_forget_file(&chats_folder()?.join(file_name(key)))
+        .map(|_| ())
+        .map_err(record_read_error)
+}
+
 /// `forget` for a record known by its file alone: one no chat points at
 /// (`chat_index::reconcile`). True when a file was removed.
 ///
@@ -1353,18 +1476,28 @@ pub fn forget(key: &str) {
 /// The count goes too, or a chat started again under the same name would
 /// number its first event as though the deleted one were still there.
 pub(crate) fn forget_file(path: &Path) -> bool {
+    try_forget_file(path).unwrap_or(false)
+}
+
+fn try_forget_file(path: &Path) -> std::io::Result<bool> {
     // Nothing is removed from a folder that is not the server's own.
     if path
         .parent()
         .is_some_and(|dir| crate::profile::create_dir_all(dir).is_err())
     {
-        return false;
+        return Err(std::io::Error::other(
+            "the chat's record folder is unavailable",
+        ));
     }
     let record = identity(path);
     let mut appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
     // Whether or not there was a file: what is there afterwards is not
     // what was.
-    let removed = fs::remove_file(path).is_ok();
+    let removed = match fs::remove_file(path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(e),
+    };
     // /clear also discards an interrupted migration's old inode. It must
     // never keep cleared words around or attach them to a new history.
     let _ = fs::remove_file(path.with_extension("jsonl.compact-backup"));
@@ -1380,7 +1513,7 @@ pub(crate) fn forget_file(path: &Path) -> bool {
     if let Some(counts) = appending.as_mut() {
         counts.remove(&record);
     }
-    removed
+    Ok(removed)
 }
 
 /// Rewrite a record line by line. `edit` returns a replacement for a line, or
@@ -1482,8 +1615,31 @@ struct RecordStamp {
     #[cfg(unix)]
     inode: (u64, u64),
 }
+impl RecordStamp {
+    fn generation(&self) -> String {
+        // No mtime or length: ordinary appends belong to the same history.
+        // On filesystems without creation time, the process nonce keeps a
+        // restart conservative rather than mistaking an inode reuse for life.
+        static EPOCH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let birth = self.created.map_or_else(
+            || {
+                EPOCH
+                    .get_or_init(|| uuid::Uuid::new_v4().to_string())
+                    .clone()
+            },
+            |time| format!("{time:?}"),
+        );
+        #[cfg(unix)]
+        let birth = format!("{birth}:{}:{}", self.inode.0, self.inode.1);
+        birth
+    }
+}
 fn record_stamp(path: &Path) -> std::io::Result<RecordStamp> {
     let meta = fs::symlink_metadata(path)?;
+    stamp_from_metadata(meta)
+}
+
+fn stamp_from_metadata(meta: fs::Metadata) -> std::io::Result<RecordStamp> {
     if !meta.is_file() || meta.file_type().is_symlink() {
         return Err(std::io::Error::other(
             "chat rewrite requires a regular record file",
@@ -1661,7 +1817,7 @@ fn rewrite<G>(
             }
             let published = {
                 let claim = publish()?;
-                let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+                let mut appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
                 #[cfg(test)]
                 let _time = RewriteTiming(std::time::Instant::now());
                 source_unchanged(path, &stamp, &seen, &appending)?;
@@ -1679,6 +1835,9 @@ fn rewrite<G>(
                 }
                 record_folder(path)?;
                 fs::rename(&temp, path)?;
+                if let Some(counts) = appending.as_mut() {
+                    counts.remove(&record);
+                }
                 if storage || host_event_replaced {
                     next_generation(&appending, &record);
                 }
@@ -1755,6 +1914,108 @@ fn compact_checkpoint(at: u8) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn record_head_follows_clear_and_keeps_generation_across_appends_and_cold_reads() {
+        let key = unique_key("record-head-clear");
+        assert_eq!(record_head(&key).unwrap().last_seq, 0);
+        for _ in 0..5 {
+            append(&key, &json!({"type":"result"})).unwrap();
+        }
+        let before = record_head(&key).unwrap();
+        assert_eq!(before.last_seq, 5);
+        assert_eq!(record_head(&key).unwrap().generation, before.generation);
+        append(&key, &json!({"type":"result"})).unwrap();
+        forget_count(&key);
+        let cold = record_head(&key).unwrap();
+        assert_eq!(cold.last_seq, 6);
+        assert_eq!(cold.generation, before.generation);
+        forget_checked(&key).unwrap();
+        let empty = record_head(&key).unwrap();
+        assert_eq!(empty.last_seq, 0);
+        assert_ne!(empty.generation, before.generation);
+        for _ in 0..2 {
+            append(&key, &json!({"type":"result"})).unwrap();
+        }
+        let after = record_head(&key).unwrap();
+        assert_eq!(after.last_seq, 2);
+        assert_ne!(after.generation, before.generation);
+        assert_eq!(record_head(&key).unwrap().generation, after.generation);
+        forget(&key);
+    }
+
+    #[test]
+    fn record_head_and_page_count_compacted_ranges_and_invalid_utf8_identically() {
+        let key = unique_key("record-head-storage");
+        let path = path_for(&key).unwrap();
+        fs::write(&path, b"{\"type\":\"octiq_compacted\",\"into\":1,\"count\":20}\n\xff\n{\"type\":\"result\"}\n").unwrap();
+        assert_eq!(record_head(&key).unwrap().last_seq, 22);
+        forget_count(&key);
+        let page = page(&key, None).unwrap();
+        // Paging already indexed the whole file: a head request must reuse it.
+        HEAD_SCAN.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(|| panic!("head rescanned after page")))
+        });
+        let head = record_head(&key).unwrap();
+        HEAD_SCAN.with(|hook| hook.borrow_mut().take());
+        assert_eq!(head.last_seq, page.events.last().unwrap().seq);
+        assert_eq!(head.last_seq, 22);
+        forget(&key);
+    }
+
+    #[test]
+    fn cold_head_scan_allows_other_appends_and_refuses_a_cleared_source() {
+        let key = unique_key("record-head-concurrent");
+        append(&key, &json!({"type":"result"})).unwrap();
+        forget_count(&key);
+        let other = unique_key("record-head-other");
+        let cleared = key.clone();
+        let appended = other.clone();
+        HEAD_SCAN.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let writer = std::thread::spawn(move || {
+                    let seq = append(&appended, &json!({"type":"result"}));
+                    forget(&cleared);
+                    for _ in 0..2 {
+                        append(&cleared, &json!({"type":"result"})).unwrap();
+                    }
+                    tx.send(seq).unwrap();
+                });
+                assert_eq!(
+                    rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap(),
+                    Some(1)
+                );
+                writer.join().unwrap();
+            }))
+        });
+        assert_eq!(record_head(&key).unwrap().last_seq, 2);
+        forget(&key);
+        forget(&other);
+    }
+
+    #[test]
+    fn record_head_changes_generation_and_invalidates_count_after_rewrite() {
+        let key = unique_key("record-head-rewrite");
+        append(&key, &json!({"type":"result"})).unwrap();
+        let before = record_head(&key).unwrap();
+        let path = path_for(&key).unwrap();
+        assert!(rewrite_lines(&path, |_| Some(
+            r#"{"type":"result","changed":true}"#.into()
+        ))
+        .unwrap());
+        let record = identity(&path);
+        assert!(!NEXT_SEQ
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .contains_key(&record));
+        let after = record_head(&key).unwrap();
+        assert_eq!(after.last_seq, before.last_seq);
+        assert_ne!(after.generation, before.generation);
+        forget(&key);
+    }
 
     #[test]
     fn rewrite_preparation_allows_appends_and_refuses_a_changed_source() {

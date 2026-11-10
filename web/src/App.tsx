@@ -40,6 +40,7 @@ import { valueBytes } from "./lib/valueBytes";
 import { loadChat, loadEarlierChat, CHAT_WINDOW_BYTES } from "./lib/loadChat";
 import { ChatHistory, type ChatPage } from "./lib/chatHistory";
 import { ChatWindowCache } from "./lib/chatWindowCache";
+import { ChatRecordClears, chatSessionFor, clearedConversation, conversationForRecord, invalidateChatRecord, type ChatRecordHead } from "./lib/chatRecord";
 import {
   addUserTurn,
   emptyChat,
@@ -1165,6 +1166,10 @@ export default function App() {
   // got nothing, and drew an empty page. See lib/catchUp.
   const catchUp = useRef(new CatchUp());
   const chatReads = useRef(new Map<string, { promise: Promise<void> }>());
+  const chatClears = useRef(new ChatRecordClears());
+  useEffect(() => bridge.onState(state => {
+    if (state !== "open") chatClears.current.disconnected();
+  }), []);
   // Remember that a particular object was saved without retaining the previous
   // multi-MB object for every chat this tab has ever opened.
   const cachedStates = useRef(new WeakMap<ChatState, string>());
@@ -1551,6 +1556,9 @@ export default function App() {
               // seen has none, and replays in full.
               messages: cached?.messages ?? [],
               seq: cached?.seq,
+              // Index metadata has no transcript identity. Carry provenance
+              // only when it still describes the same native session.
+              recordGeneration: r.sessionId === cached?.sessionId ? cached?.recordGeneration : undefined,
               // Listed by the server, so from now on its absence means
               // something: see `synced` in lib/store.ts.
               synced: true,
@@ -1732,6 +1740,30 @@ export default function App() {
         if (bridge.scopedChats && !screenChats.current.has(id)) return;
         return (earlier ? loadEarlierChat : loadChat)({
         id, key, storedSeq, catchUp: catchUp.current, history: chatHistory.current,
+        storedGeneration: conversationsRef.current.find(row => row.id === id)?.recordGeneration,
+        onRecordGeneration: (generation, previousGeneration, checkpointSessionId) => {
+          // Update the ref synchronously: a subsequent start or debounced save
+          // must not use the native ID of a different record, even before React
+          // commits this metadata update.
+          const rows = conversationsRef.current;
+          const next = rows.map(row => row.id === id ? conversationForRecord(row, generation, previousGeneration, checkpointSessionId) : row);
+          if (next.every((row, index) => row === rows[index])) return;
+          conversationsRef.current = next;
+          saveConversations(next);
+          setConversations(next);
+        },
+        requestHead: () => bridge.invoke<ChatRecordHead>("chat_record_head", { key }),
+        onInvalidated: () => {
+          recentChatWindows.current.forget(id);
+          nowPlaying.forget(id);
+          forgetChatPlace(id);
+          setConversations(rows => {
+            const next = rows.map(row => row.id === id ? clearedConversation(row) : row);
+            conversationsRef.current = next;
+            saveConversations(next);
+            return next;
+          });
+        },
         requestPage: (before) => bridge.invoke<ChatPage>("chat_page", { key, before }),
         getState: () => chatsRef.current[id] ?? EMPTY,
         publish: (state) => patch(id, () => state),
@@ -1747,6 +1779,39 @@ export default function App() {
     },
     [patch],
   );
+
+  const resetChatRecord = useCallback((id: string) => {
+    // Reset events are broadcast even when this tab only shows Settings and
+    // subscribes to no transcripts. Cancel the old read before clearing marks.
+    chatReads.current.delete(id);
+    nowPlaying.forget(id);
+    invalidateChatRecord({ id, key: keyFor(id), catchUp: catchUp.current,
+      history: chatHistory.current, recent: recentChatWindows.current,
+      getState: () => chatsRef.current[id] ?? EMPTY, publish: state => patch(id, () => state) });
+    forgetChatPlace(id);
+    setConversations(rows => {
+      const next = rows.map(row => row.id === id ? clearedConversation(row) : row);
+      conversationsRef.current = next;
+      saveConversations(next);
+      return next;
+    });
+  }, [patch]);
+
+  const refreshClearedChat = useCallback((id: string) => {
+    if (screenChats.current.has(id)) {
+      setReading(before => ({ ...before, [id]: true }));
+      void catchUpChat(id, 0).catch(() => {}).finally(() => {
+        flushChats(); setReading(before => ({ ...before, [id]: false }));
+      });
+    }
+  }, [catchUpChat, flushChats]);
+
+  useEffect(() => bridge.on<{ key: string }>("chat-forgotten", payload => {
+    const id = payload && convOf(payload.key);
+    if (!id || gone.current.has(id) || chatClears.current.forgotten(payload.key)) return;
+    resetChatRecord(id);
+    refreshClearedChat(id);
+  }), [resetChatRecord, refreshClearedChat]);
 
   const loadEarlierFor = useCallback(async (id: string | null, beforePrepend?: () => Promise<void>) => {
     if (!id || !chatHistory.current.hasEarlier(id)) return;
@@ -1989,7 +2054,7 @@ export default function App() {
         if (undoable.has(id) || gone.current.has(id) || chatReads.current.has(id)) continue;
         if (!catchUp.current.holds(keyFor(id)) || chatHistory.current.isPartial(id) || cachedStates.current.get(state) === id) continue;
         cachedStates.current.set(state, id);
-        void saveChatCheckpoint({ id, state, seq: catchUp.current.mark(keyFor(id)), updatedAt: Date.now() });
+        void saveChatCheckpoint({ id, state, seq: catchUp.current.mark(keyFor(id)), generation: catchUp.current.generation(keyFor(id)), updatedAt: Date.now() });
       }
       setConversations((prev) => {
         let list = prev;
@@ -2020,6 +2085,7 @@ export default function App() {
             latestResponse: latestAgentResponse(s.messages)?.text ?? before?.latestResponse,
             customTitle: before?.customTitle,
             sessionId: s.sessionId ?? before?.sessionId,
+            recordGeneration: catchUp.current.generation(keyFor(id)) ?? before?.recordGeneration,
             cwd: s.cwd ?? before?.cwd,
             messages: s.messages,
             modelId: info.modelId,
@@ -2209,9 +2275,11 @@ export default function App() {
     return () => { active = false; };
   }, [screenMain, screenBeside, conn, catchUpChat, flushChats]);
 
-  // Keep two recent windows under one byte budget, alongside the visible
+  // Keep six recent windows under one byte budget, alongside the visible
   // panes. Partial windows cannot be complete IndexedDB checkpoints: evicting
   // them on every switch forced a fresh paged replay and an empty transcript.
+  // Retention does not widen the socket subscription: offscreen snapshots
+  // stay still, then CatchUp fills their missing tail when shown again.
   useEffect(() => {
     const released = new Set<string>();
     let next = chatsRef.current;
@@ -3856,46 +3924,24 @@ export default function App() {
       }
       if (!conversationId) setConversationId(id);
 
-      /* `/clear` empties the conversation here as well as in the agent.
-       *
-       * The agent handles it locally and answers with nothing, so without this
-       * the agent forgets the conversation while the screen still shows every
-       * word of it — the two disagree about what has been said, which is worse
-       * than either state on its own.
-       *
-       * The transcript goes too, or a reload brings it all back. Resetting
-       * `seen` is not optional: `transcript::forget` drops the server's
+      /* `chat_forget` ends the process and removes its record. Clear the
+       * native session id too, so the next send starts a fresh session.
+       * Resetting `seen` is not optional: `transcript::forget` drops the server's
        * sequence counter to zero, and a client still holding the old high
        * number would discard every event after this as already seen. */
       if (text.trim() === "/clear") {
-        nowPlaying.forget(id);
         const key = keyFor(id);
-        if (runningRef.current.has(id)) {
-          bridge.invoke("chat_send", { key, text, recordUser: false }).catch(() => undefined);
-        }
-        bridge.invoke("chat_forget", { key }).catch(() => undefined);
-        // Held again, from nothing: `transcript::forget` drops the server's
-        // counter to zero, and a page still holding the old high number would
-        // discard every event after this as one it had already seen.
-        chatReads.current.delete(id);
-        chatHistory.current.forget(id);
-        void forgetChatCheckpoint(id);
-        catchUp.current.own(key);
-        patch(id, (s) => ({ ...emptyChat(), sessionId: s.sessionId }));
-        // The saved copy has to be emptied here rather than left to the sync
-        // effect, which skips any chat with no messages — that guard is what
-        // stops a brand-new chat being saved, and it also meant a cleared one
-        // kept its old messages on disk and got them all back on reload.
-        setConversations((prev) => {
-          const list = prev.map((c) =>
-            c.id === id
-              ? { ...c, messages: [], seq: 0, updatedAt: Date.now() }
-              : c,
-          );
-          saveConversations(list);
-          return list;
+        // Reject to the composer's existing send error, verbatim. It retains
+        // /clear for retry; no projection or checkpoint changes on failure.
+        return chatClears.current.clear({
+          key,
+          forget: () => bridge.invoke("chat_forget", { key }),
+          reset: () => {
+            resetChatRecord(id);
+            catchUp.current.own(key);
+          },
+          refresh: () => refreshClearedChat(id),
         });
-        return true;
       }
       // A model choice is immediate in the UI, but a provider process may
       // still be finishing its shutdown. Do not let a fast Send fall through
@@ -4085,9 +4131,7 @@ export default function App() {
         // the stored conversation otherwise.
         const resume = switchingModel
           ? null
-          : chatsRef.current[id]?.sessionId ??
-            conversationsRef.current.find((c) => c.id === id)?.sessionId ??
-            null;
+          : chatSessionFor(chatsRef.current[id], conversationsRef.current.find((c) => c.id === id));
 
         // Speaking into a chat whose record this page does not hold. A brand-new
         // one has no record to hold, so it is simply ours from here. Anything
@@ -4174,6 +4218,8 @@ export default function App() {
       conversationId,
       patch,
       catchUpChat,
+      resetChatRecord,
+      refreshClearedChat,
       syncQueue,
       agentsMode,
       lead,

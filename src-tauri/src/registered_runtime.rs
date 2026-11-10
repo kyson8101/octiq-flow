@@ -52,6 +52,19 @@ pub(super) fn select(
     resume: Option<String>,
     remembered: Option<&StartContext>,
 ) -> Result<Selection, String> {
+    let forgotten = crate::chat_index::forgotten_sessions(key)?;
+    let resume = resume.filter(|id| !forgotten.contains(id));
+    let remembered = remembered.cloned().map(|mut start| {
+        if start
+            .session_id
+            .as_ref()
+            .is_some_and(|id| forgotten.contains(id))
+        {
+            start.forget_session();
+        }
+        start
+    });
+    let remembered = remembered.as_ref();
     let lines = crate::transcript::every_line(key)?;
     let last_change = lines.iter().rev().find(|line| {
         matches!(
@@ -128,6 +141,7 @@ pub(super) fn select(
                         provider_for(preset.agent)
                             .observe_event(&line.event)
                             .session_id
+                            .filter(|id| !forgotten.contains(*id))
                             .map(str::to_string)
                     })
                 })

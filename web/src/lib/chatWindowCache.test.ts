@@ -45,7 +45,7 @@ it("switches between partial chats without clearing their words or rereading old
   expect(request.mock.calls).toEqual([["a", 100], ["b", 100], ["a", 100]]);
 });
 
-it("bounds recent windows by count and bytes, keeps the newest, and releases covered surfaces", () => {
+it("bounds recent windows by count and bytes and keeps covered surfaces", () => {
   const cache = new ChatWindowCache();
   const states: Record<string, ChatState> = {};
   for (let n = 0; n < 20; n++) {
@@ -57,8 +57,48 @@ it("bounds recent windows by count and bytes, keeps the newest, and releases cov
     expect([...retained].reduce((n, id) => n + valueBytes(states[id]), 0)).toBeLessThanOrEqual(RECENT_CHAT_BYTES);
     if (n > 0 && (n - 1) % 3 !== 0) expect(retained.has(`c${n - 1}`)).toBe(true);
   }
-  expect(cache.retain(states, new Set(), () => true).size).toBe(0);
-  expect(cache.retain(states, new Set(["c0"]), () => true).size).toBe(0);
+  const covered = cache.retain(states, new Set(), () => true);
+  expect(covered.size).toBe(RECENT_CHAT_WINDOWS);
+  expect(covered.has("c19")).toBe(true);
+  expect([...cache.retain(states, new Set(), () => true)]).toEqual([...covered]);
+});
+
+it("keeps six windows in LRU order, promotes a return, and releases a deleted chat", () => {
+  const cache = new ChatWindowCache();
+  const states = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`c${i}`, emptyChat()]));
+  const shown = (id: string) => cache.retain(states, new Set([id]), () => true);
+  for (let i = 0; i < 7; i++) shown(`c${i}`);
+  expect([...shown("c0")]).toEqual(["c6", "c5", "c4", "c3", "c2", "c1"]);
+  expect([...shown("c7")]).toEqual(["c0", "c6", "c5", "c4", "c3", "c2"]);
+  delete states.c4;
+  expect([...cache.retain(states, new Set(), () => true)]).toEqual(["c7", "c0", "c6", "c5", "c3", "c2"]);
+  // A recreated id does not revive the deleted reducer window's recency.
+  states.c4 = emptyChat();
+  expect(cache.retain(states, new Set(), () => true).has("c4")).toBe(false);
+  expect(cache.retain(states, new Set(), id => id !== "c5").has("c5")).toBe(false);
+});
+
+it("allows an indivisible large window to occupy the budget and skips an oversize window", () => {
+  const cache = new ChatWindowCache();
+  const window = (text: number): ChatState => ({ ...emptyChat(), messages: [{ id: "m", role: "assistant", streaming: false,
+    blocks: [{ kind: "text", text: "x".repeat(text) }] }] });
+  const states = { small: window(2 * 1024 * 1024), large: window(23 * 1024 * 1024),
+    oversize: window(25 * 1024 * 1024), current: emptyChat() };
+  for (const id of ["small", "large"]) cache.retain(states, new Set([id]), () => true);
+  expect([...cache.retain(states, new Set(["current"]), () => true)]).toEqual(["large"]);
+  cache.retain(states, new Set(["oversize"]), () => true);
+  expect([...cache.retain(states, new Set(["current"]), () => true)]).toEqual(["large"]);
+  expect(valueBytes(states.large)).toBeLessThan(RECENT_CHAT_BYTES);
+});
+
+it("remeasures an updated background window before retaining it again", () => {
+  const cache = new ChatWindowCache();
+  const states = { a: emptyChat(), b: emptyChat() };
+  cache.retain(states, new Set(["a"]), () => true);
+  expect(cache.retain(states, new Set(["b"]), () => true).has("a")).toBe(true);
+  states.a = { ...states.a, messages: [{ id: "grown", role: "assistant", streaming: false,
+    blocks: [{ kind: "text", text: "x".repeat(RECENT_CHAT_BYTES) }] }] };
+  expect(cache.retain(states, new Set(["b"]), () => true).has("a")).toBe(false);
 });
 
 it("evicts the older window when individually fitting windows exceed the combined byte budget", () => {

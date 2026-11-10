@@ -9,6 +9,35 @@ tool arguments/results, delivery identities and host events therefore remain.
 
 ## Readers
 
+The socket-only `chat_record_head { key }` command returns
+`{ lastSeq, generation }` so retained browser windows can detect a cleared or
+replaced record. `lastSeq` uses the same logical positions as paging, including
+compacted ranges and malformed lines; a missing record returns zero. It reuses
+the writer's count, also populated by a complete latest-page index. A cold
+record without a count needs one storage-line scan outside the global append
+lock; publication checks its stamp and life, and later requests read metadata
+only. Clear and every rewrite invalidate the cached count.
+
+The wire generation uses creation time and, on Unix, device/inode; appending
+does not change it. This stays stable across server restarts on filesystems
+providing creation time. Filesystems without creation time use a process nonce
+alongside Unix device/inode, so a restart conservatively invalidates retained
+windows there. Missing records have the `missing` generation. These are
+freshness tokens, not durability receipts (`transcript::Generation` below).
+`chat_forget` broadcasts `chat-forgotten { key }` after successful deletion and
+after releasing its locks; failed clears emit no such event. Neither the head
+command nor this browser event adds an agent hook or MCP route. Profile
+unavailability is returned in the profile's own words, never as an empty head.
+
+The browser persists its native-session fallback with a string
+`Conversation.recordGeneration`. It reconciles that identity on both checkpoint
+restoration and head reads, independently of whether the displayed window is
+invalidated. A current checkpoint written by another tab after `/clear` must
+not leave a saved session from the prior record available for the next start.
+This is browser metadata only; it neither changes `ChatMeta` nor the index's
+numeric restore generation. See [retention](chat-window-retention.md) for legacy
+row handling and the serial browser regression probes.
+
 | Reader | Required data |
 | --- | --- |
 | `chat.ts`, live and replay | Messages, stream block text and original tool arguments, result text, errors/outcomes, model/session/cwd/commands, usage and host facts |
@@ -20,6 +49,94 @@ tool arguments/results, delivery identities and host events therefore remain.
 | Question/answered and reopen receipts | Exact host event identities/content, generation, file sync and folder sync |
 | Tool diff | `tool_use_result.filePath`, `structuredPatch`, `type`, and `content` for newly created files |
 | Failure origin | `tool_use_result._meta`, including `octiq/outcome` |
+
+## Clearing native sessions
+
+`chat_forget` (`/clear`) stops the provider first, reserves the chat against
+concurrent starts, saves native-session revocations and clears the index session
+(including a lead's session), clears the ledger and auto-resume native ids, then
+clears the in-memory `StartContext` id. Only then does it forget the transcript
+and emit `chat-forgotten`. Claude sessions, Codex threads, Pi sessions and
+Antigravity conversations all use this same native-id boundary. Model, effort,
+access, cwd, defaults, registered identity and `leadOf` remain intact. Host
+notifications may start a fresh native session with those retained settings.
+
+The index keeps host-only `forgotten_sessions`, keyed by chat and exact native
+id. It includes the index, remembered/ledger/scheduled contexts, pending fallback
+rollback contexts and all provider init ids in the record. It survives restart
+and browser metadata saves without changing the public metadata shape or its
+restore generation. Stale saves cannot restore a revoked id or overwrite a newer
+session with one; stale `chat_start.resume`, registered recovery from transcript,
+late init events and provider-switch rollback contexts cannot resume it.
+Native init captures its launch and Stop epoch under the session lock, does
+index/team/ledger I/O outside that lock, and checks the epoch again before
+publishing its id in memory. If Stop overtakes I/O, the tentative id is revoked
+in the index and ledger and is neither published nor appended. Init recording
+also runs outside the session lock, as it did before f4f40e3. A separate per-chat
+native-write gate serializes this work with `/clear`; clear waits on it only
+after stopping, while Stop and interrupt never take it. This prevents an unknown
+late init from repopulating a cleared history. Handover ask-back refuses to fork
+a revoked id from its saved origin.
+
+The browser's `chat_stop`, `chat_interrupt` and `chat_forget` admission guard
+also stays off the ledger mutex. `require_user_chat` reads a separate in-memory
+worker identity snapshot: reserved `chat:orch-` keys and all recorded attempts
+(including settled legacy keys) remain read-only. Startup builds the snapshot
+from the loaded ledger; every committed ledger replacement publishes both
+values while holding the ledger mutex and the snapshot's short leaf write lock.
+Snapshot construction, persistence and destruction happen outside that leaf
+lock. An owed save publishes the retained in-memory state too; a refused
+save-first mutation publishes neither. Readers release the leaf lock before
+any chat operation. Thus an init paused on index I/O while holding the ledger
+cannot delay Stop's epoch veto. The regression uses real `dispatch` admission
+for all four providers and checks a response within 200 ms before releasing
+both first-index and ledger-held index barriers; delayed ids never enter
+starts, index, transcript or ledger after release. `/clear` bumps the epoch
+before capturing any ids, and reads its saved ledger context only after Stop;
+it may then wait for its required cleanup I/O.
+
+Related entry-point audit: all callers of `require_user_chat` now use that
+snapshot, including the chat replacement/cancel controls, question controls,
+trash admission and cleanup-request admission; their existing action semantics
+are unchanged. Trash remains save-first because its purpose is a durable
+record. `orchestration_task_stop` and `orchestration_run_stop` do not use this
+guard: they obtain targets through their own ledger transitions, and currently
+wait for `mutate_regardless` (including its save) before ending processes. That
+pre-existing Rule A gap remains a separate follow-up; changing their targeting,
+authorization and stop transaction is outside this native-session fix. It is
+not covered by the 200 ms chat Stop regression.
+
+Revocation filtering must also preserve permission lowering when the profile
+or index cannot be read. `remember_start` keeps the new settings but drops the
+unverified native id; `keep_resume_context` does the same for an already-applied
+lowering and retains it with `unsaved`/owed semantics if saving fails. This
+deliberately prefers a fresh native conversation over trusting an unread
+tombstone. Native init likewise publishes no id when revocations are unread.
+The regression covers a missing profile and malformed index, then restores the
+store and checks that the narrower settings survive reload without a revoked
+id. Ordinary resume-context saves, common start/launch admission,
+`registered_runtime::select` recovery, and handover ask-back all start new work;
+their filtering remains save-first and refuses an unread store. Stop, cancel,
+retarget's ledger removal and late-id cleanup add no revocation read before
+their ending action.
+
+A new provider-owned id remains usable. The final common launch boundary checks again
+under the session-table lock, including notifications and cloned auto-resumes.
+
+These stores are separate files, not a transaction. Each write is save-first:
+a failure returns the original profile/store error, retains the transcript, and
+emits no `chat-forgotten`. Stop still takes effect and can cancel queued work,
+questions or schedules (including their normal cancellation records). Revocations
+or stores already saved remain cleared on a later store failure; a retry finishes
+the remaining work. If transcript deletion itself fails, native sessions have
+already been revoked and settings retained, while history stays visible and the
+command reports the deletion error. The next start is fresh even before retry.
+Deleting history first would allow old native memory to return silently after a
+failed session write. Tombstones contain ids only, not conversation text. They
+retain the latest eight distinct revoked ids per chat (current contexts take
+precedence over older init events), and purge/permanent deletion removes that
+chat's tombstones. This bounds repeated clears; protection for tabs carrying
+more than eight revoked native ids behind the current chat is not retained.
 
 ## Disk format
 

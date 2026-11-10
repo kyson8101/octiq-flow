@@ -1051,6 +1051,14 @@ impl From<StartContext> for QueueContext {
 }
 
 impl StartContext {
+    pub(crate) fn forget_session(&mut self) {
+        self.session_id = None;
+    }
+
+    pub(crate) fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
     pub(crate) fn without_env(&self) -> Self {
         let mut saved = self.clone();
         saved.env = None;
@@ -1309,6 +1317,9 @@ pub struct ChatManager {
     /// How each running agent was last started — see `StartContext`. Keyed by
     /// process key, so each chat resumes independently.
     starts: Mutex<HashMap<String, StartContext>>,
+    /// Serializes native-id I/O with /clear, independently of process locks.
+    /// Stop/interrupt never take this gate. Weak entries are swept in batches.
+    native_writes: Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
     /// What each agent has been sent but not yet given — see `QueuedTurn`.
     /// Keyed by process key, so chats queue independently.
     queued_turns: Mutex<HashMap<String, VecDeque<QueuedTurn>>>,
@@ -1458,6 +1469,19 @@ fn is_person_turn_id(turn_id: &str) -> bool {
 }
 
 impl ChatManager {
+    fn native_write(&self, key: &str) -> Arc<Mutex<()>> {
+        let mut writes = self.native_writes.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(write) = writes.get(key).and_then(std::sync::Weak::upgrade) {
+            return write;
+        }
+        if writes.len() >= 256 {
+            writes.retain(|_, write| write.strong_count() != 0);
+        }
+        let write = Arc::new(Mutex::new(()));
+        writes.insert(key.into(), Arc::downgrade(&write));
+        write
+    }
+
     fn stop_epoch(&self, key: &str) -> Arc<std::sync::atomic::AtomicU64> {
         self.stop_epochs
             .lock()
@@ -1766,8 +1790,16 @@ impl ChatManager {
     }
 
     /// Remember how an agent was started, so it can be started that way again.
-    fn remember_start(&self, session_key: &str, start: StartContext) {
+    fn remember_start(&self, session_key: &str, mut start: StartContext) {
+        // Share clear's starts lock: a rollback checked before revocation
+        // cannot pause, then put its old id back after clear released the lock.
         if let Ok(mut m) = self.starts.lock() {
+            // A lowering/rollback also uses this door while its profile is
+            // away. Keep its settings, but never publish an id whose durable
+            // revocation status could not be checked.
+            start.session_id =
+                crate::chat_index::usable_session(session_key, start.session_id.clone())
+                    .unwrap_or(None);
             m.insert(session_key.to_string(), start.clone());
         }
         if let Err(error) = self.orchestrations.save_resume_context(session_key, start) {
@@ -1894,16 +1926,27 @@ impl ChatManager {
     /// The agent named its own conversation. Kept so its next process can
     /// resume it rather than beginning a new one.
     fn remember_session(&self, session_key: &str, session_id: &str) {
+        let write = self.native_write(session_key);
+        let _write = write.lock().unwrap_or_else(|e| e.into_inner());
+        if self.prepare_session(session_key, session_id) {
+            self.publish_session(session_key, session_id);
+        }
+    }
+
+    /// Only store I/O, with no session or starts lock held. The caller owns
+    /// the native-write gate and must still validate its launch before publish.
+    fn prepare_session(&self, session_key: &str, session_id: &str) -> bool {
+        if !matches!(
+            crate::chat_index::usable_session(session_key, Some(session_id.into())),
+            Ok(Some(_))
+        ) {
+            return false;
+        }
         if crate::lead_threads::is_key(session_key) {
             let id = session_key.trim_start_matches("chat:");
             match crate::chat_index::lead_session(id, session_id) {
                 Ok(()) => crate::bus::emit("chat-index-changed", &json!({"id":id,"gone":false})),
                 Err(error) => eprintln!("lead thread: could not save provider session: {error}"),
-            }
-        }
-        if let Ok(mut m) = self.starts.lock() {
-            if let Some(start) = m.get_mut(session_key) {
-                start.session_id = Some(session_id.to_string());
             }
         }
         let desk = self
@@ -1919,8 +1962,34 @@ impl ChatManager {
                 session_id,
             );
         }
-        if let Err(error) = self.persist_orchestration_context(session_key) {
-            eprintln!("orchestration: could not save provider session: {error}");
+        if let Some(mut start) = self.start_context(session_key) {
+            start.session_id = Some(session_id.into());
+            if let Err(error) = self.orchestrations.save_resume_context(session_key, start) {
+                eprintln!("orchestration: could not save provider session: {error}");
+            }
+        }
+        true
+    }
+
+    fn publish_session(&self, session_key: &str, session_id: &str) {
+        if let Ok(mut starts) = self.starts.lock() {
+            if let Some(start) = starts.get_mut(session_key) {
+                start.session_id = Some(session_id.into());
+            }
+        }
+    }
+
+    /// A Stop overtook native-id I/O. Revoke just that id, preserving any
+    /// previously known conversation and the chat's launch settings.
+    fn revoke_late_session(&self, session_key: &str, session_id: &str) {
+        if let Err(error) = crate::chat_index::revoke_late_session(session_key, session_id) {
+            eprintln!("chat: could not revoke late provider session: {error}");
+        }
+        if let Err(error) = self
+            .orchestrations
+            .revoke_late_session(session_key, session_id)
+        {
+            eprintln!("orchestration: could not revoke late provider session: {error}");
         }
     }
 
@@ -3678,6 +3747,7 @@ fn chat_start_with_user_turn(
     if manager.has_process(&key) {
         return Err(format!("chat '{key}' is already running"));
     }
+    let resume = crate::chat_index::usable_session(&key, resume)?;
     let previous_start = manager.start_context(&key);
     let previous_resume = resume.clone();
     let mut recovered = false;
@@ -4622,6 +4692,11 @@ fn start_session_with_recovery(
     // reads an atomic, never a chat lock. Sends/starts use their ordinary path.
     // Keep creation and insertion atomic with other starts and sends.
     let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+    if record_user_turn {
+        require_scheduled_turn(&manager, &session_key, user_turn_id.as_deref())?;
+    }
+    // Final launch boundary: a cloned auto-resume/notification may predate clear.
+    let resume = crate::chat_index::usable_session(&session_key, resume)?;
     manager.lifespan_refusal(&cwd, extra_dirs.as_ref())?;
     if let Some(id) = user_turn_id
         .as_deref()
@@ -5471,14 +5546,8 @@ fn start_session_with_recovery(
                         // The two agents spell their full stop differently, and
                         // the idle sweeper has to understand both of them or a
                         // Codex chat would look busy for as long as it lived.
-                        // The agent naming its own conversation. Kept so the
-                        // backend can RESUME this chat rather than start a
-                        // blank one — see `StartContext`. Both agents announce
-                        // it once, under different names, in their opening
-                        // event. A resumed chat always uses its own memory.
-                        if let Some(id) = observed.session_id {
-                            reading.remember_session(&session_key, id);
-                        }
+                        // Native identity is learned beside append below,
+                        // under the same session lock that Stop takes.
                         // Codex says nothing on its full stop, so its closing
                         // words have to be kept as they go past — see
                         // `codex_said`.
@@ -5584,7 +5653,16 @@ fn start_session_with_recovery(
                         // Recorded BEFORE it is sent, so a client that
                         // reconnects can never be told about an event that was
                         // not written down.
-                        let seq = crate::transcript::append(&key, &event);
+                        let Some(seq) = record_provider_event(
+                            &reading,
+                            &asking,
+                            &session_key,
+                            &key,
+                            stream_provider.kind(),
+                            &event,
+                        ) else {
+                            continue;
+                        };
                         if !notification_receipts.is_empty() {
                             if let Err(error) = reading
                                 .orchestrations
@@ -5902,6 +5980,92 @@ fn start_session_with_recovery(
         )?;
     }
 
+    Ok(())
+}
+
+/// Store I/O never holds Stop's session lock. /clear waits on a separate
+/// native-write gate AFTER stopping, so an init either precedes its cleanup
+/// or observes the ended launch. Stop can veto an in-flight learn by epoch.
+fn record_provider_event(
+    manager: &ChatManager,
+    session: &Mutex<ChatSession>,
+    session_key: &str,
+    key: &str,
+    agent: ChatAgent,
+    event: &Value,
+) -> Option<Option<u64>> {
+    let Some(id) = provider_for(agent).observe_event(event).session_id else {
+        return Some(crate::transcript::append(key, event));
+    };
+    let write = manager.native_write(session_key);
+    let _write = write.lock().unwrap_or_else(|e| e.into_inner());
+    let epoch = manager.stop_epoch(session_key);
+    let seen = {
+        let session = session.lock().ok()?;
+        // Read epoch BEFORE launch evidence: Stop removes the launch before
+        // advancing epoch, so a post-Stop epoch cannot bless an old launch.
+        let seen = epoch.load(std::sync::atomic::Ordering::SeqCst);
+        if session.cut_off == CutOff::Ended
+            || manager.auto_plan_launches.lock().ok()?.get(session_key) != Some(&session.launch_id)
+        {
+            return None;
+        }
+        seen
+    };
+    // Captured outside the process lock. The gate also prevents /clear from
+    // removing this history between native-id publication and append.
+    let generation = crate::transcript::generation(key);
+    if !manager.prepare_session(session_key, id) {
+        return None;
+    }
+    let published = {
+        let mut starts = manager.starts.lock().unwrap_or_else(|e| e.into_inner());
+        let start = starts.get_mut(session_key);
+        let previous = start.as_ref().and_then(|start| start.session_id.clone());
+        if let Some(start) = start {
+            start.session_id = Some(id.into());
+        }
+        // Every Stop and replacement launch advances epoch. CAS is the
+        // publication point; the starts lock hides the tentative id until
+        // then. No session lock is needed here (even waiting for starts
+        // under it could make Stop wait for another writer's store I/O).
+        let current = epoch
+            .compare_exchange(
+                seen,
+                seen,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok();
+        if !current {
+            if let Some(start) = starts.get_mut(session_key) {
+                start.session_id = previous;
+            }
+        }
+        current
+    };
+    if !published {
+        manager.revoke_late_session(session_key, id);
+        return None;
+    }
+    // Unlike f4f40e3, neither remember nor append holds the session mutex.
+    // d9c19ba likewise recorded init events outside that process lock.
+    Some(generation.and_then(|seen| crate::transcript::append_in(key, &seen, event).1))
+}
+
+/// A due entry may already have been cloned by the scheduler when /clear
+/// cancels it. Check the receipt when admitting a new send or initial launch.
+/// Already accepted queued turns outlive the schedule entry; Stop clears them.
+fn require_scheduled_turn(
+    manager: &ChatManager,
+    key: &str,
+    turn_id: Option<&str>,
+) -> Result<(), String> {
+    if let Some(id) = turn_id.and_then(|id| id.strip_prefix("octiq-auto-resume-")) {
+        if !manager.auto_resumes.active_dispatch(key, id) {
+            return Err("The auto-resume was cancelled.".into());
+        }
+    }
     Ok(())
 }
 
@@ -6630,8 +6794,7 @@ fn deliver_orchestration_notification_with_start(
             .orchestrations
             .saved_resume_context(key)
             .ok_or("Resume the main chat once to restore its provider settings.")?;
-        if !saved.resumable()
-            || saved.session_id != meta.session_id
+        if saved.session_id != meta.session_id
             || meta.access.as_deref()
                 != saved
                     .access
@@ -6941,6 +7104,7 @@ fn send_turn(
         // the client starts a normal resume — never a successful send that
         // vanishes in between.
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        require_scheduled_turn(&manager, &session_key, user_turn_id.as_deref())?;
         // Browser reconnects and ambiguous RPC retries reuse their stable turn
         // id. The canonical envelope is the durable acceptance receipt, so a
         // retry never creates a second queue unit or dispatches the same words
@@ -9137,6 +9301,9 @@ fn run_scheduled_resume(
     entry: &crate::auto_resume::ScheduledResume,
 ) -> Result<(), String> {
     let key = entry.chat_key.clone();
+    if !manager.auto_resumes.active_dispatch(&key, &entry.id) {
+        return Err("The auto-resume was cancelled.".into());
+    }
     if let Some(target) = &entry.fallback {
         return run_provider_switch(manager, entry, target);
     }
@@ -9392,6 +9559,10 @@ fn decode_attachment(data_base64: &str) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
+#[path = "native_clear_tests.rs"]
+mod native_clear_tests;
+
+#[cfg(test)]
 #[path = "ending_tests.rs"]
 mod ending_tests;
 
@@ -9623,6 +9794,59 @@ fn purge_deleted_chats() -> Result<usize, String> {
     Ok(expired.len())
 }
 
+/// Stop, revoke native continuations durably, then remove the display record.
+/// A failed store write leaves the transcript intact and emits no success.
+pub fn chat_forget_impl(manager: &ChatManager, key: String) -> Result<(), String> {
+    // Veto native init before even the memory snapshots: starts may be busy
+    // with I/O, and saved_resume_context takes the ledger. Neither may delay
+    // the epoch bump. Only the scheduled ids must precede Stop, whose normal
+    // cancellation removes that entry; the other contexts survive Stop.
+    manager.revoke_auto_plan(&key);
+    let scheduled_ids = manager.auto_resumes.session_ids(&key);
+    chat_stop_impl(manager, key.clone())?;
+    let mut ids = Vec::new();
+    if let Some(start) = manager.start_context(&key) {
+        ids.extend(start.session_id);
+    }
+    if let Some(start) = manager.orchestrations.saved_resume_context(&key) {
+        ids.extend(start.session_id);
+    }
+    ids.extend(scheduled_ids?);
+    let _claim = manager.hold_start(&key)?;
+    let write = manager.native_write(&key);
+    let _write = write.lock().map_err(|e| e.to_string())?;
+    if let Some(start) = manager.start_context(&key) {
+        ids.extend(start.session_id);
+    }
+    // Include previous providers, since registered recovery can consult init
+    // events when the remembered runtime differs from the current preset.
+    let mut recorded_ids = Vec::new();
+    for line in crate::transcript::every_line(&key)? {
+        for provider in ChatAgent::ALL {
+            if let Some(id) = provider_for(provider).observe_event(&line.event).session_id {
+                recorded_ids.push(id.into());
+            }
+        }
+    }
+    // Current contexts take precedence over earlier init events at the bound.
+    recorded_ids.extend(ids);
+    crate::chat_index::forget_sessions(&key, recorded_ids)?;
+    manager.orchestrations.clear_resume_session(&key)?;
+    manager.auto_resumes.clear_session(&key)?;
+    if let Some(start) = manager
+        .starts
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get_mut(&key)
+    {
+        start.forget_session();
+    }
+    chat_forget(key.clone())?;
+    drop(_claim);
+    crate::bus::emit("chat-forgotten", &json!({"key":key}));
+    Ok(())
+}
+
 /// Everything a chat said after `after`.
 ///
 /// How a client catches up. It remembers the highest seq it has seen and asks
@@ -9633,8 +9857,8 @@ pub fn chat_since(key: String, after: u64) -> Vec<crate::transcript::Recorded> {
 }
 
 /// Throw away a chat's record. Deleting a conversation should leave nothing.
-pub fn chat_forget(key: String) {
-    crate::transcript::forget(&key);
+pub fn chat_forget(key: String) -> Result<(), String> {
+    crate::transcript::forget_checked(&key)
 }
 
 /// The keys of every running chat. A reconnecting browser uses this the way it
