@@ -114,35 +114,38 @@ export async function submitReassign(
 /** The row's reassign control: a quiet button beside the row's disclosure.
  *  Pressed, the row opens `ReassignForm` under its heading. Disabled, its
  *  tooltip says why the host would refuse. */
-export function ReassignButton({ run, task, attempts, open, onToggle }: {
+export function ReassignButton({ run, task, attempts, open, busy, onToggle }: {
   run: OrchestrationRun;
   task: OrchestrationTask;
   attempts: readonly OrchestrationAttempt[];
   open: boolean;
+  busy: boolean;
   onToggle: () => void;
 }) {
   const blocker = reassignBlocker(run, task, attempts);
   return <button type="button" className="orch-task-reassign" aria-expanded={open}
-    disabled={!!blocker && !open}
+    disabled={busy || (!!blocker && !open)}
     aria-label={`Reassign task: ${task.title}`}
     title={blocker ?? `Hand "${task.title}" to another crew member`}
-    onClick={onToggle}>
+    onClick={() => { if (!busy) onToggle(); }}>
     <ReassignIcon />
   </button>;
 }
 
 /** Who, why, confirm. Who may take it is asked of the host when the form
  *  opens, so it is the lead's reports as they are now. */
-export function ReassignForm({ run, task, crew, onDone }: {
+export function ReassignForm({ run, task, crew, busy: inputBusy, onDone }: {
   run: OrchestrationRun;
   task: OrchestrationTask;
   crew: readonly CrewMember[];
+  busy: boolean;
   onDone: () => void;
 }) {
   const [choices, setChoices] = useState<ReassignChoice[] | null>(null);
   const [assignee, setAssignee] = useState("");
   const [why, setWhy] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
+  const busy = inputBusy || sending;
   const [error, setError] = useState<string | null>(null);
   const id = useId();
   const crewKey = crew.map((member) => member.id).join(",");
@@ -158,7 +161,9 @@ export function ReassignForm({ run, task, crew, onDone }: {
   const onCrew = choices?.filter((choice) => choice.inCrew) ?? [];
   const others = choices?.filter((choice) => !choice.inCrew) ?? [];
   const submit = async () => {
-    setBusy(true);
+    // The form can stay open while its run loses decision authority.
+    if (busy) return;
+    setSending(true);
     setError(null);
     try {
       await submitReassign((command, args) => bridge.invoke(command, args), run, task, assignee, why);
@@ -166,7 +171,7 @@ export function ReassignForm({ run, task, crew, onDone }: {
     } catch (problem) {
       setError(messageOf(problem));
     } finally {
-      setBusy(false);
+      setSending(false);
     }
   };
   return <div className="mission-reassign" role="group" aria-labelledby={`${id}-title`}
@@ -190,7 +195,7 @@ export function ReassignForm({ run, task, crew, onDone }: {
     <div className="mission-reassign-actions">
       <button type="button" className="orch-quiet" disabled={busy} onClick={onDone}>Cancel</button>
       {choices && choices.length > 0 && <button type="button" className="orch-quiet is-primary" disabled={busy || !assignee || !why.trim()}
-        onClick={() => void submit()}>{busy ? "Reassigning…" : "Reassign"}</button>}
+        onClick={() => void submit()}>{sending ? "Reassigning…" : "Reassign"}</button>}
     </div>
   </div>;
 }

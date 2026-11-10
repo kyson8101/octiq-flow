@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {browserPaths} from '../../scripts/browser-paths.mjs';
+import {readingDecisions} from './reading-decisions.mjs';
 
 const {webRoot: web, require, moduleUrl} = browserPaths(new URL('../../scripts/browser-paths.mjs', import.meta.url).href);
 const {createServer} = await import(pathToFileURL(require.resolve('vite')).href);
@@ -38,6 +39,7 @@ try {
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   browser = await chromium.launch({...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? {executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH} : {channel: 'chrome'}), headless: true});
+  await readingDecisions(browser, origin, scratch);
   for (const width of [1280, 390]) {
     planScene = false; planRevision = 1;
     const context = await browser.newContext({viewport: {width, height: 844}});

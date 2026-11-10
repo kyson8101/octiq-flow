@@ -729,12 +729,12 @@ function RunDetail({
   attentionFocus,
   inAccordion,
   onShowAttention,
-  onArchive,
+  onArchive: sendArchive,
   onAnswer,
-  onResolve,
-  onRetry,
-  onWorkspaceAction,
-  onBridge,
+  onResolve: sendResolve,
+  onRetry: sendRetry,
+  onWorkspaceAction: sendWorkspaceAction,
+  onBridge: sendBridge,
   onOpenChat,
   currentChatKey,
   focusTaskId = null,
@@ -743,11 +743,11 @@ function RunDetail({
   onAskStop,
   onCancelStop,
   onStop,
-  onStartMaster,
+  onStartMaster: startMaster,
   coordinatorBusy,
   projectName,
   onPlanApproved,
-  onRequestPlanChanges,
+  onRequestPlanChanges: requestPlanChanges,
   sharedHeading,
   compactControls,
 }: {
@@ -798,6 +798,17 @@ function RunDetail({
   const available = detail.available ?? detail.ready;
   // Stale evidence stays readable, but cannot drive workspace/gate actions.
   const busy = inputBusy || !detail.ready;
+  // Keep the sender guarded too, including confirmations opened before a
+  // refresh. Stop has its own path and remains available while detail reads.
+  const whenReady = <Args extends unknown[], Result,>(send: (...args: Args) => Result) =>
+    (...args: Args) => { if (!busy && !readOnly) return send(...args); };
+  const onArchive = whenReady(sendArchive);
+  const onResolve = whenReady(sendResolve);
+  const onRetry = whenReady(sendRetry);
+  const onWorkspaceAction = whenReady(sendWorkspaceAction);
+  const onBridge = whenReady(sendBridge);
+  const onStartMaster = startMaster ? whenReady(startMaster) : undefined;
+  const onRequestPlanChanges = whenReady(requestPlanChanges);
   const run = snapshot.runs.find(r => r.id === inputRun.id) ?? inputRun;
   const tasks = available ? snapshot.tasks.filter(t => t.runId === run.id) : inputTasks;
   const attempts = available ? snapshot.attempts.filter(a => a.runId === run.id) : inputAttempts;
@@ -1041,7 +1052,7 @@ function RunDetail({
                   <p id={`${tabsId}-stop`}>Stop this mission? Workers stop and open tasks are cancelled. Archiving also hides it; its history and worktrees are kept.</p>
                   <button ref={cancelRef} type="button" disabled={inputBusy} onClick={onCancelStop}>Cancel</button>
                   <button className="is-danger" type="button" disabled={inputBusy} onClick={() => onStop(false)}>Stop</button>
-                  <button className="is-danger" type="button" disabled={inputBusy} onClick={() => onStop(true)}>Stop and archive</button>
+                  <button className="is-danger" type="button" disabled={busy} onClick={() => { if (!busy) onStop(true); }}>Stop and archive</button>
                 </div>
               ) : (
                 <button className="orch-quiet" type="button" disabled={inputBusy} onClick={(event) => { notePress(event); onAskStop(); }}>Stop</button>
@@ -1518,7 +1529,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, taskNames, gate
           {attempt && onOpenBeside && !open && !beside && <OpenBesideButton className="orch-task-beside" title={task.title}
             onClick={() => onOpenBeside(attempt.workerChatKey)} />}
           {mission && task.assignee && !readOnly && <ReassignButton run={run} task={task} attempts={attempts}
-            open={reassigning} onToggle={() => setReassigning(!reassigning)} />}
+            open={reassigning} busy={busy} onToggle={() => setReassigning(!reassigning)} />}
           <button type="button" className="orch-task-expand" aria-expanded={expanded} aria-controls={detailId}
             aria-label={`${expanded ? "Collapse" : "Expand"} task progress: ${task.title}`}
             title={expanded ? "Collapse task progress" : "Expand task progress"}
@@ -1536,7 +1547,7 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, taskNames, gate
         <span>{failure.note}</span>
         {failure.askCoordinator && <button type="button" className="orch-task-ask-go" onClick={() => onOpenChat(run.coordinatorChatKey)}>Open the coordinator's chat</button>}
       </p>}
-      {mission && reassigning && !readOnly && <ReassignForm run={run} task={task} crew={mission} onDone={() => setReassigning(false)} />}
+      {mission && reassigning && !readOnly && <ReassignForm run={run} task={task} crew={mission} busy={busy} onDone={() => setReassigning(false)} />}
       <div className="orch-task-detail" id={detailId} hidden={!expanded}>
         {/* What the row leaves out: the host's state word, the task's kind
             and size, the decision it is parked on, the step
