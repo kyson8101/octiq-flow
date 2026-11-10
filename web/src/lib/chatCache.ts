@@ -5,12 +5,15 @@ import { migrateMessages } from "./cacheMigration";
 
 /** A reducer checkpoint, not just messages: an incremental replay also needs
  * pending tool calls, compaction state, and replay metadata. */
-export type ChatCheckpoint = { id: string; seq: number; state: ChatState; updatedAt: number };
+export type ChatCheckpoint = { id: string; seq: number; generation?: string; state: ChatState; updatedAt: number };
 const DATABASE = "octiq.chat-cache";
 const TABLE = "checkpoints";
 export const CHAT_CACHE_BYTES = 16 * 1024 * 1024;
 export const CHECKPOINT_BYTES = 8 * 1024 * 1024;
 const SIZES = "sizes";
+// A clear also cancels optional cache operations already waiting for IDB.
+// One counter avoids retaining an entry for every chat ever invalidated.
+let revision = 0;
 
 /** The stamp is the cache's own business: callers hand over a checkpoint and
  *  get one back, and never see this. Shared with lib/store, which keeps the
@@ -49,13 +52,14 @@ function database(): Promise<IDBDatabase | undefined> {
 }
 
 export async function readChatCheckpoint(id: string): Promise<ChatCheckpoint | undefined> {
+  const started = revision;
   const db = await database();
   if (!db) return;
   return new Promise((resolve) => {
     const finish = (value?: ChatCheckpoint) => {
       clearTimeout(timer);
       db.close();
-      resolve(value);
+      resolve(started === revision ? value : undefined);
     };
     const timer = setTimeout(() => finish(), 500);
     try {
@@ -88,10 +92,12 @@ export async function readChatCheckpoint(id: string): Promise<ChatCheckpoint | u
 }
 
 export async function saveChatCheckpoint(checkpoint: ChatCheckpoint): Promise<void> {
+  const started = revision;
   const bytes = valueBytes(checkpoint, CHECKPOINT_BYTES);
   if (bytes > CHECKPOINT_BYTES) { await forgetChatCheckpoint(checkpoint.id); return; }
   const db = await database();
   if (!db) return;
+  if (started !== revision) { db.close(); return; }
   try {
     const tx = db.transaction([TABLE, SIZES], "readwrite");
     const table = tx.objectStore(TABLE);
@@ -123,6 +129,7 @@ export async function saveChatCheckpoint(checkpoint: ChatCheckpoint): Promise<vo
 }
 
 export async function forgetChatCheckpoint(id: string): Promise<void> {
+  revision++;
   const db = await database();
   if (!db) return;
   try { const tx = db.transaction([TABLE, SIZES], "readwrite"); tx.objectStore(TABLE).delete(id); tx.objectStore(SIZES).delete(id); }

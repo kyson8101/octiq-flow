@@ -24,6 +24,54 @@ The 48 MiB ceiling accommodates six windows near the existing 8 MiB window
 target. The fixture's six ordinary windows cost about 22 MiB under the
 conservative estimator. This cap bounds retained reducer data, not browser RSS.
 
+## Record invalidation
+
+`chat-forgotten { key }` invalidates that chat in every tab, including tabs on
+Settings with no transcript subscription. Cancel its active read, remove its
+recent-window slot and history/scroll provenance, clear the CatchUp mark and
+generation, invalidate its IndexedDB checkpoint, and discard the old reducer
+projection. A visible pane immediately requests `chat_page` from the beginning;
+an offscreen chat waits until opened. Old downloads and pending IDB writes must
+not resurrect the discarded record.
+
+Each opening also requests the inexpensive socket command `chat_record_head`
+alongside checkpoint restoration and ordinary catch-up. The retained window
+renders immediately; a checkpoint publishes as soon as IDB returns, without
+waiting for the head reply. Its `{ lastSeq, generation }` is compared against
+the saved mark and generation. A smaller head or changed known generation
+discards the entire stale projection and starts a fresh paged read, even for
+a retained past window. This recovers missed reset events and stale checkpoints
+without joining words from different records. Generation travels with both
+the in-memory CatchUp window and complete checkpoints. Legacy checkpoints with
+no generation can still detect a smaller head; their first successful head read
+establishes the generation for future comparisons.
+
+An older host rejecting the command with `not available on this backend` keeps
+the existing catch-up behavior silently. Such a host cannot provide this reset
+validation. Retention budgets and visible-only subscriptions remain unchanged.
+
+`scripts/test-chat-record-reset.mjs` adapts OCTIQ DEV BACKUP's original double-tab
+reproduction with the agreed head/event contracts. It covers broadcast reset,
+missed reset, changed generation despite a larger sequence, stale checkpoint,
+and a reset while visible. Run it serially with the other browser probes:
+
+```sh
+node scripts/test-chat-record-reset.mjs
+```
+
+These are real App/bridge/IndexedDB checks against an isolated socket fixture;
+the Rust implementation and real-host end-to-end review follow in separate tasks.
+
+H1 fix validation on 2026-11-10: all five reset scenarios passed, replacing the
+old 64 messages / mark 1152 with just the new question and answer (mark 2, or
+1154 in the generation-change case). Evidence: system temporary directory
+`octiq-chat-windows-kYrMA9` (`review.json` and five screenshots). The original
+1280/390 matrix also passed with **both head and transcript replies held**,
+including Settings, scroll anchor, checkpoint display and four-tab offscreen
+flood (zero folds / zero App renders). Its evidence is
+`octiq-chat-windows-FzuERS/results.json` and screenshots. Related Vitest coverage
+passed **183 tests in 13 files**, including turn-clock reload and unread waits.
+
 ## Measurement
 
 `scripts/test-chat-window-cache.mjs` mounts the real App, reducers, rendering,
@@ -94,7 +142,10 @@ an isolated Playwright installation; `OCTIQ_WEB_ROOT` selects the web root.
 CHAT_CACHE_BASELINE=1 node scripts/test-chat-window-cache.mjs
 node scripts/test-chat-window-cache.mjs
 NODE_ENV=production CHAT_CACHE_PROFILE=1 CHAT_CACHE_DESKTOP_ONLY=1 node scripts/test-chat-window-cache.mjs
-pnpm --dir web exec vitest run src/lib/chatWindowCache.test.ts src/lib/loadChat.test.ts src/lib/chatCache.test.ts src/lib/chatHistory.test.ts src/lib/catchUp.test.ts src/lib/chatRetention.test.ts src/lib/chatPlace.test.ts src/lib/replayChat.test.ts --maxWorkers=2
+pnpm --dir web exec vitest run --maxWorkers=2 \
+  src/lib/chatRecord.test.ts src/lib/chatWindowCache.test.ts src/lib/loadChat.test.ts src/lib/loadChat.open.test.tsx \
+  src/lib/chatCache.test.ts src/lib/chatHistory.test.ts src/lib/catchUp.test.ts src/lib/chatRetention.test.ts src/lib/chatPlace.test.ts \
+  src/lib/turnClock.reload.test.ts src/lib/turnClock.unread.test.tsx src/lib/turnClock.test.ts src/lib/restoredPark.test.ts
 pnpm --dir web build
 ```
 

@@ -114,8 +114,9 @@ try {
         if (d.cmd === "chat_page") result = d.args.before == null ? pages[chatId]
           : transcripts[chatId].findLast(page => page.events.at(-1).seq < d.args.before);
         if (d.cmd === "chat_since") result = pages[chatId].events.filter(frame => frame.seq > d.args.after);
+        if (d.cmd === "chat_record_head") result = { lastSeq: pages[chatId].events.at(-1)?.seq ?? 0, generation: "fixture-record" };
         const reply = () => ws.send(JSON.stringify({ t: "reply", id: d.id, ok: true, result }));
-        if (d.cmd === "chat_page" || d.cmd === "chat_since") {
+        if (d.cmd === "chat_page" || d.cmd === "chat_since" || d.cmd === "chat_record_head") {
           if (hold) { heldReplies.push(reply); return; }
           await new Promise(resolve => setTimeout(resolve, 120));
         }

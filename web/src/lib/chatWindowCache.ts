@@ -14,6 +14,7 @@ export const RECENT_CHAT_BYTES = 48 * 1024 * 1024;
 export class ChatWindowCache {
   private recent = new Set<string>();
   private sizes = new WeakMap<ChatState, number>();
+  forget(id: string): void { this.recent.delete(id); }
 
   retain(states: Record<string, ChatState>, shown: ReadonlySet<string>, holds: (id: string) => boolean): Set<string> {
     // Settings/Agents/Projects cover the panes without changing their recency.

@@ -429,3 +429,76 @@ it("evicts historical agent and unmatched outcome projections with their page", 
   expect(Object.keys(options.getState().pendingOutcomes ?? {})).toHaveLength(CHAT_WINDOW_PAGES);
   expect(options.getState().agents.some(a => a.id === "agent-1000")).toBe(false);
 });
+
+
+it.each(["retained", "checkpoint", "past"])("replaces a stale %s record when the head shrinks or generation changes", async source => {
+  for (const changedGeneration of [false, true]) {
+    const options = setup(), history = new ChatHistory();
+    const saved = await replayChat(emptyChat(), [frame(20)], 0, () => false);
+    if (source === "checkpoint") {
+      await saveChatCheckpoint({ id: "a", state: saved, seq: 20, generation: "old", updatedAt: 1 });
+    } else {
+      options.publish(saved);
+      options.catchUp.begin(options.key); options.catchUp.end(options.key, [frame(20)]);
+      options.catchUp.setGeneration(options.key, "old");
+      if (source === "past") history.set("a", 10, 20);
+    }
+    let resolveHead!: (head: { lastSeq: number; generation: string }) => void;
+    let obsoletePage!: (page: { events: Frame[]; context: Frame[]; before: null }) => void;
+    let pages = 0;
+    const requestPage = vi.fn(() => ++pages === 1 && source !== "past"
+      ? new Promise<{ events: Frame[]; context: Frame[]; before: null }>(resolve => { obsoletePage = resolve; })
+      : Promise.resolve({ events: [frame(1)], context: [], before: null }));
+    const request = vi.fn(async () => []);
+    const loading = loadChat({ ...options, history, request, requestPage,
+      requestHead: () => new Promise(resolve => { resolveHead = resolve; }) });
+    await vi.waitFor(() => expect(options.getState().messages.map(m => m.id)).toEqual(["m20"]));
+    // Both transcript and validation requests start while the old window stays visible.
+    if (source !== "past") expect(requestPage).toHaveBeenCalledOnce();
+    resolveHead({ lastSeq: changedGeneration ? 100 : 1, generation: changedGeneration ? "new" : "old" });
+    await loading; // must not wait for the obsolete page to return
+    expect(options.getState().messages.map(m => m.id)).toEqual(["m1"]);
+    expect(options.catchUp.mark(options.key)).toBe(1);
+    expect(options.catchUp.generation(options.key)).toBe(changedGeneration ? "new" : "old");
+    expect(history.isPast("a")).toBe(false);
+    expect(request).not.toHaveBeenCalled();
+    obsoletePage?.({ events: [frame(20)], context: [], before: null });
+    await Promise.resolve();
+    expect(options.getState().messages.map(m => m.id)).toEqual(["m1"]);
+    await vi.waitFor(async () => expect((await readChatCheckpoint("a"))?.generation).toBe(changedGeneration ? "new" : "old"));
+  }
+});
+
+it("keeps a restored checkpoint visible and syncs its tail while the head request waits", async () => {
+  const options = setup();
+  await saveChatCheckpoint({ id: "a", state: await replayChat(emptyChat(), [frame(1)], 0, () => false), seq: 1, generation: "g", updatedAt: 1 });
+  let resolveHead!: (head: { lastSeq: number; generation: string }) => void;
+  const request = vi.fn(async () => [frame(2)]);
+  const loading = loadChat({ ...options, request, requestHead: () => new Promise(resolve => { resolveHead = resolve; }) });
+  await vi.waitFor(() => expect(options.getState().messages.map(m => m.id)).toEqual(["m1", "m2"]));
+  expect(request).toHaveBeenCalledWith(1);
+  resolveHead({ lastSeq: 2, generation: "g" }); await loading;
+  expect(options.catchUp.generation(options.key)).toBe("g");
+});
+
+it("uses the existing catch-up unchanged when an old host has no head command", async () => {
+  const options = setup();
+  await loadChat({ ...options, request: async () => [frame(1)] });
+  const old = options.getState();
+  const request = vi.fn(async () => [frame(2)]);
+  const loading = loadChat({ ...options, request,
+    requestHead: async () => { throw new Error("'chat_record_head' is not available on this backend"); } });
+  expect(options.getState()).toBe(old);
+  await loading;
+  expect(request).toHaveBeenCalledExactlyOnceWith(1);
+  expect(options.getState().messages.map(m => m.id)).toEqual(["m1", "m2"]);
+});
+
+it("discards a stale checkpoint even when the replacement record is empty", async () => {
+  const options = setup();
+  await saveChatCheckpoint({ id: "a", state: await replayChat(emptyChat(), [frame(20)], 0, () => false), seq: 20, updatedAt: 1 });
+  await loadChat({ ...options, request: async () => [], requestPage: async () => ({ events: [], context: [], before: null }),
+    requestHead: async () => ({ lastSeq: 0, generation: "new" }) });
+  expect(options.getState().messages).toEqual([]);
+  expect(options.catchUp.mark(options.key)).toBe(0);
+});

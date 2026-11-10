@@ -40,6 +40,7 @@ import { valueBytes } from "./lib/valueBytes";
 import { loadChat, loadEarlierChat, CHAT_WINDOW_BYTES } from "./lib/loadChat";
 import { ChatHistory, type ChatPage } from "./lib/chatHistory";
 import { ChatWindowCache } from "./lib/chatWindowCache";
+import { invalidateChatRecord, type ChatRecordHead } from "./lib/chatRecord";
 import {
   addUserTurn,
   emptyChat,
@@ -1732,6 +1733,13 @@ export default function App() {
         if (bridge.scopedChats && !screenChats.current.has(id)) return;
         return (earlier ? loadEarlierChat : loadChat)({
         id, key, storedSeq, catchUp: catchUp.current, history: chatHistory.current,
+        requestHead: () => bridge.invoke<ChatRecordHead>("chat_record_head", { key }),
+        onInvalidated: () => {
+          recentChatWindows.current.forget(id);
+          nowPlaying.forget(id);
+          forgetChatPlace(id);
+          setConversations(rows => rows.map(row => row.id === id ? { ...row, messages: [], seq: undefined } : row));
+        },
         requestPage: (before) => bridge.invoke<ChatPage>("chat_page", { key, before }),
         getState: () => chatsRef.current[id] ?? EMPTY,
         publish: (state) => patch(id, () => state),
@@ -1747,6 +1755,26 @@ export default function App() {
     },
     [patch],
   );
+
+  useEffect(() => bridge.on<{ key: string }>("chat-forgotten", payload => {
+    const id = payload && convOf(payload.key);
+    if (!id || gone.current.has(id)) return;
+    // Reset events are broadcast even when this tab only shows Settings and
+    // subscribes to no transcripts. Cancel the old read before clearing marks.
+    chatReads.current.delete(id);
+    nowPlaying.forget(id);
+    invalidateChatRecord({ id, key: payload.key, catchUp: catchUp.current,
+      history: chatHistory.current, recent: recentChatWindows.current,
+      getState: () => chatsRef.current[id] ?? EMPTY, publish: state => patch(id, () => state) });
+    forgetChatPlace(id);
+    setConversations(rows => rows.map(row => row.id === id ? { ...row, messages: [], seq: undefined } : row));
+    if (screenChats.current.has(id)) {
+      setReading(before => ({ ...before, [id]: true }));
+      void catchUpChat(id, 0).catch(() => {}).finally(() => {
+        flushChats(); setReading(before => ({ ...before, [id]: false }));
+      });
+    }
+  }), [catchUpChat, patch, flushChats]);
 
   const loadEarlierFor = useCallback(async (id: string | null, beforePrepend?: () => Promise<void>) => {
     if (!id || !chatHistory.current.hasEarlier(id)) return;
@@ -1989,7 +2017,7 @@ export default function App() {
         if (undoable.has(id) || gone.current.has(id) || chatReads.current.has(id)) continue;
         if (!catchUp.current.holds(keyFor(id)) || chatHistory.current.isPartial(id) || cachedStates.current.get(state) === id) continue;
         cachedStates.current.set(state, id);
-        void saveChatCheckpoint({ id, state, seq: catchUp.current.mark(keyFor(id)), updatedAt: Date.now() });
+        void saveChatCheckpoint({ id, state, seq: catchUp.current.mark(keyFor(id)), generation: catchUp.current.generation(keyFor(id)), updatedAt: Date.now() });
       }
       setConversations((prev) => {
         let list = prev;
