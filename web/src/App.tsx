@@ -39,6 +39,7 @@ import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
 import { valueBytes } from "./lib/valueBytes";
 import { loadChat, loadEarlierChat, CHAT_WINDOW_BYTES } from "./lib/loadChat";
 import { ChatHistory, type ChatPage } from "./lib/chatHistory";
+import { ChatWindowCache } from "./lib/chatWindowCache";
 import {
   addUserTurn,
   emptyChat,
@@ -1168,6 +1169,7 @@ export default function App() {
   // multi-MB object for every chat this tab has ever opened.
   const cachedStates = useRef(new WeakMap<ChatState, string>());
   const chatHistory = useRef(new ChatHistory());
+  const recentChatWindows = useRef(new ChatWindowCache());
   const loadPreview = useCallback((c: Conversation, cancelled: () => boolean) =>
     readChatPreview(
       () => bridge.invoke<ChatPage>("chat_page", { key: keyFor(c.id), before: null }),
@@ -1994,6 +1996,7 @@ export default function App() {
         let touched = false;
         const changedIds = new Set<string>();
         for (const [id, s] of Object.entries(chats)) {
+          if (!screenChats.current.has(id)) continue;
           if (undoable.has(id) || gone.current.has(id) || chatReads.current.has(id) || chatHistory.current.isPartial(id) || !catchUp.current.holds(keyFor(id))) continue;
           // A front-desk chat is never listed or saved: what the person meant
           // to start is the chat it routes them to.
@@ -2206,18 +2209,26 @@ export default function App() {
     return () => { active = false; };
   }, [screenMain, screenBeside, conn, catchUpChat, flushChats]);
 
-  // IndexedDB is the recent-chat cache. RAM holds only the two visible
-  // transcripts; a background stream keeps a bounded preview instead. Do not
-  // release imported/local-only words or a prompt awaiting acknowledgement.
+  // Keep two recent windows under one byte budget, alongside the visible
+  // panes. Partial windows cannot be complete IndexedDB checkpoints: evicting
+  // them on every switch forced a fresh paged replay and an empty transcript.
   useEffect(() => {
     const released = new Set<string>();
     let next = chatsRef.current;
+    const retained = recentChatWindows.current.retain(next, screenChats.current,
+      id => catchUp.current.holds(keyFor(id)));
     for (const [id, state] of Object.entries(next)) {
       if (screenChats.current.has(id)) continue;
+      // An old selection's download must not replace the retained snapshot.
+      const reading = chatReads.current.has(id);
+      if (reading) {
+        chatReads.current.delete(id);
+        catchUp.current.abandon(keyFor(id));
+      }
+      if (retained.has(id)) continue;
       // Local-only imports have no durable record to read back yet.
-      if (!catchUp.current.holds(keyFor(id)) && !chatReads.current.has(id)) continue;
+      if (!catchUp.current.holds(keyFor(id)) && !reading) continue;
       if (catchUp.current.holds(keyFor(id)) && catchUp.current.mark(keyFor(id)) === 0) continue;
-      chatReads.current.delete(id);
       if (!released.size) next = { ...next };
       released.add(id);
       catchUp.current.forget(keyFor(id));
@@ -2225,10 +2236,16 @@ export default function App() {
       const small = chatPreviewState(state);
       next[id] = bridge.scopedChats ? { ...small, messages: small.messages.filter(m => m.role === "user" && !m.echo && !m.takenUp) } : small;
     }
-    if (!released.size) return;
-    writeChats(next, true);
-    setConversations(current => current.map(row => released.has(row.id) && (row.messages.length || row.seq !== undefined)
-      ? { ...row, messages: [], seq: undefined } : row));
+    if (released.size) writeChats(next, true);
+    setConversations(current => {
+      let changed = false;
+      const rows = current.map(row => {
+        if ((!released.has(row.id) && !retained.has(row.id)) || !(row.messages.length || row.seq !== undefined)) return row;
+        changed = true;
+        return { ...row, messages: [], seq: undefined };
+      });
+      return changed ? rows : current;
+    });
   }, [chats, screenMain, screenBeside, writeChats]);
   // The chats whose players may go on playing in place. A playing one in any
   // other chat goes to the floating player (lib/nowPlaying), in the same

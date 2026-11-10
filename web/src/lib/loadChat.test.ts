@@ -108,6 +108,21 @@ it("keeps an imported transcript when the server has no events for it yet", asyn
   expect(options.getState().messages).toEqual(imported.messages);
 });
 
+it("keeps a returned-to past window and its anchor intact until Return to latest is requested", async () => {
+  const options = setup(), history = new ChatHistory();
+  options.publish(await replayChat(emptyChat(), [frame(2)], 0, () => false));
+  options.catchUp.begin(options.key); options.catchUp.end(options.key, [frame(2)]);
+  history.set(options.id, 2, 2, [{ ids: ["m2"], end: 2 }]);
+  const state = options.getState();
+  const request = vi.fn(async () => [frame(100)]);
+  const requestPage = vi.fn(async () => ({ events: [frame(100)], context: [], before: 100 }));
+  await loadChat({ ...options, history, request, requestPage });
+  expect(options.getState()).toBe(state);
+  expect(history.get(options.id)).toEqual({ before: 2, end: 2 });
+  expect(requestPage).not.toHaveBeenCalled();
+  expect(request).not.toHaveBeenCalled();
+});
+
 // The reported bug: a past session picked up into a new chat, nothing said,
 // reopened where the page's own copy is gone. Its history is the start of the
 // chat's record on the server now, so it comes back from there — still

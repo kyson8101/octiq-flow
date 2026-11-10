@@ -19,10 +19,10 @@ const tick = () => vi.advanceTimersByTimeAsync(1100);
 beforeEach(() => { vi.useFakeTimers(); mock.state = "open"; mock.handlers.clear(); mock.states.clear(); mock.reads = []; });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
-function readDetail(small: OrchestrationSnapshot, details: ReadonlyMap<string, OrchestrationSnapshot>) {
-  vi.spyOn(orchestrationFeed, "getState").mockReturnValue({ snapshot: small, error: null, details });
+function readDetail(small: OrchestrationSnapshot, details: ReadonlyMap<string, OrchestrationSnapshot>, id = "r", detailPending?: ReadonlySet<string>) {
+  vi.spyOn(orchestrationFeed, "getState").mockReturnValue({ snapshot: small, error: null, details, detailPending });
   let shown!: ReturnType<typeof useRunDetail>;
-  function Probe() { shown = useRunDetail(small, "r"); return null; }
+  function Probe() { shown = useRunDetail(small, id); return null; }
   renderToStaticMarkup(createElement(Probe));
   return shown;
 }
@@ -39,6 +39,39 @@ it.each(["summary-first", "detail-first"])("waits for the same run revision in b
   expect(readDetail(next, new Map([["r", { ...next, summary: false }]])).ready).toBe(true);
 });
 
+it("keeps a running detail visible through repeated execution invalidations and a failed refresh", async () => {
+  const feed = createOrchestrationFeed(), off = feed.subscribe(() => {});
+  mock.reads[0].resolve(summary()); await tick();
+  const release = feed.detail("r");
+  mock.reads[1].resolve({ ...summary(), summary: false }); await tick();
+  for (let n = 2; n < 5; n++) {
+    emit("orchestration-changed", { runId: "r", revision: `epoch:${n}`, attemptId: "a-r", execution: { state: "executing" } });
+    const shown = readDetail(feed.getState().snapshot!, feed.getState().details!, "r", feed.getState().detailPending);
+    expect(shown).toMatchObject({ available: true, ready: false });
+    expect(shown.displaySnapshot.runs[0].status).toBe("running");
+    await tick();
+    mock.reads.at(-1)!.reject(new Error("offline")); await tick();
+    expect(readDetail(feed.getState().snapshot!, feed.getState().details!, "r", feed.getState().detailPending)).toMatchObject({ available: true, ready: false });
+  }
+  release(); off();
+});
+
+it("can show the first detail even when a busy worker invalidates every in-flight read", async () => {
+  const feed = createOrchestrationFeed(), off = feed.subscribe(() => {});
+  mock.reads[0].resolve(summary()); await tick();
+  const release = feed.detail("r");
+  emit("orchestration-changed", { runId: "r", revision: "epoch:2", attemptId: "a-r", execution: { state: "executing" } });
+  mock.reads[1].resolve({ ...summary(), summary: false }); await tick();
+  expect(readDetail(feed.getState().snapshot!, feed.getState().details!, "r", feed.getState().detailPending)).toMatchObject({ available: true, ready: false });
+  expect(mock.reads.filter(r => r.cmd === "orchestration_run_detail")).toHaveLength(2);
+  release(); off();
+});
+
+it("never borrows another run's display snapshot", () => {
+  expect(readDetail(summary("other"), new Map([["r", { ...summary(), summary: false }]]), "other"))
+    .toMatchObject({ available: false, ready: false });
+});
+
 it("does not restore absent summary state at any nesting level", () => {
   const small = summary(); small.tasks[0].status = "ready";
   const full = structuredClone(small);
@@ -53,22 +86,26 @@ it("does not restore absent summary state at any nesting level", () => {
   expect(shown.attempts[0].execution).not.toHaveProperty("latestError");
 });
 
-it("withdraws invalidated detail, discards an invalidated in-flight reply and stays unready after failed refetch", async () => {
+it("retains invalidated detail for display while exact readiness waits for a matching refetch", async () => {
   const feed = createOrchestrationFeed(); const off = feed.subscribe(() => {});
   mock.reads[0].resolve(summary()); await tick();
   const release = feed.detail("r");
   mock.reads[1].resolve({ ...summary(), summary: false }); await tick();
   const change = () => emit("orchestration-changed", { runId: "r", revision: "epoch:2" });
-  change(); expect(feed.getState().details?.has("r")).toBe(false);
+  change(); expect(feed.getState().details?.has("r")).toBe(true);
+  // The summary request has not answered yet. Equal old revisions still
+  // cannot authorize a click after the invalidation announcement.
+  expect(readDetail(feed.getState().snapshot!, feed.getState().details!, "r", feed.getState().detailPending).ready).toBe(false);
   await tick();
   const first = mock.reads.filter(r => r.cmd === "orchestration_run_detail").at(-1)!;
   change(); first.resolve({ ...summary(), summary: false });
   await vi.advanceTimersByTimeAsync(0);
-  expect(feed.getState().details?.has("r")).toBe(false);
+  expect(feed.getState().details?.has("r")).toBe(true);
   await tick();
   mock.reads.filter(r => r.cmd === "orchestration_run_detail").at(-1)!.reject(new Error("offline")); await tick();
   expect(feed.getState().detailErrors?.get("r")).toContain("offline");
-  expect(readDetail(summary(), feed.getState().details!)).toMatchObject({ ready: false });
+  const changed = summary(); changed.runRevisions = { r: "epoch:2" };
+  expect(readDetail(changed, feed.getState().details!)).toMatchObject({ available: true, ready: false });
   release(); off();
 });
 it("whole-app readers receive only summary, with per-run invalidation and a follow-up for in-flight changes", async () => {
@@ -95,7 +132,7 @@ it("leases detail separately, refetches only open runs and ignores replies after
   mock.reads[2].resolve(summary("other")); await tick();
   emit("orchestration-changed", { runId: "r", attemptId: "a-r", execution: { state: "waiting_tool" } }); await tick();
   expect(mock.reads.at(-1)?.cmd).toBe("orchestration_run_detail");
-  a(); expect(feed.getState().details?.size).toBe(0); b(); b(); expect(feed.getState().details?.size).toBe(0);
+  a(); expect(feed.getState().details?.size).toBe(1); b(); b(); expect(feed.getState().details?.size).toBe(0);
   const c = feed.detail("r"); const latest = mock.reads.at(-1)!;
   mock.reads.at(-2)!.resolve(detail); await tick(); expect(feed.getState().details?.size).toBe(0);
   latest.resolve(detail); await tick(); expect(feed.getState().details?.size).toBe(1); c(); off();

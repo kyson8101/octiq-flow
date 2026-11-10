@@ -51,6 +51,9 @@ export type ChatLoadOptions = {
 
 export async function loadChat(options: ChatLoadOptions): Promise<void> {
   const { id, key, catchUp, getState, publish, request, cancelled } = options;
+  // A retained older window still belongs to the reader's scroll anchor.
+  // Only explicit Return to latest forgets that window before calling here.
+  if (catchUp.holds(key) && options.history?.isPast(id)) return;
   let { storedSeq } = options;
   if (!catchUp.holds(key)) {
     const cached = await readChatCheckpoint(id);

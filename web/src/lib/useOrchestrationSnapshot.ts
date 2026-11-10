@@ -80,7 +80,13 @@ export function useRunDetail(summary: OrchestrationSnapshot, id: string | null) 
   id = shown ? id : null;
   useEffect(() => id ? orchestrationFeed.detail(id) : undefined, [id]);
   const detail = id ? feed.details?.get(id) : undefined;
-  const ready = !summary.summary || !!(detail && id && coversRun(summary, detail, id));
+  const ready = !summary.summary || !!(detail && id && !feed.detailPending?.has(id) && coversRun(summary, detail, id));
+  // Display continuity and permission to act are different facts. Only the
+  // matching revision below may be used by PlanReview and decision cards.
+  const available = !summary.summary || !!(detail && id
+    && summary.runs.some(run => run.id === id) && detail.runs.some(run => run.id === id));
+  const displaySnapshot = useMemo(() => summary.summary && available && detail && id
+    ? detailedRun(summary, detail, id) : summary, [summary, available, detail, id]);
   const snapshot = useMemo(() => summary.summary && ready && detail && id ? detailedRun(summary, detail, id) : summary, [summary, ready, detail, id]);
-  return { snapshot, ready, error: id ? feed.detailErrors?.get(id) : undefined };
+  return { snapshot, displaySnapshot, available, ready, error: id ? feed.detailErrors?.get(id) : undefined };
 }

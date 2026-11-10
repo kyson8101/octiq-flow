@@ -16,6 +16,7 @@ import type { ExecutionState } from "../lib/orchestration";
 import { OrchestrationPanel, retryLaunchArgs, ROW_FOCUS, type OrchestrationSnapshot } from "./OrchestrationPanel";
 import { PendingActionsContext } from "./PendingActionBadge";
 import { pendingByTask, type PendingAction } from "../lib/pendingActions";
+import { orchestrationFeed } from "../lib/orchestrationFeed";
 
 const snapshot: OrchestrationSnapshot = {
   runs: [{
@@ -73,6 +74,29 @@ const snapshot: OrchestrationSnapshot = {
   }],
   messages: [],
 };
+
+it("keeps working run content mounted during refresh, with stale decisions disabled", () => {
+  const full = structuredClone(snapshot);
+  full.runRevisions = { run_1: "epoch:1" };
+  full.runs[0].status = "running";
+  full.tasks[0].status = "running";
+  full.attempts[0].status = "running";
+  full.attempts[0].execution = { state: "executing", lastActivityAt: 1000, lastProgressAt: 1000,
+    lastProgress: "work", currentOperation: "Read", retryCount: 0 };
+  try {
+    for (const revision of ["epoch:1", "epoch:2", "epoch:3"]) {
+      const small = structuredClone(full);
+      small.summary = true; small.runRevisions = { run_1: revision }; small.tasks[0].spec = "";
+      vi.spyOn(orchestrationFeed, "getState").mockReturnValue({ snapshot: small, error: null, details: new Map([["run_1", full]]) });
+      const html = renderToStaticMarkup(<OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+        initialSnapshot={small} onOpenChat={() => {}} onClose={() => {}} />);
+      expect(html).not.toContain("Reading run");
+      expect(html).toContain("Build the host ledger");
+      expect(html).toContain("Persist authoritative worker state.");
+      if (revision !== "epoch:1") expect(html).toMatch(/aria-disabled="true"/);
+    }
+  } finally { vi.restoreAllMocks(); }
+});
 
 describe("host execution evidence", () => {
   it("shows a dispatch capacity failure without a worker report or an active-work count", () => {

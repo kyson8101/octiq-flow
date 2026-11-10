@@ -35,6 +35,12 @@ function inspect(){
  const tools=state=>state.messages.reduce((n,message)=>n+message.blocks.filter(block=>block.kind==='tool').length,0);
  return {detailIds:feed?[...feed.details.keys()]:[],full:Object.entries(chats).filter(([,state])=>tools(state)>0).map(([id])=>id),rowCopies:conversations.filter(row=>row.messages.some(message=>message.blocks.some(block=>block.kind==='tool'))).map(row=>row.id),backgroundChars:Object.entries(chats).filter(([id])=>id!==(location.hash.match(/\/c\/([^/]+)/)?.[1]??'')).map(([id,state])=>[id,JSON.stringify(state.messages).length]),windows:history?[...history.windows.values()]:[],weakSaveMarker:values.some(value=>value?.current instanceof WeakMap)};
 }
+function checkWindows(state, shown){
+ for(const id of shown)assert.ok(state.full.includes(id),`visible window missing: ${id}: ${JSON.stringify(state)}`);
+ const recent=state.full.filter(id=>!shown.includes(id));
+ assert.ok(recent.length<=2,'only two recent offscreen windows may remain');
+ assert.ok(state.backgroundChars.filter(([id])=>!shown.includes(id)&&!recent.includes(id)).every(([,bytes])=>bytes<2000),JSON.stringify(state));
+}
 let server,browser,cacheDir;
 try{
  cacheDir=await mkdtemp(join(tmpdir(),'octiq-chat-memory-vite-'));
@@ -69,13 +75,13 @@ try{
    if(i%10===0)console.log('opening',width,i);await page.evaluate(id=>{location.hash='#/c/'+id;},`memory-${i}`);
    await page.locator('.msgs').getByText(`Answer memory-${i}.`,{exact:true}).waitFor();
    await page.waitForTimeout(i%10===5?900:50);
-   const state=await page.evaluate(inspect);assert.deepEqual(state.full,[`memory-${i}`]);assert.ok(state.rowCopies.length<=1);if(i%10===5)assert.deepEqual(state.rowCopies,[`memory-${i}`],'full checkpoints must exercise sidebar transcript copies');assert.ok(state.windows.every(window=>Object.keys(window).join() ==='before'));assert.ok(state.weakSaveMarker);assert.ok(state.backgroundChars.every(([,bytes])=>bytes<2000),JSON.stringify(state));
+   const state=await page.evaluate(inspect);checkWindows(state,[`memory-${i}`]);assert.ok(state.rowCopies.length<=1);if(i%10===5)assert.deepEqual(state.rowCopies,[`memory-${i}`],'full checkpoints must exercise sidebar transcript copies');assert.ok(state.windows.every(window=>Object.keys(window).join() ==='before'));assert.ok(state.weakSaveMarker);
   }
   console.log('opened all',width);
   // All incoming background transcripts are previews, including their tools.
   for(let i=0;i<20;i++)for(const frame of frames('background-'+i).slice(2))socket.send(JSON.stringify(modern?{t:'event',event:'chat-stream-activity',payload:{key:'chat:background-'+i,seq:frame.seq,running:true,busy:true,turnId:'background-turn',work:true,lastActivityAt:1}}:{t:'event',event:'chat-event',payload:{key:'chat:background-'+i,seq:frame.seq,event:frame.event}}));
   await page.waitForTimeout(500);
-  const state=await page.evaluate(inspect);assert.equal(state.full.length,1);assert.ok(state.backgroundChars.every(([,bytes])=>bytes<2000),JSON.stringify(state));
+  const state=await page.evaluate(inspect);checkWindows(state,[`memory-${count-1}`]);
   if(count>5){
    await page.evaluate(()=>{location.hash='#/c/memory-5';});await page.locator('.msgs').getByText('Answer memory-5.',{exact:true}).waitFor();
    assert.equal(reads.get('memory-5'),2,'a disk checkpoint still probes the bounded recent page before incremental catch-up');
@@ -85,11 +91,10 @@ try{
   // Size the actual chat area: the run column can leave only one pane at 1280.
   await page.evaluate(()=>{location.hash='#/c/memory-1/beside/memory-2';});
   if(width===1280){await page.setViewportSize({width:2200,height:840});await page.waitForTimeout(200);}
-  let split;
-  for(let attempt=0;attempt<50;attempt++){split=await page.evaluate(inspect);if(split.full.length===(width===1280?2:1))break;await page.waitForTimeout(100);}
   const expected=width===1280?['memory-1','memory-2']:['memory-2'];
-  if(JSON.stringify(split.full.sort())!==JSON.stringify(expected))console.log('split geometry',JSON.stringify(await page.evaluate(()=>({hash:location.hash,panes:[...document.querySelectorAll('.beside-pane,.workflow-chat-surface,.workflow-run-surface,.chat-app-surface')].map(e=>({class:e.className,hidden:e.hidden,width:e.getBoundingClientRect().width,height:e.getBoundingClientRect().height,display:getComputedStyle(e).display})),bodyWidth:innerWidth}))),[...selected]);
-  assert.deepEqual(split.full.sort(),expected);
+  let split;
+  for(let attempt=0;attempt<50;attempt++){split=await page.evaluate(inspect);if(expected.every(id=>split.full.includes(id)))break;await page.waitForTimeout(100);}
+  checkWindows(split,expected);
   assert.ok(split.rowCopies.length<=2);
   if(modern){
    assert.equal(commands[0],'chat_subscribe','subscription must be the first invoke');
@@ -113,7 +118,13 @@ try{
    assert.equal(connections.length,previous+1,'the fixture must exercise reconnect');
    assert.ok(connections.every(c=>c[0]==='chat_subscribe'),'every socket subscribes before any other invoke');
    assert.deepEqual([...selected].sort(),expected.map(id=>'chat:'+id));
-   assert.deepEqual((await page.evaluate(inspect)).full.sort(),expected);
+   // Subscription readiness precedes the sequential pane catch-ups. Wait for
+   // both reducer windows instead of assuming a fixed delay includes them.
+   await page.waitForFunction(({read,shown})=>{
+    const state=(0,eval)(`(${read})`)();
+    return shown.every(id=>state.full.includes(id));
+   },{read:inspect.toString(),shown:expected});
+   checkWindows(await page.evaluate(inspect),expected);
   }
   assert.deepEqual(errors,[]);results.push({modern,subscriptions:subscriptions.length,width,opened:count,background:20,fullTranscripts:state.full.length,splitTranscripts:split.full.length,reopenAndEarlier:'pass'});await context.close();
  }

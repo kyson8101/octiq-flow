@@ -720,7 +720,7 @@ function RunDetail({
   messages: inputMessages,
   notifications: inputNotifications,
   answers,
-  busy,
+  busy: inputBusy,
   readOnly,
   confirmStop,
   runError,
@@ -794,12 +794,15 @@ function RunDetail({
   compactControls: boolean;
 }) {
   const detail = useRunDetail(inputSnapshot, inputRun.id);
-  const snapshot = detail.snapshot;
+  const snapshot = detail.displaySnapshot ?? detail.snapshot;
+  const available = detail.available ?? detail.ready;
+  // Stale evidence stays readable, but cannot drive workspace/gate actions.
+  const busy = inputBusy || !detail.ready;
   const run = snapshot.runs.find(r => r.id === inputRun.id) ?? inputRun;
-  const tasks = detail.ready ? snapshot.tasks.filter(t => t.runId === run.id) : inputTasks;
-  const attempts = detail.ready ? snapshot.attempts.filter(a => a.runId === run.id) : inputAttempts;
-  const messages = detail.ready ? snapshot.messages.filter(m => m.runId === run.id) : inputMessages;
-  const notifications = detail.ready ? (snapshot.notifications ?? []).filter(n => n.runId === run.id) : inputNotifications;
+  const tasks = available ? snapshot.tasks.filter(t => t.runId === run.id) : inputTasks;
+  const attempts = available ? snapshot.attempts.filter(a => a.runId === run.id) : inputAttempts;
+  const messages = available ? snapshot.messages.filter(m => m.runId === run.id) : inputMessages;
+  const notifications = available ? (snapshot.notifications ?? []).filter(n => n.runId === run.id) : inputNotifications;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [confirmEnd, setConfirmEnd] = useState<"close" | "abandon" | null>(null);
@@ -842,7 +845,7 @@ function RunDetail({
   };
   // A finished run's specs, results and bodies are left out of the tab's
   // whole-ledger read; showing the run is when they are asked for.
-  const brief = !detail.ready;
+  const brief = !available;
   // A mission's plan goes back to approval when a task changes hands, and the
   // rows are where the next change of hands, or the correction of a wrong one,
   // is made. So they stay, unfiltered, with every start held by the host.
@@ -914,6 +917,7 @@ function RunDetail({
 
   return (
     <section ref={detailRef} className="orch-run-detail" aria-label={sharedHeading ? run.objective : undefined} aria-labelledby={sharedHeading ? undefined : "orch-run-title"}>
+      {detail.error && <p role="status">{detail.error}</p>}
       {!sharedHeading && <header className="orch-run-head">
         <div className="orch-status-line"><StatusMark status={shownRunStatus(run, tasks)} />{statusLabel(shownRunStatus(run, tasks))}</div>
         <h2 id="orch-run-title">{run.objective}</h2>
@@ -1035,12 +1039,12 @@ function RunDetail({
                 <div className="orch-stop-confirm" role="group" aria-labelledby={`${tabsId}-stop`}
                   onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onCancelStop(); } }}>
                   <p id={`${tabsId}-stop`}>Stop this mission? Workers stop and open tasks are cancelled. Archiving also hides it; its history and worktrees are kept.</p>
-                  <button ref={cancelRef} type="button" disabled={busy} onClick={onCancelStop}>Cancel</button>
-                  <button className="is-danger" type="button" disabled={busy} onClick={() => onStop(false)}>Stop</button>
-                  <button className="is-danger" type="button" disabled={busy} onClick={() => onStop(true)}>Stop and archive</button>
+                  <button ref={cancelRef} type="button" disabled={inputBusy} onClick={onCancelStop}>Cancel</button>
+                  <button className="is-danger" type="button" disabled={inputBusy} onClick={() => onStop(false)}>Stop</button>
+                  <button className="is-danger" type="button" disabled={inputBusy} onClick={() => onStop(true)}>Stop and archive</button>
                 </div>
               ) : (
-                <button className="orch-quiet" type="button" disabled={busy} onClick={(event) => { notePress(event); onAskStop(); }}>Stop</button>
+                <button className="orch-quiet" type="button" disabled={inputBusy} onClick={(event) => { notePress(event); onAskStop(); }}>Stop</button>
               )
             )}
             {!readOnly && mission && !closed && !confirmStop && !confirmEnd && <button className="orch-quiet" type="button" disabled={busy}

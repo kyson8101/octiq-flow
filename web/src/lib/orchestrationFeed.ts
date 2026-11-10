@@ -30,6 +30,8 @@ export type OrchestrationFeedState = {
   /** Full text is leased only by mounted run surfaces, never by app readers. */
   details?: ReadonlyMap<string, OrchestrationSnapshot>;
   detailErrors?: ReadonlyMap<string, string>;
+  /** Invalidated evidence may stay visible but cannot authorize a decision. */
+  detailPending?: ReadonlySet<string>;
 };
 
 type Patch = (snapshot: OrchestrationSnapshot) => OrchestrationSnapshot;

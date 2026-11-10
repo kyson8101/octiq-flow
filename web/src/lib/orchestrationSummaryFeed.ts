@@ -41,7 +41,7 @@ export function compactExecution(execution: WorkerExecution): WorkerExecution {
 
 type Lease = { readers: number; reading: boolean; dirty: boolean; timer?: ReturnType<typeof setTimeout> };
 export function createOrchestrationFeed() {
-  let state: OrchestrationFeedState = { snapshot: null, error: null, details: new Map(), detailErrors: new Map() };
+  let state: OrchestrationFeedState = { snapshot: null, error: null, details: new Map(), detailErrors: new Map(), detailPending: new Set() };
   const listeners = new Set<() => void>();
   const leases = new Map<string, Lease>();
   const legacy = createLegacyOrchestrationFeed();
@@ -80,10 +80,15 @@ export function createOrchestrationFeed() {
         if (!unavailable(e)) throw e;
         detail = await bridge.invoke<OrchestrationSnapshot>("orchestration_snapshot", { runId: id });
       }
-      if (leases.get(id) !== lease || lease.dirty) return;
+      // A busy worker can invalidate every read before it returns. Keep that
+      // answer for display; its revision still cannot authorize a decision.
+      // The dirty lease schedules a follow-up without blanking the surface.
+      if (leases.get(id) !== lease) return;
       const details = new Map(state.details).set(id, detail);
       const errors = new Map(state.detailErrors); errors.delete(id);
-      state = { ...state, details, detailErrors: errors }; notify(true);
+      const pending = new Set(state.detailPending);
+      if (!lease.dirty) pending.delete(id);
+      state = { ...state, details, detailErrors: errors, detailPending: pending }; notify(true);
     } catch (e) {
       if (leases.get(id) === lease && !lease.dirty) {
         state = { ...state, detailErrors: new Map(state.detailErrors).set(id, String(e)) }; notify(true);
@@ -94,14 +99,16 @@ export function createOrchestrationFeed() {
     }
   };
   const invalidateDetail = (id?: string) => {
-    const details = new Map(state.details), errors = new Map(state.detailErrors);
+    const errors = new Map(state.detailErrors);
+    const pending = new Set(state.detailPending);
     for (const [key, lease] of leases) {
       if (id && key !== id) continue;
       lease.dirty = true;
-      details.delete(key); errors.delete(key);
+      pending.add(key);
+      errors.delete(key);
       if (!lease.reading && !lease.timer) lease.timer = setTimeout(() => { lease.timer = undefined; void detailRead(key, lease); }, NOTIFY_MS);
     }
-    state = { ...state, details, detailErrors: errors }; notify(true);
+    state = { ...state, detailErrors: errors, detailPending: pending }; notify(true);
   };
   const runRead = async () => {
     if (reading || (!whole && !dirty.size && !waiters.length)) return;
@@ -220,7 +227,8 @@ export function createOrchestrationFeed() {
         leases.delete(id); clearTimeout(held.timer); legacyReleases.get(held)?.(); legacyReleases.delete(held);
         const details = new Map(state.details); details.delete(id);
         const errors = new Map(state.detailErrors); errors.delete(id);
-        state = { ...state, details, detailErrors: errors }; notify(true);
+        const pending = new Set(state.detailPending); pending.delete(id);
+        state = { ...state, details, detailErrors: errors, detailPending: pending }; notify(true);
       };
     },
   };
