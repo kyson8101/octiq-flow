@@ -48,6 +48,8 @@ pub struct Asked {
     pub run_ids: Vec<String>,
     pub items: Vec<Item>,
     pub processing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approved: Option<bool>,
     pub results: Vec<ItemResult>,
 }
 
@@ -289,6 +291,7 @@ impl OrchestrationStore {
             run_ids: runs.into_iter().map(|r| r.id).collect(),
             items,
             processing: false,
+            approved: None,
             results: Vec::new(),
         };
         let mut pending = self.cleanup_requests.lock().map_err(|e| e.to_string())?;
@@ -410,6 +413,7 @@ impl OrchestrationStore {
                 self.mutate(|_| Ok(()))?;
             }
             p.asked.processing = true;
+            p.asked.approved = Some(approve);
             p.asked.clone()
         };
         crate::bus::emit(
@@ -556,6 +560,11 @@ mod tests {
 
         fn assert_progress(&self, card: &Asked, result: &Settled, tap: &crate::bus::tap::Tap) {
             assert!(card.results.is_empty());
+            assert_eq!(card.approved, None);
+            assert!(serde_json::to_value(card)
+                .unwrap()
+                .get("approved")
+                .is_none());
             let events: Vec<_> = tap
                 .heard()
                 .into_iter()
@@ -586,6 +595,7 @@ mod tests {
                 for (completed, snapshot) in snapshots.iter().enumerate() {
                     let mut expected = serde_json::to_value(card).unwrap();
                     expected["processing"] = json!(true);
+                    expected["approved"] = json!(result.approved);
                     expected["results"] = json!(&result.items[..completed]);
                     assert_eq!(*snapshot, json!([expected]));
                 }

@@ -311,8 +311,9 @@ forgets consent, never executes it. The request computes a proposal only; it
 never stops workers or removes folders. The authenticated browser uses:
 
 - `orchestration_workspace_cleanup_request_pending {}` → `Asked[]` (all pending
-  cards, including `processing:true` and completed `results` while the host
-  handles one, so a page reload recovers progress).
+  cards, including `processing:true`, the person's `approved` answer and
+  completed `results` while the host handles one, so a page reload recovers
+  progress). `Asked.approved` appears only while `processing` is true.
 - `orchestration_workspace_cleanup_request_answer {id,approve:boolean}` →
   `Settled`; these two commands are socket-only. There is no answer hook/MCP.
 - Bus event `orchestration-workspace-cleanup-request`:
@@ -328,6 +329,7 @@ never stops workers or removes folders. The authenticated browser uses:
 ```ts
 type Asked = {
   id: string; chatKey: string; runIds: string[]; processing: boolean;
+  approved?: boolean; // Present only while processing; true for Approve, false for Deny.
   results: ItemResult[]; // Initially empty; completed items in processing order.
   items: {
     id: string; kind: "task-worktree" | "mission"; runId: string;
