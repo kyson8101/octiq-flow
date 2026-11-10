@@ -1,8 +1,11 @@
 import type { ChatState } from "./chat";
 import { valueBytes } from "./valueBytes";
 
-export const RECENT_CHAT_WINDOWS = 2;
-export const RECENT_CHAT_BYTES = 8 * 1024 * 1024;
+// Offscreen windows, in addition to the visible pane(s), share a conservative
+// UTF-16 budget. An indivisible 23 MB turn may use most of it alone; above the
+// budget the chat still falls back to the existing paged replay/checkpoint path.
+export const RECENT_CHAT_WINDOWS = 6;
+export const RECENT_CHAT_BYTES = 48 * 1024 * 1024;
 
 /** Only recency and weak size measurements live here. App owns the single
  * copy of each reducer window, its CatchUp mark and ChatHistory provenance.
@@ -13,8 +16,8 @@ export class ChatWindowCache {
   private sizes = new WeakMap<ChatState, number>();
 
   retain(states: Record<string, ChatState>, shown: ReadonlySet<string>, holds: (id: string) => boolean): Set<string> {
-    // Covered app surfaces still release transcripts (Settings, Agents, etc.).
-    if (!shown.size) { this.recent.clear(); return new Set(); }
+    // Settings/Agents/Projects cover the panes without changing their recency.
+    // They still obey the same count/byte budget, and deleted chats drop out.
     for (const id of shown) { this.recent.delete(id); this.recent.add(id); }
     const keep = new Set<string>();
     let bytes = 0;

@@ -2209,9 +2209,11 @@ export default function App() {
     return () => { active = false; };
   }, [screenMain, screenBeside, conn, catchUpChat, flushChats]);
 
-  // Keep two recent windows under one byte budget, alongside the visible
+  // Keep six recent windows under one byte budget, alongside the visible
   // panes. Partial windows cannot be complete IndexedDB checkpoints: evicting
   // them on every switch forced a fresh paged replay and an empty transcript.
+  // Retention does not widen the socket subscription: offscreen snapshots
+  // stay still, then CatchUp fills their missing tail when shown again.
   useEffect(() => {
     const released = new Set<string>();
     let next = chatsRef.current;
