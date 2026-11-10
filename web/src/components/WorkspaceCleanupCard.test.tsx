@@ -91,6 +91,17 @@ describe("the coordinator's cleanup card", () => {
     expect(html).toContain(">Removing…</p>");
   });
 
+  it("uses neutral progress on reload when the host has not supplied the answer", () => {
+    const html = draw({ ...cleanupAsked, processing: true, results: [cleanupSettled.items[0]] });
+    expect(html).toContain("Working…");
+    expect(html).toContain("1/2");
+    expect(html).toContain(">Removed</p>");
+    expect(html).toContain(">Waiting…</p>");
+    expect(html).not.toContain("Removing");
+    expect(html).not.toContain("Keeping");
+    expect(html.match(/disabled=""/g)).toHaveLength(2);
+  });
+
   it("stays disabled after remount while the same request's answer is out", async () => {
     let resolve!: () => void;
     const pending = once(cleanupFlight(cleanupAsked.id), () => new Promise<void>((done) => { resolve = done; }));

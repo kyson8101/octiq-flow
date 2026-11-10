@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PendingRequests } from "./pendingRequests";
-import { applyCleanupEvent, cleanupAsk, cleanupOutcome, cleanupRequest, cleanupResult, type CleanupCard, type CleanupEvent } from "./workspaceCleanup";
+import { applyCleanupEvent, CleanupRequests, cleanupAsk, cleanupOutcome, cleanupRequest, cleanupResult, type CleanupEvent } from "./workspaceCleanup";
 import { pendingReading, pendingLabel, pendingTone, WAIT_SOURCES } from "./pendingActions";
 import { EMPTY_ORCHESTRATION } from "./orchestration";
 import { waitingChats } from "./chatWait";
@@ -39,14 +38,75 @@ describe("cleanup card reading", () => {
     expect(cleanupAsk(processing)).toBe("Removing 3 worktrees…");
     expect(cleanupAsk({ ...processing, items: [cleanupAsked.items[0]] })).toBe("Removing 1 worktree…");
     expect(cleanupAsk({ ...processing, approved: false })).toBe("Keeping them…");
+    expect(cleanupAsk({ ...processing, approved: undefined })).toBe("Working…");
     expect(cleanupAsk({ ...processing, items: [{ ...cleanupAsked.items[1], worktrees: [] }] })).toBe("Closing 1 mission…");
   });
 });
 
 describe("cleanup pending reconciliation", () => {
-  it("takes the list on reconnect, including the host's processing state", () => {
-    const store = new PendingRequests<CleanupCard>();
-    const reloaded = { ...cleanupAsked, processing: true, approved: false, results: [cleanupSettled.items[0]] };
+  it("keeps processing and the first item received before the first stale pending list", () => {
+    const store = new CleanupRequests();
+    const token = store.begin();
+    applyCleanupEvent(store, { state: "processing", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, approved: true });
+    applyCleanupEvent(store, { state: "item", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, item: cleanupSettled.items[0] });
+    expect(store.current).toEqual({}); // No proposal has arrived yet.
+    store.finish(token, [cleanupAsked]);
+    expect(cleanupRequest(store.current.coordinator[0])).toEqual({
+      ...cleanupAsked, processing: true, approved: true, results: [cleanupSettled.items[0]],
+    });
+  });
+
+  it.each([false, true])("unions a second early item with the snapshot's first item (appeared=%s)", (appeared) => {
+    const store = new CleanupRequests();
+    const token = store.begin();
+    applyCleanupEvent(store, { state: "item", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, item: cleanupSettled.items[1] });
+    if (appeared) applyCleanupEvent(store, { state: "appeared", id: cleanupAsked.id, request: cleanupAsked });
+    store.finish(token, [{ ...cleanupAsked, processing: true, approved: false, results: [cleanupSettled.items[0]] }]);
+    expect(cleanupRequest(store.current.coordinator[0])).toEqual({
+      ...cleanupAsked, processing: true, approved: false, results: cleanupSettled.items,
+    });
+  });
+
+  it("merges early progress into an appeared proposal and gives event approval priority", () => {
+    const store = new CleanupRequests();
+    applyCleanupEvent(store, { state: "processing", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, approved: false });
+    applyCleanupEvent(store, { state: "item", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, item: cleanupSettled.items[1] });
+    applyCleanupEvent(store, { state: "appeared", id: cleanupAsked.id, request: { ...cleanupAsked, processing: true, approved: true, results: [cleanupSettled.items[0]] } });
+    expect(cleanupRequest(store.current.coordinator[0])).toEqual({
+      ...cleanupAsked, processing: true, approved: false, results: cleanupSettled.items,
+    });
+    store.finish(store.begin(), [cleanupAsked]);
+    expect(cleanupRequest(store.current.coordinator[0])?.approved).toBe(false);
+    expect(cleanupRequest(store.current.coordinator[0])?.results).toEqual(cleanupSettled.items);
+  });
+
+  it("keeps progress across a failed read and reread, then clears it on a new connection", () => {
+    const store = new CleanupRequests();
+    const failed = store.begin();
+    applyCleanupEvent(store, { state: "processing", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, approved: false });
+    store.cancel(failed);
+    store.finish(store.begin(), [cleanupAsked]);
+    expect(cleanupRequest(store.current.coordinator[0])?.approved).toBe(false);
+    store.resetProgress();
+    store.finish(store.begin(), [cleanupAsked]);
+    expect(store.current.coordinator).toEqual([cleanupAsked]);
+  });
+
+  it("clears early progress on settlement and ignores an obsolete list reply", () => {
+    const store = new CleanupRequests();
+    const obsolete = store.begin();
+    applyCleanupEvent(store, { state: "processing", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, approved: true });
+    applyCleanupEvent(store, { state: "settled", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, result: cleanupSettled });
+    const token = store.begin();
+    expect(store.finish(obsolete, [{ ...cleanupAsked, processing: true, results: cleanupSettled.items }])).toBeNull();
+    store.finish(token, []);
+    store.finish(store.begin(), [cleanupAsked]);
+    expect(store.current.coordinator).toEqual([cleanupAsked]);
+  });
+
+  it.each([true, false, undefined])("takes the reload list with approved=%s, including legacy hosts without it", (approved) => {
+    const store = new CleanupRequests();
+    const reloaded = { ...cleanupAsked, processing: true, ...(approved === undefined ? {} : { approved }), results: [cleanupSettled.items[0]] };
     store.finish(store.begin(), [reloaded]);
     expect(cleanupRequest(store.current.coordinator[0])).toEqual(reloaded);
     store.finish(store.begin(), []);
@@ -54,7 +114,7 @@ describe("cleanup pending reconciliation", () => {
   });
 
   it("keeps an appeared card over an older snapshot, without duplicating it", () => {
-    const store = new PendingRequests<CleanupCard>();
+    const store = new CleanupRequests();
     const token = store.begin();
     applyCleanupEvent(store, { state: "appeared", id: cleanupAsked.id, request: cleanupAsked });
     store.finish(token, [cleanupAsked]);
@@ -62,7 +122,7 @@ describe("cleanup pending reconciliation", () => {
   });
 
   it("keeps settled results over a stale pending list and preserves every item title", () => {
-    const store = new PendingRequests<CleanupCard>();
+    const store = new CleanupRequests();
     store.add(cleanupAsked);
     const token = store.begin();
     const event = { state: "settled" as const, id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, result: cleanupSettled };
@@ -75,7 +135,7 @@ describe("cleanup pending reconciliation", () => {
   });
 
   it("accepts settlement before the pending list arrives without inventing missing metadata", () => {
-    const store = new PendingRequests<CleanupCard>();
+    const store = new CleanupRequests();
     const token = store.begin();
     applyCleanupEvent(store, { state: "settled", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, result: cleanupSettled });
     store.finish(token, [cleanupAsked]);
@@ -84,16 +144,16 @@ describe("cleanup pending reconciliation", () => {
   });
 
   it.each([true, false])("marks processing immediately with approved=%s and keeps it over a stale list", (approved) => {
-    const store = new PendingRequests<CleanupCard>();
+    const store = new CleanupRequests();
     store.add(cleanupAsked);
     const token = store.begin();
     applyCleanupEvent(store, { state: "processing", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, approved });
     store.finish(token, [cleanupAsked]);
-    expect(store.current.coordinator).toEqual([{ ...cleanupAsked, processing: true, approved }]);
+    expect(store.current.coordinator).toEqual([{ ...cleanupAsked, processing: true, approved, results: [] }]);
   });
 
   it("merges each completed item by id and retains the newest host reason", () => {
-    const store = new PendingRequests<CleanupCard>();
+    const store = new CleanupRequests();
     store.add(cleanupAsked);
     const token = store.begin();
     for (const item of cleanupSettled.items) {
@@ -110,7 +170,7 @@ describe("cleanup pending reconciliation", () => {
   });
 
   it("does not let a late appeared event clear ongoing progress", () => {
-    const store = new PendingRequests<CleanupCard>();
+    const store = new CleanupRequests();
     store.add({ ...cleanupAsked, processing: true, approved: false, results: cleanupSettled.items });
     applyCleanupEvent(store, { state: "appeared", id: cleanupAsked.id, request: cleanupAsked });
     expect(cleanupRequest(store.current.coordinator[0])).toEqual({
@@ -119,7 +179,7 @@ describe("cleanup pending reconciliation", () => {
   });
 
   it("ignores progress and old proposals arriving after settlement", () => {
-    const store = new PendingRequests<CleanupCard>();
+    const store = new CleanupRequests();
     store.add(cleanupAsked);
     applyCleanupEvent(store, { state: "settled", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, result: cleanupSettled });
     const settled = store.current;
@@ -133,7 +193,7 @@ describe("cleanup pending reconciliation", () => {
   });
 
   it("ignores an unknown event without changing the store or journaling a receipt", () => {
-    const store = new PendingRequests<CleanupCard>();
+    const store = new CleanupRequests();
     store.add(cleanupAsked);
     const before = store.current;
     const token = store.begin();
@@ -142,8 +202,8 @@ describe("cleanup pending reconciliation", () => {
     expect(store.current).toEqual({});
   });
 
-  it("ignores progress for an unknown card without inventing its proposal", () => {
-    const store = new PendingRequests<CleanupCard>();
+  it("holds progress for an unknown card without inventing its proposal", () => {
+    const store = new CleanupRequests();
     const before = store.current;
     expect(applyCleanupEvent(store, { state: "processing", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, approved: true })).toBe(before);
     expect(applyCleanupEvent(store, { state: "item", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, item: cleanupSettled.items[0] })).toBe(before);

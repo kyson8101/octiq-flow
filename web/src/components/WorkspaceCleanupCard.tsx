@@ -61,7 +61,7 @@ export function WorkspaceCleanupCard({ card, onAnswer, startOpen = false }: {
             <strong>{item.title}</strong>
             {processing && <p>{results.has(item.id)
               ? results.get(item.id)!.status === "removed" ? "Removed" : `Kept · ${results.get(item.id)!.reason}`
-              : request.approved === false ? "Keeping…" : "Removing…"}</p>}
+              : request.approved === undefined ? "Waiting…" : request.approved === false ? "Keeping…" : "Removing…"}</p>}
             <CleanupDetails item={item} />
           </div>
         ))}

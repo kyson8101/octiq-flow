@@ -13,7 +13,7 @@ import { readTwice } from "./listRead";
 import { SILENT_MS, type SourceRead, type WaitSource } from "./pendingActions";
 
 import { PendingRequests, requestConversation, type PendingRequest, type RequestState } from "./pendingRequests";
-import { applyCleanupEvent, cleanupAsk, type CleanupCard, type CleanupEvent, type CleanupSettled } from "./workspaceCleanup";
+import { applyCleanupEvent, CleanupRequests, cleanupAsk, type CleanupCard, type CleanupEvent, type CleanupSettled } from "./workspaceCleanup";
 type Announce = (key: string, kind: NoticeKind, id: string, detail: string) => void;
 
 /** The card lists this hook asks for, and where each request stands for the
@@ -34,8 +34,8 @@ export function lacksCommand(problem: unknown): boolean {
 
 /** Keep the public setters compatible with useState, while applying local
  * answers to the same journal as live events before React schedules a render. */
-function usePendingRequests<T extends PendingRequest>() {
-  const [store] = useState(() => new PendingRequests<T>());
+function usePendingRequests<T extends PendingRequest>(provided?: PendingRequests<T>) {
+  const [store] = useState(() => provided ?? new PendingRequests<T>());
   const [items, publish] = useState(store.current);
   const setItems = useCallback((update: RequestState<T> | ((previous: RequestState<T>) => RequestState<T>)) => {
     publish(store.replace(update));
@@ -48,7 +48,8 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
   const safety = usePendingRequests<SafetyBlockNotice>();
   const prompts = usePendingRequests<Question>();
   const raises = usePendingRequests<AccessRequest>();
-  const cleanups = usePendingRequests<CleanupCard>();
+  const [cleanupStore] = useState(() => new CleanupRequests());
+  const cleanups = usePendingRequests<CleanupCard>(cleanupStore);
   const { items: asks, setItems: setAsks } = permissions;
   const { items: safetyBlocks, setItems: setSafetyBlocks } = safety;
   const { items: questions, setItems: setQuestions } = prompts;
@@ -66,6 +67,12 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
   const mark = useCallback((source: ListSource, state: SourceRead) => {
     setRead((before) => (before[source] === state ? before : { ...before, [source]: state }));
   }, []);
+
+  useEffect(() => {
+    // Rereading on this connection retains early progress; a reconnect starts
+    // a fresh lifetime, with the host's pending list as its source of truth.
+    return () => cleanupStore.resetProgress();
+  }, [conn, cleanupStore]);
 
   // What is waiting on YOU right now, asked for rather than waited for.
   //
@@ -200,7 +207,7 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
         const id = requestConversation(event.request);
         if (id && !event.request.processing) notice.current(event.id, "permission", id, cleanupAsk(event.request));
       }
-      cleanups.publish(applyCleanupEvent(cleanups.store, event));
+      cleanups.publish(applyCleanupEvent(cleanupStore, event));
     });
     return () => {
       offCleanup();
@@ -243,7 +250,7 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
    *  asked, with its one retry and its own five minutes. */
   const reread = useCallback(() => setRound((n) => n + 1), []);
 
-  const { store: cleanupStore, publish: publishCleanup } = cleanups;
+  const { publish: publishCleanup } = cleanups;
   const answerCleanup = useCallback(async (card: CleanupCard, approve: boolean) => {
     const result = await bridge.invoke<CleanupSettled>("orchestration_workspace_cleanup_request_answer", { id: card.id, approve });
     publishCleanup(applyCleanupEvent(cleanupStore, { state: "settled", id: card.id, chatKey: card.chatKey, result }));
