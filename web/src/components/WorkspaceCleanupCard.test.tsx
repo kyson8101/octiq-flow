@@ -54,6 +54,43 @@ describe("the coordinator's cleanup card", () => {
     expect(draw({ ...cleanupAsked, processing: true }).match(/disabled=""/g)).toHaveLength(2);
   });
 
+  it("shows live progress and each item's status even when the proposal was folded", () => {
+    const card = {
+      ...cleanupAsked, processing: true, approved: true, results: cleanupSettled.items,
+      items: [...cleanupAsked.items, { ...cleanupAsked.items[0], id: "task-2", title: "Another worktree" }],
+    };
+    const html = draw(card);
+    expect(html).toContain("Removing 4 worktrees…");
+    expect(html).toContain('role="status"');
+    expect(html).toContain("2/3");
+    expect(html).toContain("items completed");
+    expect(html).toContain("is-processing");
+    expect(html).toContain(">Removed</p>");
+    expect(html).toContain(`Kept · ${cleanupSettled.items[1].reason}`);
+    expect(html).toContain(">Removing…</p>");
+    for (const item of card.items) expect(html).toContain(item.title);
+    expect(html).not.toContain("aria-expanded");
+    expect(html).not.toContain('hidden=""');
+    expect(html).not.toContain("ask-card-dot");
+    expect(html.match(/disabled=""/g)).toHaveLength(2);
+  });
+
+  it("shows zero progress before the first item and keeps denial in view", () => {
+    expect(draw({ ...cleanupAsked, processing: true, approved: true })).toContain("0/2");
+    const html = draw({ ...cleanupAsked, processing: true, approved: false });
+    expect(html).toContain("Keeping them…");
+    expect(html.match(/>Keeping…<\/p>/g)).toHaveLength(2);
+    expect(html).not.toContain("Removing…");
+  });
+
+  it("restores the host's partial results on reload without needing to open details", () => {
+    const html = draw({ ...cleanupAsked, processing: true, approved: true, results: [cleanupSettled.items[0]] });
+    expect(html).toContain("Removing 3 worktrees…");
+    expect(html).toContain("1/2");
+    expect(html).toContain(">Removed</p>");
+    expect(html).toContain(">Removing…</p>");
+  });
+
   it("stays disabled after remount while the same request's answer is out", async () => {
     let resolve!: () => void;
     const pending = once(cleanupFlight(cleanupAsked.id), () => new Promise<void>((done) => { resolve = done; }));
@@ -72,6 +109,13 @@ describe("the coordinator's cleanup card", () => {
     const open = draw(receipt, true);
     for (const item of cleanupSettled.items) expect(open).toContain(item.reason);
     for (const item of cleanupAsked.items) expect(open).toContain(item.title);
+  });
+
+  it("keeps the complete all-removed outcome in the visible settled heading", () => {
+    const items = Array.from({ length: 5 }, (_, i) => ({ id: `task-${i}`, status: "removed" as const, reason: "Done." }));
+    const html = draw({ ...receipt, result: { ...cleanupSettled, items } });
+    expect(html).toContain('class="ask-card-title">5 removed · 0 kept</span>');
+    expect(html).not.toContain("Done.");
   });
 
   it("shows nothing removed for a denial, including all kept reasons", () => {

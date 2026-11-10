@@ -30,4 +30,9 @@ describe("cleanup's one pending reader and chat hand-off", () => {
     expect(card).toContain("useInFlight(cleanupFlight(card.id))");
     expect(card).toContain("once(cleanupFlight(card.id)");
   });
+
+  it("marks the chosen answer locally before invoking the host and clears it on failure", () => {
+    expect(card).toMatch(/setLocalAnswer\(\{ id: card.id, approved: approve \}\);\s*return onAnswer\(card, approve\)/);
+    expect(card).toMatch(/catch \(problem\) \{\s*setLocalAnswer\(null\)/);
+  });
 });

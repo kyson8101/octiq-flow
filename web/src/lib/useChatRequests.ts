@@ -198,7 +198,7 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
     const offCleanup = bridge.on<CleanupEvent>("orchestration-workspace-cleanup-request", (event) => {
       if (event.state === "appeared") {
         const id = requestConversation(event.request);
-        if (id) notice.current(event.id, "permission", id, cleanupAsk(event.request));
+        if (id && !event.request.processing) notice.current(event.id, "permission", id, cleanupAsk(event.request));
       }
       cleanups.publish(applyCleanupEvent(cleanups.store, event));
     });
