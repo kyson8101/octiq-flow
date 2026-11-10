@@ -19,7 +19,9 @@ const run = {id: 'r', objective: 'Running fixture', coordinatorChatKey: 'chat:a'
 const task = {id: 't', runId: 'r', title: 'Visible worker task', spec: 'Worker detail', dependsOn: [], status: 'running', activeAttemptId: 'at', createdAt: 1, updatedAt: 1};
 const attempt = {id: 'at', runId: 'r', taskId: 't', number: 1, workerChatKey: 'chat:w', agent: 'codex', access: 'auto', status: 'running', cwd: '/fixture', branch: 'feature/fixture', isWorktree: true, filesModified: [], createdAt: 1, updatedAt: 1,
   execution: {state: 'executing', lastActivityAt: 1, lastProgressAt: 1, retryCount: 0}};
-const detail = revision => ({...empty, runs: [run], tasks: [task], attempts: [attempt], runRevisions: {r: revision}});
+let planScene = false, planRevision = 1;
+const detail = revision => ({...empty, runs: [planScene ? {...run, planApproval: {status: 'pending', requestedAt: 1, revision: planRevision}} : run],
+  tasks: [planScene ? {...task, status: 'planned', heldByPlan: true} : task], attempts: planScene ? [] : [attempt], runRevisions: {r: revision}});
 async function until(check, label) {
   const deadline = Date.now() + 60000;
   while (!check() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
@@ -31,12 +33,13 @@ try {
   cache = await mkdtemp(join(tmpdir(), 'octiq-reading-vite-'));
   await mkdir(scratch, {recursive: true});
   await writeFile(join(scratch, 'index.html'), '<html><body><div id="root"></div><script type="module" src="/.test-reading-continuity.local/entry.tsx"></script></body></html>');
-  await writeFile(join(scratch, 'entry.tsx'), `import React from 'react';import{createRoot}from'react-dom/client';import{OrchestrationPanel}from'/src/components/OrchestrationPanel.tsx';import{useOrchestrationFeed}from'/src/lib/useOrchestrationSnapshot.ts';function Scene(){useOrchestrationFeed();return <OrchestrationPanel project={null} coordinatorKey="chat:a" embedded onOpenChat={()=>{}} onClose={()=>{}}/>}createRoot(document.getElementById('root')).render(<Scene/>);`);
+  await writeFile(join(scratch, 'entry.tsx'), `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{OrchestrationPanel}from'/src/components/OrchestrationPanel.tsx';import{RunDetailOnScreen,useOrchestrationFeed}from'/src/lib/useOrchestrationSnapshot.ts';function Scene(){useOrchestrationFeed();const[shown,setShown]=useState(true);return <><button onClick={()=>setShown(!shown)}>{shown?'Hide detail':'Show detail'}</button><div hidden={!shown}><RunDetailOnScreen value={shown}><OrchestrationPanel project={null} coordinatorKey="chat:a" embedded onOpenChat={()=>{}} onClose={()=>{}}/></RunDetailOnScreen></div></>}createRoot(document.getElementById('root')).render(<Scene/>);`);
   server = await createServer({root: web, cacheDir: join(cache, 'node_modules', '.vite'), configFile: join(web, 'vite.config.ts'), server: {host: '127.0.0.1', port: 0, strictPort: false}});
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   browser = await chromium.launch({...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? {executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH} : {channel: 'chrome'}), headless: true});
   for (const width of [1280, 390]) {
+    planScene = false; planRevision = 1;
     const context = await browser.newContext({viewport: {width, height: 844}});
     let socket, selected = new Set(), holdChat = false, holdDetail = false, runScene = false, revision = 'epoch:1';
     const held = [], commands = [], errors = [];
@@ -122,8 +125,59 @@ try {
     holdDetail = false; replyHeld();
     await page.waitForTimeout(1500);
     assert.equal((await page.locator('body').innerText()).includes('Reading run'), false);
+    await page.getByRole('button', {name: 'Hide detail', exact: true}).click();
+    holdDetail = true;
+    const hiddenStart = commands.length;
+    socket.send(JSON.stringify({t: 'event', event: 'orchestration-changed', payload: {runId: 'r', revision, attemptId: 'at', execution: attempt.execution}}));
+    await page.waitForTimeout(400);
+    assert.equal(commands.slice(hiddenStart).filter(c => c.cmd === 'orchestration_run_detail').length, 0, 'hidden context must release its lease');
+    await page.getByRole('button', {name: 'Show detail', exact: true}).click();
+    await until(() => commands.slice(hiddenStart).some(c => c.cmd === 'orchestration_run_detail'), 'shown context must re-read');
+    assert.equal((await page.locator('body').innerText()).includes('Reading run'), false);
+    holdDetail = false; replyHeld();
+    console.log(JSON.stringify({width, phase: 'running-and-hidden-detail-passed'}));
+    // Actual App unmounts/releases the run while moving A -> B -> A. Hold
+    // the return read: even an unchanged revision cannot reuse its authority.
+    planScene = true;
+    await page.goto(`${origin}/?token=fixture-token#/c/a`, {waitUntil: 'domcontentloaded'});
+    console.log(JSON.stringify({width, phase: 'app-plan-return'}));
+    const showRun = async () => {
+      const surface = page.locator('.workflow-run-surface');
+      await surface.waitFor({state: 'attached'});
+      if (await surface.isVisible()) return;
+      const column = page.getByRole('button', {name: /^Show the task column/});
+      if (await column.count()) await column.click();
+      else await page.locator('.chat-workflow-views button').filter({hasText: /^Tasks/}).click();
+    };
+    await showRun();
+    const approve = page.locator('.orch-run-detail').getByRole('button', {name: /^Approve plan/});
+    await approve.waitFor();
+    await page.evaluate(() => {location.hash = '#/c/b';});
+    await page.locator('.msgs').getByText('Answer b', {exact: true}).waitFor();
+    holdDetail = true;
+    const returnStart = commands.length;
+    await page.evaluate(() => {location.hash = '#/c/a';});
+    await showRun();
+    await until(() => commands.slice(returnStart).some(c => c.cmd === 'orchestration_run_detail'), 'return to run must immediately re-read');
+    await page.waitForTimeout(300);
+    assert.equal((await page.locator('body').innerText()).includes('Reading run'), false);
+    await page.locator('.orch-run-detail').waitFor({state: 'attached'});
+    assert.equal(await approve.count(), 0, 'cached detail cannot approve even at the same revision');
+    assert.equal(commands.filter(c => c.cmd === 'orchestration_plan_approve').length, 0);
+    planRevision = 2; revision = 'epoch:8';
+    socket.send(JSON.stringify({t: 'event', event: 'orchestration-changed', payload: {runId: 'r', revision}}));
+    await page.waitForTimeout(1200);
+    assert.equal((await page.locator('body').innerText()).includes('Reading run'), false);
+    assert.equal(await approve.count(), 0);
+    holdDetail = false; replyHeld();
+    await approve.waitFor();
+    await approve.click();
+    await until(() => commands.some(c => c.cmd === 'orchestration_plan_approve'), 'matching plan can approve');
+    const approvals = commands.filter(c => c.cmd === 'orchestration_plan_approve');
+    assert.equal(approvals.length, 1);
+    assert.equal(approvals[0].args.revision, 2);
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({width, cachedSwitches: 3, boundedTail: true, staleChatIgnored: true, emptyChat: true, detailStayedMounted: true, errors}));
+    console.log(JSON.stringify({width, cachedSwitches: 3, boundedTail: true, staleChatIgnored: true, emptyChat: true, detailStayedMounted: true, runReturnHeld: true, approvedRevision: 2, errors}));
     await context.close();
   }
 } finally {

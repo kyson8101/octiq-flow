@@ -3,6 +3,10 @@ import { EMPTY_ORCHESTRATION, type OrchestrationSnapshot, type WorkerExecution }
 import { createLegacyOrchestrationFeed, executionUpdate, withExecution, READ_GAP_MS, NOTIFY_MS, type OrchestrationFeedState } from "./orchestrationFeed";
 import type { TaskStatus } from "./chatTask";
 import { seeHolds } from "./taskHold";
+import { valueBytes } from "./valueBytes";
+
+export const RETAINED_RUN_DETAILS = 3;
+export const RETAINED_RUN_BYTES = 4 * 1024 * 1024;
 
 const unavailable = (e: unknown) => String(e).includes("not available on this backend");
 export const RUN_LISTS = ["runs", "tasks", "attempts", "batches", "gates", "nativeDecisions", "messages", "notifications", "services", "bridges", "peerAsks"] as const;
@@ -41,9 +45,26 @@ export function compactExecution(execution: WorkerExecution): WorkerExecution {
 
 type Lease = { readers: number; reading: boolean; dirty: boolean; timer?: ReturnType<typeof setTimeout> };
 export function createOrchestrationFeed() {
-  let state: OrchestrationFeedState = { snapshot: null, error: null, details: new Map(), detailErrors: new Map(), detailPending: new Set() };
+  let state: OrchestrationFeedState = { snapshot: null, error: null, details: new Map(), retainedDetails: new Map(), detailErrors: new Map(), detailPending: new Set() };
   const listeners = new Set<() => void>();
   const leases = new Map<string, Lease>();
+  const sizes = new WeakMap<OrchestrationSnapshot, number>();
+  const retainedSize = (detail: OrchestrationSnapshot) => {
+    let size = sizes.get(detail);
+    if (size === undefined) { size = valueBytes(detail, RETAINED_RUN_BYTES); sizes.set(detail, size); }
+    return size;
+  };
+  const retain = (id: string, detail?: OrchestrationSnapshot) => {
+    const kept = new Map(state.retainedDetails);
+    kept.delete(id);
+    if (detail && state.snapshot?.runs.some(run => run.id === id) && retainedSize(detail) <= RETAINED_RUN_BYTES) kept.set(id, detail);
+    let bytes = [...kept.values()].reduce((sum, value) => sum + retainedSize(value), 0);
+    for (const [key, value] of kept) {
+      if (kept.size <= RETAINED_RUN_DETAILS && bytes <= RETAINED_RUN_BYTES) break;
+      kept.delete(key); bytes -= retainedSize(value);
+    }
+    return kept;
+  };
   const legacy = createLegacyOrchestrationFeed();
   let heldChatKeys: string[] = [];
   let fallback = false, detachLegacy: (() => void) | undefined;
@@ -63,7 +84,9 @@ export function createOrchestrationFeed() {
   };
   const publish = (snapshot: OrchestrationSnapshot) => {
     seeHolds(snapshot.tasks, Date.now());
-    state = { ...state, snapshot, error: null }; notify(true);
+    const ids = new Set(snapshot.runs.map(run => run.id));
+    const retainedDetails = new Map([...(state.retainedDetails ?? [])].filter(([id]) => ids.has(id)));
+    state = { ...state, snapshot, retainedDetails, error: null }; notify(true);
   };
   const patch = (change: (s: OrchestrationSnapshot) => OrchestrationSnapshot) => {
     if (fallback) return legacy.patch(change);
@@ -218,7 +241,17 @@ export function createOrchestrationFeed() {
       else {
         lease = { readers: 1, reading: false, dirty: false }; leases.set(id, lease);
         if (fallback) legacyReleases.set(lease, legacy.detail(id));
-        else void detailRead(id, lease);
+        else {
+          // Promote only the display evidence. Even equal revisions must wait
+          // for this lease's read, including invalidations while it was away.
+          const details = new Map(state.details);
+          const retainedDetails = new Map(state.retainedDetails);
+          const retained = retainedDetails.get(id);
+          if (retained) details.set(id, retained);
+          retainedDetails.delete(id);
+          state = { ...state, details, retainedDetails, detailPending: new Set(state.detailPending).add(id) };
+          notify(true); void detailRead(id, lease);
+        }
       }
       const held = lease; let released = false;
       return () => {
@@ -228,7 +261,8 @@ export function createOrchestrationFeed() {
         const details = new Map(state.details); details.delete(id);
         const errors = new Map(state.detailErrors); errors.delete(id);
         const pending = new Set(state.detailPending); pending.delete(id);
-        state = { ...state, details, detailErrors: errors, detailPending: pending }; notify(true);
+        const retainedDetails = fallback ? state.retainedDetails : retain(id, state.details?.get(id));
+        state = { ...state, details, retainedDetails, detailErrors: errors, detailPending: pending }; notify(true);
       };
     },
   };

@@ -75,6 +75,22 @@ const snapshot: OrchestrationSnapshot = {
   messages: [],
 };
 
+it("shows retained run detail before the reacquisition effect, with gate answers disabled and Stop enabled", () => {
+  const small = { ...snapshot, summary: true, runRevisions: { run_1: "epoch:1" }, tasks: snapshot.tasks.map(task => ({ ...task, spec: "" })) };
+  const state = { snapshot: small, error: null, details: new Map(), retainedDetails: new Map([["run_1", snapshot]]) };
+  try {
+    vi.spyOn(orchestrationFeed, "getState").mockReturnValue(state);
+    const html = renderToStaticMarkup(<OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+      initialSnapshot={small} onOpenChat={() => {}} onClose={() => {}} />);
+    expect(html).not.toContain("Reading run");
+    expect(html).toContain("Persist authoritative worker state.");
+    expect(html).toMatch(/<button[^>]*aria-disabled="true"[^>]*>Yes<\/button>/);
+    const stop = html.match(/<button[^>]*>Stop<\/button>/)?.[0];
+    expect(stop).toBeDefined();
+    expect(stop).not.toContain("disabled");
+  } finally { vi.restoreAllMocks(); }
+});
+
 it("keeps working run content mounted during refresh, with stale decisions disabled", () => {
   const full = structuredClone(snapshot);
   full.runRevisions = { run_1: "epoch:1" };

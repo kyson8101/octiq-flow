@@ -29,6 +29,8 @@ export type OrchestrationFeedState = {
   error: string | null;
   /** Full text is leased only by mounted run surfaces, never by app readers. */
   details?: ReadonlyMap<string, OrchestrationSnapshot>;
+  /** Bounded inactive evidence, for display only until a new lease reads it. */
+  retainedDetails?: ReadonlyMap<string, OrchestrationSnapshot>;
   detailErrors?: ReadonlyMap<string, string>;
   /** Invalidated evidence may stay visible but cannot authorize a decision. */
   detailPending?: ReadonlySet<string>;

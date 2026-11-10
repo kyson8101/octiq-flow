@@ -11,6 +11,7 @@ import { EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "./orchestration
 import { detailedRun } from "./useOrchestrationSnapshot";
 import { useRunDetail } from "./useOrchestrationSnapshot";
 import { orchestrationFeed } from "./orchestrationFeed";
+import type { OrchestrationFeedState } from "./orchestrationFeed";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 const summary = (id = "r", status = "running"): OrchestrationSnapshot => ({ ...EMPTY_ORCHESTRATION, summary: true, revision: "epoch:1", runRevisions: { [id]: "epoch:1" }, runs: [{ id, status, coordinatorChatKey: "chat:main" }], tasks: [{ id: `t-${id}`, runId: id, status: "running", spec: "" }], attempts: [{ id: `a-${id}`, runId: id, taskId: `t-${id}`, workerChatKey: "chat:w", execution: { state: "executing" }, filesModified: [] }] } as unknown as OrchestrationSnapshot);
@@ -26,6 +27,96 @@ function readDetail(small: OrchestrationSnapshot, details: ReadonlyMap<string, O
   renderToStaticMarkup(createElement(Probe));
   return shown;
 }
+
+function retainedView(state: OrchestrationFeedState, id = "r") {
+  vi.spyOn(orchestrationFeed, "getState").mockReturnValue(state);
+  let shown!: ReturnType<typeof useRunDetail>;
+  function Probe() { shown = useRunDetail(state.snapshot!, id); return null; }
+  renderToStaticMarkup(createElement(Probe));
+  return shown;
+}
+
+it("retains released detail before reacquisition, but requires a new exact read after an unleased invalidation", async () => {
+  const feed = createOrchestrationFeed(), off = feed.subscribe(() => {});
+  mock.reads[0].resolve(summary()); await tick();
+  const release = feed.detail("r");
+  mock.reads[1].resolve({ ...summary(), summary: false }); await tick();
+  release();
+  expect(retainedView(feed.getState())).toMatchObject({ available: true, ready: false });
+  emit("orchestration-changed", { runId: "r", revision: "epoch:2", attemptId: "a-r", execution: { state: "executing" } });
+  await tick();
+  expect(mock.reads.filter(r => r.cmd === "orchestration_run_detail")).toHaveLength(1);
+  const again = feed.detail("r");
+  expect(feed.getState().detailPending?.has("r")).toBe(true);
+  expect(retainedView(feed.getState())).toMatchObject({ available: true, ready: false });
+  mock.reads.at(-1)!.resolve({ ...summary(), summary: false }); await tick();
+  expect(retainedView(feed.getState())).toMatchObject({ available: true, ready: false });
+  emit("orchestration-changed", { runId: "r", revision: "epoch:2", attemptId: "a-r", execution: { state: "executing" } });
+  await tick();
+  mock.reads.at(-1)!.resolve({ ...summary(), summary: false, runRevisions: { r: "epoch:2" } }); await tick();
+  expect(retainedView(feed.getState())).toMatchObject({ available: true, ready: true });
+  again(); off();
+});
+
+it("keeps the retained display through a failed reacquisition and retries on the next lease", async () => {
+  const feed = createOrchestrationFeed(), off = feed.subscribe(() => {});
+  mock.reads[0].resolve(summary()); await tick();
+  const release = feed.detail("r");
+  mock.reads[1].resolve({ ...summary(), summary: false }); await tick(); release();
+  const again = feed.detail("r");
+  mock.reads.at(-1)!.reject(new Error("offline")); await tick();
+  expect(retainedView(feed.getState())).toMatchObject({ available: true, ready: false, error: "Error: offline" });
+  again();
+  expect(feed.getState().detailErrors?.has("r")).toBe(false);
+  const retry = feed.detail("r");
+  expect(retainedView(feed.getState())).toMatchObject({ available: true, ready: false });
+  mock.reads.at(-1)!.resolve({ ...summary(), summary: false }); await tick();
+  expect(retainedView(feed.getState())).toMatchObject({ available: true, ready: true });
+  retry(); off();
+});
+
+it("preserves legacy detail release behavior when summary is unavailable", async () => {
+  const feed = createOrchestrationFeed(), off = feed.subscribe(() => {});
+  mock.reads[0].reject(new Error("'orchestration_summary' is not available on this backend"));
+  await vi.advanceTimersByTimeAsync(0);
+  mock.reads[1].resolve({ ...summary(), summary: undefined, briefRuns: ["r"] }); await tick();
+  const release = feed.detail("r");
+  expect(mock.reads.at(-1)).toMatchObject({ cmd: "orchestration_snapshot", args: { runId: "r" } });
+  mock.reads.at(-1)!.resolve({ ...summary(), summary: undefined, tasks: [{ ...summary().tasks[0], spec: "Legacy evidence" }] }); await tick();
+  expect(feed.getState().snapshot?.tasks[0].spec).toBe("Legacy evidence");
+  release(); await tick();
+  expect(feed.getState().snapshot?.tasks[0].spec).toBe("");
+  expect(feed.getState().retainedDetails?.size ?? 0).toBe(0);
+  off();
+});
+
+it.each(["count", "bytes", "oversized", "removed"])("bounds retained display detail by %s and evicts least recently used runs", async mode => {
+  const feed = createOrchestrationFeed(), off = feed.subscribe(() => {});
+  const all = { ...summary(), runs: ["a", "b", "c", "d"].map(id => summary(id).runs[0]) };
+  mock.reads[0].resolve(all); await tick();
+  const retain = async (id: string) => {
+    const release = feed.detail(id);
+    const size = mode === "bytes" ? 750_000 : mode === "oversized" ? 2_200_000 : 0;
+    mock.reads.at(-1)!.resolve({ ...summary(id), summary: false, tasks: [{ ...summary(id).tasks[0], spec: "x".repeat(size) }] });
+    await tick(); release();
+  };
+  await retain("a"); await retain("b"); await retain("c");
+  if (mode === "count") {
+    await retain("a"); await retain("d");
+    expect(retainedView(feed.getState(), "b").available).toBe(false);
+    for (const id of ["a", "c", "d"]) expect(retainedView(feed.getState(), id)).toMatchObject({ available: true, ready: false });
+  } else if (mode === "bytes") {
+    expect(retainedView(feed.getState(), "a").available).toBe(false);
+    for (const id of ["b", "c"]) expect(retainedView(feed.getState(), id).available).toBe(true);
+  } else if (mode === "oversized") {
+    for (const id of ["a", "b", "c"]) expect(retainedView(feed.getState(), id).available).toBe(false);
+  } else {
+    const refresh = feed.refresh(); mock.reads.at(-1)!.resolve({ ...all, runs: [] }); await refresh;
+    const restore = feed.refresh(); mock.reads.at(-1)!.resolve(all); await restore;
+    expect(retainedView(feed.getState(), "a").available).toBe(false);
+  }
+  off();
+});
 
 it.each(["summary-first", "detail-first"])("waits for the same run revision in both reads: %s", order => {
   const old = summary();
@@ -134,7 +225,9 @@ it("leases detail separately, refetches only open runs and ignores replies after
   expect(mock.reads.at(-1)?.cmd).toBe("orchestration_run_detail");
   a(); expect(feed.getState().details?.size).toBe(1); b(); b(); expect(feed.getState().details?.size).toBe(0);
   const c = feed.detail("r"); const latest = mock.reads.at(-1)!;
-  mock.reads.at(-2)!.resolve(detail); await tick(); expect(feed.getState().details?.size).toBe(0);
+  mock.reads.at(-2)!.resolve({ ...detail, tasks: [] }); await tick();
+  expect(feed.getState().details?.get("r")).toBe(detail);
+  expect(retainedView(feed.getState())).toMatchObject({ available: true, ready: false });
   latest.resolve(detail); await tick(); expect(feed.getState().details?.size).toBe(1); c(); off();
 });
 it("does not turn network failure into legacy or an empty ledger", async () => {

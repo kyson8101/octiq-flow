@@ -79,8 +79,9 @@ export function useRunDetail(summary: OrchestrationSnapshot, id: string | null) 
   const shown = useContext(RunDetailOnScreen);
   id = shown ? id : null;
   useEffect(() => id ? orchestrationFeed.detail(id) : undefined, [id]);
-  const detail = id ? feed.details?.get(id) : undefined;
-  const ready = !summary.summary || !!(detail && id && !feed.detailPending?.has(id) && coversRun(summary, detail, id));
+  const active = id ? feed.details?.get(id) : undefined;
+  const detail = active ?? (id ? feed.retainedDetails?.get(id) : undefined);
+  const ready = !summary.summary || !!(active && id && !feed.detailPending?.has(id) && coversRun(summary, active, id));
   // Display continuity and permission to act are different facts. Only the
   // matching revision below may be used by PlanReview and decision cards.
   const available = !summary.summary || !!(detail && id
