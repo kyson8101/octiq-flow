@@ -1794,11 +1794,12 @@ impl ChatManager {
         // Share clear's starts lock: a rollback checked before revocation
         // cannot pause, then put its old id back after clear released the lock.
         if let Ok(mut m) = self.starts.lock() {
-            if let Ok(session) =
+            // A lowering/rollback also uses this door while its profile is
+            // away. Keep its settings, but never publish an id whose durable
+            // revocation status could not be checked.
+            start.session_id =
                 crate::chat_index::usable_session(session_key, start.session_id.clone())
-            {
-                start.session_id = session;
-            }
+                    .unwrap_or(None);
             m.insert(session_key.to_string(), start.clone());
         }
         if let Err(error) = self.orchestrations.save_resume_context(session_key, start) {
@@ -1935,9 +1936,9 @@ impl ChatManager {
     /// Only store I/O, with no session or starts lock held. The caller owns
     /// the native-write gate and must still validate its launch before publish.
     fn prepare_session(&self, session_key: &str, session_id: &str) -> bool {
-        if matches!(
+        if !matches!(
             crate::chat_index::usable_session(session_key, Some(session_id.into())),
-            Ok(None)
+            Ok(Some(_))
         ) {
             return false;
         }
@@ -9796,7 +9797,13 @@ fn purge_deleted_chats() -> Result<usize, String> {
 /// Stop, revoke native continuations durably, then remove the display record.
 /// A failed store write leaves the transcript intact and emits no success.
 pub fn chat_forget_impl(manager: &ChatManager, key: String) -> Result<(), String> {
-    // Snapshot ids before Stop cancels/removes its scheduled continuation.
+    // Veto native init before even the memory snapshots: starts may be busy
+    // with I/O, and saved_resume_context takes the ledger. Neither may delay
+    // the epoch bump. Only the scheduled ids must precede Stop, whose normal
+    // cancellation removes that entry; the other contexts survive Stop.
+    manager.revoke_auto_plan(&key);
+    let scheduled_ids = manager.auto_resumes.session_ids(&key);
+    chat_stop_impl(manager, key.clone())?;
     let mut ids = Vec::new();
     if let Some(start) = manager.start_context(&key) {
         ids.extend(start.session_id);
@@ -9804,8 +9811,6 @@ pub fn chat_forget_impl(manager: &ChatManager, key: String) -> Result<(), String
     if let Some(start) = manager.orchestrations.saved_resume_context(&key) {
         ids.extend(start.session_id);
     }
-    let scheduled_ids = manager.auto_resumes.session_ids(&key);
-    chat_stop_impl(manager, key.clone())?;
     ids.extend(scheduled_ids?);
     let _claim = manager.hold_start(&key)?;
     let write = manager.native_write(&key);

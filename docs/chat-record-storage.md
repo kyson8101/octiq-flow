@@ -77,6 +77,49 @@ native-write gate serializes this work with `/clear`; clear waits on it only
 after stopping, while Stop and interrupt never take it. This prevents an unknown
 late init from repopulating a cleared history. Handover ask-back refuses to fork
 a revoked id from its saved origin.
+
+The browser's `chat_stop`, `chat_interrupt` and `chat_forget` admission guard
+also stays off the ledger mutex. `require_user_chat` reads a separate in-memory
+worker identity snapshot: reserved `chat:orch-` keys and all recorded attempts
+(including settled legacy keys) remain read-only. Startup builds the snapshot
+from the loaded ledger; every committed ledger replacement publishes both
+values while holding the ledger mutex and the snapshot's short leaf write lock.
+Snapshot construction, persistence and destruction happen outside that leaf
+lock. An owed save publishes the retained in-memory state too; a refused
+save-first mutation publishes neither. Readers release the leaf lock before
+any chat operation. Thus an init paused on index I/O while holding the ledger
+cannot delay Stop's epoch veto. The regression uses real `dispatch` admission
+for all four providers and checks a response within 200 ms before releasing
+both first-index and ledger-held index barriers; delayed ids never enter
+starts, index, transcript or ledger after release. `/clear` bumps the epoch
+before capturing any ids, and reads its saved ledger context only after Stop;
+it may then wait for its required cleanup I/O.
+
+Related entry-point audit: all callers of `require_user_chat` now use that
+snapshot, including the chat replacement/cancel controls, question controls,
+trash admission and cleanup-request admission; their existing action semantics
+are unchanged. Trash remains save-first because its purpose is a durable
+record. `orchestration_task_stop` and `orchestration_run_stop` do not use this
+guard: they obtain targets through their own ledger transitions, and currently
+wait for `mutate_regardless` (including its save) before ending processes. That
+pre-existing Rule A gap remains a separate follow-up; changing their targeting,
+authorization and stop transaction is outside this native-session fix. It is
+not covered by the 200 ms chat Stop regression.
+
+Revocation filtering must also preserve permission lowering when the profile
+or index cannot be read. `remember_start` keeps the new settings but drops the
+unverified native id; `keep_resume_context` does the same for an already-applied
+lowering and retains it with `unsaved`/owed semantics if saving fails. This
+deliberately prefers a fresh native conversation over trusting an unread
+tombstone. Native init likewise publishes no id when revocations are unread.
+The regression covers a missing profile and malformed index, then restores the
+store and checks that the narrower settings survive reload without a revoked
+id. Ordinary resume-context saves, common start/launch admission,
+`registered_runtime::select` recovery, and handover ask-back all start new work;
+their filtering remains save-first and refuses an unread store. Stop, cancel,
+retarget's ledger removal and late-id cleanup add no revocation read before
+their ending action.
+
 A new provider-owned id remains usable. The final common launch boundary checks again
 under the session-table lock, including notifications and cloned auto-resumes.
 

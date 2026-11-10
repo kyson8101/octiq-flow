@@ -344,6 +344,105 @@ fn unavailable_profile_refuses_clear_in_its_own_words() {
 }
 
 #[test]
+fn lowering_with_unread_revocations_keeps_access_but_never_publishes_native_ids() {
+    for missing_profile in [true, false] {
+        let home = crate::test_dir::TestDir::new("lowering-unread-revocations");
+        let _pin = crate::profile::started_in(&home);
+        let services = Services::at_profile();
+        let manager = &services.chats;
+        let key = "chat:lowering-unread";
+        crate::chat_index::upsert(meta(key, false)).unwrap();
+        services
+            .orchestrations
+            .create_run(
+                key.into(),
+                "lower safely".into(),
+                "workspace".into(),
+                home.to_string_lossy().into_owned(),
+                Some(1),
+            )
+            .unwrap();
+        let mut old = start(ChatAgent::Claude);
+        old.access = Some(Access::Auto);
+        manager.remember_start(key, old);
+        let _child = manager.test_hold(key, ChatAgent::Claude, false);
+        manager.test_seat(key, key);
+        let session = manager.sessions.lock().unwrap().get(key).unwrap().clone();
+        // The process/starts can still remember a conversation whose id the
+        // durable index has revoked. An unread index must not bless that id.
+        crate::chat_index::forget_sessions(key, vec!["old-native".into()]).unwrap();
+        let profile = crate::profile::profile_dir();
+        let index = crate::transcript::chats_dir().unwrap().join("index.json");
+        let index_bytes = std::fs::read(&index).unwrap();
+        let away = home.join("away");
+        if missing_profile {
+            std::fs::rename(&profile, &away).unwrap();
+        } else {
+            std::fs::write(&index, "unreadable index").unwrap();
+        }
+        let lowered = crate::dispatch::told(
+            &services,
+            "chat_set_access",
+            json!({"key":key,"access":"read"}),
+        );
+        assert_eq!(lowered.result, Ok(Value::Null));
+        assert_eq!(
+            manager.start_context(key).unwrap().access,
+            Some(Access::Read)
+        );
+        assert_eq!(manager.provider_session(key), None);
+        let saved = services.orchestrations.saved_resume_context(key).unwrap();
+        assert_eq!(saved.access, Some(Access::Read));
+        assert_eq!(saved.session_id, None);
+        assert_eq!(services.orchestrations.owes(), missing_profile);
+        assert_eq!(
+            lowered
+                .unsaved
+                .iter()
+                .any(|u| u.what == "the chat's access level"),
+            missing_profile
+        );
+        assert_eq!(
+            record_provider_event(
+                manager,
+                &session,
+                key,
+                key,
+                ChatAgent::Claude,
+                &init(ChatAgent::Claude, "unverified-new-native"),
+            ),
+            None
+        );
+        assert_eq!(manager.provider_session(key), None);
+        if missing_profile {
+            std::fs::rename(&away, &profile).unwrap();
+        } else {
+            std::fs::write(&index, index_bytes).unwrap();
+        }
+        crate::dispatch::settle_owed(&services);
+        assert!(!services.orchestrations.owes());
+        let reloaded = Services::at_profile();
+        let saved = reloaded.orchestrations.saved_resume_context(key).unwrap();
+        assert_eq!(saved.access, Some(Access::Read));
+        assert_eq!(saved.session_id, None);
+        assert_eq!(
+            crate::chat_index::usable_session(key, Some("old-native".into())).unwrap(),
+            None
+        );
+        assert!(crate::transcript::every_line(key)
+            .unwrap()
+            .iter()
+            .all(|line| {
+                provider_for(ChatAgent::Claude)
+                    .observe_event(&line.event)
+                    .session_id
+                    .is_none()
+            }));
+        manager.test_end(key);
+    }
+}
+
+#[test]
 fn a_cloned_due_resume_is_cancelled_before_it_can_launch_after_clear() {
     let home = crate::test_dir::TestDir::new("native-clear-due-clone");
     let _pin = crate::profile::started_in(&home);
@@ -551,16 +650,30 @@ fn stop_and_interrupt_reply_while_native_init_index_io_is_paused() {
                     let (entered, enter) = mpsc::channel();
                     let (done, finish) = mpsc::channel();
                     let stopped = manager.clone();
+                    let stopping = services.clone();
                     let stop_key = key.clone();
+                    let epoch = manager.stop_epoch(&key);
+                    let before_stop = epoch.load(Ordering::SeqCst);
                     let stopper = thread::spawn(move || {
                         enter.recv_timeout(Duration::from_secs(5)).unwrap();
                         let began = Instant::now();
-                        let result = if interrupt {
-                            chat_interrupt_impl(&stopped, stop_key.clone())
-                                .map(|reply| assert!(reply.stopped))
-                        } else {
-                            chat_stop_impl(&stopped, stop_key.clone())
-                        };
+                        // Exercise the real RPC preflight too: calling the
+                        // impl directly misses require_user_chat's lock path.
+                        let result = dispatch(
+                            &stopping,
+                            if interrupt {
+                                "chat_interrupt"
+                            } else {
+                                "chat_stop"
+                            },
+                            json!({"key":stop_key}),
+                        )
+                        .map(|reply| {
+                            if interrupt {
+                                assert_eq!(reply["stopped"], true);
+                            }
+                        });
+                        assert!(epoch.load(Ordering::SeqCst) > before_stop);
                         // Starts must also be readable while native-id I/O
                         // is paused, and must not expose its tentative id.
                         assert_eq!(
@@ -573,9 +686,11 @@ fn stop_and_interrupt_reply_while_native_init_index_io_is_paused() {
                     });
                     let timely = Arc::new(AtomicBool::new(false));
                     let measured = timely.clone();
+                    let checking_ledger = services.orchestrations.clone();
                     let recorded = crate::chat_index::tests::with_read_pause(
                         skip,
                         move || {
+                            assert_eq!(checking_ledger.test_ledger_locked(), skip != 0);
                             entered.send(()).unwrap();
                             measured.store(
                                 finish.recv_timeout(Duration::from_millis(200)).is_ok(),
@@ -644,94 +759,124 @@ fn stop_and_interrupt_reply_while_native_init_index_io_is_paused() {
 fn clear_waits_for_native_io_only_after_stopping_and_never_restores_the_init() {
     use std::sync::mpsc;
 
-    // Both threads intentionally share the test binary's scratch profile.
-    // started_in on a second thread would stand in for a second server and
-    // replace the first thread's profile ownership mark.
-    let services = Services::at_profile();
-    let manager = services.chats.clone();
-    let key = format!("chat:lead-native-clear-{}", uuid::Uuid::new_v4().simple());
-    crate::chat_index::ensure_lead(meta(&key, true)).unwrap();
-    manager.remember_start(&key, start(ChatAgent::Claude));
-    manager.test_launch(&key);
-    let session = manager.sessions.lock().unwrap().get(&key).unwrap().clone();
-    let (entered, enter) = mpsc::channel();
-    let (release, released) = mpsc::channel();
-    let recording = manager.clone();
-    let record_key = key.clone();
-    let recording_session = session.clone();
-    let reader = thread::spawn(move || {
-        crate::chat_index::tests::with_read_pause(
-            0,
-            move || {
-                entered.send(()).unwrap();
-                released.recv_timeout(Duration::from_secs(5)).unwrap();
-            },
-            || {
-                record_provider_event(
-                    &recording,
-                    &recording_session,
-                    &record_key,
-                    &record_key,
-                    ChatAgent::Claude,
-                    &init(ChatAgent::Claude, "unknown-in-flight"),
-                )
-            },
+    for skip in [0, 2] {
+        // Both threads intentionally share the test binary's scratch profile.
+        // started_in on a second thread would stand in for a second server and
+        // replace the first thread's profile ownership mark.
+        let mut services = Services::at_profile();
+        // The index/transcript are shared by these two threads, with unique
+        // chat keys. Keep their ledger separate from other parallel tests.
+        let ledger_home = crate::test_dir::TestDir::new("clear-io-ledger");
+        services.orchestrations = Arc::new(crate::orchestration::OrchestrationStore::load(
+            ledger_home.join("ledger.json"),
+        ));
+        Arc::get_mut(&mut services.chats).unwrap().orchestrations = services.orchestrations.clone();
+        let manager = services.chats.clone();
+        let key = format!("chat:lead-native-clear-{}", uuid::Uuid::new_v4().simple());
+        crate::chat_index::ensure_lead(meta(&key, true)).unwrap();
+        services
+            .orchestrations
+            .create_run(
+                key.clone(),
+                "clear barrier".into(),
+                "workspace".into(),
+                "/tmp".into(),
+                Some(1),
+            )
+            .unwrap();
+        manager.remember_start(&key, start(ChatAgent::Claude));
+        manager.test_launch(&key);
+        let session = manager.sessions.lock().unwrap().get(&key).unwrap().clone();
+        let ledger = services.orchestrations.clone();
+        let (entered, enter) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let recording = manager.clone();
+        let record_key = key.clone();
+        let recording_session = session.clone();
+        let reader = thread::spawn(move || {
+            crate::chat_index::tests::with_read_pause(
+                skip,
+                move || {
+                    assert_eq!(ledger.test_ledger_locked(), skip != 0);
+                    entered.send(()).unwrap();
+                    released.recv_timeout(Duration::from_secs(5)).unwrap();
+                },
+                || {
+                    record_provider_event(
+                        &recording,
+                        &recording_session,
+                        &record_key,
+                        &record_key,
+                        ChatAgent::Claude,
+                        &init(ChatAgent::Claude, "unknown-in-flight"),
+                    )
+                },
+            )
+        });
+        enter.recv_timeout(Duration::from_secs(5)).unwrap();
+        let clear_key = key.clone();
+        let epoch = manager.stop_epoch(&key);
+        let before_stop = epoch.load(std::sync::atomic::Ordering::SeqCst);
+        let clear_services = services.clone();
+        let clear = thread::spawn(move || {
+            dispatch(&clear_services, "chat_forget", json!({"key":clear_key}))
+        });
+        let began = Instant::now();
+        let stopped = loop {
+            if session.try_lock().is_ok_and(|s| s.cut_off == CutOff::Ended) {
+                break true;
+            }
+            if began.elapsed() >= Duration::from_millis(200) {
+                break false;
+            }
+            thread::yield_now();
+        };
+        // Always release before asserting, so a regression cannot strand threads
+        // or hold the shared index lock for the rest of the test suite.
+        let vetoed = epoch.load(std::sync::atomic::Ordering::SeqCst) > before_stop;
+        release.send(()).unwrap();
+        let recorded = reader.join().unwrap();
+        let cleared = clear.join().unwrap();
+        assert!(
+            vetoed,
+            "clear did not bump epoch before ledger I/O finished"
+        );
+        assert!(stopped, "clear did not stop before waiting on native I/O");
+        assert_eq!(recorded, None);
+        cleared.unwrap();
+        assert_eq!(manager.provider_session(&key), None);
+        assert_eq!(
+            crate::chat_index::find(key.trim_start_matches("chat:"))
+                .unwrap()
+                .unwrap()
+                .session_id,
+            None
+        );
+        assert!(crate::transcript::every_line(&key).unwrap().is_empty());
+        assert_eq!(
+            crate::chat_index::usable_session(&key, Some("unknown-in-flight".into())).unwrap(),
+            None
+        );
+        // A new launch can learn a new conversation after the clear.
+        manager.test_launch(&key);
+        let fresh = manager.sessions.lock().unwrap().get(&key).unwrap().clone();
+        assert!(record_provider_event(
+            &manager,
+            &fresh,
+            &key,
+            &key,
+            ChatAgent::Claude,
+            &init(ChatAgent::Claude, "fresh-native")
         )
-    });
-    enter.recv_timeout(Duration::from_secs(5)).unwrap();
-    let clearing = manager.clone();
-    let clear_key = key.clone();
-    let clear = thread::spawn(move || chat_forget_impl(&clearing, clear_key));
-    let began = Instant::now();
-    let stopped = loop {
-        if session.try_lock().is_ok_and(|s| s.cut_off == CutOff::Ended) {
-            break true;
-        }
-        if began.elapsed() >= Duration::from_millis(200) {
-            break false;
-        }
-        thread::yield_now();
-    };
-    // Always release before asserting, so a regression cannot strand threads
-    // or hold the shared index lock for the rest of the test suite.
-    release.send(()).unwrap();
-    let recorded = reader.join().unwrap();
-    let cleared = clear.join().unwrap();
-    assert!(stopped, "clear did not stop before waiting on native I/O");
-    assert_eq!(recorded, None);
-    cleared.unwrap();
-    assert_eq!(manager.provider_session(&key), None);
-    assert_eq!(
-        crate::chat_index::find(key.trim_start_matches("chat:"))
-            .unwrap()
-            .unwrap()
-            .session_id,
-        None
-    );
-    assert!(crate::transcript::every_line(&key).unwrap().is_empty());
-    assert_eq!(
-        crate::chat_index::usable_session(&key, Some("unknown-in-flight".into())).unwrap(),
-        None
-    );
-    // A new launch can learn a new conversation after the clear.
-    manager.test_launch(&key);
-    let fresh = manager.sessions.lock().unwrap().get(&key).unwrap().clone();
-    assert!(record_provider_event(
-        &manager,
-        &fresh,
-        &key,
-        &key,
-        ChatAgent::Claude,
-        &init(ChatAgent::Claude, "fresh-native")
-    )
-    .unwrap()
-    .is_some());
-    assert_eq!(
-        manager.provider_session(&key).as_deref(),
-        Some("fresh-native")
-    );
-    manager.test_end(&key);
-    // Lead rows intentionally cannot be removed through the ordinary API;
-    // the shared TestDir removes this unique fixture at binary exit.
-    crate::transcript::forget(&key);
+        .unwrap()
+        .is_some());
+        assert_eq!(
+            manager.provider_session(&key).as_deref(),
+            Some("fresh-native")
+        );
+        manager.test_end(&key);
+        // Lead rows intentionally cannot be removed through the ordinary API;
+        // the shared TestDir removes this unique fixture at binary exit.
+        crate::transcript::forget(&key);
+    }
 }

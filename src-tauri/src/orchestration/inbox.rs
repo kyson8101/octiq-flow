@@ -364,10 +364,15 @@ impl OrchestrationStore {
         }
         self.mutate_as(regardless, |data| {
             let mut context = context.without_env();
-            if crate::chat_index::usable_session(key, context.session_id().map(str::to_string))?
-                .is_none()
-            {
-                context.forget_session();
+            match crate::chat_index::usable_session(key, context.session_id().map(str::to_string)) {
+                Ok(Some(_)) => {}
+                Ok(None) => context.forget_session(),
+                // A lowering already happened. An unavailable revocation
+                // store must neither veto it nor bless an unverified id.
+                // Keep the narrower settings with no native continuation;
+                // mutate_regardless still says unsaved and owes the write.
+                Err(_) if regardless.is_some() => context.forget_session(),
+                Err(why) => return Err(why),
             }
             data.resume_contexts.insert(key.into(), context);
             Ok(())

@@ -465,7 +465,7 @@ impl OrchestrationStore {
                 ),
             });
         }
-        inner.data = recorded;
+        self.publish_data(&mut inner, recorded);
         Ok(())
     }
 

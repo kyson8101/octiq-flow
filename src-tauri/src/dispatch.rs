@@ -763,6 +763,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
     // Browser-facing mutation routes never drive an orchestration worker.
     // The coordinator's internal launch/message/report paths call their
     // implementations directly, without a client-controlled bypass flag.
+    // require_user_chat reads the durable identity snapshot, never the ledger
+    // mutex: Stop/interrupt/clear must reach the epoch veto while a native-id
+    // writer is blocked on profile I/O inside a ledger mutation.
     match cmd {
         "chat_start"
         | "chat_send"
