@@ -44,6 +44,53 @@ describe("cleanup card reading", () => {
 });
 
 describe("cleanup pending reconciliation", () => {
+  it("evicts orphan progress after successful empty reads, as in the review reproduction", () => {
+    const store = new CleanupRequests();
+    applyCleanupEvent(store, { state: "item", id: "orphan", chatKey: cleanupAsked.chatKey, item: cleanupSettled.items[0] });
+    for (let read = 0; read < 10; read++) store.finish(store.begin(), []);
+    expect(store["progress"].size).toBe(0);
+    expect(store.current).toEqual({});
+  });
+
+  it("bounds 1000 unknown ids to 64 and evicts the first arrivals even after updates", () => {
+    const store = new CleanupRequests();
+    for (let index = 0; index < 1000; index++) {
+      if (index === 64) {
+        applyCleanupEvent(store, { state: "item", id: "orphan-0", chatKey: cleanupAsked.chatKey, item: cleanupSettled.items[1] });
+      }
+      applyCleanupEvent(store, { state: "item", id: `orphan-${index}`, chatKey: cleanupAsked.chatKey, item: cleanupSettled.items[0] });
+      expect(store["progress"].size).toBeLessThanOrEqual(64);
+      if (index === 64) expect(store["progress"].has("orphan-0")).toBe(false);
+    }
+    expect([...store["progress"].keys()]).toEqual(Array.from({ length: 64 }, (_, index) => `orphan-${936 + index}`));
+    expect(store.current).toEqual({});
+  });
+
+  it.each([false, true])("retains progress arriving after begin until the next empty read (prior=%s)", (prior) => {
+    const store = new CleanupRequests();
+    if (prior) applyCleanupEvent(store, { state: "processing", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, approved: false });
+    const token = store.begin();
+    applyCleanupEvent(store, { state: "item", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, item: cleanupSettled.items[0] });
+    store.finish(token, []);
+    expect(store["progress"].size).toBe(1);
+    expect(store.current).toEqual({});
+    store.finish(store.begin(), []);
+    expect(store["progress"].size).toBe(0);
+  });
+
+  it("does not evict progress on cancelled or obsolete reads", () => {
+    const store = new CleanupRequests();
+    applyCleanupEvent(store, { state: "item", id: cleanupAsked.id, chatKey: cleanupAsked.chatKey, item: cleanupSettled.items[0] });
+    const cancelled = store.begin();
+    store.cancel(cancelled);
+    expect(store.finish(cancelled, [])).toBeNull();
+    const token = store.begin();
+    expect(store.finish(cancelled, [])).toBeNull();
+    expect(store["progress"].size).toBe(1);
+    store.finish(token, [cleanupAsked]);
+    expect(cleanupRequest(store.current.coordinator[0])?.results).toEqual([cleanupSettled.items[0]]);
+  });
+
   it("keeps processing and the first item received before the first stale pending list", () => {
     const store = new CleanupRequests();
     const token = store.begin();

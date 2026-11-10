@@ -32,17 +32,34 @@ export const cleanupRequest = (card: CleanupCard): CleanupAsked | undefined => "
 export const cleanupResult = (card: CleanupCard): CleanupSettled | undefined => "result" in card ? card.result : undefined;
 
 type Progress = { processing: boolean; approved?: boolean; results?: ItemResult[] };
+type CachedProgress = Progress & { arrived: number };
+const MAX_PROGRESS = 64;
 
 /** Progress can precede its proposal on a new connection. Hold only facts
  * about progress, never a fabricated proposal, until a list or event supplies it. */
 export class CleanupRequests extends PendingRequests<CleanupCard> {
-  private progress = new Map<string, Progress>();
+  private progress = new Map<string, CachedProgress>();
+  private clock = 0;
+  private readStarted = 0;
+
+  override begin(): number {
+    // A logical clock orders events and reads even within the same millisecond.
+    this.readStarted = ++this.clock;
+    return super.begin();
+  }
 
   resetProgress(): void { this.progress.clear(); }
 
+  private cacheProgress(id: string, progress: CachedProgress): void {
+    this.progress.set(id, progress);
+    // Map insertion order retains the first arrival, including after updates.
+    if (this.progress.size > MAX_PROGRESS) this.progress.delete(this.progress.keys().next().value!);
+  }
+
   recordProgress(id: string, update: Progress): void {
     const prior = this.progress.get(id);
-    this.progress.set(id, {
+    this.cacheProgress(id, {
+      arrived: ++this.clock,
       processing: !!(prior?.processing || update.processing),
       approved: update.approved ?? prior?.approved,
       results: mergeResults(prior?.results, update.results ?? []),
@@ -61,7 +78,10 @@ export class CleanupRequests extends PendingRequests<CleanupCard> {
       approved: progress?.approved ?? card.approved,
       results: mergeResults(card.results, progress?.results ?? []),
     };
-    this.progress.set(card.id, { processing: merged.processing, approved: merged.approved, results: merged.results });
+    this.cacheProgress(card.id, {
+      arrived: progress?.arrived ?? ++this.clock,
+      processing: merged.processing, approved: merged.approved, results: merged.results,
+    });
     return merged;
   }
 
@@ -71,6 +91,11 @@ export class CleanupRequests extends PendingRequests<CleanupCard> {
     const reconciled = super.finish(token, list);
     if (!reconciled) return null;
     const snapshots = new Map(list?.map((card) => [card.id, card]));
+    // The host emits appeared before processing and lists processing cards.
+    // Only a read begun after the latest progress can prove its card is gone.
+    for (const [id, progress] of this.progress) {
+      if (progress.arrived < this.readStarted && !snapshots.has(id)) this.progress.delete(id);
+    }
     // The journal may hold an older proposal plus newer progress, while the
     // list already includes another completed item. Keep both sets of facts.
     this.current = Object.fromEntries(Object.entries(reconciled).map(([chat, cards]) => [chat, cards.map((card) => {
