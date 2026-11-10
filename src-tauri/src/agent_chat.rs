@@ -9633,8 +9633,8 @@ pub fn chat_since(key: String, after: u64) -> Vec<crate::transcript::Recorded> {
 }
 
 /// Throw away a chat's record. Deleting a conversation should leave nothing.
-pub fn chat_forget(key: String) {
-    crate::transcript::forget(&key);
+pub fn chat_forget(key: String) -> Result<(), String> {
+    crate::transcript::forget_checked(&key)
 }
 
 /// The keys of every running chat. A reconnecting browser uses this the way it

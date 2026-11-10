@@ -9,6 +9,26 @@ tool arguments/results, delivery identities and host events therefore remain.
 
 ## Readers
 
+The socket-only `chat_record_head { key }` command returns
+`{ lastSeq, generation }` so retained browser windows can detect a cleared or
+replaced record. `lastSeq` uses the same logical positions as paging, including
+compacted ranges and malformed lines; a missing record returns zero. It reuses
+the writer's count, also populated by a complete latest-page index. A cold
+record without a count needs one storage-line scan outside the global append
+lock; publication checks its stamp and life, and later requests read metadata
+only. Clear and every rewrite invalidate the cached count.
+
+The wire generation uses creation time and, on Unix, device/inode; appending
+does not change it. This stays stable across server restarts on filesystems
+providing creation time. Filesystems without creation time use a process nonce
+alongside Unix device/inode, so a restart conservatively invalidates retained
+windows there. Missing records have the `missing` generation. These are
+freshness tokens, not durability receipts (`transcript::Generation` below).
+`chat_forget` broadcasts `chat-forgotten { key }` after successful deletion and
+after releasing its locks; failed clears emit no such event. Neither the head
+command nor this browser event adds an agent hook or MCP route. Profile
+unavailability is returned in the profile's own words, never as an empty head.
+
 | Reader | Required data |
 | --- | --- |
 | `chat.ts`, live and replay | Messages, stream block text and original tool arguments, result text, errors/outcomes, model/session/cwd/commands, usage and host facts |
