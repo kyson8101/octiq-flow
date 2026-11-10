@@ -311,17 +311,24 @@ forgets consent, never executes it. The request computes a proposal only; it
 never stops workers or removes folders. The authenticated browser uses:
 
 - `orchestration_workspace_cleanup_request_pending {}` → `Asked[]` (all pending
-  cards, including `processing:true` while the host handles one).
+  cards, including `processing:true` and completed `results` while the host
+  handles one, so a page reload recovers progress).
 - `orchestration_workspace_cleanup_request_answer {id,approve:boolean}` →
   `Settled`; these two commands are socket-only. There is no answer hook/MCP.
 - Bus event `orchestration-workspace-cleanup-request`:
-  `{state:"appeared",id,request:Asked}` or
-  `{state:"settled",id,chatKey,result:Settled}`. A settled event removes the card.
+  `{state:"appeared",id,request:Asked}`, then
+  `{state:"processing",id,chatKey,approved:boolean}` before the first item,
+  `{state:"item",id,chatKey,item:ItemResult}` after each item, and finally
+  `{state:"settled",id,chatKey,result:Settled}`. Approve and Deny both follow
+  this order; Deny emits a `kept` result for every item. Each item is added to
+  pending `results` before its event. Progress events are emitted without the
+  pending-request lock held. A settled event removes the card.
   Usual workspace/mission events still refresh the run panel.
 
 ```ts
 type Asked = {
   id: string; chatKey: string; runIds: string[]; processing: boolean;
+  results: ItemResult[]; // Initially empty; completed items in processing order.
   items: {
     id: string; kind: "task-worktree" | "mission"; runId: string;
     taskId?: string; title: string;
@@ -331,9 +338,10 @@ type Asked = {
     }[];
   }[];
 };
+type ItemResult = {id: string; status: "removed" | "kept"; reason: string};
 type Settled = {
   id: string; approved: boolean;
-  items: {id: string; status: "removed" | "kept"; reason: string}[];
+  items: ItemResult[];
 };
 ```
 

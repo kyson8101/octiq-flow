@@ -48,6 +48,7 @@ pub struct Asked {
     pub run_ids: Vec<String>,
     pub items: Vec<Item>,
     pub processing: bool,
+    pub results: Vec<ItemResult>,
 }
 
 pub(super) struct Pending {
@@ -288,6 +289,7 @@ impl OrchestrationStore {
             run_ids: runs.into_iter().map(|r| r.id).collect(),
             items,
             processing: false,
+            results: Vec::new(),
         };
         let mut pending = self.cleanup_requests.lock().map_err(|e| e.to_string())?;
         if let Some(existing) = pending.values().find(|p| p.asked.chat_key == actor) {
@@ -410,6 +412,12 @@ impl OrchestrationStore {
             p.asked.processing = true;
             p.asked.clone()
         };
+        crate::bus::emit(
+            EVENT,
+            &json!({ "state": "processing", "id": id, "chatKey": asked.chat_key, "approved": approve }),
+        );
+        #[cfg(test)]
+        tests::progress_emitted(self);
         let mut items = Vec::new();
         for item in &asked.items {
             let before: Vec<bool> = item
@@ -462,11 +470,24 @@ impl OrchestrationStore {
                 ),
                 Err(error) => ("kept", error),
             };
-            items.push(ItemResult {
+            let result = ItemResult {
                 id: item.id.clone(),
                 status: status.into(),
                 reason,
-            });
+            };
+            {
+                let mut pending = self.cleanup_requests.lock().map_err(|e| e.to_string())?;
+                if let Some(p) = pending.get_mut(id) {
+                    p.asked.results.push(result.clone());
+                }
+            }
+            crate::bus::emit(
+                EVENT,
+                &json!({ "state": "item", "id": id, "chatKey": asked.chat_key, "item": result }),
+            );
+            #[cfg(test)]
+            tests::progress_emitted(self);
+            items.push(result);
         }
         let settled = Settled {
             id: id.into(),
@@ -504,6 +525,79 @@ impl OrchestrationStore {
 mod tests {
     use super::*;
     use crate::git_ops::workflow::tests::Repo;
+
+    thread_local! {
+        // Read exactly what a reloaded page sees at each progress boundary,
+        // without a timing-dependent race against the next item's removal.
+        static PROGRESS_SNAPSHOTS: std::cell::RefCell<Option<Vec<serde_json::Value>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn progress_emitted(store: &OrchestrationStore) {
+        PROGRESS_SNAPSHOTS.with(|slot| {
+            if let Some(snapshots) = slot.borrow_mut().as_mut() {
+                assert!(
+                    store.cleanup_requests.try_lock().is_ok(),
+                    "progress is published after releasing the pending-request lock"
+                );
+                snapshots
+                    .push(serde_json::to_value(store.cleanup_request_pending().unwrap()).unwrap());
+            }
+        });
+    }
+
+    struct ProgressProbe;
+
+    impl ProgressProbe {
+        fn new() -> Self {
+            PROGRESS_SNAPSHOTS.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+            Self
+        }
+
+        fn assert_progress(&self, card: &Asked, result: &Settled, tap: &crate::bus::tap::Tap) {
+            assert!(card.results.is_empty());
+            let events: Vec<_> = tap
+                .heard()
+                .into_iter()
+                .filter(|(event, _)| event == EVENT)
+                .map(|(_, payload)| payload)
+                .collect();
+            let mut expected = vec![json!({
+                "state": "processing", "id": card.id,
+                "chatKey": card.chat_key, "approved": result.approved
+            })];
+            for item in &result.items {
+                expected.push(json!({
+                    "state": "item", "id": card.id, "chatKey": card.chat_key, "item": item
+                }));
+            }
+            expected.push(json!({
+                "state": "settled", "id": card.id, "chatKey": card.chat_key, "result": result
+            }));
+            assert_eq!(events, expected, "processing → item × N → settled");
+            assert_eq!(
+                result.items.iter().map(|i| &i.id).collect::<Vec<_>>(),
+                card.items.iter().map(|i| &i.id).collect::<Vec<_>>()
+            );
+            PROGRESS_SNAPSHOTS.with(|slot| {
+                let snapshots = slot.borrow();
+                let snapshots = snapshots.as_ref().unwrap();
+                assert_eq!(snapshots.len(), result.items.len() + 1);
+                for (completed, snapshot) in snapshots.iter().enumerate() {
+                    let mut expected = serde_json::to_value(card).unwrap();
+                    expected["processing"] = json!(true);
+                    expected["results"] = json!(&result.items[..completed]);
+                    assert_eq!(*snapshot, json!([expected]));
+                }
+            });
+        }
+    }
+
+    impl Drop for ProgressProbe {
+        fn drop(&mut self) {
+            PROGRESS_SNAPSHOTS.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
 
     fn setup(mode: WorkspaceMode) -> (Repo, OrchestrationStore, Run) {
         let repo = Repo::new();
@@ -701,9 +795,12 @@ mod tests {
         // A newly eligible workspace was not in the card.
         let (_, later) = prepare(&store, &run);
         finish(&store, &later);
+        let tap = crate::bus::tap::Tap::on(&card.id);
+        let progress = ProgressProbe::new();
         let result = store
             .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
             .unwrap();
+        progress.assert_progress(&card, &result, &tap);
         assert!(
             !Path::new(&first.cwd).exists(),
             "the safe control must actually be removed"
@@ -746,17 +843,25 @@ mod tests {
         let (_, first) = prepare(&store, &run);
         merged(&repo, &first);
         finish(&store, &first);
+        let (_, second) = prepare(&store, &run);
+        finish(&store, &second);
         let (tx, mut rx) = oneshot::channel();
         let card = store
             .request_workspace_cleanup(&ChatManager::default(), "chat:master", None, Some(tx))
             .unwrap()
             .unwrap();
+        assert_eq!(card.items.len(), 2);
+        let tap = crate::bus::tap::Tap::on(&card.id);
+        let progress = ProgressProbe::new();
         let result = store
             .answer_workspace_cleanup(&ChatManager::default(), &card.id, false)
             .unwrap();
+        progress.assert_progress(&card, &result, &tap);
         assert!(!result.approved);
-        assert_eq!(result.items[0].status, "kept");
+        assert!(result.items.iter().all(|item| item.status == "kept"));
         assert!(Path::new(&first.cwd).exists());
+        assert!(Path::new(&second.cwd).exists());
+        assert!(store.cleanup_request_pending().unwrap().is_empty());
         assert_eq!(rx.try_recv().unwrap().id, card.id);
         assert!(!store
             .inner
