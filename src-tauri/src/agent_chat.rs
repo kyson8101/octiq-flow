@@ -1317,6 +1317,9 @@ pub struct ChatManager {
     /// How each running agent was last started — see `StartContext`. Keyed by
     /// process key, so each chat resumes independently.
     starts: Mutex<HashMap<String, StartContext>>,
+    /// Serializes native-id I/O with /clear, independently of process locks.
+    /// Stop/interrupt never take this gate. Weak entries are swept in batches.
+    native_writes: Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
     /// What each agent has been sent but not yet given — see `QueuedTurn`.
     /// Keyed by process key, so chats queue independently.
     queued_turns: Mutex<HashMap<String, VecDeque<QueuedTurn>>>,
@@ -1466,6 +1469,19 @@ fn is_person_turn_id(turn_id: &str) -> bool {
 }
 
 impl ChatManager {
+    fn native_write(&self, key: &str) -> Arc<Mutex<()>> {
+        let mut writes = self.native_writes.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(write) = writes.get(key).and_then(std::sync::Weak::upgrade) {
+            return write;
+        }
+        if writes.len() >= 256 {
+            writes.retain(|_, write| write.strong_count() != 0);
+        }
+        let write = Arc::new(Mutex::new(()));
+        writes.insert(key.into(), Arc::downgrade(&write));
+        write
+    }
+
     fn stop_epoch(&self, key: &str) -> Arc<std::sync::atomic::AtomicU64> {
         self.stop_epochs
             .lock()
@@ -1909,14 +1925,21 @@ impl ChatManager {
     /// The agent named its own conversation. Kept so its next process can
     /// resume it rather than beginning a new one.
     fn remember_session(&self, session_key: &str, session_id: &str) {
-        let Ok(mut starts) = self.starts.lock() else {
-            return;
-        };
+        let write = self.native_write(session_key);
+        let _write = write.lock().unwrap_or_else(|e| e.into_inner());
+        if self.prepare_session(session_key, session_id) {
+            self.publish_session(session_key, session_id);
+        }
+    }
+
+    /// Only store I/O, with no session or starts lock held. The caller owns
+    /// the native-write gate and must still validate its launch before publish.
+    fn prepare_session(&self, session_key: &str, session_id: &str) -> bool {
         if matches!(
             crate::chat_index::usable_session(session_key, Some(session_id.into())),
             Ok(None)
         ) {
-            return;
+            return false;
         }
         if crate::lead_threads::is_key(session_key) {
             let id = session_key.trim_start_matches("chat:");
@@ -1925,10 +1948,6 @@ impl ChatManager {
                 Err(error) => eprintln!("lead thread: could not save provider session: {error}"),
             }
         }
-        if let Some(start) = starts.get_mut(session_key) {
-            start.session_id = Some(session_id.to_string());
-        }
-        drop(starts);
         let desk = self
             .front_desks
             .lock()
@@ -1942,8 +1961,34 @@ impl ChatManager {
                 session_id,
             );
         }
-        if let Err(error) = self.persist_orchestration_context(session_key) {
-            eprintln!("orchestration: could not save provider session: {error}");
+        if let Some(mut start) = self.start_context(session_key) {
+            start.session_id = Some(session_id.into());
+            if let Err(error) = self.orchestrations.save_resume_context(session_key, start) {
+                eprintln!("orchestration: could not save provider session: {error}");
+            }
+        }
+        true
+    }
+
+    fn publish_session(&self, session_key: &str, session_id: &str) {
+        if let Ok(mut starts) = self.starts.lock() {
+            if let Some(start) = starts.get_mut(session_key) {
+                start.session_id = Some(session_id.into());
+            }
+        }
+    }
+
+    /// A Stop overtook native-id I/O. Revoke just that id, preserving any
+    /// previously known conversation and the chat's launch settings.
+    fn revoke_late_session(&self, session_key: &str, session_id: &str) {
+        if let Err(error) = crate::chat_index::revoke_late_session(session_key, session_id) {
+            eprintln!("chat: could not revoke late provider session: {error}");
+        }
+        if let Err(error) = self
+            .orchestrations
+            .revoke_late_session(session_key, session_id)
+        {
+            eprintln!("orchestration: could not revoke late provider session: {error}");
         }
     }
 
@@ -5937,8 +5982,9 @@ fn start_session_with_recovery(
     Ok(())
 }
 
-/// Learning and recording an init share Stop's session lock. A native id
-/// first read after clear cannot evade revocation by being unknown at clear.
+/// Store I/O never holds Stop's session lock. /clear waits on a separate
+/// native-write gate AFTER stopping, so an init either precedes its cleanup
+/// or observes the ended launch. Stop can veto an in-flight learn by epoch.
 fn record_provider_event(
     manager: &ChatManager,
     session: &Mutex<ChatSession>,
@@ -5947,18 +5993,63 @@ fn record_provider_event(
     agent: ChatAgent,
     event: &Value,
 ) -> Option<Option<u64>> {
-    let announced = provider_for(agent).observe_event(event).session_id;
-    let _guard = if let Some(id) = announced {
+    let Some(id) = provider_for(agent).observe_event(event).session_id else {
+        return Some(crate::transcript::append(key, event));
+    };
+    let write = manager.native_write(session_key);
+    let _write = write.lock().unwrap_or_else(|e| e.into_inner());
+    let epoch = manager.stop_epoch(session_key);
+    let seen = {
         let session = session.lock().ok()?;
-        if session.cut_off == CutOff::Ended {
+        // Read epoch BEFORE launch evidence: Stop removes the launch before
+        // advancing epoch, so a post-Stop epoch cannot bless an old launch.
+        let seen = epoch.load(std::sync::atomic::Ordering::SeqCst);
+        if session.cut_off == CutOff::Ended
+            || manager.auto_plan_launches.lock().ok()?.get(session_key) != Some(&session.launch_id)
+        {
             return None;
         }
-        manager.remember_session(session_key, id);
-        Some(session)
-    } else {
-        None
+        seen
     };
-    Some(crate::transcript::append(key, event))
+    // Captured outside the process lock. The gate also prevents /clear from
+    // removing this history between native-id publication and append.
+    let generation = crate::transcript::generation(key);
+    if !manager.prepare_session(session_key, id) {
+        return None;
+    }
+    let published = {
+        let mut starts = manager.starts.lock().unwrap_or_else(|e| e.into_inner());
+        let start = starts.get_mut(session_key);
+        let previous = start.as_ref().and_then(|start| start.session_id.clone());
+        if let Some(start) = start {
+            start.session_id = Some(id.into());
+        }
+        // Every Stop and replacement launch advances epoch. CAS is the
+        // publication point; the starts lock hides the tentative id until
+        // then. No session lock is needed here (even waiting for starts
+        // under it could make Stop wait for another writer's store I/O).
+        let current = epoch
+            .compare_exchange(
+                seen,
+                seen,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok();
+        if !current {
+            if let Some(start) = starts.get_mut(session_key) {
+                start.session_id = previous;
+            }
+        }
+        current
+    };
+    if !published {
+        manager.revoke_late_session(session_key, id);
+        return None;
+    }
+    // Unlike f4f40e3, neither remember nor append holds the session mutex.
+    // d9c19ba likewise recorded init events outside that process lock.
+    Some(generation.and_then(|seen| crate::transcript::append_in(key, &seen, event).1))
 }
 
 /// A due entry may already have been cloned by the scheduler when /clear
@@ -9717,6 +9808,8 @@ pub fn chat_forget_impl(manager: &ChatManager, key: String) -> Result<(), String
     chat_stop_impl(manager, key.clone())?;
     ids.extend(scheduled_ids?);
     let _claim = manager.hold_start(&key)?;
+    let write = manager.native_write(&key);
+    let _write = write.lock().map_err(|e| e.to_string())?;
     if let Some(start) = manager.start_context(&key) {
         ids.extend(start.session_id);
     }

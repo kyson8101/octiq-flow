@@ -59,9 +59,15 @@ and browser metadata saves without changing the public metadata shape or its
 restore generation. Stale saves cannot restore a revoked id or overwrite a newer
 session with one; stale `chat_start.resume`, registered recovery from transcript,
 late init events and provider-switch rollback contexts cannot resume it.
-Native init learning and recording also share Stop's session lock: an init
-first read after the old process ended is discarded even if its id was unknown
-at clear. Handover ask-back refuses to fork a revoked id from its saved origin.
+Native init captures its launch and Stop epoch under the session lock, does
+index/team/ledger I/O outside that lock, and checks the epoch again before
+publishing its id in memory. If Stop overtakes I/O, the tentative id is revoked
+in the index and ledger and is neither published nor appended. Init recording
+also runs outside the session lock, as it did before f4f40e3. A separate per-chat
+native-write gate serializes this work with `/clear`; clear waits on it only
+after stopping, while Stop and interrupt never take it. This prevents an unknown
+late init from repopulating a cleared history. Handover ask-back refuses to fork
+a revoked id from its saved origin.
 A new provider-owned id remains usable. The final common launch boundary checks again
 under the session-table lock, including notifications and cloned auto-resumes.
 

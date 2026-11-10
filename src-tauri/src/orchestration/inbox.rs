@@ -434,6 +434,26 @@ impl OrchestrationStore {
         })
     }
 
+    /// A native init lost its Stop epoch during store I/O. Keep the
+    /// revocation in memory even if its file cannot be saved; settle_owed
+    /// retries it, like every other ending action.
+    pub(crate) fn revoke_late_session(&self, key: &str, session: &str) -> Result<(), String> {
+        if self
+            .saved_resume_context(key)
+            .is_none_or(|start| start.session_id() != Some(session))
+        {
+            return Ok(());
+        }
+        self.mutate_regardless("the stopped provider session", |data| {
+            if let Some(start) = data.resume_contexts.get_mut(key) {
+                if start.session_id() == Some(session) {
+                    start.forget_session();
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// Choose only a recorded coordinator location, never a worker checkout
     /// leaked into start settings by a rejected duplicate browser launch.
     pub(crate) fn notification_resume_cwd(

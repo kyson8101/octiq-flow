@@ -503,3 +503,235 @@ fn an_unknown_native_init_delayed_past_clear_cannot_repopulate_any_resume_source
         assert!(crate::transcript::every_line(&key).unwrap().is_empty());
     }
 }
+
+#[test]
+fn stop_and_interrupt_reply_while_native_init_index_io_is_paused() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+
+    for agent in ChatAgent::ALL {
+        for lead in [false, true] {
+            for interrupt in [false, true] {
+                // Pause both the first revocation read and the ledger's read,
+                // after a lead's index has already saved the tentative id.
+                for skip in [0, if lead { 2 } else { 1 }] {
+                    let home = crate::test_dir::TestDir::new("native-init-io-stop");
+                    let _pin = crate::profile::started_in(&home);
+                    let services = Services::at_profile();
+                    let manager = services.chats.clone();
+                    *manager.unwind_probe.grace.lock().unwrap() = None;
+                    let key = format!(
+                        "chat:{}-{}",
+                        if lead { "lead-io" } else { "io" },
+                        agent.id()
+                    );
+                    let row = meta(&key, lead);
+                    if lead {
+                        crate::chat_index::ensure_lead(row.clone()).unwrap();
+                    } else {
+                        crate::chat_index::upsert(row.clone()).unwrap();
+                    }
+                    services
+                        .orchestrations
+                        .create_run(
+                            key.clone(),
+                            "test".into(),
+                            "workspace".into(),
+                            home.to_string_lossy().into_owned(),
+                            Some(1),
+                        )
+                        .unwrap();
+                    manager.remember_start(&key, start(agent));
+                    let _child = manager.test_hold(&key, agent, true);
+                    if agent == ChatAgent::Codex {
+                        manager.test_as_codex_thread(&key, Access::Full);
+                    }
+                    manager.test_seat(&key, &key);
+                    let session = manager.sessions.lock().unwrap().get(&key).unwrap().clone();
+                    let (entered, enter) = mpsc::channel();
+                    let (done, finish) = mpsc::channel();
+                    let stopped = manager.clone();
+                    let stop_key = key.clone();
+                    let stopper = thread::spawn(move || {
+                        enter.recv_timeout(Duration::from_secs(5)).unwrap();
+                        let began = Instant::now();
+                        let result = if interrupt {
+                            chat_interrupt_impl(&stopped, stop_key.clone())
+                                .map(|reply| assert!(reply.stopped))
+                        } else {
+                            chat_stop_impl(&stopped, stop_key.clone())
+                        };
+                        // Starts must also be readable while native-id I/O
+                        // is paused, and must not expose its tentative id.
+                        assert_eq!(
+                            stopped.provider_session(&stop_key).as_deref(),
+                            Some("old-native")
+                        );
+                        let elapsed = began.elapsed();
+                        let _ = done.send(());
+                        (elapsed, result)
+                    });
+                    let timely = Arc::new(AtomicBool::new(false));
+                    let measured = timely.clone();
+                    let recorded = crate::chat_index::tests::with_read_pause(
+                        skip,
+                        move || {
+                            entered.send(()).unwrap();
+                            measured.store(
+                                finish.recv_timeout(Duration::from_millis(200)).is_ok(),
+                                Ordering::SeqCst,
+                            );
+                        },
+                        || {
+                            record_provider_event(
+                                &manager,
+                                &session,
+                                &key,
+                                &key,
+                                agent,
+                                &init(agent, "delayed-native"),
+                            )
+                        },
+                    );
+                    let (elapsed, result) = stopper.join().unwrap();
+                    result.unwrap();
+                    assert!(
+                        timely.load(Ordering::SeqCst),
+                        "{agent:?} lead={lead} interrupt={interrupt} skip={skip}: {elapsed:?}"
+                    );
+                    assert!(elapsed < Duration::from_millis(200));
+                    assert_eq!(recorded, None);
+                    assert_eq!(
+                        manager.provider_session(&key).as_deref(),
+                        Some("old-native")
+                    );
+                    assert_ne!(
+                        crate::chat_index::find(&row.id)
+                            .unwrap()
+                            .unwrap()
+                            .session_id
+                            .as_deref(),
+                        Some("delayed-native")
+                    );
+                    assert_eq!(
+                        crate::chat_index::usable_session(&key, Some("delayed-native".into()))
+                            .unwrap(),
+                        None
+                    );
+                    assert!(!services
+                        .orchestrations
+                        .saved_resume_context(&key)
+                        .unwrap()
+                        .resumable());
+                    assert!(crate::transcript::every_line(&key).unwrap().is_empty());
+                    // Persisted rollback, followed by a successful clear,
+                    // must also survive reconstruction of the host stores.
+                    dispatch(&services, "chat_forget", json!({"key":key})).unwrap();
+                    let reloaded = Services::at_profile();
+                    assert!(!reloaded
+                        .orchestrations
+                        .saved_resume_context(&key)
+                        .unwrap()
+                        .resumable());
+                    assert_eq!(reloaded.chats.provider_session(&key), None);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn clear_waits_for_native_io_only_after_stopping_and_never_restores_the_init() {
+    use std::sync::mpsc;
+
+    // Both threads intentionally share the test binary's scratch profile.
+    // started_in on a second thread would stand in for a second server and
+    // replace the first thread's profile ownership mark.
+    let services = Services::at_profile();
+    let manager = services.chats.clone();
+    let key = format!("chat:lead-native-clear-{}", uuid::Uuid::new_v4().simple());
+    crate::chat_index::ensure_lead(meta(&key, true)).unwrap();
+    manager.remember_start(&key, start(ChatAgent::Claude));
+    manager.test_launch(&key);
+    let session = manager.sessions.lock().unwrap().get(&key).unwrap().clone();
+    let (entered, enter) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let recording = manager.clone();
+    let record_key = key.clone();
+    let recording_session = session.clone();
+    let reader = thread::spawn(move || {
+        crate::chat_index::tests::with_read_pause(
+            0,
+            move || {
+                entered.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(5)).unwrap();
+            },
+            || {
+                record_provider_event(
+                    &recording,
+                    &recording_session,
+                    &record_key,
+                    &record_key,
+                    ChatAgent::Claude,
+                    &init(ChatAgent::Claude, "unknown-in-flight"),
+                )
+            },
+        )
+    });
+    enter.recv_timeout(Duration::from_secs(5)).unwrap();
+    let clearing = manager.clone();
+    let clear_key = key.clone();
+    let clear = thread::spawn(move || chat_forget_impl(&clearing, clear_key));
+    let began = Instant::now();
+    let stopped = loop {
+        if session.try_lock().is_ok_and(|s| s.cut_off == CutOff::Ended) {
+            break true;
+        }
+        if began.elapsed() >= Duration::from_millis(200) {
+            break false;
+        }
+        thread::yield_now();
+    };
+    // Always release before asserting, so a regression cannot strand threads
+    // or hold the shared index lock for the rest of the test suite.
+    release.send(()).unwrap();
+    let recorded = reader.join().unwrap();
+    let cleared = clear.join().unwrap();
+    assert!(stopped, "clear did not stop before waiting on native I/O");
+    assert_eq!(recorded, None);
+    cleared.unwrap();
+    assert_eq!(manager.provider_session(&key), None);
+    assert_eq!(
+        crate::chat_index::find(key.trim_start_matches("chat:"))
+            .unwrap()
+            .unwrap()
+            .session_id,
+        None
+    );
+    assert!(crate::transcript::every_line(&key).unwrap().is_empty());
+    assert_eq!(
+        crate::chat_index::usable_session(&key, Some("unknown-in-flight".into())).unwrap(),
+        None
+    );
+    // A new launch can learn a new conversation after the clear.
+    manager.test_launch(&key);
+    let fresh = manager.sessions.lock().unwrap().get(&key).unwrap().clone();
+    assert!(record_provider_event(
+        &manager,
+        &fresh,
+        &key,
+        &key,
+        ChatAgent::Claude,
+        &init(ChatAgent::Claude, "fresh-native")
+    )
+    .unwrap()
+    .is_some());
+    assert_eq!(
+        manager.provider_session(&key).as_deref(),
+        Some("fresh-native")
+    );
+    manager.test_end(&key);
+    // Lead rows intentionally cannot be removed through the ordinary API;
+    // the shared TestDir removes this unique fixture at binary exit.
+    crate::transcript::forget(&key);
+}

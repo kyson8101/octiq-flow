@@ -240,6 +240,23 @@ fn read_path(path: &std::path::Path) -> Result<Index, Unreadable> {
 }
 
 fn read_checked() -> Result<Index, Unreadable> {
+    #[cfg(test)]
+    {
+        let pause = tests::READ_PAUSE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            match slot.as_mut() {
+                Some((remaining, _)) if *remaining > 0 => {
+                    *remaining -= 1;
+                    None
+                }
+                Some(_) => slot.take().map(|(_, pause)| pause),
+                None => None,
+            }
+        });
+        if let Some(pause) = pause {
+            pause();
+        }
+    }
     let Some(path) = path() else {
         return Err(Unreadable);
     };
@@ -322,7 +339,20 @@ pub(crate) fn usable_session(key: &str, session: Option<String>) -> Result<Optio
 
 /// Save the revocation before removing any history. Only native ids change;
 /// lead identity, runtime settings and registration remain exactly as recorded.
-pub(crate) fn forget_sessions(key: &str, mut sessions: Vec<String>) -> Result<(), String> {
+pub(crate) fn forget_sessions(key: &str, sessions: Vec<String>) -> Result<(), String> {
+    revoke_sessions(key, sessions, true)
+}
+
+/// Revoke an init overtaken by Stop without clearing another known id.
+pub(crate) fn revoke_late_session(key: &str, session: &str) -> Result<(), String> {
+    revoke_sessions(key, vec![session.into()], false)
+}
+
+fn revoke_sessions(
+    key: &str,
+    mut sessions: Vec<String>,
+    clear_current: bool,
+) -> Result<(), String> {
     crate::profile::available()?;
     if crate::transcript::path_for(key).is_none() {
         crate::profile::available()?;
@@ -334,7 +364,14 @@ pub(crate) fn forget_sessions(key: &str, mut sessions: Vec<String>) -> Result<()
         .strip_prefix("chat:")
         .and_then(|id| index.chats.iter_mut().find(|c| c.id == id))
     {
-        sessions.extend(row.session_id.take());
+        if clear_current
+            || row
+                .session_id
+                .as_ref()
+                .is_some_and(|id| sessions.contains(id))
+        {
+            sessions.extend(row.session_id.take());
+        }
     }
     let revoked = index.forgotten_sessions.entry(key.into()).or_default();
     for session in sessions {
@@ -1137,9 +1174,30 @@ pub(crate) mod tests {
     }
 
     thread_local! {
+        pub(super) static READ_PAUSE: std::cell::RefCell<Option<(usize, Box<dyn FnOnce()>)>> = const { std::cell::RefCell::new(None) };
         /// Set by `while_writes_fail`, for the thread that asked only: the
         /// index is one file shared by every test in the suite.
         pub(super) static WRITES_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Pause one actual index read on this thread, including reads reached
+    /// while an index/ledger lock is held. Other tests are unaffected.
+    pub(crate) fn with_read_pause<T>(
+        skip: usize,
+        pause: impl FnOnce() + 'static,
+        work: impl FnOnce() -> T,
+    ) -> T {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                READ_PAUSE.with(|slot| {
+                    slot.borrow_mut().take();
+                });
+            }
+        }
+        let _restore = Restore;
+        READ_PAUSE.with(|slot| *slot.borrow_mut() = Some((skip, Box::new(pause))));
+        work()
     }
 
     /// Run `work` with every write of the index by this thread failing.
