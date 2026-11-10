@@ -40,7 +40,7 @@ import { valueBytes } from "./lib/valueBytes";
 import { loadChat, loadEarlierChat, CHAT_WINDOW_BYTES } from "./lib/loadChat";
 import { ChatHistory, type ChatPage } from "./lib/chatHistory";
 import { ChatWindowCache } from "./lib/chatWindowCache";
-import { invalidateChatRecord, type ChatRecordHead } from "./lib/chatRecord";
+import { ChatRecordClears, invalidateChatRecord, type ChatRecordHead } from "./lib/chatRecord";
 import {
   addUserTurn,
   emptyChat,
@@ -1166,6 +1166,10 @@ export default function App() {
   // got nothing, and drew an empty page. See lib/catchUp.
   const catchUp = useRef(new CatchUp());
   const chatReads = useRef(new Map<string, { promise: Promise<void> }>());
+  const chatClears = useRef(new ChatRecordClears());
+  useEffect(() => bridge.onState(state => {
+    if (state !== "open") chatClears.current.disconnected();
+  }), []);
   // Remember that a particular object was saved without retaining the previous
   // multi-MB object for every chat this tab has ever opened.
   const cachedStates = useRef(new WeakMap<ChatState, string>());
@@ -1756,25 +1760,37 @@ export default function App() {
     [patch],
   );
 
-  useEffect(() => bridge.on<{ key: string }>("chat-forgotten", payload => {
-    const id = payload && convOf(payload.key);
-    if (!id || gone.current.has(id)) return;
+  const resetChatRecord = useCallback((id: string) => {
     // Reset events are broadcast even when this tab only shows Settings and
     // subscribes to no transcripts. Cancel the old read before clearing marks.
     chatReads.current.delete(id);
     nowPlaying.forget(id);
-    invalidateChatRecord({ id, key: payload.key, catchUp: catchUp.current,
+    invalidateChatRecord({ id, key: keyFor(id), catchUp: catchUp.current,
       history: chatHistory.current, recent: recentChatWindows.current,
       getState: () => chatsRef.current[id] ?? EMPTY, publish: state => patch(id, () => state) });
     forgetChatPlace(id);
-    setConversations(rows => rows.map(row => row.id === id ? { ...row, messages: [], seq: undefined } : row));
+    setConversations(rows => {
+      const next = rows.map(row => row.id === id ? { ...row, messages: [], seq: 0, updatedAt: Date.now() } : row);
+      saveConversations(next);
+      return next;
+    });
+  }, [patch]);
+
+  const refreshClearedChat = useCallback((id: string) => {
     if (screenChats.current.has(id)) {
       setReading(before => ({ ...before, [id]: true }));
       void catchUpChat(id, 0).catch(() => {}).finally(() => {
         flushChats(); setReading(before => ({ ...before, [id]: false }));
       });
     }
-  }), [catchUpChat, patch, flushChats]);
+  }, [catchUpChat, flushChats]);
+
+  useEffect(() => bridge.on<{ key: string }>("chat-forgotten", payload => {
+    const id = payload && convOf(payload.key);
+    if (!id || gone.current.has(id) || chatClears.current.forgotten(payload.key)) return;
+    resetChatRecord(id);
+    refreshClearedChat(id);
+  }), [resetChatRecord, refreshClearedChat]);
 
   const loadEarlierFor = useCallback(async (id: string | null, beforePrepend?: () => Promise<void>) => {
     if (!id || !chatHistory.current.hasEarlier(id)) return;
@@ -3898,34 +3914,23 @@ export default function App() {
        * sequence counter to zero, and a client still holding the old high
        * number would discard every event after this as already seen. */
       if (text.trim() === "/clear") {
-        nowPlaying.forget(id);
         const key = keyFor(id);
-        if (runningRef.current.has(id)) {
-          bridge.invoke("chat_send", { key, text, recordUser: false }).catch(() => undefined);
-        }
-        bridge.invoke("chat_forget", { key }).catch(() => undefined);
-        // Held again, from nothing: `transcript::forget` drops the server's
-        // counter to zero, and a page still holding the old high number would
-        // discard every event after this as one it had already seen.
-        chatReads.current.delete(id);
-        chatHistory.current.forget(id);
-        void forgetChatCheckpoint(id);
-        catchUp.current.own(key);
-        patch(id, (s) => ({ ...emptyChat(), sessionId: s.sessionId }));
-        // The saved copy has to be emptied here rather than left to the sync
-        // effect, which skips any chat with no messages — that guard is what
-        // stops a brand-new chat being saved, and it also meant a cleared one
-        // kept its old messages on disk and got them all back on reload.
-        setConversations((prev) => {
-          const list = prev.map((c) =>
-            c.id === id
-              ? { ...c, messages: [], seq: 0, updatedAt: Date.now() }
-              : c,
-          );
-          saveConversations(list);
-          return list;
+        // Reject to the composer's existing send error, verbatim. It retains
+        // /clear for retry; no projection or checkpoint changes on failure.
+        return chatClears.current.clear({
+          key,
+          forget: () => bridge.invoke("chat_forget", { key }),
+          clearAgent: () => {
+            if (runningRef.current.has(id)) {
+              void bridge.invoke("chat_send", { key, text, recordUser: false }).catch(() => undefined);
+            }
+          },
+          reset: () => {
+            resetChatRecord(id);
+            catchUp.current.own(key);
+          },
+          refresh: () => refreshClearedChat(id),
         });
-        return true;
       }
       // A model choice is immediate in the UI, but a provider process may
       // still be finishing its shutdown. Do not let a fast Send fall through
@@ -4204,6 +4209,8 @@ export default function App() {
       conversationId,
       patch,
       catchUpChat,
+      resetChatRecord,
+      refreshClearedChat,
       syncQueue,
       agentsMode,
       lead,

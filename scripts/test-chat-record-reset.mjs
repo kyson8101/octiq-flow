@@ -54,10 +54,12 @@ const review = [];
 try {
   await server.listen();
   browser = await chromium.launch({ headless: true, channel: process.env.OCTIQ_TEST_BROWSER || "chrome" });
-  for (const scenario of ["broadcast", "missed-event", "generation", "checkpoint", "visible"]) {
+  for (const scenario of ["broadcast", "missed-event", "generation", "checkpoint", "visible", "clear-failure", "clear-save-first"]) {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
     const sockets = [], calls = [], errors = [];
     let generation = "before-clear";
+    let finishForget, forgetAnswered = false;
+    const hostError = "The profile folder /fixture/profile is not available right now: nothing was saved. Put the original folder back and retry.";
     for (const c of chats) pages[c.id] = transcripts[c.id].at(-1);
     await context.addInitScript(() => {
       localStorage.setItem("octiq.web.token", "isolated-fixture"); localStorage.setItem("octiq.agentsMode", "off"); localStorage.setItem("octiq.v2.gitColumn", "0");
@@ -70,6 +72,7 @@ try {
         calls.push(d); let result = [];
         if (d.cmd === "list_workspaces") result = [{ id: "fixture", name: "Fixture", primary_path: "/fixture" }];
         if (d.cmd === "chat_index_list") result = chats;
+        if (d.cmd === "chat_list" && scenario.startsWith("clear-")) result = ["chat:c0"];
         if (d.cmd === "chat_queue_state") result = { live: false, queuedTurnIds: [] };
         if (d.cmd === "git_status") result = { branch: "develop", files: [] };
         if (d.cmd === "orchestration_summary") result = { runs: [], tasks: [], attempts: [], gates: [], messages: [], batches: [], nativeDecisions: [], notifications: [], services: [], bridges: [], peerAsks: [] };
@@ -78,9 +81,31 @@ try {
         if (d.cmd === "chat_since") result = pages[chatId].events.filter(f => f.seq > d.args.after);
         if (d.cmd === "chat_record_head") result = { lastSeq: pages[chatId].events.at(-1)?.seq ?? 0, generation: chatId === "c0" ? generation : "stable" };
         if (d.cmd === "chat_forget") {
+          if (scenario === "clear-failure") {
+            ws.send(JSON.stringify({ t: "reply", id: d.id, ok: false, error: hostError }));
+            return;
+          }
+          if (scenario === "clear-save-first") {
+            finishForget = () => {
+              generation = "after-clear";
+              pages.c0 = { events: [
+                { seq: 1, event: { type: "user", uuid: "racing-user", message: { role: "user", content: "New post-clear question" } } },
+                { seq: 2, event: { type: "assistant", message: { id: "racing-answer", content: [{ type: "text", text: "New post-clear answer" }] } } },
+              ], context: [], before: null };
+              for (const socket of sockets) {
+                socket.send(JSON.stringify({ t: "event", event: "chat-forgotten", payload: { key: d.args.key } }));
+                // New-record events racing the reply must survive the local reset.
+                for (const frame of pages.c0.events) socket.send(JSON.stringify({ t: "event", event: "chat-event", payload: { key: d.args.key, ...frame } }));
+              }
+              forgetAnswered = true;
+              ws.send(JSON.stringify({ t: "reply", id: d.id, ok: true, result: null }));
+            };
+            return;
+          }
           pages[chatId] = { events: [], context: [], before: null }; generation = "after-clear";
           if (scenario === "broadcast" || scenario === "visible") for (const socket of sockets) socket.send(JSON.stringify({ t: "event", event: "chat-forgotten", payload: { key: d.args.key } }));
         }
+        if (d.cmd === "chat_send" && scenario === "clear-save-first") assert.ok(forgetAnswered, "agent /clear waits for the saved reply");
         ws.send(JSON.stringify({ t: "reply", id: d.id, ok: true, result }));
       });
     });
@@ -91,6 +116,33 @@ try {
     await page.locator(".msgs").getByText("Retained answer c0 31", { exact: true }).waitFor(); await idle();
     const before = await page.evaluate(() => window.__probeState().c0);
     assert.equal(before.seq, 1152); assert.equal(before.messages, 64);
+    if (scenario.startsWith("clear-")) {
+      const composer = page.getByRole("textbox", { name: "Message", exact: true });
+      await composer.fill("/clear"); await composer.press("Enter");
+      if (scenario === "clear-failure") {
+        await page.locator(".attach-error").getByText(hostError, { exact: true }).waitFor();
+        assert.equal(await composer.inputValue(), "/clear");
+        assert.deepEqual(await page.evaluate(() => window.__probeState().c0), before);
+        assert.equal(calls.filter(c => c.cmd === "chat_send").length, 0);
+      } else {
+        await page.waitForTimeout(150); await composer.press("Enter"); await page.waitForTimeout(150);
+        assert.equal(calls.filter(c => c.cmd === "chat_forget").length, 1);
+        assert.equal(calls.filter(c => c.cmd === "chat_send").length, 0);
+        assert.deepEqual(await page.evaluate(() => window.__probeState().c0), before);
+        assert.equal(await composer.inputValue(), "/clear");
+        assert.ok(finishForget); finishForget();
+        await page.locator(".msgs").getByText("New post-clear answer", { exact: true }).waitFor();
+        await page.waitForFunction(() => document.querySelector('textarea[aria-label="Message"]')?.value === "");
+        await idle();
+        assert.equal(calls.filter(c => c.cmd === "chat_send" && c.args.text === "/clear").length, 1);
+        assert.equal((await page.evaluate(() => window.__probeState().c0)).messages, 2);
+      }
+      assert.deepEqual(errors, []);
+      const after = await page.evaluate(() => ({ state: window.__probeState().c0, text: document.body.textContent }));
+      review.push({ scenario, before, after, calls: calls.filter(c => /chat_forget|chat_send/.test(c.cmd)), errors });
+      await page.screenshot({ path: join(output, `${scenario}.png`) });
+      await context.close(); continue;
+    }
     if (scenario !== "visible") await page.evaluate(() => window.__extras.cover("settings"));
     if (scenario === "checkpoint") {
       await page.evaluate(async () => {

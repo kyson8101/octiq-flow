@@ -471,7 +471,7 @@ export function Composer({
   onChoice: (c: ModelChoice) => void;
   access: AccessLevel;
   onAccess: (a: AccessLevel) => void;
-  onSend: (text: string, attachments: Attachment[]) => void;
+  onSend: (text: string, attachments: Attachment[]) => void | boolean | Promise<boolean>;
   onStop: () => void;
   /** Words taken back out of the queue before any agent was given them — the ✕
    *  on a queued bubble. That bubble is gone, and the box is the only place
@@ -1103,9 +1103,38 @@ export function Composer({
     rememberSent(value);
   }
 
-  function send() {
+  const clearing = useRef(new Set<string | undefined>());
+  async function send() {
     const value = text.trim();
     if ((!value && attached.length === 0) || disabled || pasteSaveFor(drafts.current, shownFor.current).pending) return;
+    if (value === "/clear") {
+      const owner = shownFor.current, store = drafts.current, submitted = text;
+      if (clearing.current.has(owner)) return;
+      clearing.current.add(owner);
+      try {
+        if (await onSend(value, attached) === false) return;
+        // A late reply belongs to the box it was sent from. Keep newer typing
+        // and other chats' drafts, and only remove the successful command.
+        if (shownFor.current === owner && drafts.current === store) {
+          if (box.current.text === submitted) {
+            rememberSent(value);
+            setText("");
+            forget(attached);
+            setAttached([]);
+            setAttachError(null);
+          }
+        } else {
+          const saved = store.take(owner);
+          if (saved.text === submitted) forget(saved.attached);
+          else store.keep(owner, saved);
+        }
+      } catch (error) {
+        if (shownFor.current === owner) setAttachError(reason(error));
+      } finally {
+        clearing.current.delete(owner);
+      }
+      return;
+    }
     onSend(value, attached);
     rememberSent(value);
     setText("");

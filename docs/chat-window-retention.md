@@ -26,6 +26,10 @@ conservative estimator. This cap bounds retained reducer data, not browser RSS.
 
 ## Record invalidation
 
+`/clear` is save-first: await `chat_forget` before clearing the agent or local
+history; a failure keeps the history, checkpoint, sequence mark and composer
+command, and displays the host's reason verbatim for retry.
+
 `chat-forgotten { key }` invalidates that chat in every tab, including tabs on
 Settings with no transcript subscription. Cancel its active read, remove its
 recent-window slot and history/scroll provenance, clear the CatchUp mark and
@@ -53,7 +57,12 @@ validation. Retention budgets and visible-only subscriptions remain unchanged.
 `scripts/test-chat-record-reset.mjs` adapts OCTIQ DEV BACKUP's original double-tab
 reproduction with the agreed head/event contracts. It covers broadcast reset,
 missed reset, changed generation despite a larger sequence, stale checkpoint,
-and a reset while visible. Run it serially with the other browser probes:
+and a reset while visible. It also covers a rejected `/clear` through the
+actual composer (history and input retained, host error visible, no agent
+command) and a held successful
+forget (duplicate Enter refused, agent command sent only after success,
+own broadcast plus racing new-record events applied without a second reset).
+Run it serially with the other browser probes:
 
 ```sh
 node scripts/test-chat-record-reset.mjs
