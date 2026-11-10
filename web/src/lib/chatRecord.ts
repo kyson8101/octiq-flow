@@ -11,7 +11,22 @@ export type ChatRecordHead = { lastSeq: number; generation: string };
 /** Clearing the host record also ends its process. No saved native session
  * may be used as the fallback for the next browser start. */
 export function clearedConversation(chat: Conversation): Conversation {
-  return { ...chat, sessionId: undefined, messages: [], seq: 0, updatedAt: Date.now() };
+  return { ...chat, sessionId: undefined, recordGeneration: undefined, messages: [], seq: 0, updatedAt: Date.now() };
+}
+
+/** A checkpoint may already belong to the replacement record, so projection
+ * invalidation alone cannot protect the separately saved native ID. Compare
+ * its own provenance on every observation, including checkpoint restoration.
+ * For legacy rows, a known prior window generation supplies that provenance. */
+export function conversationForRecord(chat: Conversation, generation: string, previousGeneration?: string, checkpointSessionId?: string | null): Conversation {
+  const previous = chat.recordGeneration ?? previousGeneration;
+  if (chat.recordGeneration === generation && (previous === undefined || previous === generation)) return chat;
+  const different = previous !== undefined ? previous !== generation
+    // A legacy row has no provenance. A checkpoint from a known record can
+    // validate its ID; do not carry an unproven fallback across that restore.
+    : checkpointSessionId !== undefined && checkpointSessionId !== chat.sessionId;
+  return { ...chat, recordGeneration: generation,
+    sessionId: different ? undefined : chat.sessionId };
 }
 
 export function chatSessionFor(state: Pick<ChatState, "sessionId"> | undefined, chat: Pick<Conversation, "sessionId"> | undefined): string | null {

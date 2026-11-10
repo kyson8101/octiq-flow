@@ -39,12 +39,14 @@ export type ChatLoadOptions = {
   id: string;
   key: string;
   storedSeq?: number;
+  storedGeneration?: string;
   catchUp: CatchUp;
   getState: () => ChatState;
   publish: (state: ChatState) => void;
   request: (after: number) => Promise<Frame[]>;
   requestHead?: () => Promise<ChatRecordHead>;
   onInvalidated?: () => void;
+  onRecordGeneration?: (generation: string, previousGeneration?: string, checkpointSessionId?: string | null) => void;
   cancelled: () => boolean;
   history?: ChatHistory;
   requestPage?: (before: number | null) => Promise<ChatPage>;
@@ -58,6 +60,7 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
   // publication waits for this small capability probe.
   const headRead = options.requestHead?.().then(head => ({ head }), error => ({ error }));
   let { storedSeq } = options;
+  let generation = catchUp.generation(key) ?? options.storedGeneration;
   if (!catchUp.holds(key)) {
     const cached = await readChatCheckpoint(id);
     if (cancelled()) return;
@@ -66,12 +69,15 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
       // left off its clock: nobody saw it (`turnClock.restoredTurn`).
       publish(withLocalPrompts(restoredTurn(cached.state, cached.updatedAt), getState(), true));
       storedSeq = cached.seq;
-      if (cached.generation !== undefined) catchUp.setGeneration(key, cached.generation);
+      if (cached.generation !== undefined) {
+        options.onRecordGeneration?.(cached.generation, generation, cached.state.sessionId ?? null);
+        generation = cached.generation;
+        catchUp.setGeneration(key, cached.generation);
+      }
     }
   }
   if (cancelled()) return;
   const mark = catchUp.holds(key) ? catchUp.mark(key) : (storedSeq ?? 0);
-  const generation = catchUp.generation(key);
   let superseded = false;
   const syncing = loadChatWindow({ ...options, storedSeq, cancelled: () => cancelled() || superseded })
     .then(() => ({}), error => ({ error }));
@@ -83,6 +89,7 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
   const head = result && "head" in result ? result.head : undefined;
   // An unrecognized capability reply cannot establish a record identity.
   if (head && Number.isSafeInteger(head.lastSeq) && typeof head.generation === "string") {
+    options.onRecordGeneration?.(head.generation, generation);
     if (head.lastSeq < mark || (generation !== undefined && generation !== head.generation)) {
       superseded = true;
       options.onInvalidated?.();
@@ -99,7 +106,10 @@ export async function loadChat(options: ChatLoadOptions): Promise<void> {
     if ("error" in synced) throw synced.error;
   }
   if (cancelled()) return;
-  if (head && Number.isSafeInteger(head.lastSeq) && typeof head.generation === "string") catchUp.setGeneration(key, head.generation);
+  if (head && Number.isSafeInteger(head.lastSeq) && typeof head.generation === "string") {
+    catchUp.setGeneration(key, head.generation);
+    options.onRecordGeneration?.(head.generation, generation);
+  }
   if (catchUp.holds(key) && !options.history?.isPartial(id)) {
     void saveChatCheckpoint({ id, state: getState(), seq: catchUp.mark(key), generation: catchUp.generation(key), updatedAt: Date.now() });
   }

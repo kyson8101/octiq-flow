@@ -40,7 +40,7 @@ const instrumentation = {
   window.__extras = {clear: () => send("/clear"), cover: () => setAppSettings(true)};
   window.__probeOpen = id => openConversation(conversationsRef.current.find(c => c.id === id));
   window.__probeState = () => Object.fromEntries(Object.entries(chatsRef.current).map(([id, state]) => [id,
-    {sessionId: state.sessionId ?? null, storedSessionId: conversationsRef.current.find(c => c.id === id)?.sessionId ?? null, savedSessionId: loadConversations().find(c => c.id === id)?.sessionId ?? null, held: catchUp.current.holds(keyFor(id)), messages: state.messages.length, seq: catchUp.current.mark(keyFor(id)), generation: catchUp.current.generation(keyFor(id))}]));
+    {sessionId: state.sessionId ?? null, storedSessionId: conversationsRef.current.find(c => c.id === id)?.sessionId ?? null, savedSessionId: loadConversations().find(c => c.id === id)?.sessionId ?? null, recordGeneration: conversationsRef.current.find(c => c.id === id)?.recordGeneration, held: catchUp.current.holds(keyFor(id)), messages: state.messages.length, seq: catchUp.current.mark(keyFor(id)), generation: catchUp.current.generation(keyFor(id))}]));
   window.__probeIdle = () => chatReads.current.size === 0;
   // Load the task beside the main chat`);
   },
@@ -55,7 +55,7 @@ const review = [];
 try {
   await server.listen();
   browser = await chromium.launch({ headless: true, channel: process.env.OCTIQ_TEST_BROWSER || "chrome" });
-  const scenarios = process.env.CHAT_RESET_SCENARIOS?.split(",") ?? ["broadcast", "missed-event", "generation", "checkpoint", "visible", "clear-failure", "clear-save-first"];
+  const scenarios = process.env.CHAT_RESET_SCENARIOS?.split(",") ?? ["broadcast", "missed-event", "generation", "checkpoint", "current-checkpoint", "same-generation", "visible", "clear-failure", "clear-save-first"];
   for (const scenario of scenarios) {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
     const sockets = [], calls = [], errors = [];
@@ -121,6 +121,22 @@ try {
     const before = await page.evaluate(id => window.__probeState()[id], mainId);
     assert.equal(before.sessionId, "old-native-0");
     assert.equal(before.seq, 1152); assert.equal(before.messages, 64);
+    assert.equal(before.recordGeneration, "before-clear");
+    if (scenario === "same-generation") {
+      await page.evaluate(() => window.__extras.cover());
+      await page.evaluate(id => window.__probeOpen(id), "c1"); await idle();
+      await page.evaluate(id => window.__probeOpen(id), mainId); await idle();
+      await page.reload();
+      await page.locator(".msgs").getByText(`Retained answer ${mainId} 31`, { exact: true }).waitFor(); await idle();
+      const retained = await page.evaluate(id => window.__probeState()[id], mainId);
+      assert.equal(retained.sessionId, "old-native-0"); assert.equal(retained.storedSessionId, "old-native-0");
+      const composer = page.getByRole("textbox", { name: "Message", exact: true });
+      await composer.fill("Resume same generation"); await composer.press("Enter");
+      await page.waitForFunction(() => document.querySelector('textarea[aria-label="Message"]')?.value === "");
+      assert.equal(calls.find(c => c.cmd === "chat_start")?.args.resume, "old-native-0");
+      assert.deepEqual(errors, []);
+      review.push({ scenario, before, after: { state: retained }, errors }); await context.close(); continue;
+    }
     if (scenario.startsWith("clear-")) {
       const composer = page.getByRole("textbox", { name: "Message", exact: true });
       await composer.fill("/clear"); await composer.press("Enter");
@@ -155,7 +171,7 @@ try {
       await context.close(); continue;
     }
     if (scenario !== "visible") await page.evaluate(() => window.__extras.cover("settings"));
-    if (scenario === "checkpoint") {
+    if (scenario === "checkpoint" || scenario === "current-checkpoint") {
       await page.evaluate(async mainId => {
         const { readChatCheckpoint, saveChatCheckpoint } = await import("/src/lib/chatCache.ts");
         // Save a representative old complete checkpoint on an offline device.
@@ -178,6 +194,13 @@ try {
     await other.evaluate(() => window.__extras.clear());
     await other.waitForFunction(mainId => window.__probeState()[mainId].messages === 0, mainId);
     assert.equal(pages[mainId].events.length, 0);
+    // B's loadChat save is asynchronous. Wait for its real current checkpoint
+    // before either restoring the deliberately stale one or using it naturally.
+    if (scenario === "checkpoint" || scenario === "current-checkpoint") await other.waitForFunction(async mainId => {
+      const { readChatCheckpoint } = await import("/src/lib/chatCache.ts");
+      const cached = await readChatCheckpoint(mainId);
+      return cached?.seq === 0 && cached.generation === "after-clear";
+    }, mainId);
     if (scenario === "broadcast" || scenario === "visible") {
       await page.waitForFunction(mainId => window.__probeState()[mainId].messages === 0 && window.__probeState()[mainId].seq === 0, mainId);
       if (scenario === "visible") {
@@ -201,8 +224,17 @@ try {
     assert.equal(after.text.includes("Retained answer"), false);
     assert.equal(after.state.sessionId, null);
     assert.equal(after.state.storedSessionId, null); assert.equal(after.state.savedSessionId, null);
+    assert.equal(after.state.recordGeneration, "after-clear");
     assert.equal(after.state.messages, 2); assert.equal(after.state.seq, start + 1);
     assert.deepEqual(errors, []);
+    // Let the App's 700ms save run: the old fallback must not return to disk.
+    await page.waitForTimeout(2100);
+    const saved = await page.evaluate(id => window.__probeState()[id], mainId);
+    assert.equal(saved.storedSessionId, null); assert.equal(saved.savedSessionId, null);
+    const composer = page.getByRole("textbox", { name: "Message", exact: true });
+    await composer.fill("Fresh next turn after reset"); await composer.press("Enter");
+    await page.waitForFunction(() => document.querySelector('textarea[aria-label="Message"]')?.value === "");
+    assert.equal(calls.find(c => c.cmd === "chat_start")?.args.resume, null);
     await page.screenshot({ path: join(output, `${scenario}.png`) });
     review.push({ scenario, before, after, requests: calls.filter(c => /chat_page|chat_since|chat_record_head/.test(c.cmd)), errors });
     await writeFile(join(output, "review.json"), JSON.stringify(review, null, 2)); await context.close();

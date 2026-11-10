@@ -69,6 +69,20 @@ the in-memory CatchUp window and complete checkpoints. Legacy checkpoints with
 no generation can still detect a smaller head; their first successful head read
 establishes the generation for future comparisons.
 
+The saved `Conversation` also carries `recordGeneration` beside its native
+`sessionId`; this string is independent of the index's numeric Trash/restore
+`generation`. Every accepted checkpoint and head reconciles that pair, even
+when the restored checkpoint already belongs to the new record and no window
+invalidation occurs. A changed generation removes only the saved native ID;
+model, access, effort, cwd and other conversation settings remain. Identical
+generations preserve resume across reload, chat switches and Settings returns.
+Index refreshes carry the binding only for the same native ID, and the normal
+metadata save carries the current CatchUp generation. Legacy rows use a known
+prior window generation where available; otherwise a checkpoint with known
+generation validates the saved ID against its own session, discarding an
+unproven fallback. A first head without any prior provenance establishes the
+binding; older hosts without a head retain their compatibility behavior.
+
 An older host rejecting the command with `not available on this backend` keeps
 the existing catch-up behavior silently. Such a host cannot provide this reset
 validation. Retention budgets and visible-only subscriptions remain unchanged.
@@ -82,6 +96,12 @@ command) and a held successful
 forget (duplicate Enter refused, no agent `/clear` command, native ID removed
 from memory and storage, next send starts without resume, own broadcast plus
 racing new-record events applied without a second reset).
+It additionally waits for the clearing tab's asynchronous checkpoint save
+before injecting a stale checkpoint, and separately tests the naturally saved
+seq-zero current checkpoint. Both paths assert native IDs remain absent after
+the debounced metadata save and that the next `chat_start.resume` is null.
+An unchanged-generation reload/switch/Settings path checks the original ID
+is still sent as resume.
 Run it serially with the other browser probes:
 
 ```sh
@@ -91,6 +111,25 @@ CHAT_CLEAR_LEAD=1 CHAT_RESET_SCENARIOS=clear-save-first node scripts/test-chat-r
 
 These are real App/bridge/IndexedDB checks against an isolated socket fixture;
 the Rust implementation and real-host end-to-end review follow in separate tasks.
+
+Generation-binding follow-up on 2026-11-10: the expanded nine-scenario reset
+suite passed three consecutive runs, including the natural current-checkpoint
+race and unchanged-generation resume. The lead clear/send check also passed.
+The 1280/390 window matrix still displayed all six retained returns without
+loading; all four desktop tabs reported zero offscreen delta folds and renders.
+Full web validation passed 341 files / 4756 tests with `--maxWorkers=2`, plus
+the production build. Evidence: `/tmp/octiq-fe-generation-review/reset-manifest.json`,
+`/tmp/octiq-fe-generation-vitest.log`, `/tmp/octiq-fe-generation-build.log` and
+`octiq-chat-windows-IgWj07/results.json` in the system temporary directory.
+Separate real Rust host checks used the `042afbf` binary with this follow-up's
+production web bundle and isolated homes/profiles/ports plus stub CLIs. The
+natural current-checkpoint race passed three consecutive runs with missed
+reset/index observations: the next App start and actual CLI argv omitted the
+old ID, while unchanged-generation reload/Settings/switch resumed the stable
+ID. H1 full/partial, M1 save-first failure and M2 fresh-start/stale-save/restart
+checks also passed. Evidence: `/tmp/octiq-fe-generation-review/host-race{1,2,3}`,
+`host-full` and `host-partial`. These are author checks; independent exact-SHA
+acceptance remains with OCTIQ DEV BACKUP.
 
 H1 fix validation on 2026-11-10: all five reset scenarios passed, replacing the
 old 64 messages / mark 1152 with just the new question and answer (mark 2, or

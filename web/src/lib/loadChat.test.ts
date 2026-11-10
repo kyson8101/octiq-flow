@@ -8,6 +8,8 @@ import { valueBytes } from "./valueBytes";
 import * as chatReducer from "./chat";
 import { replayChat } from "./replayChat";
 import { ChatHistory } from "./chatHistory";
+import { conversationForRecord } from "./chatRecord";
+import { loadConversations, saveConversations, type Conversation } from "./store";
 
 beforeEach(() => vi.stubGlobal("indexedDB", new IDBFactory()));
 afterEach(() => vi.unstubAllGlobals());
@@ -503,4 +505,56 @@ it("discards a stale checkpoint even when the replacement record is empty", asyn
     requestHead: async () => ({ lastSeq: 0, generation: "new" }) });
   expect(options.getState().messages).toEqual([]);
   expect(options.catchUp.mark(options.key)).toBe(0);
+});
+
+it.each(["checkpoint-before-head", "head-before-checkpoint", "legacy-row"])("clears a saved native ID when another tab's seq0 checkpoint wins the reset race: %s", async timing => {
+  const values = new Map<string, string>();
+  vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value) });
+  let chat: Conversation = { id: "a", projectId: "p", title: "A", messages: [], createdAt: 1, updatedAt: 2,
+    sessionId: "old-native", recordGeneration: "before", modelId: "claude:sonnet", permission: "read", effort: "high" };
+  const options = setup();
+  if (timing === "legacy-row") delete chat.recordGeneration;
+  options.publish({ ...emptyChat(), sessionId: chat.sessionId });
+  // Tab B's asynchronous save has replaced A's stale checkpoint. Its record
+  // already matches the head, so onInvalidated is deliberately never called.
+  await saveChatCheckpoint({ id: "a", seq: 0, state: emptyChat(), generation: "after", updatedAt: 1 });
+  let finish!: (head: { generation: string; lastSeq: number }) => void;
+  const head = { generation: "after", lastSeq: 1 };
+  const onInvalidated = vi.fn();
+  const loading = loadChat({ ...options, storedGeneration: chat.recordGeneration,
+    onRecordGeneration: (generation, previous, native) => { chat = conversationForRecord(chat, generation, previous, native); saveConversations([chat]); },
+    onInvalidated, request: async () => [frame(1)],
+    requestHead: () => timing === "head-before-checkpoint" ? Promise.resolve(head) : new Promise(resolve => { finish = resolve; }) });
+  if (timing !== "head-before-checkpoint") {
+    await vi.waitFor(() => expect(options.getState().messages).toHaveLength(1));
+    expect(chat.sessionId).toBeUndefined();
+    finish(head);
+  }
+  await loading;
+  expect(onInvalidated).not.toHaveBeenCalled();
+  expect(options.getState().sessionId).toBeUndefined();
+  expect(chat).toMatchObject({ recordGeneration: "after", modelId: "claude:sonnet", permission: "read", effort: "high" });
+  expect(chat.sessionId).toBeUndefined();
+  // Same fallback as the delayed App metadata save, then a full reload.
+  chat = { ...chat, sessionId: options.getState().sessionId ?? chat.sessionId };
+  saveConversations([chat]);
+  expect(loadConversations()[0].sessionId).toBeUndefined();
+});
+
+it.each(["reload", "retained-switch", "settings-return"])("keeps native resume for the same generation on %s", async source => {
+  const options = setup();
+  let chat: Conversation = { id: "a", projectId: "p", title: "A", messages: [], createdAt: 1, updatedAt: 2,
+    sessionId: "current-native", recordGeneration: "stable", modelId: "claude:sonnet", permission: "read" };
+  const state = { ...emptyChat(), sessionId: chat.sessionId };
+  if (source === "reload") await saveChatCheckpoint({ id: "a", seq: 0, state, generation: "stable", updatedAt: 1 });
+  else {
+    options.publish(state); options.catchUp.own(options.key); options.catchUp.setGeneration(options.key, "stable");
+  }
+  const onInvalidated = vi.fn();
+  await loadChat({ ...options, storedGeneration: chat.recordGeneration, onInvalidated,
+    onRecordGeneration: (generation, previous) => { chat = conversationForRecord(chat, generation, previous); },
+    requestHead: async () => ({ lastSeq: 1, generation: "stable" }), request: async () => [frame(1)] });
+  expect(onInvalidated).not.toHaveBeenCalled();
+  expect(chat.sessionId).toBe("current-native"); expect(options.getState().sessionId).toBe("current-native");
 });

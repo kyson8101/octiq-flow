@@ -40,7 +40,7 @@ import { valueBytes } from "./lib/valueBytes";
 import { loadChat, loadEarlierChat, CHAT_WINDOW_BYTES } from "./lib/loadChat";
 import { ChatHistory, type ChatPage } from "./lib/chatHistory";
 import { ChatWindowCache } from "./lib/chatWindowCache";
-import { ChatRecordClears, chatSessionFor, clearedConversation, invalidateChatRecord, type ChatRecordHead } from "./lib/chatRecord";
+import { ChatRecordClears, chatSessionFor, clearedConversation, conversationForRecord, invalidateChatRecord, type ChatRecordHead } from "./lib/chatRecord";
 import {
   addUserTurn,
   emptyChat,
@@ -1556,6 +1556,9 @@ export default function App() {
               // seen has none, and replays in full.
               messages: cached?.messages ?? [],
               seq: cached?.seq,
+              // Index metadata has no transcript identity. Carry provenance
+              // only when it still describes the same native session.
+              recordGeneration: r.sessionId === cached?.sessionId ? cached?.recordGeneration : undefined,
               // Listed by the server, so from now on its absence means
               // something: see `synced` in lib/store.ts.
               synced: true,
@@ -1737,6 +1740,18 @@ export default function App() {
         if (bridge.scopedChats && !screenChats.current.has(id)) return;
         return (earlier ? loadEarlierChat : loadChat)({
         id, key, storedSeq, catchUp: catchUp.current, history: chatHistory.current,
+        storedGeneration: conversationsRef.current.find(row => row.id === id)?.recordGeneration,
+        onRecordGeneration: (generation, previousGeneration, checkpointSessionId) => {
+          // Update the ref synchronously: a subsequent start or debounced save
+          // must not use the native ID of a different record, even before React
+          // commits this metadata update.
+          const rows = conversationsRef.current;
+          const next = rows.map(row => row.id === id ? conversationForRecord(row, generation, previousGeneration, checkpointSessionId) : row);
+          if (next.every((row, index) => row === rows[index])) return;
+          conversationsRef.current = next;
+          saveConversations(next);
+          setConversations(next);
+        },
         requestHead: () => bridge.invoke<ChatRecordHead>("chat_record_head", { key }),
         onInvalidated: () => {
           recentChatWindows.current.forget(id);
@@ -2070,6 +2085,7 @@ export default function App() {
             latestResponse: latestAgentResponse(s.messages)?.text ?? before?.latestResponse,
             customTitle: before?.customTitle,
             sessionId: s.sessionId ?? before?.sessionId,
+            recordGeneration: catchUp.current.generation(keyFor(id)) ?? before?.recordGeneration,
             cwd: s.cwd ?? before?.cwd,
             messages: s.messages,
             modelId: info.modelId,

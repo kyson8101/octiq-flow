@@ -6,11 +6,25 @@ import { CatchUp } from "./catchUp";
 import { ChatHistory } from "./chatHistory";
 import { ChatWindowCache } from "./chatWindowCache";
 import { readChatCheckpoint, saveChatCheckpoint } from "./chatCache";
-import { ChatRecordClears, chatSessionFor, clearedConversation, invalidateChatRecord } from "./chatRecord";
+import { ChatRecordClears, chatSessionFor, clearedConversation, conversationForRecord, invalidateChatRecord } from "./chatRecord";
 import { loadConversations, saveConversations, type Conversation } from "./store";
 
 beforeEach(() => vi.stubGlobal("indexedDB", new IDBFactory()));
 afterEach(() => vi.unstubAllGlobals());
+
+it("binds the saved native ID to its own record without changing model, access or messages", () => {
+  const chat: Conversation = { id: "a", projectId: "p", title: "A", messages: [], createdAt: 1, updatedAt: 2,
+    sessionId: "old-native", recordGeneration: "before", modelId: "claude:sonnet", permission: "read", effort: "high", cwd: "/fixture" };
+  expect(conversationForRecord(chat, "before")).toBe(chat);
+  const next = conversationForRecord(chat, "after");
+  expect(next).toEqual({ ...chat, sessionId: undefined, recordGeneration: "after" });
+  expect(conversationForRecord(next, "after")).toBe(next);
+  const { recordGeneration: _, ...legacy } = chat;
+  expect(conversationForRecord(legacy, "after", "before")).toEqual(next);
+  expect(conversationForRecord(legacy, "before").sessionId).toBe("old-native");
+  expect(conversationForRecord(legacy, "after", undefined, null).sessionId).toBeUndefined();
+  expect(conversationForRecord(legacy, "before", undefined, "old-native").sessionId).toBe("old-native");
+});
 
 it("chat-forgotten releases recent recency, checkpoint, history and mark together", async () => {
   const catchUp = new CatchUp(), history = new ChatHistory(), recent = new ChatWindowCache();

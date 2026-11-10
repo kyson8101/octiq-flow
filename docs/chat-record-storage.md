@@ -29,6 +29,15 @@ after releasing its locks; failed clears emit no such event. Neither the head
 command nor this browser event adds an agent hook or MCP route. Profile
 unavailability is returned in the profile's own words, never as an empty head.
 
+The browser persists its native-session fallback with a string
+`Conversation.recordGeneration`. It reconciles that identity on both checkpoint
+restoration and head reads, independently of whether the displayed window is
+invalidated. A current checkpoint written by another tab after `/clear` must
+not leave a saved session from the prior record available for the next start.
+This is browser metadata only; it neither changes `ChatMeta` nor the index's
+numeric restore generation. See [retention](chat-window-retention.md) for legacy
+row handling and the serial browser regression probes.
+
 | Reader | Required data |
 | --- | --- |
 | `chat.ts`, live and replay | Messages, stream block text and original tool arguments, result text, errors/outcomes, model/session/cwd/commands, usage and host facts |
