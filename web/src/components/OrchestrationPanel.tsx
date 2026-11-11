@@ -665,7 +665,7 @@ function NewRun({
       <div className="orch-automation-options">
         <label><input type="checkbox" checked={automatic} disabled={busy} onChange={(event) => onAutomatic(event.target.checked)} /> Automatically start ready tasks</label>
       </div>
-      <p>The main agent chooses a suitable worker and reasoning effort for each task. Fable and Astra are reserved for orchestration.</p>
+      <p>The main agent chooses a suitable worker and reasoning effort for each task. Astra is reserved for orchestration.</p>
       <div className="orch-start-row">
         <label className="orch-field orch-concurrency">
           <span>Worker limit</span>

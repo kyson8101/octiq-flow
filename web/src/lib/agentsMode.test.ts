@@ -62,11 +62,14 @@ describe("agents mode", () => {
     expect(headConversation(leads, null, exists)).toBeNull();
   });
 
-  it("keeps Fable and Astra as leads only, and never offers Default", () => {
-    expect(leadOnly({ model: "fable" })).toBe(true);
+  it("allows Fable workers, keeps Astra lead only, and never offers Default", () => {
+    expect(leadOnly({ model: "fable" })).toBe(false);
+    expect(leadOnly({ model: "claude-fable-5-1" })).toBe(false);
     expect(leadOnly({ model: "gpt-6-astra" })).toBe(true);
     expect(leadOnly({ model: "sonnet" })).toBe(false);
-    expect(teamModels("codex").every((m) => m.flag)).toBe(true);
+    for (const provider of ["claude", "codex", "antigravity"] as const) {
+      expect(teamModels(provider).every((m) => m.flag)).toBe(true);
+    }
   });
 
   it("names a registered agent's model the way a person reads it", () => {

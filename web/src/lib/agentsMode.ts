@@ -369,10 +369,10 @@ export function agentIdentity(
   };
 }
 
-/** Fable and Astra only lead; the host refuses them as workers. */
+/** Astra only leads; the host refuses it as a worker. */
 export function leadOnly(agent: Pick<TeamAgent, "model">): boolean {
   const model = agent.model.toLowerCase();
-  return model.includes("fable") || model.includes("astra");
+  return model.includes("astra");
 }
 
 /** Models a registered agent can use: explicit ones only, never "Default". */
