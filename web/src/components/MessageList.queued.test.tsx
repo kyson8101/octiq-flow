@@ -78,6 +78,22 @@ describe("message delivery controls", () => {
     expect(status).not.toMatch(/animate|spinner/);
   });
 
+  it("keeps the user's icon-only copy action visible beside the receipt", () => {
+    const html = draw({ delivery: "dispatched", takenUp: true });
+    const copy = html.match(/<button[^>]*class="msg-copy[^]*?<\/button>/)?.[0];
+    expect(copy).toContain('title="Copy this message"');
+    expect(copy).toContain('aria-label="Copy this message"');
+    expect(copy).toContain('data-icon-action="true"');
+    expect(copy).toContain('data-action-icon="copy"');
+    // The button has no text fallback: a legacy SVG-hiding rule makes it empty.
+    expect(copy?.replace(/<[^>]*>/g, "")).toBe("");
+    const css = lf(bubbleCssRaw).replace(/\/\*[^]*?\*\//g, "");
+    for (const [, selector, declarations] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!selector.includes(".msg-copy")) continue;
+      expect(declarations).not.toMatch(/display:\s*none|visibility:\s*hidden|(?:^|;)\s*(?:width|height|opacity):\s*0\s*[;}]/);
+    }
+  });
+
   it("separates the status and each action with a pipe that is drawn, never typed", () => {
     // `Queued | Send now | Edit | Copy`, `Sent | Copy`: the pipes are CSS
     // hairlines, so no button's name and no status reads "|".
