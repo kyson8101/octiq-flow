@@ -123,9 +123,11 @@
 .status-row-dismiss {
   display: grid;
   place-items: center;
-  flex: 0 0 26px;
-  width: 26px;
-  height: 26px;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
   padding: 0;
   border: 0;
   border-radius: var(--r-sm);
@@ -321,4 +323,12 @@
   .status-row-panel { animation: none; }
   .status-row-chevron,
   .status-row-dismiss { transition: none; }
+}
+
+.status-row-dismiss.is-visible { opacity: 1; }
+.status-row-dismiss:disabled,
+.status-row-dismiss[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+@media (max-width: 640px), (hover: none), (any-pointer: coarse) {
+  .status-row-dismiss { flex-basis: 44px; width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+  .status-row:has(> .status-row-dismiss) { min-height: 44px; }
 }

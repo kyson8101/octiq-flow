@@ -10,10 +10,18 @@
 // agent the rule exists, so the agent retries itself. Its outage card (the
 // classifier gave no verdict) offers the one as-is retry Claude itself allows,
 // and an allow rule the person adds to their own settings.
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { AUTO_MODE_BLOCKED } from "../lib/safetyToast";
+import { StatusDismiss } from "./ChatStatus";
 import { CopyBit, CopyIcon } from "./CopyBit";
+import { commandDrawn } from "../lib/cardFold";
+import { dropHeld, notePress, repeatsAnother } from "../lib/pressGuard";
+
+function RefusalCommand({ text }: { text: string }) {
+  const parts = useMemo(() => commandDrawn(text), [text]);
+  return <>{parts.map((part, index) => typeof part === "string" ? part : <span className="ask-command-mark" key={index}>{part.code}</span>)}</>;
+}
 
 export type SafetyBlockNotice = {
   id: string;
@@ -283,9 +291,7 @@ function OutageBlock({
           onClick={() => setOpen((shown) => !shown)}>
           {open ? "Hide technical details" : "Technical details"}
         </button>
-        <button className="ask-btn" type="button" disabled={!!sending} onClick={() => void answer("dismiss")}>
-          {sending === "dismiss" ? "Dismissing…" : "Dismiss"}
-        </button>
+        <StatusDismiss label="Dismiss" visible disabled={!!sending} onClick={() => void answer("dismiss")} />
       </div>
 
       {(projectPath || userPath) && (
@@ -475,6 +481,7 @@ function ClaudeSafetyBlock({
   startOpen,
   folded,
   reveal,
+  context,
 }: {
   block: SafetyBlockNotice;
   onContinue: Continue;
@@ -482,10 +489,11 @@ function ClaudeSafetyBlock({
   startOpen: boolean;
   folded: boolean;
   reveal?: number;
+  context?: string;
 }) {
   const [open, setOpen] = useState(startOpen);
   // The folded line's own disclosure: the card under it.
-  const [shown, setShown] = useState(folded && startOpen);
+  const [shown, setShown] = useState(startOpen);
   const line = useRef<HTMLDivElement>(null);
   const cardId = useId();
   const [sending, setSending] = useState<"safer" | "dismiss" | AllowScope | null>(null);
@@ -550,6 +558,14 @@ function ClaudeSafetyBlock({
       ? `The rule is already in ${block.written === "project" ? "this project's" : "your own"} settings.`
       : "";
 
+  const saferAnswer = <button className="ask-btn is-primary" type="button" disabled={!!sending} onKeyDown={dropHeld}
+    onClick={(event) => { if (!repeatsAnother(event)) void answer("safer"); }}>
+    {sending === "safer" ? "Continuing…" : "Use safer approach"}
+  </button>;
+  const dismissAnswer = <StatusDismiss label="Dismiss" visible disabled={!!sending} onKeyDown={dropHeld}
+    onClick={(event) => { if (!repeatsAnother(event)) void answer("dismiss"); }} />;
+  const answers = <>{saferAnswer}{dismissAnswer}</>;
+
   // At a glance: what was blocked and why, that nothing ran, and one next
   // step. The whole line, the classifier's words and every way to allow it
   // (with the exact rules and files "Always allow" writes, shown before the
@@ -557,7 +573,7 @@ function ClaudeSafetyBlock({
   const body = (
     <>
       {block.action && (
-        <pre className="safety-card-action safety-card-preview"><span>{block.action}</span></pre>
+        <pre className="safety-card-action safety-card-preview"><span>{folded ? block.action : <RefusalCommand text={block.action} />}</span></pre>
       )}
       <p className="safety-card-calm">{CLAUDE_BLOCKED_STATUS}</p>
 
@@ -566,7 +582,8 @@ function ClaudeSafetyBlock({
 
       <div className="ask-card-buttons safety-card-buttons">
         <button className="safety-card-toggle" type="button" aria-expanded={open}
-          aria-controls={open ? detailsId : undefined} onClick={() => setOpen((was) => !was)}>
+          aria-controls={open ? detailsId : undefined} onKeyDown={dropHeld}
+          onClick={(event) => { notePress(event); setOpen((was) => !was); }}>
           {/* One label both ways, so the row never re-wraps on a phone:
               the chevron and aria-expanded carry the state. */}
           Details
@@ -575,12 +592,7 @@ function ClaudeSafetyBlock({
             <path d="m6 9 6 6 6-6" />
           </svg>
         </button>
-        <button className="ask-btn is-primary" type="button" disabled={!!sending} onClick={() => void answer("safer")}>
-          {sending === "safer" ? "Continuing…" : "Use safer approach"}
-        </button>
-        <button className="ask-btn" type="button" disabled={!!sending} onClick={() => void answer("dismiss")}>
-          {sending === "dismiss" ? "Dismissing…" : "Dismiss"}
-        </button>
+        {folded && answers}
       </div>
 
       {open && (
@@ -591,7 +603,7 @@ function ClaudeSafetyBlock({
               <CopyBit className="panel-act safety-card-copy" icon={<CopyIcon />} idle="Copy the command"
                 done="Command copied" read={() => ({ text: block.action ?? null })} />
             </div>
-            <pre className="safety-card-action safety-card-full">{block.action}</pre>
+            <pre className="safety-card-action safety-card-full">{folded ? block.action : <RefusalCommand text={block.action} />}</pre>
           </>}
 
           {block.detail && <>
@@ -627,14 +639,14 @@ function ClaudeSafetyBlock({
               {projectPath && (
                 <button className="ask-btn safety-allow" type="button" disabled={!!sending}
                   title={`Adds ${rules.join(", ")} to ${projectPath}, then tells the agent`}
-                  onClick={() => void allow("project")}>
+                  onKeyDown={dropHeld} onClick={(event) => { if (!repeatsAnother(event)) void allow("project"); }}>
                   {sending === "project" ? "Saving…" : "Always allow in this project"}
                 </button>
               )}
               {userPath && (
                 <button className="ask-btn safety-allow" type="button" disabled={!!sending}
                   title={`Adds ${rules.join(", ")} to ${userPath}, then tells the agent`}
-                  onClick={() => void allow("user")}>
+                  onKeyDown={dropHeld} onClick={(event) => { if (!repeatsAnother(event)) void allow("user"); }}>
                   {sending === "user" ? "Saving…" : "Always allow everywhere"}
                 </button>
               )}
@@ -647,16 +659,15 @@ function ClaudeSafetyBlock({
 
   if (folded) {
     // Not an alert: the agent is still working and nothing here is owed. The
-    // line says what happened; the reason and the start of the command ride
-    // along as far as the row has room for.
+    // line says what happened and why; the opened card holds the command.
     return (
       <div className={`safety-line${shown ? " is-open" : ""}`} ref={line}>
         <button className="safety-line-row" type="button" aria-expanded={shown}
-          aria-controls={shown ? cardId : undefined} onClick={() => setShown((was) => !was)}>
+          aria-controls={shown ? cardId : undefined} onKeyDown={dropHeld}
+          onClick={(event) => { notePress(event); setShown((was) => !was); }}>
           <span className="safety-card-icon" aria-hidden="true">!</span>
           <span className="safety-line-what">{AUTO_MODE_BLOCKED}</span>
           {block.summary && <span className="safety-line-reason">{block.summary}</span>}
-          {block.action && <code className="safety-line-action">{block.action}</code>}
           <svg className="safety-card-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
             strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="m6 9 6 6 6-6" />
@@ -672,16 +683,28 @@ function ClaudeSafetyBlock({
   }
 
   return (
-    <div className="ask-card safety-card is-compact" role="alert" aria-label={block.title}>
-      <div className="ask-card-head safety-card-head">
-        <span className="safety-card-icon" aria-hidden="true">!</span>
-        <span className="safety-card-heading">
-          <strong className="ask-card-title">{block.title}</strong>
-          {block.summary && <span className="safety-card-reason">{block.summary}</span>}
+    <div className={`safety-card safety-refusal${shown ? " is-open" : ""}`} role="alert" aria-label={block.title}>
+      <div className="safety-refusal-row">
+        <span className="safety-refusal-icon" aria-hidden="true">!</span>
+        <span className="safety-refusal-copy">
+          {context && <span className="safety-refusal-context" title={context}><span className="safety-refusal-context-name">{context}</span><span aria-hidden="true">·</span></span>}
+          <span className="safety-refusal-subject">
+            <span className="safety-refusal-what">Auto mode blocked</span>
+            {block.summary && <span className="safety-refusal-reason" title={block.summary}>{block.summary}</span>}
+          </span>
         </span>
+        <div className="safety-refusal-answers">{saferAnswer}</div>
+        <button className="safety-refusal-toggle" type="button" aria-expanded={shown}
+          aria-label={shown ? "Hide blocked action" : "Show blocked action"} aria-controls={shown ? cardId : undefined}
+          onKeyDown={dropHeld} onClick={(event) => { notePress(event); setShown((was) => !was); }}>
+          <svg className="safety-card-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+        </button>
+        {dismissAnswer}
       </div>
-
-      {body}
+      {!shown && written && <p className="ask-card-note safety-card-written" role="status">{written}</p>}
+      {!shown && error && <p className="ask-card-note safety-card-error">Could not answer the card: {error}</p>}
+      {shown && <div className="safety-refusal-body" id={cardId}>{body}</div>}
     </div>
   );
 }
@@ -693,6 +716,7 @@ export function SafetyBlock({
   startOpen = false,
   folded = false,
   reveal,
+  context,
 }: {
   block: SafetyBlockNotice;
   onContinue: Continue;
@@ -704,13 +728,15 @@ export function SafetyBlock({
   /** Changes when the notice's Details asks for this line: open it and
    *  bring it into view. Read only when `folded`. */
   reveal?: number;
+  /** The worker/task this refusal belongs to; presentation only. */
+  context?: string;
 }) {
   if (block.provider === "claude" && block.kind === "outage") {
     return <OutageBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen} />;
   }
   if (block.provider === "claude") {
     return <ClaudeSafetyBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen}
-      folded={folded} reveal={reveal} />;
+      folded={folded} reveal={reveal} context={context} />;
   }
   return <CodexSafetyBlock block={block} onContinue={onContinue} onAnswered={onAnswered} startOpen={startOpen} />;
 }

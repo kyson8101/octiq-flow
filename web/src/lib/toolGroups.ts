@@ -174,7 +174,7 @@ export function groupRows(blocks: Block[], keepOut?: (tool: Tool) => boolean): R
   return rows;
 }
 
-function foldable(tool: Tool, keepOut?: (tool: Tool) => boolean): boolean {
+export function foldable(tool: Tool, keepOut?: (tool: Tool) => boolean): boolean {
   if (keepOut?.(tool)) return false;
   // A terminal stream failure uses a tool card, but must remain identifiable
   // rather than disappearing into a generic "Used tools" activity summary.

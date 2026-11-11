@@ -71,7 +71,7 @@
 /* The pipe: a short grey hairline, never the accent, and never the bubble's
    edge, which is ink in Manga.
    Drawn, not typed, so no button's name and no status says "|". */
-:is(.message-delivery-status:not(:empty), .message-delivery-actions :is(button, .msg-copy))::after {
+:is(.message-delivery-status:not(:empty), .message-delivery-actions :is(button:not(.status-row-dismiss), .msg-copy))::after {
   content: "";
   position: absolute;
   top: 50%;
@@ -95,7 +95,7 @@
 /* Nothing to do: no group, so the status ends the line and its pipe goes. */
 .message-delivery-actions:empty { display: none; }
 .message-delivery-actions .msg-actions { gap: 2px; }
-.message-delivery-actions :is(button, .msg-copy) {
+.message-delivery-actions :is(button:not(.status-row-dismiss), .msg-copy) {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -116,20 +116,20 @@
    success still says a copy worked. */
 .message-delivery-actions .msg-copy svg { display: none; }
 .message-delivery-actions .msg-copy.is-done { color: var(--ok); }
-.message-delivery-actions :is(button, .msg-copy):hover:not(:disabled) {
+.message-delivery-actions :is(button:not(.status-row-dismiss), .msg-copy):hover:not(:disabled) {
   background: color-mix(in srgb, var(--fg-0) 7%, transparent);
   color: var(--fg-0);
 }
 /* Inside the button: the line clips at its right edge, and the last button
    stands on it. */
-.message-delivery-actions :is(button, .msg-copy):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.message-delivery-actions :is(button:not(.status-row-dismiss), .msg-copy):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .message-delivery-actions button:disabled { opacity: .45; cursor: wait; }
 
 /* A finger gets a whole target, and the line grows to hold it. */
 @media (hover: none), (any-pointer: coarse) {
   .message-delivery-line { min-height: 44px; }
   .message-delivery::after { height: 22px; }
-  .message-delivery-actions :is(button, .msg-copy) { min-height: 44px; padding-inline: 10px; }
+  .message-delivery-actions :is(button:not(.status-row-dismiss), .msg-copy) { min-height: 44px; padding-inline: 10px; }
   .message-delivery-status:not(:empty) { padding-inline-end: 10px; }
 }
 
@@ -148,7 +148,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .msg-user .msg-body { transition: none; }
-  .message-delivery-actions :is(button, .msg-copy) { transition: none; }
+  .message-delivery-actions :is(button:not(.status-row-dismiss), .msg-copy) { transition: none; }
 }
 
 /* A confirmed front-desk brief is a handoff, rather than the person's speech. */

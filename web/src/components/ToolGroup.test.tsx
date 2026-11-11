@@ -183,3 +183,10 @@ describe("failures say whose they were", () => {
     expect(markup).not.toContain("is-warning");
   });
 });
+
+
+it("keeps recovered failure counts visible in the quiet tone", () => {
+  const markup = renderToStaticMarkup(<ToolGroup tools={[failedBash("bad", "pnpm test")]} newest={bash("ok", "pnpm test")} danger={new Set()} />);
+  expect(markup).toContain("is-recovered");
+  expect(markup).toContain("1 failed");
+});

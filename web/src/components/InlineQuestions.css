@@ -504,7 +504,6 @@
   line-height: 1.45;
 }
 
-.qa-dismiss,
 .qa-link {
   flex: 0 0 auto;
   padding: 2px 0;
@@ -522,7 +521,6 @@
 }
 
 @media (hover: hover) {
-  .qa-dismiss:not([aria-disabled="true"]):hover,
   .qa-link:not([aria-disabled="true"]):hover { color: var(--fg-0); }
 }
 
@@ -668,7 +666,7 @@
   .qa-row input { top: 12px; }
   .qa-submit { min-height: 44px; }
   .qa-input { min-height: 44px; font-size: 16px; }
-  .qa-dismiss, .qa-link { padding: 10px 0; }
+  .qa-link { padding: 10px 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

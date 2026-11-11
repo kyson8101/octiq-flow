@@ -39,48 +39,15 @@ describe("tokenLabel", () => {
 });
 
 describe("workingLine", () => {
-  it("reads as the CLI's own: how long, how much, how hard", () => {
-    expect(
-      workingLine({ elapsedMs: 252_000, tokens: 16_543, thinking: true, effort: "very high" }),
-    ).toBe("4m 12s · ↓ 16.5k tokens · thinking with very high effort");
+  it("keeps time and thinking, with no token or effort noise", () => {
+    expect(workingLine({ elapsedMs: 252_000, thinking: true })).toBe("4m 12s · thinking…");
   });
-
-  it("leaves out what it does not know yet", () => {
-    expect(workingLine({ elapsedMs: 3_000 })).toBe("3s · working…");
+  it("leaves out an unknown clock", () => {
     expect(workingLine({})).toBe("working…");
+    expect(workingLine({ elapsedMs: 3_000 })).toBe("3s · working…");
   });
-
-  it("says thinking without the effort when nobody said which", () => {
-    expect(workingLine({ elapsedMs: 3_000, thinking: true })).toBe("3s · thinking…");
-  });
-
-  it("lets a named activity speak instead — it is the more specific news", () => {
-    expect(
-      workingLine({
-        elapsedMs: 63_000,
-        tokens: 2_100,
-        thinking: true,
-        effort: "high",
-        activity: "Compacting the conversation to make room…",
-      }),
-    ).toBe("1m 03s · ↓ 2.1k tokens · Compacting the conversation to make room…");
-  });
-
-  it("marks the count approximate while a message is still being written", () => {
-    expect(
-      workingLine({
-        elapsedMs: 252_000,
-        tokens: 16_543,
-        approx: true,
-        thinking: true,
-        effort: "very high",
-      }),
-    ).toBe("4m 12s · ↓ ~16.5k tokens · thinking with very high effort");
-  });
-
-  it("drops the tilde once the real count has settled", () => {
-    expect(workingLine({ elapsedMs: 252_000, tokens: 16_543 })).toBe(
-      "4m 12s · ↓ 16.5k tokens · working…",
-    );
+  it("keeps the more specific activity", () => {
+    expect(workingLine({ elapsedMs: 63_000, thinking: true, activity: "Compacting the conversation to make room…" }))
+      .toBe("1m 03s · Compacting the conversation to make room…");
   });
 });

@@ -190,7 +190,7 @@ describe("a chat that waits on the person does not look like it is running", () 
 
   it("says thinking without repeating the reply avatar while nothing waits", () => {
     const html = eyebrow(composer(agentIdentity(ryan, "Ryan", opus), running));
-    expect(html).toContain("thinking with high effort");
+    expect(html).toContain("thinking…");
     expect(html).not.toContain("agent-avatar");
     expect(html).not.toContain("working-waits");
   });

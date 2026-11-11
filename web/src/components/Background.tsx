@@ -13,7 +13,7 @@
  *      and the one the eyebrow used to answer only while a turn was in flight;
  *    - the CARD, for "which of these is still going" — the question you ask
  *      once the dot has told you something is. Its tick is held back and a
- *      pulsing `in background` put in its place, until the ending lands.
+ *      quiet `in background` put in its place, until the ending lands.
  *
  *  The card's half rides on a context rather than a prop. It is read four
  *  levels down, past a grouping pass that rebuilds its rows from scratch, and

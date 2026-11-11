@@ -92,8 +92,10 @@ export function ToolCard({
   note,
   folder,
   open: openFrom,
+  quietFailure = false,
 }: {
   tool: Tool;
+  quietFailure?: boolean;
   agent?: AgentRun;
   /** Opens the run's read-only agent chat instead of expanding an inline
    * transcript. Absent only for old/untracked task cards. */
@@ -189,6 +191,7 @@ export function ToolCard({
         `tool-${tool.state}`,
         tool.state === "error" && tool.outcome?.severity === "warning" ? "is-warning" : "",
         isSkill ? "tool-skill" : "",
+        quietFailure && tool.state === "error" ? "is-recovered" : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -240,10 +243,9 @@ export function ToolCard({
           )}
           {/* The call answered; the work it started has not. A tick here would be
               the card's own small share of a screen that reads as finished, so
-              the tick waits and this pulses in its place. */}
+              the tick waits and this quiet label takes its place. */}
           {stillRunning ? (
             <span className="tool-state is-background" title={job ? job.job.label : undefined}>
-              <span className="tool-spinner" aria-hidden="true" />
               {job ? backgroundChip(job.job) : "in background"}
             </span>
           ) : (

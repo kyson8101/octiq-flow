@@ -135,7 +135,7 @@
 }
 
 /* A refusal is a warning, and its card glows amber. */
-:root[data-theme="cyberpunk"] .safety-card {
+:root[data-theme="cyberpunk"] .safety-card:not(.safety-refusal) {
   box-shadow: 0 0 16px color-mix(in srgb, var(--warn) 16%, transparent);
 }
 

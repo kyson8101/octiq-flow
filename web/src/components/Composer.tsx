@@ -411,8 +411,6 @@ export function Composer({
   contextWindow,
   activity,
   turnStartedAt,
-  turnTokens,
-  turnApprox,
   thinking,
   thought,
   background,
@@ -1155,7 +1153,7 @@ export function Composer({
     <div className={`composer ${focusMode ? "composer-focus" : ""} ${focusMode && focusOptions ? "focus-options-open" : ""}`} data-composer-style={choice.composerStyle} data-model-id={choice.id}>
       {focusMode && <div className="focus-activity" role="status" data-waiting={(busy && waiting) || undefined}>{busy && waiting ? WAIT_WORDS[waiting] : activity || (busy ? "Working…" : "\u00a0")}</div>}
       {/* Everything ABOUT the turn sits above the box: the thought being had,
-          and under it how long this has taken and how much has been written.
+          and under it how long this has taken and the current activity.
           Both are lines of text, and a line of text in a row of buttons gets
           eight characters and an ellipsis. */}
       {!!thought?.trim() && (
@@ -1181,11 +1179,8 @@ export function Composer({
             waits={turnWaits}
             waiting={waiting ?? undefined}
             onRecheck={onRecheckWaits}
-            tokens={turnTokens}
-            approx={turnApprox}
             activity={activity}
             thinking={thinking}
-            effort={eff.label.toLowerCase()}
             background={(background ?? []).length > 0 || hasJob}
             robot={choice.composerStyle}
             persona={identity}
@@ -2758,7 +2753,7 @@ function ContextMeter({ tokens, window, scope }: { tokens?: number; window?: num
   );
 }
 
-/** The status line while a turn runs: how long, how much, how hard.
+/** The status line while a turn runs: elapsed time and current activity.
  *
  *  It keeps its own second hand rather than being handed an elapsed time, so
  *  the clock advances between agent events — a turn can go a whole minute
@@ -2767,11 +2762,8 @@ function ContextMeter({ tokens, window, scope }: { tokens?: number; window?: num
  *  Nothing above it re-renders either: the second belongs to this span. */
 function Working({
   since,
-  tokens,
-  approx,
   activity,
   thinking,
-  effort,
   background,
   robot,
   persona,
@@ -2782,11 +2774,8 @@ function Working({
   /** A registered agent works under its own face, not a model's robot. */
   persona?: AgentIdentity | null;
   since?: number;
-  tokens?: number;
-  approx?: boolean;
   activity?: string;
   thinking?: boolean;
-  effort: string;
   /** Which of the ten robots is doing this turn — the chosen model's
    *  `composerStyle`. It is the one fact on this line you can read without
    *  reading: a face you already know, moving the way that model moves. */
@@ -2826,7 +2815,7 @@ function Working({
   // whole of what a reader notices about it. Rolling exists to make a change
   // findable; a change that happens every second finds itself. Tabular digits
   // keep it from nudging the words after it, which was the other half of the
-  // wheel's job. The token count and the words keep theirs: they move rarely,
+  // wheel's job. The activity words keep theirs: they move rarely,
   // and rarely is exactly when the motion earns its keep.
   return (
     <>
@@ -2855,11 +2844,8 @@ function Working({
       ) : (
         <RollingText>
           {workingLine({
-            tokens,
-            approx,
             activity,
             thinking,
-            effort,
           })}
         </RollingText>
       )}

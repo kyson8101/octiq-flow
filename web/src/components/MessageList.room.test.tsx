@@ -160,7 +160,8 @@ describe("two seats answering one after the other", () => {
       answered("second half", CODEX),
     );
 
-    expect(html).toContain("first half");
+    expect(html).not.toContain("first half");
+    expect(html).toContain("turn-work-head");
     expect(html).toContain("second half");
     expect(html.match(/msg-role/g) ?? []).toHaveLength(1);
   });

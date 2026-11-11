@@ -79,7 +79,7 @@ describe("the status line", () => {
   const HINT = "Enter to send";
   /** And while a turn is running: its own clock, which is the one this must
    *  not double up on. */
-  const TURN = "2m 19s · thinking with very high effort";
+  const TURN = "2m 19s · thinking…";
 
   const line = (tasks: BackgroundTask[], busy: boolean, said: string) =>
     renderToStaticMarkup(

@@ -87,7 +87,7 @@ describe("message delivery controls", () => {
       expect(line(html)).not.toContain("&#124;");
     }
     const css = lf(bubbleCssRaw);
-    const pipe = /:is\(\.message-delivery-status:not\(:empty\), \.message-delivery-actions :is\(button, \.msg-copy\)\)::after \{([^}]*)\}/.exec(css)?.[1];
+    const pipe = /:is\(\.message-delivery-status:not\(:empty\), \.message-delivery-actions :is\(button:not\(\.status-row-dismiss\), \.msg-copy\)\)::after \{([^}]*)\}/.exec(css)?.[1];
     expect(pipe).toBeDefined();
     expect(pipe).toContain('content: "";');
     expect(pipe).not.toMatch(/--accent/);
@@ -167,7 +167,7 @@ describe("message delivery controls", () => {
     const html = draw({ delivery: "failed", queueLost: true }, busy);
     expect(html).toContain("Not sent");
     expect(html).toContain("Restore to composer");
-    expect(html).toContain("Dismiss");
+    expect(html).toContain('aria-label="Dismiss"');
     expect(html).not.toContain("Send this queued message now");
   });
 

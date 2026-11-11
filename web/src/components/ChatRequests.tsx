@@ -16,7 +16,7 @@ import type { CleanupCard } from "../lib/workspaceCleanup";
  *  asked (`components/InlineQuestions`). */
 export function ChatRequests({
   asks, safetyBlocks, onPermissionAnswered, onSafetyAnswered,
-  onContinue, accessRequests = [], onAccessAnswer, cleanupRequests = [], onCleanupAnswer, scope = "", agent,
+  onContinue, accessRequests = [], onAccessAnswer, cleanupRequests = [], onCleanupAnswer, scope = "", agent, safetyContext,
 }: {
   asks: Ask[];
   safetyBlocks: SafetyBlockNotice[];
@@ -34,6 +34,7 @@ export function ChatRequests({
    *  or when you come back to it, is drawn in place. */
   scope?: string;
   agent?: string;
+  safetyContext?: string;
 }) {
   const shownAccess = onAccessAnswer ? accessRequests : [];
   const late = useLateKeys(scope, [
@@ -62,7 +63,7 @@ export function ChatRequests({
       {safetyBlocks.map((block) => (
         <Arrive key={block.id} late={late.has(`safety:${block.id}`)}>
           <div className="pending-target" data-pending-keys={`safety:${block.id}`}>
-            <SafetyBlock block={block} onContinue={onContinue} onAnswered={onSafetyAnswered} />
+            <SafetyBlock block={block} context={safetyContext} onContinue={onContinue} onAnswered={onSafetyAnswered} />
           </div>
         </Arrive>
       ))}

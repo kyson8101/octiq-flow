@@ -148,38 +148,21 @@ describe("Codex progress", () => {
     expect(html).not.toContain('<details class="agent-progress-log" open=""');
   });
 
-  it("keeps the latest update in view after the final answer lands", () => {
+  it("folds every settled progress update while keeping the final answer", () => {
     const message: Message = {
-      id: "a-progress",
-      role: "assistant",
+      id: "a-progress", role: "assistant", streaming: false,
       blocks: [{ kind: "text", text: "Updated and verified." }],
       progress: ["Started the review.", "The targeted tests are running."],
-      streaming: false,
     };
     const html = renderToStaticMarkup(<MessageList messages={[message]} busy={false} />);
-
-    // Only the earlier update is folded; the newest sits outside the
-    // disclosure, so nothing has to be opened to see it.
-    const fold = html.slice(
-      html.indexOf('<details class="agent-progress-log"'),
-      html.indexOf("</details>"),
-    );
-    expect(fold).toContain("Started the review.");
-    expect(fold).not.toContain("The targeted tests are running.");
-    expect(html).toContain("1 earlier progress update");
-    expect(html).toContain("Oldest first");
-    expect(html).toContain("Latest update");
-    expect(html.indexOf("</details>")).toBeLessThan(
-      html.indexOf("The targeted tests are running."),
-    );
-    // It is no longer live: no status region, and the card reads as settled.
+    expect(html).toContain('class="turn-work-head" aria-expanded="false"');
+    expect(html).not.toContain("Started the review.");
+    expect(html).not.toContain("The targeted tests are running.");
     expect(html).not.toContain('role="status"');
-    expect(html).not.toContain("aria-live");
-    expect(html).toContain('class="agent-progress is-settled"');
     expect(html).toContain("Updated and verified.");
   });
 
-  it("shows a lone settled update without any disclosure", () => {
+  it("folds a lone settled progress update", () => {
     const message: Message = {
       id: "a-progress",
       role: "assistant",
@@ -190,8 +173,8 @@ describe("Codex progress", () => {
     const html = renderToStaticMarkup(<MessageList messages={[message]} busy={false} />);
 
     expect(html).not.toContain("<details");
-    expect(html).toContain("Latest update");
-    expect(html).toContain("Checked the config.");
+    expect(html).toContain("turn-work-head");
+    expect(html).not.toContain("Checked the config.");
   });
 
   it("makes an opened progress history its own keyboard-scrollable region", () => {
@@ -200,9 +183,9 @@ describe("Codex progress", () => {
       role: "assistant",
       blocks: [{ kind: "text", text: "Done." }],
       progress: Array.from({ length: 20 }, (_, index) => `Progress update ${index + 1}.`),
-      streaming: false,
+      streaming: true,
     };
-    const html = renderToStaticMarkup(<MessageList messages={[message]} busy={false} />);
+    const html = renderToStaticMarkup(<MessageList messages={[message]} busy />);
 
     expect(html).toContain('<ol class="agent-progress-list"');
     expect(html).toContain('class="agent-progress-items"');
@@ -480,4 +463,42 @@ describe("Run on a reply's shell fence", () => {
     for (const text of ["```bash\nprintf hello", "```js\nprintf hello\n```", "```\nprintf hello\n```", "```bash\n\n```"])
       expect(withTerminal(text)).not.toContain("code-run");
   });
+});
+
+describe("finished work at desktop and phone widths", () => {
+  it.each([1280, 390])("renders one folded row and the complete final reply at %ipx", (width) => {
+    const messages: Message[] = [said("Review this"), {
+      id: "work", role: "assistant", streaming: false,
+      blocks: [{ kind: "text", text: "Interim update" }, {
+        kind: "tool", id: "command", name: "Bash", argsJson: "", args: { command: "pnpm test" }, state: "error",
+      }],
+    }, {
+      id: "answer", role: "assistant", streaming: false,
+      turnEnd: { status: "completed", durationMs: 372000 },
+      blocks: [{ kind: "notice", text: "Recovered chat notice" }, { kind: "compacted", text: "context" },
+        { kind: "tool", id: "skill", name: "Skill", state: "done", args: { skill: "test-skill" }, argsJson: "" },
+        { kind: "text", text: 'Final reply\n\n```octiq-diagram\n{"rows":[[{"title":"Visible result"}]]}\n```' }],
+    }];
+    const html = renderToStaticMarkup(<div style={{ width }}><MessageList messages={messages} busy={false} /></div>);
+    expect(html.match(/class="turn-work-head"/g)).toHaveLength(1);
+    expect(html).toContain("Worked 6m 12s · 1 command");
+    expect(html).toContain("1 failed");
+    expect(html).not.toContain("is-danger");
+    expect(html).not.toContain("Interim update");
+    expect(html).toContain("Recovered chat notice");
+    expect(html).toContain("history summarised to make room");
+    expect(html).toContain("test-skill");
+    expect(html).toContain("Final reply");
+    expect(html).toContain("Visible result");
+  });
+});
+
+it("keeps the last progress prose visible when Codex ended without final text", () => {
+  const html = renderToStaticMarkup(<MessageList messages={[{
+    id: "empty-final", role: "assistant", streaming: false, blocks: [],
+    progress: ["Earlier update", "Latest finding"], turnEnd: { status: "failed" },
+  }]} busy={false} />);
+  expect(html).toContain("turn-work-head");
+  expect(html).not.toContain("Earlier update");
+  expect(html).toContain("Latest finding");
 });

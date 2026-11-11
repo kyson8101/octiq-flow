@@ -13,7 +13,7 @@
 //
 // The group grows upward: it sits on the composer, so a row arriving never
 // moves the box under it.
-import type { ReactNode } from "react";
+import type { ButtonHTMLAttributes, ReactNode } from "react";
 import "./ChatStatus.css";
 
 export function ChatStatus({ children }: { children: ReactNode }) {
@@ -33,9 +33,14 @@ export function StatusChevron() {
 
 /** A row's own way out. Quiet until the row is under the pointer or holds
  *  the focus; a touch screen has neither, so there it is always drawn. */
-export function StatusDismiss({ label, onClick }: { label: string; onClick: () => void }) {
+export function StatusDismiss({ label, visible = false, className, disabled, ...props }: {
+  label: string;
+  /** Outside a status row the icon is always visible. */
+  visible?: boolean;
+} & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children" | "title" | "aria-label">) {
   return (
-    <button type="button" className="status-row-dismiss" aria-label={label} title={label} onClick={onClick}>
+    <button {...props} type="button" className={["status-row-dismiss", visible && "is-visible", className].filter(Boolean).join(" ")}
+      aria-label={label} title={label} disabled={disabled} aria-disabled={props["aria-disabled"] ?? (disabled || undefined)}>
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" aria-hidden="true">
         <path d="M6 6l12 12M18 6 6 18" />
       </svg>

@@ -3216,12 +3216,9 @@ body {
   color: var(--danger);
 }
 
-/* The call answered; the work it started has not. Its own colour rather than
-   the accent a live call gets: those two states look the same from across the
-   room, and they are not the same news — one is the agent working, the other is
-   the agent gone and something still running without it. */
+/* The status group owns the live colour; inline background labels stay quiet. */
 .tool-state.is-background {
-  color: var(--warn);
+  color: var(--fg-3);
 }
 
 /* A call the stop caught in flight. It never answered and never will, but
@@ -11427,10 +11424,8 @@ body.is-ultra .eff {
   white-space: nowrap;
 }
 
-/* The reason and the start of the command give way, in that order, before
-   the sentence does. */
-.safety-line-reason,
-.safety-line-action {
+/* The reason gives way before the sentence does. */
+.safety-line-reason {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -11447,12 +11442,7 @@ body.is-ultra .eff {
   color: var(--fg-3);
 }
 
-.safety-line-action {
-  flex: 1 1 0;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--fg-3);
-}
+
 
 .safety-line-row .safety-card-chevron {
   flex: 0 0 auto;
@@ -13850,3 +13840,68 @@ body.is-ultra .eff {
 }
 
 .work-location { flex-wrap: wrap; }
+
+/* Recovered calls keep their words, without claiming the turn is broken. */
+.tool-error.is-recovered > .tool-head-row .tool-icon { --tint: var(--fg-3); }
+.tool-group.tool-error.is-recovered .tool-summary-icon,
+.tool-group.is-recovered .tool-result-failed,
+.tool.is-recovered > .tool-head-row .tool-state.is-error { color: var(--fg-3); }
+
+.turn-work { min-width: 0; }
+.turn-work-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0;
+  border: 0; padding: 6px 0; background: none; color: var(--fg-3);
+  font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+}
+.turn-work-head > svg { flex: 0 0 auto; }
+.turn-work-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn-work-failed { flex: 0 0 auto; white-space: nowrap; }
+.turn-work-failed.is-danger { color: var(--danger); }
+.turn-work-head:hover { color: var(--fg-2); }
+
+/* Keep the final reply in place when a live collapse leaves a short page. */
+.msgs-inner { padding-top: calc(18px + var(--fold-space, 0px)); }
+
+/* Reserve the final reply's copy line while it is live, so ending the turn
+   adds no height below the words the reader is following. */
+.msg-foot.is-placeholder { visibility: hidden; }
+
+/* A judged auto-mode refusal asks in a line. Outage and Codex cards keep
+   their existing surface; only the warning's icon/rule carries amber here. */
+.safety-refusal {
+  container-type: inline-size;
+  flex: 0 0 auto; width: 100%; max-width: var(--chat-column);
+  min-width: 0; margin: 0 auto 4px; padding: 0 0 0 8px;
+  border: 0; border-left: 2px solid var(--warn); border-radius: 0; background: none;
+}
+.safety-refusal-row { display: flex; align-items: center; gap: 6px; min-height: 28px; min-width: 0; }
+.safety-refusal-icon { flex: 0 0 14px; color: var(--warn); font-size: 12px; text-align: center; }
+.safety-refusal-copy { display: flex; align-items: baseline; gap: 0; flex: 1 1 auto; min-width: 0; font-size: 12px; }
+.safety-refusal-context { display: inline-flex; flex: 0 1 auto; min-width: 0; max-width: 35%; gap: 0; color: var(--fg-3); overflow: hidden; white-space: nowrap; }
+.safety-refusal-context-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.safety-refusal-context > [aria-hidden] { flex: 0 0 auto; margin-left: 3px; }
+.safety-refusal-context { margin-right: 6px; }
+.safety-refusal-subject { display: inline-flex; align-items: baseline; gap: 6px; flex: 0 0 auto; max-width: 100%; min-width: 0; }
+.safety-refusal-context + .safety-refusal-subject { max-width: calc(100% - 6px); }
+.safety-refusal-what { flex: 0 0 auto; color: var(--fg-2); white-space: nowrap; }
+.safety-refusal-reason { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-3); }
+.safety-refusal-reason::before { content: "·"; margin-right: 6px; }
+.safety-refusal-answers { display: flex; flex: 0 0 auto; gap: 5px; margin-left: auto; }
+.safety-refusal .ask-btn { min-height: 26px; padding: 3px 8px; font-size: 11.5px; }
+.safety-refusal .ask-btn:not(.is-primary) { border-color: transparent; color: var(--fg-3); background: none; }
+.safety-refusal-toggle { display: grid; place-items: center; flex: 0 0 auto; width: 28px; min-height: 28px; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--fg-3); background: none; cursor: pointer; }
+.safety-refusal-toggle:hover { color: var(--fg-1); background: var(--bg-2); }
+.safety-refusal-toggle:focus-visible { outline: 2px solid var(--decide); outline-offset: 1px; }
+.safety-refusal-toggle[aria-expanded="true"] .safety-card-chevron { transform: rotate(180deg); }
+.safety-refusal-body { min-width: 0; padding: 2px 6px 6px 20px; }
+.safety-refusal .safety-card-preview { max-height: none; overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; }
+.safety-refusal .safety-card-preview > span { display: contents; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
+.safety-refusal .safety-card-buttons { margin-top: 4px; }
+@container (max-width: 560px) {
+  .safety-refusal-row { flex-wrap: wrap; }
+  .safety-refusal-copy { flex: 1 1 calc(100% - 26px); min-height: 28px; align-items: center; }
+  .safety-refusal-answers { margin-left: 20px; }
+  .safety-refusal .ask-btn { min-height: 44px; padding: 6px 10px; }
+  .safety-refusal-toggle { width: 44px; min-height: 44px; margin-left: auto; }
+  .safety-refusal .status-row-dismiss { flex-basis: 44px; width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+}

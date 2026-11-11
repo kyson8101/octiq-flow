@@ -700,17 +700,30 @@ pending key and what the buttons send are the card's.
 
 - **What splits them is whether the turn is still running** (`splitSafety`).
   A judged refusal folds only while `chat.busy`; once the turn is over with it
-  still unanswered, the agent has stopped and it is the full card above the
-  prompt box again. The record carries no time and no tool-use id, so "the
+  still unanswered, the agent has stopped and it is a compact answer row above
+  the prompt box. A judged worker refusal uses that same row in its coordinator's
+  chat, prefixed by the worker/task name in muted text, with no separate
+  "Approval for Worker" heading. The record carries no time and no tool-use id, so "the
   agent went on and finished anyway" cannot be told from "it stopped on this".
 - **An outage card and a Codex block never fold.** Both offer something only
   the person can choose (a retry, an approval).
 - **Only a live `safety-blocked` event raises the notice.** The list read on
   connect or on reopening a chat (`safety_block_pending`) never does, and
   leaving the chat drops it.
-- **The card stays amber; the answer it leads with does not.** A refusal is
-  a warning, so a safety card keeps `--warn`. Its primary button ("Keep it
-  local", "Use safer approach") is a decision, and is drawn in `--decide`
+- **A judged refusal is one compact row, without a box or amber fill.** A small
+  `--warn` icon/rule leads `Auto mode blocked · <reason>`, then the small
+  "Use safer approach" answer, one chevron and a final Dismiss ×. Opened, the whole
+  command (drawn through `cardFold.commandDrawn`), "Nothing ran…" and Details
+  appear below. In a narrow container the answers may wrap, with 44px targets;
+  no content widens the page. The pending key, badge tone, press guards and
+  answer messages are unchanged.
+- **Dismiss is the shared × everywhere** (`StatusDismiss`): its accessible name
+  and tooltip keep the full action in words, but the button has no text label.
+  It is 28px on desktop and 44px on a phone or coarse pointer; a pending answer
+  disables and dims it. It is last in its row, after any chevron, and keeps the
+  caller's press/key guards and send behaviour.
+- **The warning keeps `--warn`; its leading answer uses `--decide`.** The
+  primary button ("Keep it local", "Use safer approach") is a decision,
   like every card that asks: never the accent, which the composer rebinds to
   the model's colour and which came up gold under Claude
   (`lib/decideColour.test.ts`).
@@ -1463,7 +1476,8 @@ and is there only while it has something to point at: `1 question waiting`
 view.
 
 - **A row is one line, with no box and no fill of its own.** The same
-  height (28px), the same left edge and the same icon column, which is the
+  height (28px; a row with Dismiss grows to 44px on a phone or coarse pointer),
+  the same left edge and the same icon column, which is the
   eyebrow's own, so the face under the rows stands in line with them. A
   hairline between two rows is all that separates them. A row's state is
   the colour of its icon or dot and nothing else. The shared frame is

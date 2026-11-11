@@ -496,7 +496,7 @@ describe("Cyberpunk keeps colour's meaning under its neon", () => {
     const ask = sheet.filter((rule) => rule.selector === ':root[data-theme="cyberpunk"] .ask-card');
     expect(ask).toHaveLength(1);
     expect(ask[0].body).toMatch(/box-shadow:[^;]*var\(--decide\)/);
-    const safety = sheet.filter((rule) => rule.selector === ':root[data-theme="cyberpunk"] .safety-card');
+    const safety = sheet.filter((rule) => rule.selector === ':root[data-theme="cyberpunk"] .safety-card:not(.safety-refusal)');
     expect(safety).toHaveLength(1);
     expect(safety[0].body).toMatch(/var\(--warn\)/);
   });

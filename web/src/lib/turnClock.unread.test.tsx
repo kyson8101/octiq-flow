@@ -137,7 +137,7 @@ function page({ unknownIsNotWaiting = false } = {}) {
       const hint = html.slice(html.indexOf('<div class="composer-hint">'), html.indexOf('class="composer-history"'));
       const clock = /<span class="working-clock">([^<]+)<\/span>/.exec(hint)?.[1] ?? "";
       const words = /<span class="working-waits[^"]*">([^<]+)<\/span>/.exec(hint)?.[1]
-        ?? (/thinking with high effort/.exec(hint)?.[0] ?? "");
+        ?? (/thinking…/.exec(hint)?.[0] ?? "");
       return {
         eyebrow: `${clock} · ${words}`,
         taskBar: phaseOf(undefined, { busy: state.busy, waiting: hold }).label,
@@ -170,7 +170,7 @@ const HELD = { eyebrow: "1m 30s · Checking what waits on you", taskBar: QUIET, 
 /** The page could not read a list: still held, under the words that say so. */
 const UNCHECKED = { eyebrow: "1m 30s · Could not check what waits on you", taskBar: QUIET, listedWorking: false };
 const WAITING = { eyebrow: "1m 30s · Waiting for your answer", taskBar: "Needs you", listedWorking: false };
-const working = (clock: string) => ({ eyebrow: `${clock} · thinking with high effort`, taskBar: "Working", listedWorking: true });
+const working = (clock: string) => ({ eyebrow: `${clock} · thinking…`, taskBar: "Working", listedWorking: true });
 
 describe("a reload while the chat waits, with the lists of what waits not read yet", () => {
   it("draws the held chat as neither working nor waiting on the person", () => {
@@ -211,8 +211,8 @@ describe("a reload while the chat waits, with the lists of what waits not read y
       }
       expect(next.at(now), `${first} first`).toEqual(WAITING);
       next.updates([question("saved")]);
-      expect(next.at(now + s(5)).eyebrow).toBe("1m 30s · thinking with high effort");
-      expect(next.at(now + s(10)).eyebrow).toBe("1m 35s · thinking with high effort");
+      expect(next.at(now + s(5)).eyebrow).toBe("1m 30s · thinking…");
+      expect(next.at(now + s(10)).eyebrow).toBe("1m 35s · thinking…");
     }
   });
 
@@ -397,10 +397,10 @@ describe("the 720 orders the six lists can answer in", () => {
       next.at(now);
       const done = next.at(now + s(5));
       const ok = read.every((eyebrow) => /^1m 30s · (Checking what waits on you|Could not check what waits on you|Waiting for your answer)$/.test(eyebrow))
-        && waiting.eyebrow === WAITING.eyebrow && done.eyebrow === "1m 35s · thinking with high effort";
+        && waiting.eyebrow === WAITING.eyebrow && done.eyebrow === "1m 35s · thinking…";
       if (!ok) wrong += 1;
       expect({ order, read, waiting: waiting.eyebrow, done: done.eyebrow }, order.join(" > ")).toEqual({
-        order, read, waiting: WAITING.eyebrow, done: "1m 35s · thinking with high effort",
+        order, read, waiting: WAITING.eyebrow, done: "1m 35s · thinking…",
       });
       for (const eyebrow of read) expect(eyebrow, order.join(" > ")).toMatch(/^1m 30s · /);
     }
@@ -552,7 +552,7 @@ describe("one card back and answered while another list is still unread", () => 
         }
       }
       expect(atCard, name).toEqual(APPROVAL);
-      if (done.eyebrow !== "1m 35s · thinking with high effort") wrong.push(name);
+      if (done.eyebrow !== "1m 35s · thinking…") wrong.push(name);
       expect(done, name).toEqual(working("1m 35s"));
     }
     expect(wrong).toEqual([]);
@@ -580,7 +580,7 @@ describe("the page as it was: a list not read yet taken for an empty one", () =>
     expect(was.at(RELOAD + s(120)).eyebrow).toBe("3m 30s · Waiting for your answer");
     was.updates([question("saved")]);
     was.at(RELOAD + s(300));
-    expect(was.at(RELOAD + s(305)).eyebrow).toBe("3m 35s · thinking with high effort");
+    expect(was.at(RELOAD + s(305)).eyebrow).toBe("3m 35s · thinking…");
   });
 });
 

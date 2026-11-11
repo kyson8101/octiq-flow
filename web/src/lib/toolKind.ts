@@ -269,7 +269,7 @@ function shellCall(name: string, args: unknown): ShellCall | null {
   if (!envelope) return null;
 
   for (const clause of envelope.body.split(/\s*(?:&&|\|\||;|\n)\s*/)) {
-    const words = shellWords(clause.trim());
+    const words = shellWords(clause.trim().replace(/^[\s({!]+/, ""));
     let i = 0;
     while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++;
     const called = words[i] ?? "";

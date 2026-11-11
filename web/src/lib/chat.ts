@@ -259,6 +259,8 @@ export type ReplyTarget = { id: string; preview: string };
 
 export type Message = {
   id: string;
+  /** The provider/host ended this turn. Kept on its last reply for replay. */
+  turnEnd?: { status: "completed" | "failed" | "stopped"; durationMs?: number };
   role: "user" | "assistant";
   blocks: Block[];
   /** Files sent with this turn — drawn under it, so a message that was three
@@ -273,6 +275,9 @@ export type Message = {
    * superseded answer candidate here. The transcript can then fold the working
    * log away without throwing it away. */
   progress?: string[];
+  /** Codex stores commentary apart from blocks. This call precedes its newest
+   * text, preserving recovery order without changing the visible progress log. */
+  textAfterTool?: string;
   /** The newest unphased Codex message while its turn is still open.
    *
    * The protocol does not identify the final answer until `turn.completed`.
@@ -963,6 +968,23 @@ function agentStatus(raw: unknown): Partial<AgentRun> {
  *  and the clock is an argument so a replay of a captured stream lands on the
  *  same numbers every time. */
 export function reduceChat(state: ChatState, raw: unknown, now: number = Date.now(), source: "live" | "replay" = "live"): ChatState {
+  const next = reduceEvent(state, raw, now, source);
+  const e = asObj(raw);
+  if (next === state) return next;
+  const ended = ["result", "turn.completed", "turn.failed"].includes(asStr(e.type));
+  if (e.parent_tool_use_id || (!ended && !(state.busy && !next.busy))) return next;
+  const speaker = readSpeaker(e.octiq_speaker)?.id;
+  const index = next.messages.map((m) => m.role === "assistant" && !m.parent && m.speaker?.id === speaker).lastIndexOf(true);
+  if (index < 0) return next;
+  const status = state.stopping || next.stoppedAt !== state.stoppedAt || e.subtype === "error_during_execution"
+    ? "stopped" : e.is_error === true || e.type === "turn.failed" || (next.failure && next.failure !== state.failure)
+      ? "failed" : "completed";
+  const durationMs = typeof e.duration_ms === "number" ? e.duration_ms : undefined;
+  return { ...next, messages: next.messages.map((m, i) => i === index
+    ? { ...m, turnEnd: { status, ...(durationMs !== undefined ? { durationMs } : {}) } } : m) };
+}
+
+function reduceEvent(state: ChatState, raw: unknown, now: number, source: "live" | "replay"): ChatState {
   const e = asObj(raw);
   const type = asStr(e.type);
   // Which writer this event belongs to: a Task call's id when a subagent wrote
@@ -2251,6 +2273,8 @@ function foldCodex(
 
   if (read.kind === "say") {
     return withCodexCurrent(state, parent, speaker, (m) => {
+      const lastTool = [...m.blocks].reverse().find((b) => b.kind === "tool");
+      if (read.text.trim() && lastTool?.kind === "tool") m = { ...m, textAfterTool: lastTool.id };
       const superseded = m.codexCandidate ? [m.codexCandidate] : [];
       const progress = [...(m.progress ?? []), ...superseded];
 

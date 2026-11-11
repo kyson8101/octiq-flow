@@ -32,6 +32,7 @@
 // - A block is whole before it can be sent. The host says how many
 //   questions a call carried and sends them one event each; until the last
 //   has arrived the button is off and says it is still reading them.
+import { StatusDismiss } from "./ChatStatus";
 import { createContext, useContext, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import type { AskItem } from "../lib/askAnswer";
 import { bridge } from "../lib/bridge";
@@ -298,16 +299,13 @@ function QuestionForm({ batch, questions, onDone, onSent }: {
           last question gets its answer. */}
       <div className="qa-foot">
         <p className="qa-why" id={`${uid}-why`}>{reason ?? ""}</p>
-        <button
-          type="button"
+        <StatusDismiss
+          label="Dismiss without answering" visible
           className="qa-dismiss"
           aria-disabled={sending}
-          title="The agent is told you did not answer"
           onKeyDown={dropHeld}
           onClick={guarded(() => void dismiss())}
-        >
-          Dismiss without answering
-        </button>
+        />
       </div>
     </div>
   );

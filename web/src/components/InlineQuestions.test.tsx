@@ -74,7 +74,7 @@ describe("a pending question, at the call that asked it", () => {
   });
 
   it("has no card round it and nothing folded in it", () => {
-    const block = html.slice(html.indexOf('class="qa-block'), html.indexOf("Dismiss without answering"));
+    const block = html.slice(html.indexOf('class="qa-block'), html.indexOf('aria-label="Dismiss without answering"'));
     expect(block).not.toMatch(/ask-card|qa-card|<details|aria-expanded/);
   });
 
@@ -321,7 +321,7 @@ describe("how it is wired", () => {
   it("guards the two controls that answer against a held key and a repeated press", () => {
     for (const control of ["qa-submit", "qa-dismiss"]) {
       const at = source.indexOf(`className="${control}"`);
-      const button = source.slice(at, source.indexOf("</button>", at));
+      const button = source.slice(at, source.indexOf(control === "qa-dismiss" ? "/>" : "</button>", at));
       expect(button, control).toContain("onKeyDown={dropHeld}");
       expect(button, control).toContain("onClick={guarded(");
     }

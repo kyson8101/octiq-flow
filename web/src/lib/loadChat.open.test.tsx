@@ -43,7 +43,8 @@ it.each([
   const requestPage = vi.fn(async (before: number | null) => before === null ? recent : older);
   await loadChat({ ...options, requestPage });
   expect(html()).toContain("Use the Task tool once");
-  expect(html()).toContain("I&#x27;ll use the Agent tool");
+  expect(html()).toMatch(/turn-work-head|use the Agent tool/);
+  expect(options.getState().messages.flatMap((m) => m.blocks).some((b) => b.kind === "text" && b.text.includes("use the Agent tool"))).toBe(true);
   expect(options.catchUp.mark(options.key)).toBe(end);
   expect(options.history.hasEarlier(options.id)).toBe(false);
   expect(requestPage.mock.calls.map(([cursor]) => cursor)).toEqual([null, start + 1]);

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { StatusDismiss } from "./ChatStatus";
 import type { Message } from "../lib/chat";
 import "./MessageBubble.css";
 
@@ -61,8 +62,8 @@ export function MessageBubble({ user, message, wrapUp = false, onStart, onCancel
                 title="Return this message and its attachments to the composer"
                 aria-label="Take this queued message back to edit" onClick={onCancel}>Edit</button>)}
               {onRestore && <button type="button" onClick={onRestore}>Restore to composer</button>}
-              {onDismiss && <button type="button" onClick={onDismiss}>Dismiss</button>}
               {footer}
+              {onDismiss && <StatusDismiss label="Dismiss" visible onClick={onDismiss} />}
             </div>
           </div>
         </div>

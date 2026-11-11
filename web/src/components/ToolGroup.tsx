@@ -33,7 +33,9 @@ export function ToolGroup({
   newest,
   folder,
   note,
+  danger,
 }: {
+  danger?: ReadonlySet<string>;
   tools: Tool[];
   newest: Tool;
   /** The folder a header above this run has already named — every call in the
@@ -56,6 +58,7 @@ export function ToolGroup({
   const failures = failureCounts(allTools);
   // A phone's shorter form: one count per origin.
   const byOrigin = originCounts(allTools);
+  const recovered = look.failed > 0 && danger !== undefined && !allTools.some((tool) => danger.has(tool.id));
   const onlyWarnings = failures.length > 0 && failures.every((f) => f.severity === "warning");
   // Calls usually run one at a time, but searching backwards also keeps the
   // row honest if a provider reports overlapping calls: the detail belongs to
@@ -70,7 +73,7 @@ export function ToolGroup({
 
   return (
     <div
-      className={`tool tool-group tool-${shownState} ${onlyWarnings ? "is-warning" : ""} ${open ? "is-open" : ""}`}
+      className={`tool tool-group tool-${shownState} ${onlyWarnings ? "is-warning" : ""} ${recovered ? "is-recovered" : ""} ${open ? "is-open" : ""}`}
     >
       <button
         className="tool-head tool-group-head"
@@ -114,6 +117,7 @@ export function ToolGroup({
             <ToolCard
               key={tool.id}
               tool={tool}
+              quietFailure={danger !== undefined && !danger.has(tool.id)}
               folder={folder}
               note={tool.id === newest.id ? note : undefined}
             />

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Block } from "../lib/chat";
 import { ToolCard } from "./ToolCard";
+import { BackgroundProvider } from "./Background";
 
 type Tool = Extract<Block, { kind: "tool" }>;
 
@@ -278,4 +279,17 @@ describe("a subagent call", () => {
 
     expect(html).not.toContain("tool-agent");
   });
+});
+
+it("keeps a background call quiet, with no inline spinner", () => {
+  const html = renderToStaticMarkup(<BackgroundProvider value={new Set(["toolu_bg"])}><ToolCard tool={backgrounded()} /></BackgroundProvider>);
+  expect(html).toContain('class="tool-state is-background"');
+  expect(html).toContain("in background");
+  expect(html).not.toContain("tool-spinner");
+});
+
+it("quiets a recovered failed icon without losing the failure words", () => {
+  const html = renderToStaticMarkup(<ToolCard tool={{ ...backgrounded(), state: "error" }} quietFailure />);
+  expect(html).toContain("is-recovered");
+  expect(html).toContain("error");
 });

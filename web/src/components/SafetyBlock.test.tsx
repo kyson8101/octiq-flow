@@ -123,9 +123,10 @@ describe("SafetyBlock", () => {
 
     it("names the refused line and offers no way to allow it", () => {
       for (const html of [drawClaude(claude), drawClaude(claude, true)]) {
-        expect(html).toContain("eas update --branch production");
+        if (html.includes('aria-label="Hide blocked action"')) expect(html).toContain("eas update --branch production");
+        else expect(html).not.toContain("eas update --branch production");
         expect(html).toContain("Use safer approach");
-        expect(html).toContain("Dismiss");
+        expect(html).toContain('aria-label="Dismiss"');
         expect(html).not.toMatch(/Always allow|Allow once|Retry/);
         expect(html).not.toContain("Codex");
       }
@@ -145,18 +146,20 @@ describe("SafetyBlock", () => {
       const long: SafetyBlockNotice = { ...claude, summary: "Irreversible Local Destruction", action: line };
       const shown = line.replace(/&/g, "&amp;");
 
-      it("says what was blocked, why, that nothing ran, and one next step", () => {
+      it("shows only the reason, two compact answers and one disclosure", () => {
         const html = drawClaude(long);
         // Headline and reason, one quiet status line, the start of the line.
         expect(html).toContain("Claude&#x27;s auto mode blocked an action");
-        expect(html).toContain('<span class="safety-card-reason">Irreversible Local Destruction</span>');
-        expect(html).toContain(`<pre class="safety-card-action safety-card-preview"><span>${shown}</span></pre>`);
-        expect(html).toContain(CLAUDE_BLOCKED_STATUS);
+        expect(html).toContain('class="safety-refusal-reason" title="Irreversible Local Destruction"');
+        expect(html).not.toContain(shown);
+        expect(html).not.toContain(CLAUDE_BLOCKED_STATUS);
+        expect(html).toContain('class="safety-card safety-refusal"');
         // Primary, secondary, and a low-emphasis disclosure that is shut.
         expect(html).toContain("Use safer approach");
-        expect(html).toContain("Dismiss");
-        expect(html).toMatch(/<button class="safety-card-toggle" type="button" aria-expanded="false">Details/);
-        expect(html.indexOf("Use safer approach")).toBeLessThan(html.indexOf("Dismiss"));
+        expect(html).toContain('aria-label="Dismiss"');
+        expect(html).toContain('aria-expanded="false" aria-label="Show blocked action"');
+        expect(html).not.toContain('>Details');
+        expect(html.indexOf("Use safer approach")).toBeLessThan(html.indexOf('aria-label="Dismiss"'));
       });
 
       it("drops the eyebrow, the badge, the banner, the section labels and the notes", () => {
@@ -167,8 +170,8 @@ describe("SafetyBlock", () => {
           "Permission for this action was denied", "cannot approve a call", "Manual command approval",
           "safety-card-more",
         ]) expect(html).not.toContain(gone);
-        // The line appears once: as the preview, not again in full.
-        expect(html.split(shown).length - 1).toBe(1);
+        // The command is behind the one disclosure.
+        expect(html).not.toContain(shown);
       });
 
       it("opens to the full line, the technical details and every way to allow it", () => {
@@ -185,20 +188,21 @@ describe("SafetyBlock", () => {
         expect(html).toContain("choose Manual command approval");
         // The quick answers stay where they were.
         expect(html).toContain("Use safer approach");
-        expect(html).toContain("Dismiss");
+        expect(html).toContain('aria-label="Dismiss"');
       });
 
       it("keeps the same shape without a command, and for a call that is not a shell line", () => {
         const bare = drawClaude({ ...claude, action: null, summary: "Blocked by auto mode" });
         expect(bare).not.toContain("safety-card-preview");
         expect(bare).toContain("Blocked by auto mode");
-        expect(bare).toContain(CLAUDE_BLOCKED_STATUS);
+        expect(bare).not.toContain(CLAUDE_BLOCKED_STATUS);
+        expect(drawClaude({ ...claude, action: null }, true)).toContain(CLAUDE_BLOCKED_STATUS);
         expect(bare).toContain("Use safer approach");
         const bareOpen = drawClaude({ ...claude, action: null }, true);
         expect(bareOpen).not.toContain("Copy the command");
         expect(bareOpen).toContain("How to allow this");
 
-        const write = drawClaude({ ...claude, action: "Write /Users/me/.ssh/config", summary: "Credential Exposure" });
+        const write = drawClaude({ ...claude, action: "Write /Users/me/.ssh/config", summary: "Credential Exposure" }, true);
         expect(write).toContain("<span>Write /Users/me/.ssh/config</span>");
         expect(write).toContain("Credential Exposure");
       });
@@ -213,12 +217,13 @@ describe("SafetyBlock", () => {
           <SafetyBlock block={notice} folded onContinue={() => {}} onAnswered={() => {}} startOpen={startOpen} />,
         );
 
-      it("is one shut line: what happened, why, and the start of the command", () => {
+      it("is one shut line: what happened and why", () => {
         const html = drawFolded(refused);
         expect(html).toMatch(/^<div class="safety-line"><button class="safety-line-row" type="button" aria-expanded="false">/);
         expect(html).toContain('<span class="safety-line-what">Auto mode blocked an action</span>');
         expect(html).toContain('<span class="safety-line-reason">Security Weaken</span>');
-        expect(html).toContain(`<code class="safety-line-action">${shown}</code>`);
+        expect(html).not.toContain("safety-line-action");
+        expect(html).not.toContain(shown);
       });
 
       it("asks for nothing until it is opened: no alert, no card, no buttons", () => {
@@ -239,7 +244,7 @@ describe("SafetyBlock", () => {
         expect(html).toContain(CLAUDE_BLOCKED_STATUS);
         expect(html).toContain("Permission for this action was denied by the Claude Code auto mode classifier.");
         expect(html).toContain("How to allow this");
-        expect(html.indexOf("Use safer approach")).toBeLessThan(html.indexOf("Dismiss"));
+        expect(html.indexOf("Use safer approach")).toBeLessThan(html.indexOf('aria-label="Dismiss"'));
         // The line is the heading; the card under it does not say it twice.
         expect(html).not.toContain("safety-card-heading");
       });
@@ -320,7 +325,7 @@ describe("SafetyBlock", () => {
       expect(html).toContain("Claude&#x27;s auto mode blocked an action");
       expect(html).toContain("Use safer approach");
       expect(html).toContain("Details");
-      expect(html).toContain("Dismiss");
+      expect(html).toContain('aria-label="Dismiss"');
       expect(html).toContain("choose Manual command approval");
       expect(html).not.toContain("safety check was unavailable");
       expect(html).not.toContain("is-outage");
@@ -385,7 +390,7 @@ describe("SafetyBlock", () => {
         expect(html).not.toMatch(/Allow once|exact command once/);
         // The safer path and the record stay.
         expect(html).toContain("Use safer approach");
-        expect(html).toContain("Dismiss");
+        expect(html).toContain('aria-label="Dismiss"');
       });
 
       it("lists the parts no rule names, and offers only the scopes the server named", () => {
@@ -550,7 +555,7 @@ describe("SafetyBlock", () => {
       const html = drawOutage(outage);
       expect(html).toContain("Retry once");
       expect(html).toContain("Technical details");
-      expect(html).toContain("Dismiss");
+      expect(html).toContain('aria-label="Dismiss"');
       expect(html).not.toContain("Use safer approach");
       expect(html).not.toContain("Manual command approval");
       // This card's server named no rule and no file: nothing to allow.
@@ -749,4 +754,15 @@ describe("SafetyBlock", () => {
       expect(html).toContain("OctiqFlow will not re-run it");
     });
   });
+});
+
+it("opens a judged refusal's whole multiline command and makes hidden characters visible", () => {
+  const action = Array.from({ length: 15 }, (_, index) => `echo line-${index}`).join("\n") + "\necho \u202Ehidden";
+  const notice: SafetyBlockNotice = { id: "long-judged", provider: "claude", kind: "high-risk-action",
+    title: "Claude's auto mode blocked an action", summary: "Safety Bypass Flag", detail: "Details", action };
+  const html = renderToStaticMarkup(<SafetyBlock block={notice} startOpen onContinue={() => {}} onAnswered={() => {}} />);
+  expect(html).toContain("echo line-14");
+  expect(html).toContain('class="ask-command-mark">\\u{202E}</span>');
+  expect(html).not.toContain("\u202E");
+  expect(html).toContain(CLAUDE_BLOCKED_STATUS);
 });

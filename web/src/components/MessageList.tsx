@@ -40,6 +40,7 @@ import { useRunningCalls } from "./Background";
 import { SentFiles } from "./Thumb";
 import { roughTokens } from "../lib/tokens";
 import { groupRows, type Note } from "../lib/toolGroups";
+import { turnFold } from "../lib/turnFold";
 import { folderLabel, rowFolders } from "../lib/folderHead";
 import { useTypewriter } from "../lib/typewriter";
 import { closeFence, splitBlocks } from "../lib/blocks";
@@ -318,7 +319,9 @@ function BlockView({
   onOpenAgent,
   note,
   folder,
+  quietFailure,
 }: {
+  quietFailure?: boolean;
   block: Block;
   animate?: boolean;
   kids: Kids;
@@ -366,6 +369,7 @@ function BlockView({
   return (
     <ToolCard
       tool={block}
+      quietFailure={quietFailure}
       note={note}
       folder={folder}
       agent={
@@ -399,7 +403,11 @@ function Blocks({
   kids,
   agentByTool,
   onOpenAgent,
+  danger,
+  originalBlocks,
 }: {
+  danger?: ReadonlySet<string>;
+  originalBlocks?: Block[];
   blocks: Block[];
   streaming: boolean;
   kids: Kids;
@@ -424,15 +432,16 @@ function Blocks({
       {rows.map((row, i) => {
         const folder = folders[i];
         const heads = !!folder && folder !== folders[i - 1];
-        const key = row.kind === "group" ? (row.tools[0]?.id ?? row.newest.id) : row.index;
+        const key = row.kind === "group" ? (row.tools[0]?.id ?? row.newest.id) : originalBlocks ? originalBlocks.indexOf(row.block) : row.index;
         return (
           <Fragment key={key}>
             {heads && <FolderHead dir={folder} />}
             {row.kind === "group" ? (
-              <ToolGroup tools={row.tools} newest={row.newest} folder={folder} note={row.note} />
+              <ToolGroup tools={row.tools} newest={row.newest} folder={folder} note={row.note} danger={danger} />
             ) : (
               <BlockView
                 block={row.block}
+                quietFailure={row.block.kind === "tool" && danger !== undefined && !danger.has(row.block.id)}
                 animate={streaming && row.index === last}
                 kids={kids}
                 agentByTool={agentByTool}
@@ -505,6 +514,7 @@ function SubAgent({
     <div className="subagent">
       <Blocks
         blocks={blocks}
+        danger={turnFold(messages, { live: streaming }).danger}
         streaming={streaming}
         kids={kids}
         agentByTool={agentByTool}
@@ -855,6 +865,8 @@ function TurnView({
   tints,
   fresh,
   mapTurnId,
+  stopped,
+  onWorkOpen,
   hostName,
   hostPersona,
   onCancelQueued,
@@ -862,6 +874,8 @@ function TurnView({
   onRestoreUnsent,
   onDismissUnsent,
 }: {
+  stopped?: boolean;
+  onWorkOpen?: () => void;
   messages: Message[];
   kids: Kids;
   agentByTool?: ReadonlyMap<string, string>;
@@ -890,6 +904,8 @@ function TurnView({
   /** A person-sent turn is one return point on the conversation map. */
   mapTurnId?: string;
 }) {
+  const [workOpen, setWorkOpen] = useState(false);
+  const wasSettled = useRef(false);
   const role = messages[0].role;
   const nameOf = useContext(ChatPersonaContext);
   // One turn is one voice — `groupTurns` breaks on the seat, so every message
@@ -911,6 +927,17 @@ function TurnView({
   const replyTo = messages.find((m) => m.replyTo)?.replyTo;
   const streaming = messages.some((m) => m.streaming);
   const blocks = messages.flatMap((m) => m.blocks);
+  const turnLive = !!busy && !!last && !messages.some((m) => m.turnEnd) && !wasSettled.current;
+  useLayoutEffect(() => {
+    if (role === "assistant" && !streaming && !turnLive) wasSettled.current = true;
+  }, [role, streaming, turnLive]);
+  const plan = turnFold(messages, {
+    live: turnLive, stopped,
+    keepOut: (tool) => kids.has(tool.id) || !!agentByTool?.has(tool.id),
+  });
+  const foldWork = role === "assistant" && !streaming && !turnLive
+    && (plan.hidden.size > 0 || plan.hasProgressWork);
+  const visibleBlocks = foldWork && !workOpen ? blocks.filter((_, i) => !plan.hidden.has(i)) : blocks;
   const progress = messages.flatMap((m) => m.progress ?? []);
   const codexCandidate = [...messages].reverse().find((m) => m.codexCandidate)?.codexCandidate;
   // The answer as it reads on screen. Thinking is left out — it is folded away
@@ -1094,7 +1121,16 @@ function TurnView({
           <span className="desk-route-confirmed">Confirmed by you</span>
         </header>}
         <SentFiles files={files} />
-        {role === "assistant" && (
+        {foldWork && <div className="turn-work">
+          <button type="button" className="turn-work-head" aria-expanded={workOpen}
+            onClick={() => { if (!workOpen) onWorkOpen?.(); setWorkOpen(!workOpen); }}>
+            <Chevron open={workOpen} />
+            <span className="turn-work-label">{plan.label}</span>
+            {plan.failed > 0 && <span className={`turn-work-failed${[...plan.failures].some((id) => plan.danger.has(id)) ? " is-danger" : ""}`}> · {plan.failed} failed</span>}
+          </button>
+        </div>}
+        {foldWork && !workOpen && plan.lastProgress && <Prose text={plan.lastProgress} animate={false} />}
+        {role === "assistant" && (!foldWork || workOpen) && (
           <ProgressLog updates={progress} candidate={codexCandidate} streaming={streaming} />
         )}
         {/* Each message you sent is cut on its own — two long pastes in a row
@@ -1107,7 +1143,9 @@ function TurnView({
           blocks.map((b, i) => <UserText key={i} text={deskRoute ? readDeskRoute(shown((b as { text: string }).text))?.text ?? shown((b as { text: string }).text) : shown((b as { text: string }).text)} />)
         ) : (
           <Blocks
-            blocks={blocks}
+            blocks={visibleBlocks}
+            originalBlocks={blocks}
+            danger={role === "assistant" ? plan.danger : undefined}
             streaming={streaming}
             kids={kids}
             agentByTool={agentByTool}
@@ -1131,9 +1169,11 @@ function TurnView({
             takes to answer, which is how the flicker became impossible to
             miss. The bottom turn is the only one a working agent can still add
             to, so that is the one that has to wait for it to stop. */}
-        {role === "assistant" && !streaming && !(busy && last) && answer && (
-          <div className="msg-foot">
-            <CopyAnswer text={answer} what="reply" />
+        {role === "assistant" && answer && (
+          <div className={`msg-foot${streaming || turnLive ? " is-placeholder" : ""}`}>
+            {streaming || turnLive
+              ? <span className="msg-copy" aria-hidden="true"><CopyIcon />Copy</span>
+              : <CopyAnswer text={answer} what="reply" />}
           </div>
         )}
       </MessageBubble>
@@ -1216,7 +1256,7 @@ function groupTurns(messages: Message[]): Message[][] {
     const differentReplyTarget =
       m.replyTo?.id !== last?.[0].replyTo?.id && (!!m.replyTo || !!last?.[0].replyTo);
     const hostPlanRecord = (message?: Message) => message?.blocks.some((b) => b.kind === "planAutoApproved");
-    const alone = !!m.relay || !!last?.[0].relay || ownTurn || differentReplyTarget || hostPlanRecord(m) || hostPlanRecord(last?.[0]);
+    const alone = !!last?.at(-1)?.turnEnd || !!m.relay || !!last?.[0].relay || ownTurn || differentReplyTarget || hostPlanRecord(m) || hostPlanRecord(last?.[0]);
     if (!alone && last && last[0].role === m.role && last[0].speaker?.id === m.speaker?.id)
       last.push(m);
     else turns.push([m]);
@@ -1865,6 +1905,31 @@ const MessageListBody = function MessageList({
     return releasePlace;
   }, [conversationId]);
 
+  const workLayout = useRef<{ id?: string; folds: number; busy: boolean; anchor: HTMLElement | null; bottom: number } | null>(null);
+  // A collapse can leave less than one pane of content. scrollTop alone then
+  // cannot hold the final reply: retain just the removed space above it.
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    const inner = innerRef.current;
+    if (!el || !inner) return;
+    const before = workLayout.current;
+    const folds = inner.querySelectorAll(".turn-work").length;
+    if (before?.id !== conversationId || (busy && !before?.busy)) inner.style.removeProperty("--fold-space");
+    const following = stick.current && !glide.current && !hoveredMedia.current && !resuming.current;
+    if (following) el.scrollTop = el.scrollHeight;
+    if (following && before && before.id === conversationId && folds > before.folds && before.anchor?.isConnected) {
+      const delta = before.bottom - before.anchor.getBoundingClientRect().bottom;
+      if (delta > 1) {
+        const held = parseFloat(inner.style.getPropertyValue("--fold-space")) || 0;
+        inner.style.setProperty("--fold-space", `${held + delta}px`);
+        el.scrollTop = el.scrollHeight;
+      }
+    }
+    const prose = inner.querySelectorAll<HTMLElement>(".msg-assistant .msg-body > .prose");
+    const anchor = prose[prose.length - 1] ?? null;
+    workLayout.current = { id: conversationId, folds, busy, anchor, bottom: anchor?.getBoundingClientRect().bottom ?? 0 };
+  }, [messages, busy, conversationId]);
+
   // Scrolling to the bottom ONCE is not enough, because the bottom moves
   // afterwards. A turn's file list is fetched from the backend and appears a
   // moment later; a code block reflows; a font finishes loading. Each grows the
@@ -2189,10 +2254,20 @@ const MessageListBody = function MessageList({
           <Fragment key={turn[0].id}>
             <TurnView
               messages={turn}
+              stopped={!!stoppedAt && turn.some((m) => m.id === stoppedAt)}
+              onWorkOpen={() => {
+                stopGlide(); releasePlace(); stick.current = false;
+                const el = scrollerRef.current;
+                const inner = innerRef.current;
+                const held = parseFloat(inner?.style.getPropertyValue("--fold-space") ?? "") || 0;
+                inner?.style.removeProperty("--fold-space");
+                if (el) el.scrollTop = Math.max(0, el.scrollTop - held);
+                setAway(true);
+              }}
               kids={kids}
               agentByTool={agentByTool}
               onOpenAgent={onOpenAgent}
-              last={i === visibleTurns.length - 1}
+              last={i === visibleTurns.map((t) => t[0].role === "assistant").lastIndexOf(true)}
               busy={busy}
               tints={tints}
               fresh={fresh.has(turn[0].id)}

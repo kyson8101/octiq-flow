@@ -5,11 +5,6 @@
 // nothing: the model is reasoning, no text has appeared yet, and the only
 // honest question ("is this going anywhere?") has no answer on screen.
 //
-// So the line says what the CLI's own spinner says: how long this turn has run,
-// how much the model has written so far, and — while it is reasoning rather
-// than typing — how hard it was told to think. Every piece drops out when there
-// is nothing to say, so the line is never longer than it has news for.
-
 /** 252000 → "4m 12s". Seconds up to a minute, then minutes and seconds, then
  *  hours and minutes — the reader wants the SIZE of the wait, and by the time
  *  it runs to hours the seconds are noise. */
@@ -32,39 +27,12 @@ export function tokenLabel(n: number): string {
   return String(Math.max(0, Math.round(n)));
 }
 
-/** The whole line: "4m 12s · ↓ 16.5k tokens · thinking with very high effort". */
-export function workingLine({
-  elapsedMs,
-  tokens,
-  approx,
-  activity,
-  thinking,
-  effort,
-}: {
-  /** How long the turn has been running. Absent until it is known — a chat
-   *  picked up mid-turn only knows when we joined it. */
+/** The current activity; elapsed time is also used by the composer's clock. */
+export function workingLine({ elapsedMs, activity, thinking }: {
   elapsedMs?: number;
-  /** Output tokens the agent has produced this turn, settled plus estimated. */
-  tokens?: number;
-  /** True while part of that count is still a guess: a message is mid-flight,
-   *  so its tail is an estimate rather than a number anyone reported. The
-   *  tilde is the whole of the apology — it says "about", and it takes itself
-   *  away the moment the message closes and the real count lands. */
-  approx?: boolean;
-  /** The agent's own words for a state worth naming — compacting, retrying.
-   *  It wins the last slot: it is the more specific news. */
   activity?: string;
-  /** True while the model is reasoning rather than writing. */
   thinking?: boolean;
-  /** What the effort picker calls the level — "very high", not "xhigh". The
-   *  status has to agree with the menu the user set it in. */
-  effort?: string;
 }): string {
-  const parts: string[] = [];
-  if (typeof elapsedMs === "number") parts.push(elapsedLabel(elapsedMs));
-  if (tokens) parts.push(`↓ ${approx ? "~" : ""}${tokenLabel(tokens)} tokens`);
-  parts.push(
-    activity ?? (thinking ? (effort ? `thinking with ${effort} effort` : "thinking…") : "working…"),
-  );
-  return parts.join(" · ");
+  return [typeof elapsedMs === "number" ? elapsedLabel(elapsedMs) : "",
+    activity ?? (thinking ? "thinking…" : "working…")].filter(Boolean).join(" · ");
 }

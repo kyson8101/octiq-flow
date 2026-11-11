@@ -108,7 +108,7 @@ import { ProjectsPage } from "./components/ProjectsPage";
 import { BackgroundProvider, JobCallsProvider, JobStoreProvider } from "./components/Background";
 import { ChatNotices } from "./components/ChatNotices";
 import { RemovedFolderBanner } from "./components/RemovedFolderBanner";
-import { ChatStatus, StatusChevron } from "./components/ChatStatus";
+import { ChatStatus } from "./components/ChatStatus";
 import { ChatQuestionsContext, QuestionWaitingRow, type ChatQuestions } from "./components/InlineQuestions";
 import { isAnswerTurn } from "./lib/questionBlock";
 import { isNoticeTurn } from "./lib/hostNotice";
@@ -212,7 +212,7 @@ import {
 import { useHandovers } from "./lib/handoverStore";
 import { composerLanding, forgetIdentity, landIdentity, routeAfter, routeStands, type PageNow, type RouteTravel } from "./lib/identityTravel";
 import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
-import { isQuietWorkerRefusal, pendingByRow, pendingByTask, pendingReading, type PendingAction, type SourcesRead } from "./lib/pendingActions";
+import { pendingByRow, pendingByTask, pendingReading, type PendingAction, type SourcesRead } from "./lib/pendingActions";
 const NO_ACTIONS: readonly PendingAction[] = [];
 import { chatPlans, seenPlans } from "./lib/chatPlans";
 import { RunDetailOnScreen, useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
@@ -244,7 +244,7 @@ import { NowPlaying } from "./components/NowPlaying";
 import { nowPlaying } from "./lib/nowPlaying";
 import { SafetyToast } from "./components/SafetyToast";
 import type { Continue } from "./components/SafetyBlock";
-import { splitSafety, useSafetyToast } from "./lib/safetyToast";
+import { isAutoModeRefusal, splitSafety, useSafetyToast } from "./lib/safetyToast";
 import { foldedSafetyKeys, seenWait, waitingChats, workingChats } from "./lib/chatWait";
 import { parkRestored, withWait, withWork } from "./lib/turnClock";
 import { knownSettings } from "./lib/chatSettings";
@@ -6219,12 +6219,12 @@ export default function App() {
 
           {workerRequestIds.map((id) => {
             const cards = safetyBlocks[id] ?? [];
-            const quiet = cards.filter(isQuietWorkerRefusal);
-            const loud = cards.filter((card) => !isQuietWorkerRefusal(card));
+            const judged = cards.filter(isAutoModeRefusal);
+            const other = cards.filter((card) => !isAutoModeRefusal(card));
             if ((asks[id]?.length ?? 0) + cards.length === 0) return null;
             const title = conversations.find((chat) => chat.id === id)?.title ?? "agent";
-            const requests = (safety: typeof cards) => (
-              <ChatRequests asks={safety === quiet ? [] : asks[id] ?? []} safetyBlocks={safety}
+            const requests = (safety: typeof cards, includeAsks = false) => (
+              <ChatRequests asks={includeAsks ? asks[id] ?? [] : []} safetyBlocks={safety} safetyContext={title}
                 agent={modelFromId(conversations.find((item) => item.id === id)?.modelId ?? meta.current[id]?.modelId ?? null)?.agent}
                 onPermissionAnswered={(requestId) => setAsks((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== requestId) }))}
                 onSafetyAnswered={(requestId) => setSafetyBlocks((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== requestId) }))}
@@ -6232,26 +6232,11 @@ export default function App() {
             );
             return (
               <section key={id} aria-label="Agent safety approvals">
-                {(asks[id]?.length ?? 0) + loud.length > 0 && <>
+                {(asks[id]?.length ?? 0) + other.length > 0 && <>
                   <p className="worker-approval-context">Approval for {title}. Follow-up instructions go through this main chat.</p>
-                  {requests(loud)}
+                  {requests(other, true)}
                 </>}
-                {/* Feedback 76cde28e: one quiet line, the card behind it. */}
-                {quiet.length > 0 && (
-                  <details className="worker-refusal-line">
-                    <summary className="status-row">
-                      <span className="status-row-icon" aria-hidden="true">
-                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                          <circle cx="8" cy="8" r="5.75" />
-                          <path d="m4 12 8-8" />
-                        </svg>
-                      </span>
-                      <span className="status-row-text">{title}: {quiet.length === 1 ? "1 action" : `${quiet.length} actions`} blocked by Claude's auto mode · nothing to approve</span>
-                      <StatusChevron />
-                    </summary>
-                    {requests(quiet)}
-                  </details>
-                )}
+                {judged.length > 0 && requests(judged)}
               </section>
             );
           })}

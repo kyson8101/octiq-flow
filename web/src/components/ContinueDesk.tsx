@@ -3,6 +3,7 @@
 // tap on New conversation or on another chat used to leave one out of reach
 // until the next restart removed it. The new-chat screen is where the front
 // desk lives, so the way back is here, under its welcome.
+import { StatusDismiss } from "./ChatStatus";
 import { useState } from "react";
 import type { UnfinishedDeskChat } from "../lib/agentsMode";
 import { agoLabel } from "../lib/chatTask";
@@ -40,14 +41,13 @@ export function ContinueDesk({ name, chats, now, onContinue, onCancel }: {
                 <span className="hero-continue-text">{words}</span>
                 <span className="hero-continue-time">{when}</span>
               </button>
-              {onCancel && <button type="button" className="hero-continue-cancel"
-                disabled={pending.includes(chat.chatKey)} aria-label={`Cancel continuing “${words}”`}
-                title="Dismiss this continuation; keeps the conversation record"
+              {onCancel && <StatusDismiss label="Dismiss this continuation; keeps the conversation record" visible
+                disabled={pending.includes(chat.chatKey)}
                 onClick={async () => {
                   setPending((keys) => [...keys, chat.chatKey]); setError("");
                   try { await onCancel(chat); } catch (err) { setError(String(err)); }
                   finally { setPending((keys) => keys.filter((key) => key !== chat.chatKey)); }
-                }}>Cancel</button>}
+                }} />}
             </li>
           );
         })}

@@ -5,15 +5,5 @@
   border-radius: var(--r-md);
   font-size: 12px;
 }
-.sidebar-archive-error button {
-  display: block;
-  margin-top: 8px;
-  color: var(--accent);
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
-}
+.sidebar-archive-error .status-row-dismiss { margin-left: auto; }
 .sidebar-archive-error { color: var(--danger); }

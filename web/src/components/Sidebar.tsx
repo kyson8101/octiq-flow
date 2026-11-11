@@ -1,4 +1,5 @@
 // Task-first navigation: one global list of chats, with project as context.
+import { StatusDismiss } from "./ChatStatus";
 import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type React from "react";
 import { modelFromId } from "../lib/agentProviders";
@@ -583,7 +584,7 @@ export function Sidebar({
           </ul>
         </div>
 
-        {archiveError && <div className="sidebar-archive-error" role="alert">{archiveError}<button type="button" onClick={() => setArchiveError(null)}>Dismiss</button></div>}
+        {archiveError && <div className="sidebar-archive-error" role="alert">{archiveError}<StatusDismiss label="Dismiss" visible onClick={() => setArchiveError(null)} /></div>}
         {leadOpenError && <p className="lead-error" role="alert">{leadOpenError}</p>}
         {!navigationReady ? <div className="lead-placeholder" aria-hidden="true" /> : leadsOnly ? <LeadList reading={leadReading} conversations={everyChat} current={currentConversation} busy={busy} waiting={waiting} opening={openingLead} onOpen={onOpenLead ?? (() => {})} /> : listed === "held" ? null : conversations.length > 0 || showArchived ? (
           <div ref={chatList} className={`task-chat-content${listed === "entering" ? " enter-fade" : ""}`}>

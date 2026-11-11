@@ -19,6 +19,16 @@ import {
 } from "./toolKind";
 
 describe("commandTool", () => {
+  it.each([
+    ["(dotnet test) > log", "dotnet"],
+    ["( pnpm test )", "pnpm"],
+    ["{ cargo test; }", "cargo"],
+    ["! (CI=1 pnpm test)", "pnpm"],
+    ["CI=1 pnpm test", "pnpm"],
+  ])("unwraps shell groups: %s", (command, cli) => {
+    expect(commandTool("Bash", { command })).toBe(cli);
+    expect(toolLook("Bash", { command }).label).toBe(`bash(${cli})`);
+  });
   it("finds the CLI launched through zsh", () => {
     expect(commandTool("command_execution", { command: "/bin/zsh -lc 'gh pr view 42'" })).toBe("gh");
     expect(commandTool("command_execution", { command: "'/opt/homebrew/bin/zsh' -l -c 'pnpm test'" })).toBe("pnpm");
