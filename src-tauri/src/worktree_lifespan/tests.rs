@@ -1928,6 +1928,9 @@ fn h5_reversible_autocrlf_and_explicit_eol_restore_exact_raw_bytes() {
         0
     );
     // Missing/offline smudge is unknown restoration, not proof of preservation.
+    // A pass-through clean keeps the commit below working when git re-hashes
+    // a racily clean `crlf`; only the restore (smudge) side is offline.
+    git::text(&r.root, &["config", "filter.offline.clean", "cat"]).unwrap();
     git::text(&r.root, &["config", "filter.offline.smudge", "exit 1"]).unwrap();
     git::text(&r.root, &["config", "filter.offline.required", "true"]).unwrap();
     r.write(".gitattributes", "crlf filter=offline\n");
