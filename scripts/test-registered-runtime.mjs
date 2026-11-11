@@ -33,7 +33,10 @@ function cli() {
   if (process.argv.includes("mcp") && process.argv.includes("list")) { console.log("[]"); return; }
   if (provider === "claude" && process.argv.includes("--resume") && fs.existsSync(process.env.FAILOVER_ACCOUNT_SWITCH)) {
     log({ rejectedResume: process.argv[process.argv.indexOf("--resume") + 1] });
-    console.error("No conversation found with session ID: session belongs to previous account");
+    const error = "No conversation found with session ID: session belongs to previous account";
+    // Claude Code 2.1.322 emits both streams, with no `result` text field.
+    out({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 0, errors: [error] });
+    console.error(error);
     process.exit(1);
   }
   const thread = `new-${provider}-${process.pid}`;
@@ -138,7 +141,7 @@ try {
     const fresh = () => starts("claude").filter(c => !c.argv.includes("--resume"));
     await wait("one same-provider fresh recovery", () => fresh().length === 2);
     if (scenario === "account-switch") {
-      await wait("fresh Claude result", () => heard("chat:registered", "result").length === 2);
+      await wait("fresh Claude result", () => heard("chat:registered", "result").length === 3);
       assert.equal(heard("chat:registered", "octiq_native_session_recovered").length, 1);
       assert.equal(heard("chat:registered", "result").at(-1).payload.event.subtype, "success");
       const prompt = calls().filter(c => c.text?.includes("CONTINUE_AFTER_ACCOUNT_SWITCH")).at(-1).text;
@@ -146,7 +149,7 @@ try {
       assert(prompt.length < 170_000, "fresh transcript context is bounded");
     }
     if (scenario === "account-switch-quota") {
-      await wait("fresh quota result", () => heard("chat:registered", "result").length === 2);
+      await wait("fresh quota result", () => heard("chat:registered", "result").length === 3);
       assert.equal(heard("chat:registered", "octiq_auto_resume_scheduled").length, 1, "fresh recovery cannot schedule another Auto handoff");
     }
     await new Promise(resolve => setTimeout(resolve, scenario === "account-switch-quota" ? 16000 : 1000));
