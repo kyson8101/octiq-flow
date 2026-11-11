@@ -35,7 +35,9 @@ describe("Registered agents table", () => {
       expect(html).toContain(`scope="col">${column}</th>`);
     }
     expect(html).toContain("--team-depth:1");
-    expect(html).toContain("lead only");
+    expect(html).not.toContain("lead only");
+    const astra = renderToStaticMarkup(<RegisteredAgentsTable {...props} team={[agent("Astra", { agent: "codex", model: "gpt-6-astra" })]} />);
+    expect(astra).toContain('title="Astra can lead a task but cannot take one">lead only');
     expect(html).toContain("team-badge");
     expect(html).toContain('data-label="Reports to"><span class="agents-cell-text" title="Lead"><span class="agents-word">Lead</span></span></td>');
     expect(html).toContain('data-label="Available in"><span class="agents-cell-text" title="OctiqFlow"><span class="agents-word">OctiqFlow</span></span></td>');

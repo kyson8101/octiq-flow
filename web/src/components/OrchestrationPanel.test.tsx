@@ -557,7 +557,7 @@ describe("OrchestrationPanel", () => {
     expect(html).toContain("New worktree");
     expect(html).toContain("Automatically start ready tasks");
     expect(html).toContain("main agent chooses a suitable worker");
-    expect(html).toContain("Fable and Astra are reserved for orchestration");
+    expect(html).toContain("Astra is reserved for orchestration");
     expect(html).not.toContain('aria-label="Worker provider"');
     expect(html).toContain('aria-modal="true"');
   });

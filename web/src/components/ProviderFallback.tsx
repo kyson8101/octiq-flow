@@ -13,7 +13,7 @@ type Choice = { id: string; key: string; label: string; source: Settings; prefer
 const providers: Provider[] = ["claude", "codex", "antigravity"];
 
 export function FallbackFields({ value, onChange, disabled = false, allowed = providers, worker = false }: { value: Selection; onChange: (value: Selection) => void; disabled?: boolean; allowed?: Provider[]; worker?: boolean }) {
-  const models = (agent: Provider) => teamModels(agent).filter(m => !worker || !/astra|fable/i.test(m.flag));
+  const models = (agent: Provider) => teamModels(agent).filter(m => !worker || !/astra/i.test(m.flag));
   return <div className="fallback-fields">
     <label>Provider<select value={value.agent} disabled={disabled} onChange={e => {
       const agent = e.target.value as Provider;

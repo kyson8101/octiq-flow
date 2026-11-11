@@ -28,6 +28,15 @@ describe("provider-limit choices", () => {
     expect(html).toMatch(/disabled=""[^>]*aria-label="Continue with selection"[^>]*>/);
     expect(html).toMatch(/<button(?=[^>]*class="vault-button")(?=[^>]*aria-label="Cancel")[^>]*>/);
   });
+  it("offers Fable for workers while reserving Astra for orchestration", () => {
+    const fields = (agent: "claude" | "codex", model: string, worker: boolean) =>
+      renderToStaticMarkup(createElement(FallbackFields, {
+        value: { agent, model, effort: null }, worker, onChange: () => {},
+      }));
+    expect(fields("claude", "opus", true)).toContain('value="fable"');
+    expect(fields("codex", "gpt-6.1-sol", true)).not.toContain('value="gpt-6-astra"');
+    expect(fields("codex", "gpt-6.1-sol", false)).toContain('value="gpt-6-astra"');
+  });
   it("uses model-encoded effort for Antigravity", () => {
     const html = renderToStaticMarkup(createElement(FallbackFields, {
       value: { agent: "antigravity", model: "gemini-3.1-pro-high", effort: null }, onChange: () => {},

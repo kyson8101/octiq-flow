@@ -839,7 +839,7 @@ function AgentIdentity({ agent, teams, depth, roleButton }: { agent: TeamDraft; 
     {depth > 0 && <span aria-hidden="true" className="agents-branch">└</span>}
     <AgentAvatar name={agent.name} avatar={agent.avatar} id={agent.id} size={28} decorative />
     <div className="agents-identity-copy"><span className="team-row-name"><bdi title={agent.name || "New agent"}><AgentWords text={agent.name || "New agent"} /></bdi>
-      {leadOnly(agent) && <span className="team-tag" title="Fable and Astra can lead a task but cannot take one">lead only</span>}
+      {leadOnly(agent) && <span className="team-tag" title="Astra can lead a task but cannot take one">lead only</span>}
       {badge && <span className="team-tag team-badge" title={`On the team ${badge.name}: may ask its teammates for help`}><bdi>{badge.name}</bdi></span>}
     </span>{roleButton}</div>
   </div>;
@@ -878,7 +878,7 @@ export function InlineAgentRow({ draft, depth, team, teams, projects, saving, on
         <label><span>Team</span><select aria-label="Team" disabled={saving} value={draft.teamId ?? ""} onChange={(event) => set({ teamId: event.target.value || null })}>
           <option value="">None</option>{joinable.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
       </div>
-      {leadOnly(draft) && <small className="team-field-note">Fable and Astra can lead a task, but they cannot be given one.</small>}
+      {leadOnly(draft) && <small className="team-field-note">Astra can lead a task, but it cannot be given one.</small>}
       <div className="agents-edit-footer">
         <button type="button" className="vault-button" disabled={saving} onClick={() => onDetails(draft)} data-icon-action title="Edit role, prompt & avatar" aria-label="Edit role, prompt & avatar">
           <ActionIcon name="edit" />
@@ -1016,7 +1016,7 @@ export function TeamForm({ draft, team, teams, projects, saving, onChange, onSav
       </label>
       {lead && (
         <p className="settings-note team-form-wide">
-          Fable and Astra can lead a task, but they cannot be given one.
+          Astra can lead a task, but it cannot be given one.
         </p>
       )}
       <div className="team-form-actions team-form-wide">
