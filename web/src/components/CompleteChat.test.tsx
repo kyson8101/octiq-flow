@@ -244,9 +244,9 @@ describe("the wrap-up's bubble", () => {
     const html = draw(wrapUp());
     expect(html).toContain(">Queued</span>");
     expect(html).toContain("aria-label=\"Send this queued message now\"");
-    expect(html).toContain('aria-description="Stop the current reply and wrap up now"');
+    expect(html).toContain('title="Stop the current reply and wrap up now"');
     expect(html).toContain('aria-label="Cancel completing this chat"');
-    expect(html).toContain('aria-description="Take the wrap-up back. The chat is not completed."');
+    expect(html).toContain('title="Take the wrap-up back. The chat is not completed."');
     // There are no typed words to return to the composer, and none to copy.
     expect(html).not.toContain("aria-label=\"Take this queued message back to edit\"");
     expect(html).not.toContain("Take this queued message back to edit");

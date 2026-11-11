@@ -235,7 +235,7 @@ export function FilesButton({
       // Named apart from the view switch's "Files", which opens the editor.
       // Two controls one bar apart, both called Files, would be a coin toss.
       aria-label={`Files worth opening — ${count}`}
-      title={`Files worth opening — ${count}`}
+      title={`${count} file${count === 1 ? "" : "s"} worth opening`}
       onClick={onToggle}
      data-icon-action aria-description={`${count} file${count === 1 ? "" : "s"} worth opening`}>
       <ActionIcon name="pinned" /><span className="sfp-count">

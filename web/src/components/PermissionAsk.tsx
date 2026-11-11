@@ -507,7 +507,12 @@ export function PermissionAsk({ ask, agent, onAnswered, startOpen = false }: {
               // its reason read out, and Deny beside it still answers.
               aria-disabled={off || undefined}
               aria-describedby={off ? whyId : undefined}
-              title={sending === "always" ? "Allowing…" : "Always"}
+              title={
+                off ? why
+                  : ask.toolName?.toLowerCase() === "bash"
+                  ? "Stop asking about this program for the rest of this chat"
+                  : "Stop asking about this tool for the rest of this chat"
+              }
               onClick={() => { if (!off) void answer("always"); }}
              data-icon-action aria-label={sending === "always" ? "Allowing…" : "Always"} aria-description={
                 off ? why
@@ -524,7 +529,7 @@ export function PermissionAsk({ ask, agent, onAnswered, startOpen = false }: {
             disabled={!!sending}
             aria-disabled={off || undefined}
             aria-describedby={off ? whyId : undefined}
-            title={sending === "allow" ? "Allowing…" : ask.once ? "Allow" : "Allow once"}
+            title={off ? why : sending === "allow" ? "Allowing…" : ask.once ? "Allow" : "Allow once"}
             onClick={() => { if (!off) void answer("allow"); }}
            data-icon-action aria-label={sending === "allow" ? "Allowing…" : ask.once ? "Allow" : "Allow once"} aria-description={off ? why : undefined}>
             <ActionIcon name="allow" />

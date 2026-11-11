@@ -259,7 +259,7 @@ export function Viewer({ path, onClose }: { path: string; onClose: () => void })
               onClick={() => zoomBy((from) => stepScale(from, 1))}
               disabled={view.scale >= MAX_SCALE}
               aria-label="Zoom in"
-              title="Zoom in"
+              title="Zoom in (+)"
              data-icon-action>
               <ActionIcon name="new" />
             </button>

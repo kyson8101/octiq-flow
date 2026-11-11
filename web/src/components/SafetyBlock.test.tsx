@@ -53,6 +53,7 @@ describe("SafetyBlock", () => {
     expect(html).toContain("Keep it local");
     expect(html).toContain("Technical details");
     expect(html).toContain("Always allow in this project");
+    expect(html).toContain('title="Remember this exact authorization for future chats and sessions in this project"');
     expect(html).toContain("Allow once");
     expect(html).not.toContain(block.detail);
   });
@@ -375,6 +376,8 @@ describe("SafetyBlock", () => {
         expect(html).toContain("Bash(rm -f web/pnpm-workspace.yaml)");
         expect(html).toContain("Bash(git status --short)");
         expect(html).toContain("Bash(sed -n &#x27;1,80p&#x27; web/package.json)");
+        expect(html).toMatch(/title="Adds [^"]+ to \/work\/repo\/\.claude\/settings.local.json, then tells the agent"/);
+        expect(html).toMatch(/title="Adds [^"]+ to \/Users\/me\/\.claude\/settings.json, then tells the agent"/);
         expect(html).toContain("This project: /work/repo/.claude/settings.local.json");
         expect(html).toContain("Everywhere: /Users/me/.claude/settings.json");
         expect(html).toContain("Always allow in this project");
@@ -589,8 +592,9 @@ describe("SafetyBlock", () => {
         expect(html).toContain("Retry once");
         expect(html).toContain("Always allow in this project");
         expect(html).toContain("Always allow everywhere");
-        expect(html).toContain("Adds Bash(git push:*) to /work/repo/.claude/settings.local.json, then retries");
-        expect(html).toContain("Adds Bash(git push:*) to /Users/me/.claude/settings.json, then retries");
+        expect(html).toContain('title="Ask the agent to make the same call once more. Claude checks it again."');
+        expect(html).toContain('title="Adds Bash(git push:*) to /work/repo/.claude/settings.local.json, then retries. In a task worktree the rule goes when the worktree does."');
+        expect(html).toContain('title="Adds Bash(git push:*) to /Users/me/.claude/settings.json, then retries"');
         expect(html).toContain("<code>Bash(git push:*)</code>");
         // Never a blanket Bash rule, and nothing for the piped line.
         expect(html).not.toContain("Bash(*)");

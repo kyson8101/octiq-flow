@@ -474,14 +474,14 @@ function EnvField({ row }: { row: ReturnType<typeof taskEnvironment>["rows"][num
             <button
               type="button"
               className="chat-task-copy"
-              aria-label={`Copy ${row.label.toLowerCase()} path`}
-              title={`Copy ${row.label.toLowerCase()} path`}
+              aria-label={copied === "done" ? "Path copied" : copied === "failed" ? "Could not copy path" : `Copy ${row.label.toLowerCase()} path`}
+              title={copied === "done" ? "Path copied" : copied === "failed" ? "Could not copy path" : `Copy ${row.path}`}
               onClick={async () => {
                 setCopied((await copyText(row.path ?? "")) ? "done" : "failed");
                 setTimeout(() => setCopied("idle"), 1600);
               }}
              data-icon-action aria-description={copied === "failed" ? "Could not copy" : copied === "done" ? "Copied" : `Copy ${row.path}`}>
-              <ActionIcon name="copy" />
+              <ActionIcon name={copied === "done" ? "allow" : "copy"} />
             </button>
           )}
         </span>

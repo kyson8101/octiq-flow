@@ -1482,7 +1482,7 @@ export function Composer({
               className="picker-btn attach-btn clear-btn"
               type="button"
               aria-label="Clear the message"
-              title="Clear the message"
+              title="Clear the message and its files"
               onClick={clearAll}
              data-icon-action>
               <ActionIcon name="dismiss" />

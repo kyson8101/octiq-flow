@@ -1033,7 +1033,7 @@ function TurnView({
           <div className="job-wake-line">
             <WrapUpNote label={jobEnd.label} detail={jobEnd.detail} text={answer} mark="job" />
             {cancel && <button className="job-wake-cancel" type="button" disabled={!!message.queueAction}
-              title="Cancel telling the agent the job ended"
+              title="Take this turn back. The agent is not told that the job ended."
               aria-label="Cancel telling the agent the job ended" onClick={cancel} data-icon-action>
               <ActionIcon name="dismiss" />
             </button>}

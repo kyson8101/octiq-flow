@@ -224,7 +224,7 @@ export function RailButton({
       type="button"
       aria-expanded={open}
       aria-label={`Agents in this chat — ${count}`}
-      title={`Agents in this chat — ${count}`}
+      title={`${count} agent${count === 1 ? "" : "s"} this chat has started`}
       onClick={onToggle}
      data-icon-action aria-description={`${count} agent${count === 1 ? "" : "s"} this chat has started`}>
       <ActionIcon name="agents" /><span className="rail-count">

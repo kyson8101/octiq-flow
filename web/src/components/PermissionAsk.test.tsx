@@ -277,7 +277,7 @@ describe("PermissionAsk", () => {
       onAnswered={() => {}}
     />);
     expect(html).toMatch(
-      /<div class="ask-card-foot"><p class="ask-card-wait"[^>]*>[\s\S]*?<\/p><div class="ask-card-actions"><button(?=[^>]*aria-label="Deny") class="ask-btn is-quiet"[^>]*>[\s\S]*?<\/button><button(?=[^>]*aria-label="Always") class="ask-btn"[^>]*title="Always"[^>]*>[\s\S]*?<\/button><button(?=[^>]*aria-label="Allow once") class="ask-btn is-primary"[^>]*>[\s\S]*?<\/button><\/div><\/div>/,
+      /<div class="ask-card-foot"><p class="ask-card-wait"[^>]*>[\s\S]*?<\/p><div class="ask-card-actions"><button(?=[^>]*aria-label="Deny") class="ask-btn is-quiet"[^>]*>[\s\S]*?<\/button><button(?=[^>]*aria-label="Always") class="ask-btn"[^>]*title="Stop asking about this program for the rest of this chat"[^>]*>[\s\S]*?<\/button><button(?=[^>]*aria-label="Allow once") class="ask-btn is-primary"[^>]*>[\s\S]*?<\/button><\/div><\/div>/,
     );
   });
 

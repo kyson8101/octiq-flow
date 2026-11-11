@@ -582,7 +582,7 @@ export function ProjectSettings({
                     className="set-row-btn is-quiet"
                     type="button"
                     disabled={busy}
-                    title="Remove"
+                    title="Remove this folder"
                     onClick={() =>
                       void run(() =>
                         bridge.invoke("remove_workspace_path", { id: project.id, path: p }),

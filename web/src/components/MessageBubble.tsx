@@ -54,17 +54,17 @@ export function MessageBubble({ user, message, wrapUp = false, onStart, onCancel
             </span>
             <div className="message-delivery-actions" role="group" aria-label="Message actions">
               {onStart && <button type="button" disabled={pending}
-                title="Send this queued message now"
+                title={wrapUp ? "Stop the current reply and wrap up now" : "Stop the current reply and send this message next"}
                 aria-label="Send this queued message now" onClick={onStart} data-icon-action aria-description={wrapUp ? "Stop the current reply and wrap up now" : "Stop the current reply and send this message next"}>
                 <ActionIcon name="send" />
               </button>}
               {onCancel && (wrapUp ? <button type="button" disabled={pending}
-                title="Cancel completing this chat"
+                title="Take the wrap-up back. The chat is not completed."
                 aria-label="Cancel completing this chat" aria-description="Take the wrap-up back. The chat is not completed." onClick={onCancel} data-icon-action>
                 <ActionIcon name="cancel" />
               </button>
                 : <button type="button" disabled={pending}
-                title="Take this queued message back to edit"
+                title="Return this message and its attachments to the composer"
                 aria-label="Take this queued message back to edit" aria-description="Return this message and its attachments to the composer" onClick={onCancel} data-icon-action>
                   <ActionIcon name="edit" />
                 </button>)}

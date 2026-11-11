@@ -119,8 +119,11 @@ try{
   // Fill review fixes so its action can be assessed in its enabled state.
   await page.locator('[data-scene="reopen"] textarea').fill('Address the review findings.');
   const facts=await page.locator('button[data-icon-action],button:has(>svg.action-icon)').evaluateAll(list=>list.filter(e=>e.getBoundingClientRect().width&&e.getBoundingClientRect().height).map(e=>({name:e.getAttribute('aria-label'),title:e.title,w:e.getBoundingClientRect().width,h:e.getBoundingClientRect().height,icon:e.querySelector('svg')?.getBoundingClientRect().width,words:e.textContent.trim(),scene:e.closest('[data-scene]')?.getAttribute('data-scene')})));
-  for(const f of facts){assert(f.name,JSON.stringify(f));assert.equal(f.name,f.title,JSON.stringify(f));assert(f.w>=(width===390?44:28)&&f.h>=(width===390?44:28),JSON.stringify(f));assert.equal(f.icon,16,JSON.stringify(f));if(!f.words)assert.equal(Math.round(f.w),width===390?44:28,JSON.stringify(f));}
+  for(const f of facts){assert(f.name,JSON.stringify(f));assert(f.title,JSON.stringify(f));assert(f.w>=(width===390?44:28)&&f.h>=(width===390?44:28),JSON.stringify(f));assert.equal(f.icon,16,JSON.stringify(f));if(!f.words)assert.equal(Math.round(f.w),width===390?44:28,JSON.stringify(f));}
   assert.equal(await page.locator('[data-scene="permission"] .ask-card-actions button').count(),3);
+  // Pointer tooltips explain the scope; the accessible name stays short.
+  assert.equal(await page.locator('[data-scene="permission"]').getByRole('button',{name:'Always',exact:true}).getAttribute('title'),'Stop asking about this program for the rest of this chat');
+  assert.equal(await page.locator('[data-scene="outage"]').getByRole('button',{name:'Always allow in this project',exact:true}).getAttribute('title'),'Adds Bash(git push:*) to /work/.claude/settings.local.json, then retries. In a task worktree the rule goes when the worktree does.');
   for(const scene of ['outage','claude-rules'])assert.equal(await page.locator('[data-scene="'+scene+'"]').getByRole('button',{name:'Always allow everywhere',exact:true}).locator('svg').getAttribute('data-action-icon'),'alwaysEverywhere');
   assert.equal(await page.locator('[data-scene="stop"]').getByRole('button',{name:'Stop worker',exact:true}).locator('svg').getAttribute('data-action-icon'),'stop');
   for(const [name,icon] of [['Deny','deny'],['Always','always'],['Allow once','allow']])assert.equal(await page.locator('[data-scene="permission"]').getByRole('button',{name,exact:true}).locator('svg').getAttribute('data-action-icon'),icon);

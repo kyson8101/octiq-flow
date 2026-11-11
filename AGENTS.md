@@ -735,7 +735,8 @@ transcript, at the call that asked it (`components/InlineQuestions`,
 `lib/questionBlock`), with no card round it: each question a heading line,
 its options radio rows (checkbox rows when `multiple`), an option's
 description under its label, a quiet `Recommended` in words, and one
-full-width button in `--decide`. Every question of one call is one block
+right-aligned icon-only answer target in `--decide` (28px on desktop,
+44px on a phone). Every question of one call is one block
 with one button. The host's contract is what it was: `question_pending`,
 the `user-question` events, `question_answer_batch`, `question_cancel`,
 `question_retry`.
@@ -1391,7 +1392,8 @@ narrow Windows window gets the phone's layout.
 - **The action bar** (`components/ActionBar`, 36px; 45px on a phone): every
   action for what is on screen, each an icon-only button from
   `components/ActionIcon`, with any count badge kept. The original action
-  words stay in both `aria-label` and `title`; no visible label is needed.
+  words stay in `aria-label`; no visible label is needed.
+  An icon-only button keeps its detailed wording in `title`; `aria-description` never substitutes for `title`.
   Desktop targets are 28px; phone and coarse-pointer targets are 44px.
   `Tasks`, `Git`, `Focus`, `New task`, `Details`, `Agents`, `Pinned`,
   `Full width`, `Run`, `Reload`, `History`, `Back to thread`, `Copy ID`,

@@ -140,7 +140,7 @@ export function FeedbackDetail({ report, available, onOpenChat, onBack, onSaved 
     {updatedBy && <p className="feedback-origin">Last updated {date(report.updatedAt)} by {updatedBy}</p>}
     <div className="feedback-actions">
       <button type="button" disabled={!available} onClick={() => onOpenChat(report.source.chatId)} title={available ? report.source.chatTitle : "The source chat is no longer available"}>Open source chat</button>
-      <button type="button" disabled={dirty} title={copied ? "Brief copied" : "Copy fix brief"} onClick={async event => {
+      <button type="button" disabled={dirty} title={dirty ? "Save your triage changes before copying" : copied ? "Brief copied" : "Copy fix brief"} onClick={async event => {
         setError(null);
         if (await copyText(feedbackBrief(report), event.currentTarget.closest("dialog") ?? undefined)) setCopied(true);
         else setError("The fix brief could not be copied. Try again.");

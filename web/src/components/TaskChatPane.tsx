@@ -75,7 +75,7 @@ export const TaskChatPane = forwardRef(function TaskChatPane(props: TaskChatPane
             <ActionIcon name="width" />
           </button>
           {split && <button type="button" className="beside-btn" onClick={props.onClose}
-            aria-label="Close split" title="Close split" data-icon-action>
+            aria-label="Close split" title="Close split · keep the main chat" data-icon-action>
             <ActionIcon name="dismiss" />
           </button>}
         </div>
@@ -152,7 +152,7 @@ export function BesideBar({ showing, taskTitle, onShow, onClose }: {
           <span>Task</span><span className="beside-switch-title">{taskTitle}</span>
         </button>
       </div>
-      <button type="button" className="beside-btn" onClick={onClose} aria-label="Close split" title="Close split" data-icon-action>
+      <button type="button" className="beside-btn" onClick={onClose} aria-label="Close split" title="Close split · keep the main chat" data-icon-action>
         <ActionIcon name="dismiss" />
       </button>
     </div>
