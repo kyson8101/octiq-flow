@@ -100,10 +100,10 @@ pub struct AgentTeamDraft {
 }
 
 impl TeamAgent {
-    /// Fable and Astra only lead: orchestration rejects them as workers.
+    /// Astra only leads: orchestration rejects it as a worker.
     pub fn can_work(&self) -> bool {
         let model = self.model.to_ascii_lowercase();
-        !(model.contains("fable") || model.contains("astra"))
+        !model.contains("astra")
     }
 
     fn visible_in(&self, project_id: Option<&str>) -> bool {
@@ -3820,13 +3820,53 @@ mod tests {
     }
 
     #[test]
+    fn fable_reports_are_assignable_and_present_in_the_manager_brief() {
+        let path = temp();
+        let lead = save(&path, draft("Lead", None)).unwrap();
+        for model in ["fable", "claude-fable-5", "CLAUDE-FABLE-5-20260924"] {
+            let mut worker = under("Fable dev", None, &lead);
+            worker.model = model.into();
+            let worker = save(&path, worker).unwrap();
+            assert!(worker.can_work());
+            assert_eq!(
+                resolve(&path, "p1", &worker.id, Some(&lead.id))
+                    .unwrap()
+                    .model,
+                model
+            );
+            let roster = list(&path, None, true).unwrap();
+            assert_eq!(eligible_direct_reports(&roster, &lead.id).len(), 1);
+            let text = brief(
+                &path,
+                "chat:fable-manager",
+                "p1",
+                &lead.id,
+                "Do the task",
+                false,
+                &[],
+            )
+            .unwrap();
+            assert!(text.contains(&format!("id `{}`", worker.id)));
+            assert!(!text.contains("lead only"));
+            // Remove this fixture before registering the next model spelling.
+            delete_idle(&path, &worker.id, &Asked(|_: &TeamAgent| Ok(()))).unwrap();
+        }
+        for model in ["astra", "gpt-6-astra", "GPT-6-ASTRA-20260924"] {
+            let mut worker = lead.clone();
+            worker.model = model.into();
+            assert!(!worker.can_work());
+        }
+    }
+
+    #[test]
     fn resolve_enforces_direct_reports_and_lead_only_models() {
         let path = temp();
         let ceo = save(&path, draft("Ceo", None)).unwrap();
         let ada = save(&path, under("Ada", None, &ceo)).unwrap();
         let dev = save(&path, under("Dev", None, &ada)).unwrap();
         let mut boss = under("Boss", None, &ceo);
-        boss.model = "fable".into();
+        boss.model = "gpt-6-astra".into();
+        boss.agent = ChatAgent::Codex;
         save(&path, boss).unwrap();
         assert_eq!(
             resolve(&path, "p1", &ada.id, Some(&ceo.id)).unwrap().name,
@@ -3907,7 +3947,8 @@ mod tests {
         assert!(!text.contains("orchestration_task_create"));
 
         let mut lead_only = under("Lead only", None, &solo);
-        lead_only.model = "fable".into();
+        lead_only.model = "gpt-6-astra".into();
+        lead_only.agent = ChatAgent::Codex;
         let lead_only = save(&path, lead_only).unwrap();
         let text = brief(
             &path,

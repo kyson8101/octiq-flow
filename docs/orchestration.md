@@ -12,11 +12,12 @@ the task ledger, current attempts, worktree branches, open decisions, and the
 latest structured messages.
 
 The main agent chooses the provider, model, and reasoning effort for each task.
-A run can mix Claude and Codex workers. Fable and Astra are reserved for main
-agents orchestrating other agents; the host rejects them for every worker,
-including retries and review tasks. Suitable execution choices include Sol,
-Terra, Luna, Opus, Sonnet, and Haiku. This restriction applies to orchestration
-workers, while ordinary chat model selection remains available.
+A run can mix Claude and Codex workers. Astra is reserved for orchestrators;
+the host rejects it for workers, including retries, review tasks and peer requests.
+Fable can run any worker task. It is costly, so prefer Sol, Opus or Sonnet for
+ad-hoc workers; a task assigned to a registered Fable agent runs on Fable.
+Other execution choices include Terra, Luna and Haiku. Ordinary chat model
+selection remains available.
 
 Pass each choice as `worker: { agent, model, effort, access }` when creating a
 task. Automatic dispatch uses that saved choice, including for dependent tasks

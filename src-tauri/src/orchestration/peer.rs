@@ -999,7 +999,7 @@ mod tests {
         assert_eq!(pick("ada", "bo").unwrap(), "bo");
         // By exact name too, whatever the case.
         assert_eq!(pick("ada", "Bo").unwrap(), "bo");
-        // A lead-only model may still answer: answering is not working a task.
+        // Fable may answer peer questions on its registered model.
         assert_eq!(pick("ada", "fa").unwrap(), "fa");
         assert_eq!(
             pick("ada", "ada").unwrap_err(),
@@ -1178,6 +1178,33 @@ mod tests {
 
     fn logged(store: &OrchestrationStore) -> Vec<PeerAsk> {
         store.snapshot(None).unwrap().peer_asks
+    }
+
+    #[test]
+    fn peer_ask_runs_fable_on_its_registered_model() {
+        for model in ["fable", "claude-fable-5", "CLAUDE-FABLE-5-20260924"] {
+            let store = OrchestrationStore::default();
+            let attempt = worker_on_a_team(&store);
+            let (mut agents, teams) = roster();
+            agents.iter_mut().find(|a| a.id == "fa").unwrap().model = model.into();
+            store
+                .peer_ask(
+                    &attempt.worker_chat_key,
+                    None,
+                    ask("fa", "Which lock?"),
+                    &agents,
+                    &teams,
+                    "",
+                    |turn| {
+                        assert_eq!(turn.agent, ChatAgent::Claude);
+                        assert_eq!(turn.model, model);
+                        assert_eq!(turn.effort.as_deref(), Some("high"));
+                        answered("The store lock.")
+                    },
+                )
+                .unwrap();
+            assert_eq!(logged(&store)[0].helper_model, model);
+        }
     }
 
     #[test]

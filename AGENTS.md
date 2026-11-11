@@ -273,8 +273,12 @@ kept across switches (and reread for registered chats after restart), so returni
 to a recovered provider keeps its exact model and effort. Unknown reset times
 use a 15-minute cooldown. Registered agent defaults and identity do not change.
 
-- Runtime model tiers map Fable ↔ Astra, Opus ↔ Sol, Sonnet ↔ Terra,
-  Haiku ↔ Luna. Effort and the semantic `Access` level are preserved; minimal
+- Runtime model tiers map Fable ↔ Astra for ordinary chats, Opus ↔ Sol, Sonnet ↔ Terra,
+  Haiku ↔ Luna. Workers map Fable → Sol on Codex failover because Astra stays
+  reserved for orchestrators. Fable may execute any worker task or peer job;
+  prefer Sol/Opus/Sonnet for ad-hoc workers because Fable is costly, but tasks
+  assigned to a registered Fable agent run on Fable.
+  Effort and the semantic `Access` level are preserved; minimal
   maps to low, ultracode to max. Gemini effort is encoded in its model id.
   A guarded Auto or Manual launch never falls back to Antigravity, whose
   headless Auto bypasses permission checks. Pi is not an independent fallback.

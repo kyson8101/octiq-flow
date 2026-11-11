@@ -1172,7 +1172,7 @@ const READ_CONVERSATION = {
 const WORKER_SETTINGS_PROPERTIES = {
   agent: { type: "string", enum: ["codex", "claude", "antigravity"], description: "Choose the provider suitable for this task; tasks may use different providers. An Antigravity worker cannot be asked about a command: at edits or read access it refuses every shell command and the refusal ends its turn, while auto and full run everything unguarded." },
   access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"] },
-  model: { type: "string", description: "Choose a provider-native execution model: Codex gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna; Claude opus, sonnet, haiku; Antigravity gemini-3.1-pro-high, gemini-3.8-flash-high (an Antigravity Gemini id names its own effort). Fable and Astra (including versioned IDs) are reserved for main orchestrators and rejected for workers. If omitted, uses Sol for Codex, Sonnet for Claude or gemini-3.1-pro-high for Antigravity, never a CLI default." },
+  model: { type: "string", description: "Choose a provider-native execution model: Codex gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna; Claude opus, sonnet, haiku, fable; Antigravity gemini-3.1-pro-high, gemini-3.8-flash-high (an Antigravity Gemini id names its own effort). Astra is reserved for orchestrators. Fable is costly: prefer Sol/Opus/Sonnet for ad-hoc workers; registered Fable assignees run on Fable. If omitted, uses Sol for Codex, Sonnet for Claude or gemini-3.1-pro-high for Antigravity, never a CLI default." },
   effort: { type: "string", description: "Provider-native reasoning effort suited to this task's complexity." },
   recovery: { type: "object", description: "Host recovery for transient provider failures. Defaults to two retries with exponential backoff. Retains the task workspace and starts a new attempt; pending tools and disconnects require coordinator review.", properties: {
     maxRetries: { type: "integer", minimum: 0, maximum: 5, description: "0 disables automatic retries; default 2." },
@@ -1218,7 +1218,7 @@ const ORCHESTRATION_TASK_CREATE = {
     "Add one task to a run owned by this master chat. Dependencies are task IDs from " +
     "the same run. Use dependencies only for real ordering; independent tasks should " +
     "form one parallel wave. Keep the DAG shallow and each spec independently executable. " +
-    "Choose a suitable provider, model and effort for each task in worker; Fable and Astra are main orchestrators only.",
+    "Choose a suitable provider, model and effort for each task in worker; Astra is reserved for orchestrators. Fable is costly: prefer Sol/Opus/Sonnet for ad-hoc workers; registered Fable assignees run on Fable.",
   inputSchema: {
     type: "object",
     properties: {
@@ -1833,7 +1833,7 @@ const BASE_SERVER_INSTRUCTIONS =
   DIAGRAM_INSTRUCTIONS + " " + MEDIA_INSTRUCTIONS + " " +
   "Use task_status for multi-step work and plan or active-step changes. Report the objective and steps only; OctiqFlow checks git. " +
   "Run a command that takes minutes under octiq-job: job_register says how. " +
-  "Use orchestration only for explicitly requested multi-agent work or DAGs, or delegation in an agents-mode brief. The master creates one run and a shallow DAG, starts the full ready wave before waiting, and trusts orchestration_snapshot. Fable and Astra coordinate and never run as workers. A worker settles its exact attempt with orchestration_worker_report. " +
+  "Use orchestration only for explicitly requested multi-agent work or DAGs, or delegation in an agents-mode brief. The master creates one run and a shallow DAG, starts the full ready wave before waiting, and trusts orchestration_snapshot. Astra is reserved for orchestrators. Fable is costly: prefer Sol/Opus/Sonnet for ad-hoc workers; registered Fable assignees run on Fable. A worker settles its exact attempt with orchestration_worker_report. " +
   "A teammate in your agents-mode brief is a peer, not a report: use orchestration_peer_ask for questions or orchestration_peer_request for one bounded job, approved on the plan card before starting. " +
   "For agent, policy or team changes, read agent_list, then propose with agent_register, agent_update, agent_delete, agent_policy_update, team_create or team_update; the person approves on a card. " +
   "When this chat's access level stops work the person asked for, use request_access with the least level that lets it through; the person decides on a card. " +

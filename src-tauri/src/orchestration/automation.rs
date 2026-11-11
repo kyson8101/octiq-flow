@@ -45,8 +45,8 @@ pub(super) fn worker_model(agent: ChatAgent, model: Option<&str>) -> Result<Stri
         .filter(|s| !s.is_empty())
         .unwrap_or(fallback);
     let lower = model.to_ascii_lowercase();
-    if lower.contains("fable") || lower.contains("astra") {
-        return Err("Fable and Astra are reserved for main agents that orchestrate other agents. Choose an execution model such as Sol, Terra, Luna, Opus, Sonnet, or Haiku.".into());
+    if lower.contains("astra") {
+        return Err("Astra is reserved for main agents that orchestrate other agents. Choose an execution model such as Sol, Terra, Luna, Opus, Sonnet, or Haiku.".into());
     }
     if lower == "default" || crate::agent_provider::safe_model(model).is_none() {
         return Err("Choose an explicit provider-native worker model; CLI defaults and invalid model IDs are not allowed.".into());
@@ -623,17 +623,63 @@ mod tests {
     }
 
     #[test]
+    fn fable_assignee_tasks_keep_their_model_through_approval_and_reservation() {
+        for model in ["fable", "claude-fable-5", "CLAUDE-FABLE-5-20260924"] {
+            let store = OrchestrationStore::default();
+            let run = super::super::tests::run(&store);
+            store.require_plan_approval(&run.id).unwrap();
+            let assignee = TaskAssignee {
+                id: "agent_fable".into(),
+                name: "Fable dev".into(),
+            };
+            let task = store
+                .create_task_for(
+                    "chat:master",
+                    run.id.clone(),
+                    "Task".into(),
+                    "Spec".into(),
+                    vec![],
+                    None,
+                    Some(selected(ChatAgent::Claude, model)),
+                    Some(assignee.clone()),
+                    None,
+                )
+                .unwrap();
+            let launch = WorkerLaunch {
+                task_id: task.id.clone(),
+                agent: ChatAgent::Claude,
+                model: Some(model.into()),
+                access: Access::Auto,
+                effort: Some("high".into()),
+                new_worktree: None,
+                base_branch: String::new(),
+            };
+            assert!(store
+                .reserve_attempt("chat:master", &launch)
+                .unwrap_err()
+                .contains("has not approved"));
+            store
+                .approve_plan("chat:master", &run.id, None, None)
+                .unwrap();
+            let (_, task, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
+            assert_eq!(task.assignee, Some(assignee.clone()));
+            assert_eq!(attempt.assignee, Some(assignee));
+            assert_eq!(attempt.model.as_deref(), Some(model));
+            assert_eq!(attempt.agent, ChatAgent::Claude);
+            assert_eq!(attempt.effort.as_deref(), Some("high"));
+        }
+    }
+
+    #[test]
     fn coordinator_models_are_rejected_before_task_or_attempt_mutation() {
         let store = OrchestrationStore::default();
         let run = super::super::tests::run(&store);
         let task = super::super::tests::task(&store, &run, vec![]);
         for model in [
-            "fable",
-            "claude-fable-5",
-            "CLAUDE-FABLE-5-20260924",
             "astra",
             "gpt-6-astra",
             "gpt-6-astra-20260924",
+            "GPT-6-ASTRA-20260924",
             " codex:astra ",
         ] {
             for agent in [ChatAgent::Claude, ChatAgent::Codex] {
@@ -649,7 +695,7 @@ mod tests {
                         Some(settings.clone())
                     )
                     .unwrap_err()
-                    .contains("reserved for main agents"));
+                    .contains("Astra is reserved for main agents"));
                 assert!(store
                     .configure_automation(
                         "chat:master",
@@ -663,7 +709,7 @@ mod tests {
                         })
                     )
                     .unwrap_err()
-                    .contains("reserved for main agents"));
+                    .contains("Astra is reserved for main agents"));
                 let launch = WorkerLaunch {
                     task_id: task.id.clone(),
                     agent,
@@ -676,7 +722,7 @@ mod tests {
                 assert!(store
                     .reserve_attempt("chat:master", &launch)
                     .unwrap_err()
-                    .contains("reserved for main agents"));
+                    .contains("Astra is reserved for main agents"));
             }
         }
         let snapshot = store.snapshot(Some(&run.id)).unwrap();
@@ -709,6 +755,9 @@ mod tests {
             (ChatAgent::Codex, "gpt-5.6-sol"),
             (ChatAgent::Codex, "gpt-5.6-terra"),
             (ChatAgent::Codex, "gpt-5.6-luna"),
+            (ChatAgent::Claude, "fable"),
+            (ChatAgent::Claude, "claude-fable-5"),
+            (ChatAgent::Claude, "CLAUDE-FABLE-5-20260924"),
             (ChatAgent::Claude, "opus"),
             (ChatAgent::Claude, "sonnet"),
             (ChatAgent::Claude, "haiku"),
@@ -898,7 +947,7 @@ mod tests {
         let mut launch = WorkerLaunch {
             task_id: first.task_id,
             agent: ChatAgent::Claude,
-            model: Some("fable".into()),
+            model: Some("gpt-6-astra".into()),
             access: Access::Auto,
             effort: Some("high".into()),
             new_worktree: Some(false),
@@ -906,12 +955,13 @@ mod tests {
         };
         assert!(store.reserve_attempt("chat:master", &launch).is_err());
         assert_eq!(store.snapshot(Some(&run.id)).unwrap().attempts.len(), 1);
-        launch.model = Some("sonnet".into());
+        launch.model = Some("fable".into());
         let (_, task, retry, previous) = store.reserve_attempt("chat:master", &launch).unwrap();
         assert_eq!(retry.number, 2);
         assert_eq!(previous.unwrap().id, first.id);
         assert_eq!(task.worker.unwrap().model, retry.model);
         assert_eq!(retry.agent, ChatAgent::Claude);
+        assert_eq!(retry.model.as_deref(), Some("fable"));
     }
 
     #[test]

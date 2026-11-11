@@ -232,9 +232,58 @@ pub(crate) fn equivalent(source: &Settings, target: AgentKind) -> Option<Setting
     })
 }
 
+/// Workers cannot use the ordinary Fable -> Astra tier: Astra only orchestrates.
+/// Keep the ordinary chat mapping and the saved source preset unchanged.
+pub(crate) fn equivalent_for_worker(source: &Settings, target: AgentKind) -> Option<Settings> {
+    let mut settings = equivalent(source, target)?;
+    if target == AgentKind::Codex
+        && source
+            .model
+            .as_deref()
+            .is_some_and(|model| model.to_ascii_lowercase().contains("fable"))
+    {
+        settings.model = Some("gpt-5.6-sol".into());
+    }
+    crate::orchestration::validate_fallback_worker(
+        settings.agent,
+        settings.model.as_deref().unwrap_or_default(),
+    )
+    .ok()?;
+    Some(settings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fable_workers_fail_over_to_sol_without_changing_their_registered_preset() {
+        for model in ["fable", "claude-fable-5", "CLAUDE-FABLE-5-20260924"] {
+            for access in Access::ALL_FOR_TESTS {
+                let source = Settings {
+                    agent: AgentKind::Claude,
+                    model: Some(model.into()),
+                    effort: Some("xhigh".into()),
+                    access,
+                };
+                let next = equivalent_for_worker(&source, AgentKind::Codex).unwrap();
+                assert_eq!(next.model.as_deref(), Some("gpt-5.6-sol"));
+                assert_eq!(next.effort, source.effort);
+                assert_eq!(next.access, source.access);
+                assert_eq!(
+                    equivalent(&source, AgentKind::Codex)
+                        .unwrap()
+                        .model
+                        .as_deref(),
+                    Some("gpt-6-astra")
+                );
+                assert_eq!(
+                    equivalent_using(&next, &source, AgentKind::Claude).unwrap(),
+                    source
+                );
+            }
+        }
+    }
 
     #[test]
     fn gemini_effort_encoded_in_the_model_is_mapped_to_the_next_provider() {

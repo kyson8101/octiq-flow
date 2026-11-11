@@ -580,8 +580,10 @@ you. The host refuses loops. It also refuses a manager that isn't available
 everywhere its report is: a global agent reports only to a global one. Deleting
 a manager moves its reports up to its own manager.
 
-Fable and Astra agents are marked **lead only**. They can receive a task, but
-orchestration rejects them as workers, so they cannot be assigned one.
+Astra agents are marked **lead only** and cannot be assigned worker tasks or
+peer requests. Fable agents can take any task or peer job on their registered Fable
+model. Fable is costly: prefer Sol, Opus or Sonnet for ad-hoc workers; this is
+guidance, never a refusal of Fable.
 
 Stored in `<profile dir>/team.json` (`team.rs`), together with a record of
 which chats were handed a task and to whom (`leads`), and the configured head
@@ -975,7 +977,7 @@ workspace. The host (`orchestration/peer.rs`):
   chat in any rolling hour (`MAX_LEAD_ASKS_PER_HOUR`), answered or not, takes
   questions of up to 4000 characters, and cuts answers at 8000;
 - runs the answer as the teammate's registered provider, model and effort
-  (a Fable or Astra teammate may answer: answering is not working a task) in a
+  (Fable and Astra may answer: answering is not working a task) in a
   one-shot process in the asker's workspace, or a lead chat's folder, with
   read tools only (Claude: `--tools Read,Grep,Glob`, no MCP; Codex:
   `-s read-only`, `--ignore-user-config`), none of the chat's `OCTIQ_*`
