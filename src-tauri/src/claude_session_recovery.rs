@@ -138,13 +138,18 @@ impl Observation {
     pub(super) fn event(&self, event: &Value) {
         if event["type"] == "result"
             && event["is_error"] == true
-            && event["result"].as_str().is_some_and(missing_session)
+            && (event["result"].as_str().is_some_and(missing_session)
+                || event["errors"].as_array().is_some_and(|errors| {
+                    errors.iter().filter_map(Value::as_str).any(missing_session)
+                }))
         {
             self.missing.store(true, Ordering::SeqCst);
         } else if matches!(
             event["type"].as_str(),
             Some("system" | "user" | "assistant" | "stream_event" | "result")
         ) {
+            // Other zero-turn errors still count as acceptance: only an explicit
+            // missing-session rejection permits the fresh-session retry.
             self.accepted.store(true, Ordering::SeqCst);
         }
     }
@@ -153,6 +158,95 @@ impl Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request(manager: &ChatManager) -> Request {
+        Request::new(
+            manager,
+            "chat:recovery-result",
+            StartContext::for_test(ChatAgent::Claude, Some("old")),
+            "Keep going".into(),
+            vec![],
+            "same-turn".into(),
+        )
+    }
+
+    #[test]
+    fn recorded_errors_only_result_and_stderr_allow_recovery_in_either_order() {
+        let event: Value = serde_json::from_str(include_str!(
+            "fixtures/claude-2.1.322-missing-session.jsonl"
+        ))
+        .unwrap();
+        let stderr = include_str!("fixtures/claude-2.1.322-missing-session.stderr.txt");
+        assert!(event.get("result").is_none());
+        assert_eq!(event["num_turns"], 0);
+        for stderr_first in [false, true] {
+            let manager = ChatManager::default();
+            let request = request(&manager);
+            let observation = request.observation();
+            if stderr_first {
+                observation.stderr(stderr);
+            }
+            observation.event(&event);
+            // The structured event is sufficient even before stderr is read.
+            assert!(request.eligible(Some(1), true));
+            observation.stderr(stderr);
+            assert!(request.eligible(Some(1), true));
+            assert!(!request.eligible(Some(0), true));
+            assert!(!request.eligible(Some(1), false));
+            observation.event(&json!({"type":"assistant"}));
+            observation.event(&event);
+            assert!(!request.eligible(Some(1), true));
+        }
+    }
+
+    #[test]
+    fn missing_session_in_result_or_any_string_error_is_not_acceptance() {
+        for event in [
+            json!({"type":"result", "is_error":true,
+                "result":"No conversation found with session ID: old"}),
+            json!({"type":"result", "is_error":true, "result":"Failed",
+                "errors":[null, 42, {}, "Other error", "NO CONVERSATION FOUND WITH SESSION ID: old"]}),
+        ] {
+            let manager = ChatManager::default();
+            let request = request(&manager);
+            request.observation().event(&event);
+            assert!(request.eligible(Some(1), true));
+        }
+    }
+
+    #[test]
+    fn other_zero_turn_errors_and_successes_still_block_recovery() {
+        for text in [
+            "You've hit your session limit",
+            "Authentication failed",
+            "Unknown error",
+        ] {
+            for field in ["result", "errors"] {
+                let manager = ChatManager::default();
+                let request = request(&manager);
+                let observation = request.observation();
+                let mut event = json!({"type":"result", "is_error":true, "num_turns":0});
+                event[field] = if field == "result" {
+                    json!(text)
+                } else {
+                    json!([text])
+                };
+                observation.event(&event);
+                assert!(!request.eligible(Some(1), true));
+                // Even explicit stderr must not override another result's acceptance.
+                observation.stderr("No conversation found with session ID: old");
+                assert!(!request.eligible(Some(1), true));
+            }
+        }
+        let manager = ChatManager::default();
+        let request = request(&manager);
+        let observation = request.observation();
+        observation.event(&json!({"type":"result", "is_error":false,
+            "errors":["No conversation found with session ID: old"]}));
+        observation.stderr("No conversation found with session ID: old");
+        assert!(!request.eligible(Some(1), true));
+    }
+
     #[test]
     fn only_explicit_missing_session_before_acceptance_allows_one_retry() {
         let manager = ChatManager::default();
