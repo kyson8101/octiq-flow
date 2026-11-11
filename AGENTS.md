@@ -739,7 +739,7 @@ transcript, at the call that asked it (`components/InlineQuestions`,
 `lib/questionBlock`), with no card round it: each question a heading line,
 its options radio rows (checkbox rows when `multiple`), an option's
 description under its label, a quiet `Recommended` in words, and one
-right-aligned icon-only answer target in `--decide` (28px on desktop,
+right-aligned icon + `Send` answer target in `--decide` (28px on desktop,
 44px on a phone). Every question of one call is one block
 with one button. The host's contract is what it was: `question_pending`,
 the `user-question` events, `question_answer_batch`, `question_cancel`,
@@ -1404,14 +1404,20 @@ narrow Windows window gets the phone's layout.
   `Complete`, `Delete` keep their order. Results change the icon, colour
   and accessible name, without adding words to the row. A page's own
   buttons (`WorkspaceHeader`'s `actions`) are drawn at its start on desktop.
-  The same registry covers secondary actions and decision answers. Decision
-  glyphs differ by shape (Deny is a slashed circle; Dismiss is ×); the
-  primary answer keeps `--decide` and quiet answers stay quiet. Preserve
+  The same registry supplies icon + short word for decision answers, state
+  changes and panel buttons: pass a 1–2 word `label` to `ActionIcon`, while
+  keeping the full wording in `title` and `aria-label`. The width grows with
+  the word; narrow cards wrap answers without widening the page. The action
+  bar (including `WorkspaceHeader.actions` portaled into it), universal
+  utilities (Copy, Dismiss ×, fullscreen, close and disclosure
+  chevrons) and list-row edit/trash keep icon-only targets. A Close that
+  changes saved state, such as closing a mission bridge, takes a label. Do not
+  hide their SVGs or the shared `.action-label` with older component CSS.
+  Decision glyphs differ by shape (Deny is a slashed circle; Dismiss is ×);
+  the primary answer keeps `--decide` and quiet answers stay quiet. Preserve
   every press guard, pending key, disabled reason and submitted value.
-  Final destructive confirmations (`Confirm removal`, `Delete`, `Remove
-  all` and other danger dialogs) retain icon plus words. Arbitrary gate
-  options, question choices, navigation/data rows and their disclosures
-  retain their content: those words identify data, rather than an action.
+  Arbitrary gate options, question choices, navigation/data rows and their
+  disclosures retain their content: those words identify data.
   - **Adding a button is one line** in `App.tsx`'s `barActions`:
     `act(id, keep, node)`. `keep` is how long it stays as a desktop narrows.
   - **A desktop measures; a phone scrolls.** On a desktop what does not fit

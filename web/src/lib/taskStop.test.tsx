@@ -112,7 +112,7 @@ describe("whether a reopened line can stop its task", () => {
         </TaskStopContext.Provider>);
     };
     const running = hostFacts.usageContext();
-    expect(draw(running, running.tasks[0].id)).toContain('<button type="button" class="reopened-note-stop">Stop this task…</button>');
+    expect(draw(running, running.tasks[0].id)).toMatch(/class="reopened-note-stop"[^>]*aria-label="Stop this task…"[^>]*>[\s\S]*?class="action-label"[^>]*>Stop<\/span>/);
     const after = draw(stopped.snapshot, stopped.answer.id);
     expect(after).toContain('data-stop="stopped"');
     expect(after).toContain("Stopped by you. Only your Start starts it again: Start is on its row in the run panel.");

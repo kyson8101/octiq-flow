@@ -45,7 +45,7 @@ export function SchedulingBlock({ agentsMode = false, settings, unread, loading,
       </select></label>
       <p className="set-hint" aria-live="polite">{running ?? "—"} workers running now</p>
       <button className="settings-primary" type="button" disabled={busy || !changed} onClick={onSave} data-icon-action title={busy ? "Saving…" : "Save scheduling"} aria-label={busy ? "Saving…" : "Save scheduling"}>
-        <ActionIcon name="save" />
+        <ActionIcon name="save" label="Save" />
       </button>
       {done && !error && <span role="status">Saved</span>}
     </>}

@@ -294,7 +294,7 @@ function QuestionForm({ batch, questions, onDone, onSent }: {
         onKeyDown={dropHeld}
         onClick={guarded(() => void submit())}
        data-icon-action title={sending ? "Sending…" : total === 1 ? "Send answer" : `Send ${total} answers`} aria-label={sending ? "Sending…" : total === 1 ? "Send answer" : `Send ${total} answers`}>
-        <ActionIcon name="send" />
+        <ActionIcon name="send" label="Send" />
       </button>
       {/* The reason is under the button, so nothing above it moves when the
           last question gets its answer. */}
@@ -415,12 +415,12 @@ function Recorded({ batch, onDone }: { batch: Batch; onDone: (ids: string[]) => 
           {failed && (
             <button type="button" className="qa-link" aria-disabled={working} onKeyDown={dropHeld}
               onClick={() => void act(() => bridge.invoke("question_retry", { ids }).then(() => {}))} data-icon-action title="Retry delivery" aria-label="Retry delivery">
-              <ActionIcon name="retry" />
+              <ActionIcon name="retry" label="Retry delivery" />
             </button>
           )}
           <button type="button" className="qa-link" aria-disabled={working} onKeyDown={dropHeld}
             onClick={() => void act(async () => { await cancelQuestions(ids); onDone(ids); })} data-icon-action title="Cancel pending delivery" aria-label="Cancel pending delivery">
-            <ActionIcon name="cancel" />
+            <ActionIcon name="cancel" label="Cancel delivery" />
           </button>
         </div>
       </Asked>

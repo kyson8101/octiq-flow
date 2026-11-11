@@ -47,7 +47,7 @@ function render() {
     table: all.find((node) => node.type === RegisteredAgentsTable)?.props,
     modal: all.find((node) => node.type === AgentDetailsDialog)?.props,
     errors: all.filter((node) => node.props.role === "alert").map((node) => node.props.children),
-    add: all.find((node) => node.props.children === "Add agent")?.props,
+    add: all.find((node) => node.props["aria-label"] === "Add agent")?.props,
   };
 }
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));

@@ -242,7 +242,7 @@ export function SessionSearch({
             );
           }}
          data-icon-action title="Look again" aria-label="Look again">
-          <ActionIcon name="refresh" />
+          <ActionIcon name="refresh" label="Look again" />
         </button>
       </div>
     </div>

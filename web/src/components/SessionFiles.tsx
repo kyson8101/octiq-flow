@@ -385,8 +385,8 @@ export function SessionFilesPanel({
             <div className="gitp-note">
               No file here matches that.{" "}
               {type !== ALL_TYPES && (
-                <button className="sfp-clear" type="button" onClick={() => setType(ALL_TYPES)}>
-                  Show every type
+                <button className="sfp-clear" type="button" onClick={() => setType(ALL_TYPES)} data-icon-action title="Show every type" aria-label="Show every type">
+                  <ActionIcon name="refresh" label="Show all" />
                 </button>
               )}
             </div>

@@ -30,6 +30,12 @@ const sources = import.meta.glob("../**/*.{ts,tsx}", { query: "?raw", import: "d
 const buttons = (html: string) => [...html.matchAll(/<button[^>]*>[\s\S]*?<\/button>/g)].map((match) => match[0]);
 
 describe("where the keyboard is put when a question opens", () => {
+  it("keeps the full archive consequence in the name and tooltip beside its short label", () => {
+    const html = renderToStaticMarkup(<ConfirmDialog options={{ title: "Remove this worktree?", confirmLabel: "Archive and remove", decision: true }} onAnswer={() => {}} />);
+    expect(html).toContain('title="Archive and remove" aria-label="Archive and remove"');
+    expect(html).toContain('class="action-label" aria-hidden="true">Archive/remove</span>');
+  });
+
   it("is the safe answer, for a question that stops something", () => {
     const html = renderToStaticMarkup(<ConfirmDialog options={stopConfirm({ title: "Implement" })} onAnswer={() => {}} />);
     const [cancel, confirm] = buttons(html);

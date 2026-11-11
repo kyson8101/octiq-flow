@@ -27,8 +27,8 @@ import { StatusDismiss } from "./ChatStatus";
 import { useCarefulAnswer } from "./Confirm";
 import "./CompleteChat.css";
 
-/** The action in the chat's action bar. The short word is drawn; the whole
- *  sentence, and why it is off when it is, is its name and tooltip. */
+/** The icon-only action in the chat's action bar. The whole sentence, and
+ *  why it is off when it is, is its name and tooltip. */
 export function CompleteChatButton({ action, onClick }: { action: CompleteAction; onClick: () => void }) {
   if (!action.shown) return null;
   return (
@@ -191,13 +191,13 @@ export function CompleteChatConfirm({
               page behind re-renders on every delta and must not pull it
               back, and a key pressed again cancels. */}
           <button className="ask-btn" type="button" autoFocus onClick={onCancel} data-icon-action title={content.refusal ? "Close" : "Cancel"} aria-label={content.refusal ? "Close" : "Cancel"}>
-            <ActionIcon name="cancel" />
+            <ActionIcon name="cancel" label={content.refusal ? "Close" : "Cancel"} />
           </button>
           {/* Nothing can be confirmed until the host has said what it knows,
               or that it will not: the answer is what the question is about. */}
           {!content.refusal && (
             <button className="ask-btn is-primary" type="button" disabled={loading} onClick={careful.confirm} data-icon-action title="Complete" aria-label="Complete">
-              <ActionIcon name="complete" />
+              <ActionIcon name="complete" label="Complete" />
             </button>
           )}
         </div>

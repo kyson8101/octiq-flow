@@ -108,7 +108,6 @@
 .team-row-meta { color: var(--fg-2); font-size: 12px; overflow-wrap: anywhere; }
 .team-row-actions { display: flex; gap: 6px; flex: 0 0 auto; }
 .team-row-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
-.team-row-action svg { display: none; }
 .team-row-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* The role lines up under the name, clear of the face. */
 .team-row-role { margin-inline-start: 38px; }

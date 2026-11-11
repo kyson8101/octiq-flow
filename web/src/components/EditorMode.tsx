@@ -342,7 +342,7 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
               disabled={!editable || !dirty || saving}
               onClick={() => void save()}
              data-icon-action title={saving ? "Saving…" : justSaved === active && !dirty ? "Saved" : "Save"} aria-label={saving ? "Saving…" : justSaved === active && !dirty ? "Saved" : "Save"}>
-              <ActionIcon name="save" />
+              <ActionIcon name="save" label="Save" />
             </button>
           )}
         </div>
@@ -363,11 +363,11 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
                   setSourceView((prev) => ({ ...prev, [current.path]: !prev[current.path] }))
                 }
                data-icon-action title={sourceView[current.path] ? "Preview" : "Edit"} aria-label={sourceView[current.path] ? "Preview" : "Edit"}>
-                <ActionIcon name={sourceView[current.path] ? "preview" : "edit"} />
+                <ActionIcon name={sourceView[current.path] ? "preview" : "edit"} label={sourceView[current.path] ? "Preview" : "Edit"} />
               </button>
             )}
             <button className="ws-mini-btn" type="button" onClick={() => void reload(current.path)} data-icon-action title="Reload" aria-label="Reload">
-              <ActionIcon name="refresh" />
+              <ActionIcon name="refresh" label="Reload" />
             </button>
           </div>
         )}

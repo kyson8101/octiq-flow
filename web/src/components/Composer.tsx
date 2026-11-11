@@ -1246,7 +1246,7 @@ export function Composer({
           {onReloadSkills && (
             <div className="skill-reload">
               <button type="button" disabled={skillsStatus === "loading"} onClick={onReloadSkills} data-icon-action title={skillsStatus === "loading" ? "Reloading…" : "Reload skills"} aria-label={skillsStatus === "loading" ? "Reloading…" : "Reload skills"}>
-                <ActionIcon name="refresh" />
+                <ActionIcon name="refresh" label="Reload" />
               </button>
               {skillsStatus && skillsStatus !== "loading" && <span role="alert">{skillsStatus}</span>}
             </div>
@@ -2332,7 +2332,7 @@ function ModelPicker({
         <div className="mp-catalog is-warn" title={modelStatus.error}>
           Could not refresh models. Showing built-in choices.
           <button type="button" onClick={() => onReloadModels(tab)} data-icon-action title="Try again" aria-label="Try again">
-            <ActionIcon name="retry" />
+            <ActionIcon name="retry" label="Try again" />
           </button>
         </div>
       )}
@@ -2843,7 +2843,7 @@ function Working({
               stands, and this asks the lists again. A button with its words
               on it, never a tooltip alone. */}
           {waiting === "unchecked" && onRecheck && (
-            <button type="button" className="working-recheck" onClick={onRecheck}>{RECHECK_LABEL}</button>
+            <button type="button" className="working-recheck" onClick={onRecheck} data-icon-action aria-label={RECHECK_LABEL} title={RECHECK_LABEL}><ActionIcon name="refresh" label="Check again" /></button>
           )}
         </>
       ) : (

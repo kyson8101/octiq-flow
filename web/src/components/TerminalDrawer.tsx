@@ -212,7 +212,7 @@ export function TerminalDrawer({
           title="Another shell in this project"
           onClick={() => write(addTab(tabs, project.id))}
          data-icon-action aria-label="Another shell in this project">
-          <ActionIcon name="new" />
+          <ActionIcon name="new" label="New shell" />
         </button>
       </div>
 
@@ -324,15 +324,15 @@ function CommandForm({
         onChange={(e) => setCommand(e.target.value)}
       />
       <button className="cmd-form-save" type="submit" disabled={!ready} data-icon-action title="Save" aria-label="Save">
-        <ActionIcon name="save" />
+        <ActionIcon name="save" label="Save" />
       </button>
       {onDelete && (
         <button className="cmd-form-delete" type="button" onClick={onDelete} data-icon-action title="Delete" aria-label="Delete">
-          <ActionIcon name="delete" /> Delete
+          <ActionIcon name="delete" label="Delete" />
         </button>
       )}
       <button className="cmd-form-cancel" type="button" onClick={onCancel} data-icon-action title="Cancel" aria-label="Cancel">
-        <ActionIcon name="cancel" />
+        <ActionIcon name="cancel" label="Cancel" />
       </button>
       {error && <span className="cmd-form-error">{error}</span>}
     </form>

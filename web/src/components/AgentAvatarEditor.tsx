@@ -192,18 +192,18 @@ export function AgentAvatarEditorView({
             {gen.kind === "candidate" ? (
               <>
                 <button className="settings-primary" type="button" onClick={onAccept} data-icon-action title="Use this" aria-label="Use this">
-                  <ActionIcon name="confirm" />
+                  <ActionIcon name="confirm" label="Use this" />
                 </button>
                 <button className="vault-button" type="button" onClick={onGenerate} data-icon-action title="Regenerate" aria-label="Regenerate">
-                  <ActionIcon name="retry" />
+                  <ActionIcon name="retry" label="Regenerate" />
                 </button>
                 <button className="vault-button" type="button" onClick={onDiscard} data-icon-action title="Discard" aria-label="Discard">
-                  <ActionIcon name="cancel" />
+                  <ActionIcon name="cancel" label="Discard" />
                 </button>
               </>
             ) : busy ? (
               <button className="vault-button" type="button" onClick={onCancel} data-icon-action title="Cancel" aria-label="Cancel">
-                <ActionIcon name="cancel" />
+                <ActionIcon name="cancel" label="Cancel" />
               </button>
             ) : (
               <>
@@ -218,7 +218,7 @@ export function AgentAvatarEditorView({
                   Generate with ChatGPT
                 </button>
                 {avatar && <button className="vault-button" type="button" onClick={onRemove} data-icon-action title="Remove" aria-label="Remove">
-                  <ActionIcon name="delete" />
+                  <ActionIcon name="delete" label="Remove" />
                 </button>}
               </>
             )}

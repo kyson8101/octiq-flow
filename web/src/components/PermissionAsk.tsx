@@ -496,7 +496,7 @@ export function PermissionAsk({ ask, agent, onAnswered, startOpen = false }: {
             disabled={!!sending}
             onClick={() => void answer("deny")}
            data-icon-action title={sending === "deny" ? "Denying…" : "Deny"} aria-label={sending === "deny" ? "Denying…" : "Deny"}>
-            <ActionIcon name="deny" />
+            <ActionIcon name="deny" label="Deny" />
           </button>
           {!ask.once && (
             <button
@@ -520,7 +520,7 @@ export function PermissionAsk({ ask, agent, onAnswered, startOpen = false }: {
                   ? "Stop asking about this program for the rest of this chat"
                   : "Stop asking about this tool for the rest of this chat"
               }>
-              <ActionIcon name="always" />
+              <ActionIcon name="always" label="Always" />
             </button>
           )}
           <button
@@ -532,7 +532,7 @@ export function PermissionAsk({ ask, agent, onAnswered, startOpen = false }: {
             title={off ? why : sending === "allow" ? "Allowing…" : ask.once ? "Allow" : "Allow once"}
             onClick={() => { if (!off) void answer("allow"); }}
            data-icon-action aria-label={sending === "allow" ? "Allowing…" : ask.once ? "Allow" : "Allow once"} aria-description={off ? why : undefined}>
-            <ActionIcon name="allow" />
+            <ActionIcon name="allow" label={ask.once ? "Allow" : "Allow once"} />
           </button>
         </div>
       </div>

@@ -112,9 +112,7 @@
   cursor: pointer;
   transition: color 130ms ease-out, background-color 130ms ease-out;
 }
-/* Words only here, like the buttons beside it; `Copied` in the colour of
-   success still says a copy worked. */
-.message-delivery-actions .msg-copy svg { display: none; }
+/* Copy uses the shared action glyph and target, including its success check. */
 .message-delivery-actions .msg-copy.is-done { color: var(--ok); }
 .message-delivery-actions :is(button:not(.status-row-dismiss), .msg-copy):hover:not(:disabled) {
   background: color-mix(in srgb, var(--fg-0) 7%, transparent);

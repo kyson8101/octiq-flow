@@ -1035,7 +1035,7 @@ function TurnView({
             {cancel && <button className="job-wake-cancel" type="button" disabled={!!message.queueAction}
               title="Take this turn back. The agent is not told that the job ended."
               aria-label="Cancel telling the agent the job ended" onClick={cancel} data-icon-action>
-              <ActionIcon name="dismiss" />
+              <ActionIcon name="dismiss" label="Cancel" />
             </button>}
           </div>
           {message.queueError && <p className="message-delivery-error" role="alert">{message.queueError}</p>}

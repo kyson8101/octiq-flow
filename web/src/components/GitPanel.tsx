@@ -43,7 +43,7 @@ import { baseName } from "../lib/files";
 import { useDockWidth, type Sizes } from "../lib/dockWidth";
 import { PROJECT_GIT_CHANGED_EVENT } from "../lib/projectGit";
 import { remember } from "../lib/remember";
-import { RollingNumber, RollingText } from "./RollingNumber";
+import { RollingNumber } from "./RollingNumber";
 
 /** One changed file in a repo (git.rs `ChangedFile`). */
 type ChangedFile = {
@@ -585,7 +585,7 @@ export function GitPanel({
           onClick={() => void load()}
           disabled={busy || loading || folders.length === 0}
          data-icon-action title={loading ? "…" : "Refresh"} aria-label={loading ? "…" : "Refresh"}>
-          <ActionIcon name="refresh" />
+          <ActionIcon name="refresh" label="Refresh" />
         </button>
         {/* Both shapes close from here. A column with no way out is furniture
             you cannot move, and the width it takes is the chat's. */}
@@ -680,15 +680,7 @@ export function GitPanel({
             type="button"
             onClick={commit}
             disabled={busy || tickedCount === 0}
-          >
-            <RollingText>
-              {tickedCount === 0
-                ? "Commit"
-                : targets.length > 1
-                  ? `Commit ${tickedCount} files in ${targets.length} repos`
-                  : `Commit ${tickedCount} file${tickedCount === 1 ? "" : "s"}`}
-            </RollingText>
-          </button>
+           data-icon-action aria-label={tickedCount === 0 ? "Commit" : targets.length > 1 ? `Commit ${tickedCount} files in ${targets.length} repos` : `Commit ${tickedCount} file${tickedCount === 1 ? "" : "s"}`} title={tickedCount === 0 ? "Commit" : targets.length > 1 ? `Commit ${tickedCount} files in ${targets.length} repos` : `Commit ${tickedCount} file${tickedCount === 1 ? "" : "s"}`}><ActionIcon name="git" label="Commit" /></button>
         </div>
       )}
     </aside>
@@ -818,9 +810,7 @@ function RepoSection({
               ? `git pull --${pullMode}`
               : "This branch does not track a remote branch yet. Push it first."
           }
-        >
-          <RollingText>{repo.behind > 0 ? `Pull ${repo.behind}` : "Pull"}</RollingText>
-        </button>
+         data-icon-action aria-label={repo.behind > 0 ? `Pull ${repo.behind}` : "Pull"}><ActionIcon name="refresh" label="Pull" /></button>
         <select
           className="gitp-mode"
           value={pullMode}
@@ -834,9 +824,7 @@ function RepoSection({
             </option>
           ))}
         </select>
-        <button className="gitp-btn" type="button" onClick={onPush} disabled={busy} title="git push">
-          <RollingText>{repo.ahead > 0 ? `Push ${repo.ahead}` : "Push"}</RollingText>
-        </button>
+        <button className="gitp-btn" type="button" onClick={onPush} disabled={busy} title="git push" data-icon-action aria-label={repo.ahead > 0 ? `Push ${repo.ahead}` : "Push"}><ActionIcon name="handover" label="Push" /></button>
       </div>
 
       {files.length === 0 ? (

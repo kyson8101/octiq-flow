@@ -49,10 +49,11 @@ const glyphs = {
 export type ActionName = keyof typeof glyphs;
 export const ACTION_NAMES = Object.keys(glyphs) as ActionName[];
 
-/** Decorative: the containing button always carries its words as both name
- * and tooltip. Keep this glyph at 16px, independent of its hit target. */
-export function ActionIcon({ name }: { name: ActionName }) {
-  return <svg className="action-icon" data-action-icon={name} width="16" height="16" viewBox="0 0 24 24"
+/** The containing button owns its full accessible name and tooltip.
+ * Decisions and panel actions pass a short visible label; utilities and the
+ * ActionBar omit it. The decorative glyph stays 16px in either case. */
+export function ActionIcon({ name, label }: { name: ActionName; label?: string }) {
+  return <><svg className="action-icon" data-action-icon={name} width="16" height="16" viewBox="0 0 24 24"
     fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
-    aria-hidden="true" focusable="false">{glyphs[name]}</svg>;
+    aria-hidden="true" focusable="false">{glyphs[name]}</svg>{label && <span className="action-label" aria-hidden="true">{label}</span>}</>;
 }

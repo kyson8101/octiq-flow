@@ -35,6 +35,7 @@ describe("RunBridges", () => {
     expect(html).toContain("3 of 50 sent");
     expect(html).toContain("Receives notes from <span class=\"orch-bridge-run\">“Objective run_b”</span>");
     expect(html.match(/aria-label="Close"/g)?.length).toBe(2);
+    expect(html.match(/class="action-label" aria-hidden="true">Close<\/span>/g)).toHaveLength(2);
     // Both ways are open, so nothing is left to offer.
     expect(html).not.toContain("send notes to another run");
   });

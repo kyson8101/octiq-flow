@@ -1,3 +1,4 @@
+import { ActionIcon } from "./ActionIcon";
 // The host's line, in the coordinator's chat, for a task it reopened with
 // new instructions (`lib/taskReopened`).
 //
@@ -116,7 +117,7 @@ export function ReopenedLine({ reopened, stop, startOpen = false, busy = false, 
               <button type="button" className="reopened-note-stop" onKeyDown={dropHeld} disabled={busy}
                 aria-disabled={stop.state === "cannot" || undefined}
                 aria-describedby={stop.state === "cannot" ? whyId : undefined}
-                onClick={stop.state === "can" ? onStop : undefined}>{busy ? "Stopping…" : "Stop this task…"}</button>
+                onClick={stop.state === "can" ? onStop : undefined} data-icon-action aria-label={busy ? "Stopping…" : "Stop this task…"} title={busy ? "Stopping…" : "Stop this task…"}><ActionIcon name="stop" label="Stop" /></button>
               {stop.state === "cannot" && <span id={whyId} className="reopened-note-why">{stop.reason}</span>}
             </>}
           {error && <p className="reopened-note-error" role="alert">{error}</p>}
