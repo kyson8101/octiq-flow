@@ -956,6 +956,12 @@ the `user-question` events, `question_answer_batch`, `question_cancel`,
   reading it as a held card from the page's one list; the block carries the
   same `data-pending-keys` the card did. Do not add a second reader.
 
+### A finished turn's work folds into one line
+
+Folding never changes grouping or attachment (both are decided on the original
+sequence before filtering formed rows), and tests cover a pure protocol-fence
+final beside a retained card.
+
 ### A reply can hold media beside its explanation
 
 A fenced code block whose info string is `octiq-media` draws ONE local

@@ -404,10 +404,10 @@ function Blocks({
   agentByTool,
   onOpenAgent,
   danger,
-  originalBlocks,
+  hidden,
 }: {
   danger?: ReadonlySet<string>;
-  originalBlocks?: Block[];
+  hidden?: ReadonlySet<number>;
   blocks: Block[];
   streaming: boolean;
   kids: Kids;
@@ -419,8 +419,19 @@ function Blocks({
   // background work is still going, which is the same rule for the same reason.
   const running = useRunningCalls();
   const rows = useMemo(
-    () => groupRows(blocks, (tool) => kids.has(tool.id) || running.has(tool.id)),
-    [blocks, kids, running],
+    () => {
+      // Group and attach notes in the original sequence. Hiding work must not
+      // make a final fence newly adjacent to a retained question or Skill.
+      const grouped = groupRows(blocks, (tool) => kids.has(tool.id) || running.has(tool.id));
+      if (!hidden?.size) return grouped;
+      const visible = new Set(blocks.filter((_, index) => !hidden.has(index)));
+      // Rows are indivisible: retain a card/group if any of its source blocks
+      // (including an originally attached note at row.index) remains visible.
+      return grouped.filter((row) => !hidden.has(row.index) || (row.kind === "block"
+        ? visible.has(row.block)
+        : visible.has(row.newest) || row.tools.some((tool) => visible.has(tool))));
+    },
+    [blocks, kids, running, hidden],
   );
   // Where each row's files are. Two things read it: the header drawn above a
   // row whose folder is not the one above it, and the cards themselves, which
@@ -432,7 +443,7 @@ function Blocks({
       {rows.map((row, i) => {
         const folder = folders[i];
         const heads = !!folder && folder !== folders[i - 1];
-        const key = row.kind === "group" ? (row.tools[0]?.id ?? row.newest.id) : originalBlocks ? originalBlocks.indexOf(row.block) : row.index;
+        const key = row.kind === "group" ? (row.tools[0]?.id ?? row.newest.id) : blocks.indexOf(row.block);
         return (
           <Fragment key={key}>
             {heads && <FolderHead dir={folder} />}
@@ -937,7 +948,6 @@ function TurnView({
   });
   const foldWork = role === "assistant" && !streaming && !turnLive
     && (plan.hidden.size > 0 || plan.hasProgressWork);
-  const visibleBlocks = foldWork && !workOpen ? blocks.filter((_, i) => !plan.hidden.has(i)) : blocks;
   const progress = messages.flatMap((m) => m.progress ?? []);
   const codexCandidate = [...messages].reverse().find((m) => m.codexCandidate)?.codexCandidate;
   // The answer as it reads on screen. Thinking is left out — it is folded away
@@ -1143,8 +1153,8 @@ function TurnView({
           blocks.map((b, i) => <UserText key={i} text={deskRoute ? readDeskRoute(shown((b as { text: string }).text))?.text ?? shown((b as { text: string }).text) : shown((b as { text: string }).text)} />)
         ) : (
           <Blocks
-            blocks={visibleBlocks}
-            originalBlocks={blocks}
+            blocks={blocks}
+            hidden={foldWork && !workOpen ? plan.hidden : undefined}
             danger={role === "assistant" ? plan.danger : undefined}
             streaming={streaming}
             kids={kids}

@@ -41,7 +41,7 @@ export function ContinueDesk({ name, chats, now, onContinue, onCancel }: {
                 <span className="hero-continue-text">{words}</span>
                 <span className="hero-continue-time">{when}</span>
               </button>
-              {onCancel && <StatusDismiss label="Dismiss this continuation; keeps the conversation record" visible
+              {onCancel && <StatusDismiss label={`Cancel continuing "${words}"`} visible
                 disabled={pending.includes(chat.chatKey)}
                 onClick={async () => {
                   setPending((keys) => [...keys, chat.chatKey]); setError("");
