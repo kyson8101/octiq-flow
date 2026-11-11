@@ -1406,8 +1406,9 @@ narrow Windows window gets the phone's layout.
   the word; narrow cards wrap answers without widening the page. The action
   bar (including `WorkspaceHeader.actions` portaled into it), universal
   utilities (Copy, Dismiss ×, fullscreen, close and disclosure
-  chevrons) and list-row edit/trash keep icon-only targets. Do not hide their
-  SVGs or the shared `.action-label` with older component CSS.
+  chevrons) and list-row edit/trash keep icon-only targets. A Close that
+  changes saved state, such as closing a mission bridge, takes a label. Do not
+  hide their SVGs or the shared `.action-label` with older component CSS.
   Decision glyphs differ by shape (Deny is a slashed circle; Dismiss is ×);
   the primary answer keeps `--decide` and quiet answers stay quiet. Preserve
   every press guard, pending key, disabled reason and submitted value.

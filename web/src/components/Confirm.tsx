@@ -151,7 +151,7 @@ export function ConfirmDialog({
             className={`ask-btn is-primary ${options.danger ? "is-danger" : ""} ${options.decision ? "is-decision" : ""}`}
             type="button"
             onClick={careful.confirm}
-           data-icon-action title={options.confirmLabel ?? "OK"} aria-label={options.confirmLabel === "Archive and remove" ? "Archive/remove" : options.confirmLabel ?? "OK"}>
+           data-icon-action title={options.confirmLabel ?? "OK"} aria-label={options.confirmLabel ?? "OK"}>
             <ActionIcon name={options.confirmLabel?.startsWith("Stop") ? "stop" : options.danger ? "delete" : "confirm"} label={options.confirmLabel === "Archive and remove" ? "Archive/remove" : options.confirmLabel ?? "OK"} />
           </button>
         </div>

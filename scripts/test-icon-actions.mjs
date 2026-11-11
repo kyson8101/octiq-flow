@@ -16,6 +16,7 @@ import {ActionIcon,ACTION_NAMES} from '/src/components/ActionIcon';
 import {ActionBar} from '/src/components/ActionBar';
 import {GitPanel} from '/src/components/GitPanel';
 import {AgentsSettings} from '/src/components/AgentsSettings';
+import {RunBridges} from '/src/components/RunBridges';
 import {hostFacts} from '/src/lib/__fixtures__/hostFacts';
 import {PermissionAsk} from '/src/components/PermissionAsk';
 import {AccessRequestCard} from '/src/components/AccessRequestCard';
@@ -95,6 +96,8 @@ scene('cleanup','Worktree cleanup · irreversible words retained',<WorkspaceClea
 scene('provider','Provider fallback',<ChoiceCard choice={{id:'choice',key:'chat:c1',label:'Continue the existing task',source,preferred:suggestion,options:[{agent:'codex',installed:true,limited:false,suggestion}]}} onDone={noop}/>);
 scene('complete','Complete chat confirmation',<CompleteChatConfirm content={confirmContent(undefined)} onConfirm={record('complete')} onCancel={noop}/>);
 scene('confirm','General confirmation',<ConfirmDialog options={{title:'Confirm this answer?',confirmLabel:'Confirm',decision:true}} onAnswer={record('confirm')}/>);
+scene('archive-confirm','Archive worktree · full consequence retained',<ConfirmDialog options={{title:'Archive and remove this worktree?',confirmLabel:'Archive and remove',cancelLabel:'Keep worktree',decision:true}} onAnswer={record('archive-confirm')}/>);
+scene('bridges','Mission bridge · Close changes saved state',<RunBridges run={merged.runs[0]} snapshot={{runs:[...merged.runs,{...merged.runs[0],id:'other-run',objective:'Other mission',coordinatorChatKey:'chat:other'}],bridges:[{id:'icons-bridge',fromRunId:merged.runs[0].id,toRunId:'other-run',fromCoordinatorChatKey:'chat:icons',toCoordinatorChatKey:'chat:other',openedAt:1,sends:[]}]}} busy={false} readOnly={false} onBridge={record('bridge')}/>);
 scene('stop','Stop worker confirmation · words retained',<ConfirmDialog options={{title:'Stop this worker?',body:'This stops the active attempt.',confirmLabel:'Stop worker',cancelLabel:'Keep it running',danger:true}} onAnswer={record('stop')}/>);
 scene('delete','Delete confirmation · words retained',<ConfirmDialog options={{title:'Delete this saved project?',body:'This removes the project record.',confirmLabel:'Delete',danger:true}} onAnswer={record('delete')}/>);
 scene('delivery','Merged worktree · cleanup then Confirm removal',<div style={{height:600,display:'flex'}}><OrchestrationPanel embedded initialSnapshot={merged} project={{id:merged.runs[0].workspaceId,name:'Review fixture'}} coordinatorKey={merged.runs[0].coordinatorChatKey} onOpenChat={noop} onClose={noop}/></div>);
@@ -144,10 +147,14 @@ try{
   const facts=await page.locator('button[data-icon-action],button:has(>svg.action-icon)').evaluateAll(list=>list.filter(e=>e.getBoundingClientRect().width&&e.getBoundingClientRect().height).map(e=>({name:e.getAttribute('aria-label'),title:e.title,w:e.getBoundingClientRect().width,h:e.getBoundingClientRect().height,icon:e.querySelector('svg')?.getBoundingClientRect().width,words:e.textContent.trim(),label:e.querySelector('.action-label')?.textContent,labelVisible:(()=>{const l=e.querySelector('.action-label');if(!l)return null;const c=getComputedStyle(l);return c.display!=='none'&&c.visibility!=='hidden'&&Number(c.opacity)>0&&parseFloat(c.fontSize)>0&&l.getBoundingClientRect().width>0&&l.getBoundingClientRect().height>0;})(),scene:e.closest('[data-scene]')?.getAttribute('data-scene')})));
   for(const f of facts){assert(f.name,JSON.stringify(f));assert(f.title,JSON.stringify(f));assert(f.w>=(width===390?44:28)&&f.h>=(width===390?44:28),JSON.stringify(f));assert.equal(f.icon,16,JSON.stringify(f));if(f.label)assert.equal(f.labelVisible,true,JSON.stringify(f));if(!f.words)assert.equal(Math.round(f.w),width===390?44:28,JSON.stringify(f));}
   assert.equal(await page.locator('[data-scene="permission"] .ask-card-actions button').count(),3);
-  for(const scene of ['permission','access','codex','handover','route','plan','question','gate','gate-main','provider','complete','confirm']){
+  for(const scene of ['permission','access','codex','handover','route','plan','question','gate','gate-main','provider','complete','confirm','archive-confirm','bridges']){
    const buttons=page.locator('[data-scene="'+scene+'"] button:has(>svg.action-icon):not(:has(svg[data-action-icon="expand"])):not(:has(svg[data-action-icon="collapse"])):not(.status-row-dismiss)');
    for(const button of await buttons.all())assert(await button.locator('.action-label').count(),scene+': '+await button.getAttribute('aria-label'));
   }
+  const archive=page.locator('[data-scene="archive-confirm"]').getByRole('button',{name:'Archive and remove',exact:true});
+  assert.equal(await archive.getAttribute('title'),'Archive and remove');
+  assert.equal((await archive.textContent()).trim(),'Archive/remove');
+  assert.equal(await page.locator('[data-scene="bridges"]').getByRole('button',{name:'Close',exact:true}).locator('.action-label').textContent(),'Close');
   assert.equal(await page.locator('[data-scene="bar"] .action-label').count(),0);
   assert.equal(await page.locator('[data-scene="agents-settings"] .team-row-action .action-label').count(),0);
   assert(await page.locator('[data-scene="agents-settings"] .action-label').count()>0);
@@ -173,7 +180,8 @@ try{
   // Exact named buttons still invoke their existing contract.
   await page.locator('[data-scene="permission"]').getByRole('button',{name:'Allow once',exact:true}).click();
   await page.locator('[data-scene="handover"]').getByRole('button',{name:'Keep it here',exact:true}).click();
-  const calls=await page.evaluate(()=>window.calls);assert(calls.some(c=>c.cmd==='permission_decide'&&c.args.decision==='allow'),JSON.stringify(calls));assert(calls.some(c=>c.cmd==='handover'));
+  await page.locator('[data-scene="bridges"]').getByRole('button',{name:'Close',exact:true}).click();
+  const calls=await page.evaluate(()=>window.calls);assert(calls.some(c=>c.cmd==='bridge'&&c.args[0]==='orchestration_bridge_close'&&c.args[1].bridgeId==='icons-bridge'));assert(calls.some(c=>c.cmd==='permission_decide'&&c.args.decision==='allow'),JSON.stringify(calls));assert(calls.some(c=>c.cmd==='handover'));
   report.answers.push({width,theme,calls});await context.close();
  }
  assert.deepEqual(errors,[]);await writeFile(join(output,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({output,sheets:report.scenes.map(({width,theme,buttons})=>({width,theme,buttons:buttons.length})),errors},null,2));

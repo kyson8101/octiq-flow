@@ -35,7 +35,7 @@ export function RunBridges({ run, snapshot, busy, readOnly, onBridge }: {
       </p>
       {!readOnly && <button type="button" className="orch-quiet" disabled={busy}
         onClick={() => onBridge("orchestration_bridge_close", { bridgeId: bridge.id })} data-icon-action title="Close" aria-label="Close">
-        <ActionIcon name="cancel" />
+        <ActionIcon name="cancel" label="Close" />
       </button>}
     </li>
   );
