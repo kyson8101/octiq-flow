@@ -310,10 +310,18 @@ pub(crate) fn finish_worker(task: &str) -> Result<(), String> {
     write(&policy)
 }
 
-fn options(manager: &crate::agent_chat::ChatManager, source: &Settings) -> Vec<serde_json::Value> {
+fn options(
+    manager: &crate::agent_chat::ChatManager,
+    source: &Settings,
+    worker: bool,
+) -> Vec<serde_json::Value> {
     let installs = crate::agents::agent_installs(None);
     [AgentKind::Claude, AgentKind::Codex, AgentKind::Antigravity].into_iter().filter_map(|agent| {
-        let suggestion = crate::provider_failover::equivalent_using(source, source, agent)?;
+        let suggestion = if worker {
+            crate::provider_failover::equivalent_for_worker(source, agent)?
+        } else {
+            crate::provider_failover::equivalent_using(source, source, agent)?
+        };
         let installed = installs.iter().any(|a| a.id == agent.id() && a.installed);
         Some(serde_json::json!({ "agent": agent, "installed": installed, "limited": manager.failover.blocked(agent, crate::auto_resume::unix_now()), "suggestion": suggestion }))
     }).collect()
@@ -367,6 +375,25 @@ mod tests {
             agent: AgentKind::Codex,
             model: "gpt-5.6-terra".into(),
             effort: Some("low".into()),
+        }
+    }
+
+    #[test]
+    fn fable_worker_choice_suggests_sol_while_ordinary_chat_choice_keeps_astra() {
+        let manager = crate::agent_chat::ChatManager::default();
+        let source = Settings {
+            model: Some("fable".into()),
+            ..source()
+        };
+        for (worker, expected) in [(true, "gpt-5.6-sol"), (false, "gpt-6-astra")] {
+            let options = options(&manager, &source, worker);
+            let codex = options
+                .iter()
+                .find(|option| option["agent"] == "codex")
+                .unwrap();
+            assert_eq!(codex["suggestion"]["model"], expected);
+            assert_eq!(codex["suggestion"]["access"], "manual");
+            assert_eq!(codex["suggestion"]["effort"], "xhigh");
         }
     }
 
@@ -494,7 +521,7 @@ pub(crate) fn choices(
         .filter(|e| e.awaiting_choice && e.chat_key == key)
     {
         let source = entry.start.settings();
-        choices.push(serde_json::json!({ "id": entry.id, "key": entry.chat_key, "label": "Continue this conversation", "source": source, "preferred": entry.fallback, "rememberLabel": if owner(key)?.is_some() { "Save as this agent’s backup" } else { "Save as global backup" }, "options": options(manager, &source) }));
+        choices.push(serde_json::json!({ "id": entry.id, "key": entry.chat_key, "label": "Continue this conversation", "source": source, "preferred": entry.fallback, "rememberLabel": if owner(key)?.is_some() { "Save as this agent’s backup" } else { "Save as global backup" }, "options": options(manager, &source, false) }));
     }
     let snapshot = orchestrations.snapshot(None)?;
     for choice in load()?.workers.values().filter(|c| {
@@ -503,7 +530,7 @@ pub(crate) fn choices(
             && (c.view_key == key || c.chat_key == key)
             && current_worker(c, &snapshot)
     }) {
-        choices.push(serde_json::json!({ "id": choice.id, "key": choice.chat_key, "label": choice.label, "worker": true, "source": choice.source, "preferred": rule(choice.owner.as_deref())?.backup.and_then(|b| { crate::orchestration::validate_fallback_worker(b.agent, &b.model).ok()?; b.settings(&choice.source).ok() }), "rememberLabel": if choice.owner.is_some() { "Save as this agent’s backup" } else { "Save as global backup" }, "options": options(manager, &choice.source) }));
+        choices.push(serde_json::json!({ "id": choice.id, "key": choice.chat_key, "label": choice.label, "worker": true, "source": choice.source, "preferred": rule(choice.owner.as_deref())?.backup.and_then(|b| { crate::orchestration::validate_fallback_worker(b.agent, &b.model).ok()?; b.settings(&choice.source).ok() }), "rememberLabel": if choice.owner.is_some() { "Save as this agent’s backup" } else { "Save as global backup" }, "options": options(manager, &choice.source, true) }));
     }
     Ok(choices)
 }

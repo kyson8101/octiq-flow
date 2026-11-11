@@ -172,8 +172,10 @@ permission to delete a directory the new workflow did not create.
 
 **Automatically start ready tasks** opts into a host scheduler. The main agent
 chooses a provider, model, access, and reasoning effort for each task in its
-`worker` settings. Fable and Astra are reserved for main orchestrators and
-rejected for execution workers, including retries. It runs every two seconds,
+`worker` settings. Astra is reserved for orchestrators and rejected for
+execution workers, including retries. Fable may run any worker task; prefer
+Sol, Opus or Sonnet for ad-hoc workers because Fable is costly, while a task
+assigned to a registered Fable agent runs on Fable. It runs every two seconds,
 starts the ready wave up to the concurrency limit, and advances dependencies
 from authoritative reports. Task creation can come from the master agent, a
 static workflow, or authenticated API calls. No LLM turn is needed to allocate

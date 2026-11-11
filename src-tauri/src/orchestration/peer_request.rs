@@ -1400,7 +1400,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// Ada, Bo (Codex, edits access) and Fa (a lead-only model) share team
+    /// Ada, Bo (Codex, edits access) and Fa (Fable) share team
     /// t1 with Di, who works only in p2; Cy is on another team, Ed on none.
     fn roster() -> (Vec<TeamAgent>, Vec<AgentTeam>) {
         (
@@ -1580,6 +1580,59 @@ pub(crate) mod tests {
             .into_iter()
             .filter(|n| n.target_chat_key == target && n.kind == kind)
             .collect()
+    }
+
+    #[test]
+    fn peer_request_accepts_fable_and_preserves_its_registered_model_after_approval() {
+        for model in ["fable", "claude-fable-5", "CLAUDE-FABLE-5-20260924"] {
+            let store = OrchestrationStore::default();
+            let (mut agents, teams) = roster();
+            agents.iter_mut().find(|a| a.id == "fa").unwrap().model = model.into();
+            let made = store
+                .peer_request(
+                    LEAD_CHAT,
+                    Some(&lead_of("ada")),
+                    work("fa"),
+                    &agents,
+                    &teams,
+                    &[],
+                )
+                .unwrap();
+            let task = task_of(&store, &made.task_id);
+            assert_eq!(task.assignee.as_ref().unwrap().id, "fa");
+            assert_eq!(task.worker.as_ref().unwrap().model.as_deref(), Some(model));
+            assert!(store
+                .reserve_attempt(LEAD_CHAT, &host_launch(&store, &task))
+                .is_err());
+            let attempt = approved_and_started(&store, &made.task_id);
+            assert_eq!(attempt.agent, ChatAgent::Claude);
+            assert_eq!(attempt.model.as_deref(), Some(model));
+            assert_eq!(attempt.effort.as_deref(), Some("high"));
+        }
+    }
+
+    #[test]
+    fn peer_request_refuses_astra_before_creating_any_run_or_task() {
+        for model in ["astra", "gpt-6-astra", "GPT-6-ASTRA-20260924"] {
+            let store = OrchestrationStore::default();
+            let (mut agents, teams) = roster();
+            let helper = agents.iter_mut().find(|a| a.id == "fa").unwrap();
+            helper.agent = ChatAgent::Codex;
+            helper.model = model.into();
+            let error = store
+                .peer_request(
+                    LEAD_CHAT,
+                    Some(&lead_of("ada")),
+                    work("fa"),
+                    &agents,
+                    &teams,
+                    &[],
+                )
+                .unwrap_err();
+            assert!(error.contains("lead-only model"), "{error}");
+            let snapshot = store.snapshot(None).unwrap();
+            assert!(snapshot.runs.is_empty() && snapshot.tasks.is_empty());
+        }
     }
 
     #[test]
@@ -1863,7 +1916,18 @@ pub(crate) mod tests {
             .starts_with("You cannot hand work to yourself"));
         assert!(from_lead(&store, work(" ")).unwrap_err().contains("`peer`"));
         // A lead-only model takes no task, peer or not.
-        let lead_only = from_lead(&store, work("fa")).unwrap_err();
+        let (mut agents, teams) = roster();
+        agents.iter_mut().find(|a| a.id == "fa").unwrap().model = "gpt-6-astra".into();
+        let lead_only = store
+            .peer_request(
+                LEAD_CHAT,
+                Some(&lead_of("ada")),
+                work("fa"),
+                &agents,
+                &teams,
+                &[],
+            )
+            .unwrap_err();
         assert!(lead_only.contains("lead-only model"), "{lead_only}");
         // An agent on no team has no one to ask.
         let (agents, teams) = roster();

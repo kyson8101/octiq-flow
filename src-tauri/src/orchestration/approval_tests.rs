@@ -297,6 +297,42 @@ fn all_limited_providers_hold_before_reservation_without_spending_retries() {
 }
 
 #[test]
+fn fable_worker_handoff_uses_sol_and_retains_approved_fable_identity() {
+    let store = OrchestrationStore::default();
+    let chosen = automation::WorkerSettings {
+        agent: ChatAgent::Claude,
+        model: Some("fable".into()),
+        effort: Some("high".into()),
+        ..settings(Access::Manual)
+    };
+    let (_, task) = approved(&store, Some(chosen.clone()));
+    let (_, _, reserved, _) = store
+        .reserve_attempt("chat:master", &host_launch(&store, &task.id))
+        .unwrap();
+    let source = crate::provider_failover::Settings {
+        agent: reserved.agent,
+        model: reserved.model.clone(),
+        effort: reserved.effort.clone(),
+        access: reserved.access,
+    };
+    let astra = crate::provider_failover::equivalent(&source, ChatAgent::Codex).unwrap();
+    assert!(store
+        .redirect_limited_attempt(&reserved.id, &astra)
+        .is_err());
+    let sol = crate::provider_failover::equivalent_for_worker(&source, ChatAgent::Codex).unwrap();
+    let actual = store.redirect_limited_attempt(&reserved.id, &sol).unwrap();
+    assert_eq!(actual.model.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(actual.agent, ChatAgent::Codex);
+    assert_eq!(actual.access, Access::Manual);
+    assert_eq!(actual.assignee, task.assignee);
+    assert_eq!(actual.execution.provider_origin, Some(chosen.clone()));
+    assert_eq!(
+        approval::worker_of(&task_now(&store, &task.id)),
+        Some(&chosen)
+    );
+}
+
+#[test]
 fn host_provider_handoff_keeps_approval_identity_and_blocks_wider_settings() {
     let store = OrchestrationStore::default();
     let (_run, task) = approved(&store, Some(settings(Access::Manual)));
