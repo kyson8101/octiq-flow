@@ -37,7 +37,7 @@ export function ConversationFileActions({
   const inside = (target: EventTarget | null) => target instanceof Node && root.current?.contains(target);
 
   useEffect(() => {
-    if (!hovered || !matchMedia('(hover: hover)').matches) return;
+    if (!hovered || !matchMedia('(hover: hover) and (pointer: fine)').matches) return;
     const timer = setTimeout(() => setHoverReady(true), 180);
     return () => clearTimeout(timer);
   }, [hovered]);
@@ -51,7 +51,7 @@ export function ConversationFileActions({
   useLayoutEffect(() => {
     const anchor = root.current;
     const popup = menu.current;
-    if (!anchor || !popup || !engaged || !matchMedia('(hover: hover)').matches) return;
+    if (!anchor || !popup || !engaged || !matchMedia('(hover: hover) and (pointer: fine)').matches) return;
     // The phone chat pane has its own stacking context. A native top-layer
     // popover escapes both that context and the transcript's overflow without
     // breaking the DOM ancestry used by hover and focus-within. Touch never
@@ -117,7 +117,7 @@ export function ConversationFileActions({
   }, [engaged]);
 
   useEffect(() => {
-    if (!engaged || !matchMedia('(hover: hover)').matches) return;
+    if (!engaged || !matchMedia('(hover: hover) and (pointer: fine)').matches) return;
     const key = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       const ours = keepsEscape(true, focusAt<Node>(document.activeElement, root.current, document.body));
@@ -142,7 +142,7 @@ export function ConversationFileActions({
   };
 
   const openPath = () => {
-    if (engaged && matchMedia('(hover: hover)').matches) setDismissed(true);
+    if (engaged && matchMedia('(hover: hover) and (pointer: fine)').matches) setDismissed(true);
     open(path);
   };
 
@@ -193,7 +193,7 @@ export function ConversationFileActions({
           aria-label={copied ? "Path copied" : `Copy path: ${path}`}
           onClick={() => void copy()}
          data-icon-action>
-          <ActionIcon name={copied ? "allow" : "copy"} />
+          <ActionIcon name={copied ? "allow" : "copy"} label={copied ? "Copied" : "Copy path"} />
         </button>
         <button
           className="prose-file-action"
