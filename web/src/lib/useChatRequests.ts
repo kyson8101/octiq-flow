@@ -255,10 +255,15 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
     const result = await bridge.invoke<CleanupSettled>("orchestration_workspace_cleanup_request_answer", { id: card.id, approve });
     publishCleanup(applyCleanupEvent(cleanupStore, { state: "settled", id: card.id, chatKey: card.chatKey, result }));
   }, [cleanupStore, publishCleanup]);
+  /** A settled receipt is page-only; dismissing it removes nothing on the host. */
+  const dismissCleanup = useCallback((card: CleanupCard) => {
+    if (!("result" in card)) return;
+    publishCleanup(cleanupStore.remove(card.id));
+  }, [cleanupStore, publishCleanup]);
 
   return {
     asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, refillSafetyBlocks, reread,
-    cleanupRequests, answerCleanup,
+    cleanupRequests, answerCleanup, dismissCleanup,
     /** Whether each list has answered for this connection, and whether one
      *  has been silent too long: what `pendingActions.wholeOf` reads. */
     read, late,

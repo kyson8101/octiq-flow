@@ -29,8 +29,9 @@ describe("the coordinator's cleanup card", () => {
       expect(html).toContain(item.title);
       for (const root of item.worktrees) for (const value of [root.branch, root.path, root.headCommit, root.baseBranch]) expect(html).toContain(value);
     }
-    expect(html).toContain("Ignored files at stake</dt><dd>Unknown");
-    expect(html).toContain("Ignored files at stake</dt><dd>2");
+    expect(html).toContain("Ignored files unknown");
+    expect(html).toContain("2 ignored files at stake");
+    expect(html).not.toContain("0 ignored");
     expect(html).toContain("is-bounded");
   });
 
@@ -69,6 +70,7 @@ describe("the coordinator's cleanup card", () => {
     expect(html).toContain(`Kept · ${cleanupSettled.items[1].reason}`);
     expect(html).toContain(">Removing…</p>");
     for (const item of card.items) expect(html).toContain(item.title);
+    expect(html).not.toContain("feature/client");
     expect(html).not.toContain("aria-expanded");
     expect(html).not.toContain('hidden=""');
     expect(html).not.toContain("ask-card-dot");
@@ -120,6 +122,15 @@ describe("the coordinator's cleanup card", () => {
     const open = draw(receipt, true);
     for (const item of cleanupSettled.items) expect(open).toContain(item.reason);
     for (const item of cleanupAsked.items) expect(open).toContain(item.title);
+  });
+
+  it("offers a dismiss on a settled result only", () => {
+    const onDismiss = () => {};
+    const settled = renderToStaticMarkup(<WorkspaceCleanupCard card={receipt} onAnswer={async () => {}} onDismiss={onDismiss} />);
+    expect(settled).toContain('aria-label="Dismiss cleanup result"');
+    expect(settled).not.toContain("2 results");
+    const asked = renderToStaticMarkup(<WorkspaceCleanupCard card={cleanupAsked} onAnswer={async () => {}} onDismiss={onDismiss} />);
+    expect(asked).not.toContain("Dismiss cleanup result");
   });
 
   it("keeps the complete all-removed outcome in the visible settled heading", () => {

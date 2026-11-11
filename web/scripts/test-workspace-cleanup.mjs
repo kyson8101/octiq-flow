@@ -114,7 +114,7 @@ try {
     assert.equal(answers.length, 0, "held Enter does not decide");
     assert.equal(await card.locator(".cleanup-item").count(), 36);
     assert.ok((await card.innerText()).includes("Unknown"));
-    assert.ok((await card.innerText()).includes("Ignored files at stake\n7"));
+    assert.ok((await card.innerText()).includes("7 ignored files at stake"));
     assert.ok((await card.innerText()).includes("close the mission record only"));
     const geometry = await card.evaluate((el) => {
       const box = el.querySelector(".card-fold-in"); box.scrollTop = box.scrollHeight;

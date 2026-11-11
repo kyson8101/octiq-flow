@@ -867,7 +867,7 @@ export default function App() {
   const [railShut, setRailShut] = useState(() => localStorage.getItem(RAIL_KEY) === "1");
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
-  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, cleanupRequests, answerCleanup, refillSafetyBlocks, reread: rereadLists, read: listsRead, late: listsLate } =
+  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions, accessRequests, setAccessRequests, cleanupRequests, answerCleanup, dismissCleanup, refillSafetyBlocks, reread: rereadLists, read: listsRead, late: listsLate } =
     useChatRequests(conn, (...args) => announceOnce(...args));
   const [choice, setChoice] = useState<ModelChoice>(
     () => modelFromId(recall(CHOICE_KEY)) ?? MODELS[0],
@@ -6192,6 +6192,7 @@ export default function App() {
               onAccessAnswer={answerAccess}
               cleanupRequests={cleanupRequests[conversationId] ?? []}
               onCleanupAnswer={answerCleanup}
+              onCleanupDismiss={dismissCleanup}
             />
           )}
 

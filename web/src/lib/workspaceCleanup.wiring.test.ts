@@ -25,7 +25,8 @@ describe("cleanup's one pending reader and chat hand-off", () => {
   it("uses the shared disclosure, press guards and request-keyed inFlight", () => {
     expect(card.match(/<FoldLine\b/g)).toHaveLength(1);
     expect(card).toContain("onKeyDown={dropHeld}");
-    expect(card.match(/!repeatsAnother\(event\)/g)).toHaveLength(2);
+    // Keep them, Remove all, and the settled result's Dismiss.
+    expect(card.match(/!repeatsAnother\(event\)/g)).toHaveLength(3);
     expect(fold).toMatch(/notePress\(event\);\s*fold.toggle\(\)/);
     expect(card).toContain("useInFlight(cleanupFlight(card.id))");
     expect(card).toContain("once(cleanupFlight(card.id)");

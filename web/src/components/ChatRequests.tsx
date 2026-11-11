@@ -16,7 +16,7 @@ import type { CleanupCard } from "../lib/workspaceCleanup";
  *  asked (`components/InlineQuestions`). */
 export function ChatRequests({
   asks, safetyBlocks, onPermissionAnswered, onSafetyAnswered,
-  onContinue, accessRequests = [], onAccessAnswer, cleanupRequests = [], onCleanupAnswer, scope = "", agent, safetyContext,
+  onContinue, accessRequests = [], onAccessAnswer, cleanupRequests = [], onCleanupAnswer, onCleanupDismiss, scope = "", agent, safetyContext,
 }: {
   asks: Ask[];
   safetyBlocks: SafetyBlockNotice[];
@@ -29,6 +29,7 @@ export function ChatRequests({
   onAccessAnswer?: AnswerAccess;
   cleanupRequests?: CleanupCard[];
   onCleanupAnswer?: AnswerCleanup;
+  onCleanupDismiss?: (card: CleanupCard) => void;
   /** The chat these belong to. A card that turns up after its chat was drawn
    *  comes in (`components/Arrive`); one already waiting when the chat opens,
    *  or when you come back to it, is drawn in place. */
@@ -70,7 +71,7 @@ export function ChatRequests({
       {onCleanupAnswer && cleanupRequests.map((card) => (
         <Arrive key={card.id} late={late.has(`cleanup:${card.id}`)}>
           <div className="pending-target" data-pending-keys={`cleanup:${card.id}`}>
-            <WorkspaceCleanupCard card={card} onAnswer={onCleanupAnswer} />
+            <WorkspaceCleanupCard card={card} onAnswer={onCleanupAnswer} onDismiss={onCleanupDismiss} />
           </div>
         </Arrive>
       ))}

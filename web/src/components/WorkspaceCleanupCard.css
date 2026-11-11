@@ -10,14 +10,21 @@
 .workspace-cleanup-card.is-processing .ask-btn.is-primary:hover { background: var(--bg-1); border-color: var(--border); color: var(--fg-2); }
 .cleanup-progress-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--fg-2); }
 .cleanup-progress-count { flex: 0 0 auto; color: var(--fg-1); font-size: 12px; font-variant-numeric: tabular-nums; }
-.workspace-cleanup-card.is-settled { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 8px; background: transparent; border: 0; padding: 4px 15px; }
-.workspace-cleanup-card.is-settled > .card-fold-line { margin-top: 0; }
-.workspace-cleanup-card.is-settled > .card-fold { grid-column: 1 / -1; }
+.workspace-cleanup-card.is-settled { background: transparent; border: 0; padding: 4px 15px; }
+.workspace-cleanup-card.is-settled .ask-card-head { align-items: center; gap: 4px; }
 .workspace-cleanup-card.is-settled .ask-card-title { color: var(--fg-2); font-size: 12px; font-weight: 400; }
-.cleanup-item { padding: 10px 0; color: var(--fg-1); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.cleanup-item { padding: 8px 0; color: var(--fg-1); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 .cleanup-item + .cleanup-item { border-top: 1px solid var(--border); }
-.cleanup-item p { margin: 4px 0; white-space: pre-wrap; }
-.cleanup-item dl { margin: 10px 0; }
-.cleanup-item dt { margin-top: 6px; color: var(--fg-2); }
-.cleanup-item dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.cleanup-error { color: var(--danger); overflow-wrap: anywhere; }
+.cleanup-item > strong { font-weight: 600; color: var(--fg-0); }
+.cleanup-item-status { margin: 2px 0 0; color: var(--fg-2); white-space: pre-wrap; }
+.cleanup-roots { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 4px; }
+.cleanup-root { display: grid; min-width: 0; }
+.cleanup-root-branch { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px; overflow-wrap: anywhere; }
+.cleanup-root-meta { color: var(--fg-2); font-size: 11px; overflow-wrap: anywhere; margin: 0; }
+.cleanup-root-warn { color: var(--warn); font-size: 11px; }
+.cleanup-rows { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 2px; }
+.cleanup-row { display: flex; align-items: baseline; gap: 12px; min-width: 0; font-size: 12px; line-height: 1.5; }
+.cleanup-row-title { flex: 1 1 auto; min-width: 0; color: var(--fg-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cleanup-row-status { flex: 0 1 auto; margin: 0; color: var(--fg-2); text-align: right; overflow-wrap: anywhere; }
+.cleanup-row.is-removed .cleanup-row-status { color: var(--ok); }
+.cleanup-row.is-kept .cleanup-row-status { color: var(--warn); }
