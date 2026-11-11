@@ -77,7 +77,7 @@ describe("the front desk's confirm card", () => {
     expect(html).toMatch(/<ul class="handover-unpassed" role="alert" aria-label="Not passed on"><li><svg[^>]*aria-hidden="true">.*?<\/svg><span>Not passed on: hosts \(not a file the person attached in OctiqFlow\)<\/span><\/li><\/ul>/);
     expect(html).toContain("Nothing opens until you choose");
     expect(html).toContain("Open chat with Vesper");
-    expect(html).toContain(">Cancel<");
+    expect(html).toContain("aria-label=\"Cancel\"");
     // A hidden chat badges nothing.
     expect(html).not.toContain("data-pending-keys");
   });
@@ -100,7 +100,7 @@ describe("the front desk's confirm card", () => {
     expect(html.indexOf("card-fold-line")).toBeLessThan(html.indexOf("route-message-text"));
     expect(html.indexOf("route-message-text")).toBeLessThan(html.indexOf("handover-actions"));
     expect(html).toContain("Open chat with Vesper");
-    expect(html).toContain(">Cancel<");
+    expect(html).toContain("aria-label=\"Cancel\"");
   });
 
   it("opens a first message whole past the 200,000 characters it used to stop at", () => {
@@ -120,17 +120,17 @@ describe("the front desk's confirm card", () => {
       const why = /<p class="handover-over" id="([^"]+)">This first message is too long to show in full \(5,000,023 characters\), so it cannot be sent from here\. Cancel it and ask for a shorter one\.<\/p>/.exec(html);
       expect(why, "no reason on the card").not.toBeNull();
       // The answer that would send it is off and points at the sentence above it.
-      expect(html).toMatch(new RegExp(`<button type="button" class="handover-go" aria-disabled="true" aria-describedby="${why![1]}"[^>]*>Open chat with Vesper</button>`));
+      expect(html).toMatch(new RegExp(`<button type="button" class="handover-go" aria-disabled="true" aria-describedby="${why![1]}"[^>]*aria-label="Open chat with Vesper"[^>]*>`));
       expect(html.indexOf("handover-over")).toBeLessThan(html.indexOf("handover-actions"));
       // Cancel is an ordinary button, and none of the message is drawn.
-      expect(html).toContain('<button type="button" class="handover-quiet">Cancel</button>');
+      expect(html).toMatch(new RegExp("<button(?=[^>]*aria-label=\"Cancel\")(?=[^>]*type=\"button\")(?=[^>]*class=\"handover-quiet\")[^>]*>[\\s\\S]*?</button>"));
       expect(html).not.toContain("mmmm");
       expect(html).not.toContain("card-fold-toggle");
     }
     // A failed start offers no way round it either.
     const retry = cards([route({ status: "starting", targetChatKey: "chat:new", error: "CLI unavailable", abandonable: true, route: { message } })], "chat:desk").tail;
-    expect(retry).toMatch(/<button type="button" class="handover-go" aria-disabled="true"[^>]*>Try again<\/button>/);
-    expect(retry).toContain('<button type="button" class="handover-quiet">Give up</button>');
+    expect(retry).toMatch(/<button(?=[^>]*aria-label="Try again") type="button" class="handover-go" aria-disabled="true"[^>]*>[\s\S]*?<\/button>/);
+    expect(retry).toMatch(/<button(?=[^>]*class="handover-quiet")(?=[^>]*aria-label="Give up")[^>]*>/);
   });
 
   it("leaves a one-line brief on the card: it is a short fact", () => {
@@ -146,7 +146,7 @@ describe("the front desk's confirm card", () => {
     expect(tail).toContain("Vesper&#x27;s chat did not start");
     expect(tail).toContain("Try again");
     expect(tail).toContain("Give up");
-    expect(tail).not.toContain(">Cancel<");
+    expect(tail).not.toContain("aria-label=\"Cancel\"");
   });
 
   // The page never opens a chat read-only of its own accord: a start a
@@ -180,7 +180,7 @@ describe("the front desk's confirm card", () => {
     expect(tail).toMatch(/<p class="handover-fact">Discussion · <span class="handover-place has-tip"[^>]*>starfall-novel<span class="handover-tip"[^>]*>\/src\/starfall<\/span><\/span> · new worktree<\/p>/);
     expect(tail).not.toMatch(/· discussion/);
     expect(tail).toContain("</span>Opus latest · high · Auto</p>");
-    expect(tail).toContain("Discuss with Vesper<");
+    expect(tail).toContain('aria-label="Discuss with Vesper"');
     expect(tail).not.toMatch(/read-only/i);
     // A discussion that could not start has the same two answers.
     const stuck = cards([route({ status: "starting", error: "CLI unavailable", abandonable: true, route: { message: "x", discuss: true } })], "chat:desk").tail;

@@ -176,7 +176,7 @@ describe("SafetyBlock", () => {
 
       it("opens to the full line, the technical details and every way to allow it", () => {
         const html = drawClaude(long, true);
-        expect(html).toMatch(/aria-expanded="true" aria-controls="([^"]+)">Details[\s\S]*class="safety-card-more" id="\1"/);
+        expect(html).toMatch(/aria-expanded="true" aria-controls="([^"]+)"[^>]*aria-label="Details"[^>]*>[\s\S]*class="safety-card-more" id="\1"/);
         expect(html).toContain(`<pre class="safety-card-action safety-card-full">${shown}</pre>`);
         expect(html).toContain('aria-label="Copy the command"');
         expect(html).toContain("Technical details");

@@ -17,6 +17,7 @@
 //     `await` in front of it spends that gesture. `arm` is the hint that a
 //     click looks likely — a hover, a focus, a pointer coming down — so a
 //     caller that has to fetch what it copies can have it in hand by then.
+import { ActionIcon } from "./ActionIcon";
 import { useState } from "react";
 import type React from "react";
 import { copyText } from "../lib/clipboard";
@@ -28,7 +29,6 @@ import { copyText } from "../lib/clipboard";
 export type Copyable = { text: string | null; partial?: boolean };
 
 export function CopyBit({
-  icon,
   idle,
   done,
   empty,
@@ -88,20 +88,15 @@ export function CopyBit({
         }
         settle(cut ? "warn" : "done", cut ? (partial ?? done) : done);
       }}
-    >
-      {state === "done" ? <TickIcon /> : icon}
+     data-icon-action>
+      <ActionIcon name={state === "done" ? "allow" : "copy"} />
     </button>
   );
 }
 
 /** Two sheets, one behind the other — an address, or anything else short. */
 export function CopyIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="9" y="9" width="12" height="12" rx="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
+  return <ActionIcon name="copy" />;
 }
 
 /** A page with words on it — the file's contents, as against its address. */
@@ -117,9 +112,5 @@ export function TextIcon() {
 }
 
 export function TickIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="m20 6-11 11-5-5" />
-    </svg>
-  );
+  return <ActionIcon name="allow" />;
 }

@@ -15,6 +15,7 @@
 // Confirmed, the face and the name go on to where the agent is named next
 // (`lib/identityTravel`): the composer of the chat a route opened, or the
 // line a handover leaves in this one.
+import { ActionIcon } from "./ActionIcon";
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import {
   askBackSummary, chatIdOf, handoverHeadline, handoverWhere, homeShort, isRoute, latestOutcome, noticeLine,
@@ -331,11 +332,11 @@ function SourceCard({ handover, onDecide, startOpen = false }: {
       {pending && (
         <footer className="handover-actions">
           <span className="handover-hint">Nothing starts until you choose</span>
-          <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("decline")}>
-            {busy === "decline" ? "Keeping…" : "Keep it here"}
+          <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("decline")} data-icon-action title={busy === "decline" ? "Keeping…" : "Keep it here"} aria-label={busy === "decline" ? "Keeping…" : "Keep it here"}>
+            <ActionIcon name="keep" />
           </button>
-          <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")}>
-            {busy === "confirm" ? "Handing over…" : `Hand over to ${handover.to.name}`}
+          <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")} data-icon-action title={busy === "confirm" ? "Handing over…" : `Hand over to ${handover.to.name}`} aria-label={busy === "confirm" ? "Handing over…" : `Hand over to ${handover.to.name}`}>
+            <ActionIcon name="handover" />
           </button>
         </footer>
       )}
@@ -349,13 +350,13 @@ function SourceCard({ handover, onDecide, startOpen = false }: {
                 : "Its chat may already have started, so it can only be tried again."}
           </span>
           {handover.error && handover.abandonable && (
-            <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("abandon")}>
-              {busy === "abandon" ? "Giving up…" : "Give up"}
+            <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("abandon")} data-icon-action title={busy === "abandon" ? "Giving up…" : "Give up"} aria-label={busy === "abandon" ? "Giving up…" : "Give up"}>
+              <ActionIcon name="cancel" />
             </button>
           )}
           {handover.error && (
-            <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")}>
-              {busy === "confirm" ? "Starting…" : "Try again"}
+            <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")} data-icon-action title={busy === "confirm" ? "Starting…" : "Try again"} aria-label={busy === "confirm" ? "Starting…" : "Try again"}>
+              <ActionIcon name="retry" />
             </button>
           )}
         </footer>
@@ -491,11 +492,11 @@ export function RouteCard({ handover, onDecide, startOpen = false }: {
       {pending && (
         <footer className="handover-actions">
           <span className="handover-hint">Nothing opens until you choose</span>
-          <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("decline")}>
-            {busy === "decline" ? "Cancelling…" : "Cancel"}
+          <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("decline")} data-icon-action title={busy === "decline" ? "Cancelling…" : "Cancel"} aria-label={busy === "decline" ? "Cancelling…" : "Cancel"}>
+            <ActionIcon name="cancel" />
           </button>
-          <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")}>
-            {busy === "confirm" ? "Opening…" : route?.discuss ? `Discuss with ${handover.to.name}` : `Open chat with ${handover.to.name}`}
+          <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")} data-icon-action title={busy === "confirm" ? "Opening…" : route?.discuss ? `Discuss with ${handover.to.name}` : `Open chat with ${handover.to.name}`} aria-label={busy === "confirm" ? "Opening…" : route?.discuss ? `Discuss with ${handover.to.name}` : `Open chat with ${handover.to.name}`}>
+            <ActionIcon name="handover" />
           </button>
         </footer>
       )}
@@ -509,13 +510,13 @@ export function RouteCard({ handover, onDecide, startOpen = false }: {
                 : "Its chat may already have started, so it can only be tried again."}
           </span>
           {handover.error && handover.abandonable && (
-            <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("abandon")}>
-              {busy === "abandon" ? "Giving up…" : "Give up"}
+            <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("abandon")} data-icon-action title={busy === "abandon" ? "Giving up…" : "Give up"} aria-label={busy === "abandon" ? "Giving up…" : "Give up"}>
+              <ActionIcon name="cancel" />
             </button>
           )}
           {handover.error && (
-            <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")}>
-              {busy === "confirm" ? "Opening…" : "Try again"}
+            <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")} data-icon-action title={busy === "confirm" ? "Opening…" : "Try again"} aria-label={busy === "confirm" ? "Opening…" : "Try again"}>
+              <ActionIcon name="retry" />
             </button>
           )}
         </footer>

@@ -39,16 +39,16 @@ describe("the agent policy editor", () => {
   it("saves only a change, and clears only a saved policy", () => {
     // Nothing saved, nothing typed: neither button does anything.
     const empty = policyBlock();
-    expect(empty).toMatch(/<button class="vault-button" type="button" disabled="">Clear<\/button>/);
-    expect(empty).toMatch(/<button class="settings-primary" type="submit" disabled="">Save policy<\/button>/);
+    expect(empty).toMatch(/<button(?=[^>]*aria-label="Clear") class="vault-button" type="button" disabled=""[^>]*>[\s\S]*?<\/button>/);
+    expect(empty).toMatch(/<button(?=[^>]*aria-label="Save policy") class="settings-primary" type="submit" disabled=""[^>]*>[\s\S]*?<\/button>/);
     // Typed and unsaved: Save is live.
     const typed = policyBlock({ text: "Work in a worktree." });
-    expect(typed).toMatch(/<button class="settings-primary" type="submit">Save policy<\/button>/);
+    expect(typed).toMatch(/<button(?=[^>]*aria-label="Save policy") class="settings-primary" type="submit"[^>]*>[\s\S]*?<\/button>/);
     expect(typed).toContain("19 / 4,000");
     // Saved and unchanged: Clear is live, Save is not.
     const saved = policyBlock({ saved: "Work in a worktree.", text: "Work in a worktree." });
-    expect(saved).toMatch(/<button class="vault-button" type="button">Clear<\/button>/);
-    expect(saved).toMatch(/<button class="settings-primary" type="submit" disabled="">Save policy<\/button>/);
+    expect(saved).toMatch(/<button(?=[^>]*aria-label="Clear") class="vault-button" type="button"[^>]*>[\s\S]*?<\/button>/);
+    expect(saved).toMatch(/<button(?=[^>]*aria-label="Save policy") class="settings-primary" type="submit" disabled=""[^>]*>[\s\S]*?<\/button>/);
     expect(saved).toContain(">Work in a worktree.</textarea>");
   });
 
@@ -56,7 +56,7 @@ describe("the agent policy editor", () => {
     const html = policyBlock({ text: "x".repeat(AGENT_POLICY_MAX + 1) });
     expect(html).toContain("4,001 / 4,000 · too long");
     expect(html).toContain("team-field-count is-over");
-    expect(html).toMatch(/type="submit" disabled="">Save policy/);
+    expect(html).toMatch(/type="submit" disabled=""[^>]*aria-label="Save policy"[^>]*>/);
   });
 
   it("holds still while it loads or saves", () => {
@@ -125,8 +125,8 @@ describe("the agent policy API", () => {
   it("offers no save over a policy it could not read", () => {
     const html = policyBlock({ unread: true, text: "typed on a blank form" } as never);
     expect(html).toMatch(/<textarea[^>]*disabled=""/);
-    expect(html).toMatch(/<button class="vault-button" type="button" disabled="">Clear<\/button>/);
-    expect(html).toMatch(/<button class="settings-primary" type="submit" disabled="">Save policy<\/button>/);
+    expect(html).toMatch(/<button(?=[^>]*aria-label="Clear") class="vault-button" type="button" disabled=""[^>]*>[\s\S]*?<\/button>/);
+    expect(html).toMatch(/<button(?=[^>]*aria-label="Save policy") class="settings-primary" type="submit" disabled=""[^>]*>[\s\S]*?<\/button>/);
   });
 
   it("sends the persistent prompt with the agent, and leaves it out to keep it", async () => {

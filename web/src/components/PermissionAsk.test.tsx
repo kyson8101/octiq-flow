@@ -66,7 +66,7 @@ describe("PermissionAsk", () => {
     expect(html).toContain("<div><dt>Available in</dt><dd>Starfall</dd></div>");
     expect(html).not.toContain("<pre");
     expect(html).not.toContain("Always");
-    expect(html).toContain(">Allow<");
+    expect(html).toContain("aria-label=\"Allow\"");
     // Read back with no arrival time: the wait in words, and no clock.
     expect(html).toContain(">No answer within 50 seconds counts as Deny</p>");
     expect(html).not.toContain("ask-card-clock");
@@ -108,15 +108,15 @@ describe("PermissionAsk", () => {
       const html = draw({ id: "p1", toolName, toolInput: { command: "ls" } });
       expect(html, toolName).toContain(`<span class="label-pill">${server}</span><span class="label-pill is-mono">x</span>`);
       expect(html, toolName).toContain(`<strong title="${toolName}">X</strong>`);
-      expect(html, toolName).toMatch(/<button class="ask-btn is-quiet"[^>]*>Deny<\/button>/);
-      expect(html, toolName).toMatch(/<button class="ask-btn"[^>]*>Always<\/button>/);
-      expect(html, toolName).toMatch(/<button class="ask-btn is-primary"[^>]*>Allow once<\/button>/);
+      expect(html, toolName).toMatch(/<button(?=[^>]*aria-label="Deny") class="ask-btn is-quiet"[^>]*>[\s\S]*?<\/button>/);
+      expect(html, toolName).toMatch(/<button(?=[^>]*aria-label="Always") class="ask-btn"[^>]*>[\s\S]*?<\/button>/);
+      expect(html, toolName).toMatch(/<button(?=[^>]*aria-label="Allow once") class="ask-btn is-primary"[^>]*>[\s\S]*?<\/button>/);
     }
     // A built-in tool with such a name is one this app does not know.
     const plain = draw({ id: "p2", toolName: "constructor", toolInput: {} });
     expect(plain).toContain('data-kind="other"');
     expect(plain).toContain("The agent wants to use <strong>constructor</strong>");
-    expect(plain).toContain(">Allow once<");
+    expect(plain).toContain("aria-label=\"Allow once\"");
   });
 
   it("shows an older host's change as the text it wrote, never read apart into rows", () => {
@@ -219,7 +219,7 @@ describe("PermissionAsk", () => {
       });
       expect(html, JSON.stringify(changeFacts)).toContain(`<pre class="ask-card-body is-whole">${text}</pre>`);
       expect(html, JSON.stringify(changeFacts)).not.toContain("ask-change");
-      expect(html, JSON.stringify(changeFacts)).toContain(">Allow<");
+      expect(html, JSON.stringify(changeFacts)).toContain("aria-label=\"Allow\"");
     }
   });
 
@@ -241,7 +241,7 @@ describe("PermissionAsk", () => {
     expect(folded).toContain("<span>10,001 more lines</span>");
     expect(drawOpen(many)).toBe(drawOpen(old));
     expect(drawOpen(many)).toContain("Field 9999: v9999</pre>");
-    expect(folded).toContain(">Allow<");
+    expect(folded).toContain("aria-label=\"Allow\"");
   });
 
   it("draws no rows for a tool that sent rows and no change", () => {
@@ -277,7 +277,7 @@ describe("PermissionAsk", () => {
       onAnswered={() => {}}
     />);
     expect(html).toMatch(
-      /<div class="ask-card-foot"><p class="ask-card-wait"[^>]*>[^<]*<\/p><div class="ask-card-actions"><button class="ask-btn is-quiet"[^>]*>Deny<\/button><button class="ask-btn"[^>]*title="Stop asking about this program for the rest of this chat"[^>]*>Always<\/button><button class="ask-btn is-primary"[^>]*>Allow once<\/button><\/div><\/div>/,
+      /<div class="ask-card-foot"><p class="ask-card-wait"[^>]*>[\s\S]*?<\/p><div class="ask-card-actions"><button(?=[^>]*aria-label="Deny") class="ask-btn is-quiet"[^>]*>[\s\S]*?<\/button><button(?=[^>]*aria-label="Always") class="ask-btn"[^>]*title="Always"[^>]*>[\s\S]*?<\/button><button(?=[^>]*aria-label="Allow once") class="ask-btn is-primary"[^>]*>[\s\S]*?<\/button><\/div><\/div>/,
     );
   });
 
@@ -317,19 +317,19 @@ describe("PermissionAsk", () => {
     expect(html).toContain(
       '<p class="ask-card-wait" title="Paused until you answer. No answer counts as Deny. “Always” lasts until this chat is stopped.">No answer counts as Deny</p>',
     );
-    expect(html).toContain(">Allow once<");
+    expect(html).toContain("aria-label=\"Allow once\"");
   });
 });
 
 describe("the permission card, folded and opened", () => {
   /** The three answers, in both states: opening must never cost a button. */
   const answers = (html: string) => {
-    expect(html).toMatch(/<button class="ask-btn is-quiet"[^>]*>Deny<\/button>/);
-    expect(html).toMatch(/<button class="ask-btn is-primary"[^>]*>Allow( once)?<\/button>/);
+    expect(html).toMatch(/<button(?=[^>]*aria-label="Deny") class="ask-btn is-quiet"[^>]*>[\s\S]*?<\/button>/);
+    expect(html).toMatch(/<button(?=[^>]*aria-label="Allow( once)?") class="ask-btn is-primary"[^>]*>[\s\S]*?<\/button>/);
   };
   /** The control, and the box it names. */
   const control = (html: string) => {
-    const button = /<button type="button" class="card-fold-toggle" aria-expanded="(true|false)" aria-controls="([^"]+)" aria-describedby="([^"]+)" aria-label="([^"]+)" title="([^"]+)">/.exec(html);
+    const button = /<button type="button" class="card-fold-toggle" aria-expanded="(true|false)" aria-controls="([^"]+)" aria-describedby="([^"]+)" aria-label="([^"]+)" title="([^"]+)"[^>]*>/.exec(html);
     expect(button, "no disclosure button").not.toBeNull();
     const [, expanded, controls, describedBy, label, title] = button!;
     // It names a box that is on the page, and the words that say what is in it.
@@ -383,7 +383,7 @@ describe("the permission card, folded and opened", () => {
     expect(line).toBeGreaterThan(-1);
     expect(line).toBeLessThan(box);
     expect(box).toBeLessThan(foot);
-    expect(html.indexOf(">Allow<")).toBeGreaterThan(html.indexOf("card-fold-note"));
+    expect(html.indexOf("aria-label=\"Allow\"")).toBeGreaterThan(html.indexOf("card-fold-note"));
     answers(html);
   });
 
@@ -575,9 +575,9 @@ describe("the permission card, folded and opened", () => {
       expect(why, "no reason on the card").not.toBeNull();
       expect(why![2]).toBe(size);
       // The answer points at the sentence, and the sentence is above it.
-      expect(html).toMatch(new RegExp(`<button class="ask-btn is-primary"[^>]*aria-disabled="true" aria-describedby="${why![1]}"[^>]*>Allow</button>`));
+      expect(html).toMatch(new RegExp(`<button class="ask-btn is-primary"[^>]*aria-disabled="true" aria-describedby="${why![1]}"[^>]*aria-label="Allow"[^>]*>`));
       expect(html.indexOf("ask-card-why")).toBeLessThan(html.indexOf("ask-card-foot"));
-      expect(html).toMatch(/<button class="ask-btn is-quiet" type="button">Deny<\/button>/);
+      expect(html).toMatch(/<button(?=[^>]*aria-label="Deny") class="ask-btn is-quiet" type="button"[^>]*>[\s\S]*?<\/button>/);
       // None of it is drawn as if it were the change, and nothing opens.
       expect(html).not.toContain("cccc");
       expect(html).not.toContain("card-fold-toggle");
@@ -607,8 +607,8 @@ describe("the permission card, folded and opened", () => {
   it("will not take an Allow for a plan too long to show", () => {
     const html = draw({ id: "f10", toolName: "ExitPlanMode", toolInput: { plan: `## Step 1\n${"p".repeat(WHOLE_MAX)}` } });
     expect(html).toContain("This plan is too long to show in full (5,000,010 characters), so it cannot be allowed here.");
-    expect(html).toMatch(/<button class="ask-btn is-primary"[^>]*aria-disabled="true"[^>]*>Allow once<\/button>/);
-    expect(html).toMatch(/<button class="ask-btn"[^>]*aria-disabled="true"[^>]*>Always<\/button>/);
+    expect(html).toMatch(/<button(?=[^>]*aria-label="Allow once") class="ask-btn is-primary"[^>]*aria-disabled="true"[^>]*>[\s\S]*?<\/button>/);
+    expect(html).toMatch(/<button(?=[^>]*aria-label="Always") class="ask-btn"[^>]*aria-disabled="true"[^>]*>[\s\S]*?<\/button>/);
     expect(html).not.toContain("Step 1");
   });
 
@@ -627,13 +627,13 @@ describe("a command on the permission card", () => {
   const bash = (command: string): AskProp => ({ id: "c1", toolName: "Bash", toolInput: { command } });
   /** The allow buttons as drawn: whether each is held back. */
   const allows = (html: string) => {
-    const always = /<button class="ask-btn"([^>]*)>Always<\/button>/.exec(html);
-    const once = /<button class="ask-btn is-primary"([^>]*)>Allow once<\/button>/.exec(html);
+    const always = /<button(?=[^>]*aria-label="Always") class="ask-btn"([^>]*)[^>]*>[\s\S]*?<\/button>/.exec(html);
+    const once = /<button(?=[^>]*aria-label="Allow once") class="ask-btn is-primary"([^>]*)[^>]*>[\s\S]*?<\/button>/.exec(html);
     expect(always, "no Always").not.toBeNull();
     expect(once, "no Allow once").not.toBeNull();
     return { always: always![1].includes('aria-disabled="true"'), once: once![1].includes('aria-disabled="true"') };
   };
-  const deny = (html: string) => /<button class="ask-btn is-quiet"([^>]*)>Deny<\/button>/.exec(html)![1];
+  const deny = (html: string) => /<button(?=[^>]*aria-label="Deny") class="ask-btn is-quiet"([^>]*)[^>]*>[\s\S]*?<\/button>/.exec(html)![1];
 
   it("never names a script by its first command, and shows every line of it", () => {
     // The reviewer's two: a harmless first line over the one that matters.
@@ -681,7 +681,7 @@ describe("a command on the permission card", () => {
     expect(html.lastIndexOf("ask-command-text")).toBeLessThan(html.indexOf("ask-command-unseen"));
     expect(html.indexOf("ask-command-unseen")).toBeLessThan(html.indexOf("ask-card-foot"));
     // The control is a button in words, above the command it opens.
-    const button = /<button type="button" class="card-fold-button ask-btn is-primary" aria-expanded="false" aria-controls="([^"]+)" aria-describedby="([^"]+)">Open the full command<\/button>/.exec(html);
+    const button = /<button(?=[^>]*aria-label="Open the full command") type="button" class="card-fold-button ask-btn is-primary" aria-expanded="false" aria-controls="([^"]+)" aria-describedby="([^"]+)"[^>]*>[\s\S]*?<\/button>/.exec(html);
     expect(button, "no open button").not.toBeNull();
     for (const id of button![1].split(" ")) expect(html).toContain(`id="${id}"`);
     expect(html).toContain(`id="${button![2]}">command · 13 lines<`);
@@ -690,8 +690,8 @@ describe("a command on the permission card", () => {
     // Both allows are held, each pointing at the reason; Deny is not.
     expect(allows(html)).toEqual({ always: true, once: true });
     const reason = /<span class="ask-card-why" id="([^"]+)"> Open the full command to allow it\.<\/span>/.exec(html)![1];
-    expect(html).toMatch(new RegExp(`<button class="ask-btn is-primary"[^>]*aria-describedby="${reason}"[^>]*>Allow once</button>`));
-    expect(html).toMatch(new RegExp(`<button class="ask-btn"[^>]*aria-describedby="${reason}"[^>]*>Always</button>`));
+    expect(html).toMatch(new RegExp(`<button class="ask-btn is-primary"[^>]*aria-describedby="${reason}"[^>]*aria-label="Allow once"[^>]*>`));
+    expect(html).toMatch(new RegExp(`<button class="ask-btn"[^>]*aria-describedby="${reason}"[^>]*aria-label="Always"[^>]*>`));
     expect(deny(html)).not.toContain("aria-disabled");
     expect(deny(html)).not.toContain("disabled");
     // Held is not `disabled`: the button keeps its place in the tab order.
@@ -706,7 +706,7 @@ describe("a command on the permission card", () => {
     expect(html).toContain(`<pre class="ask-command-text">${lines(12)}</pre>`);
     expect(html).toContain(`<pre class="ask-command-text">${rest}</pre>`);
     expect(html).toContain('aria-expanded="true"');
-    expect(html).toContain(">Fold the command</button>");
+    expect(html).toContain("aria-label=\"Fold the command\"");
     expect(html).not.toContain("not shown");
     expect(allows(html)).toEqual({ always: false, once: false });
     // The sentences the foot shortens are still the last thing it opens.
@@ -746,7 +746,7 @@ describe("a command on the permission card", () => {
     const shut = draw(bash(reviewer));
     expect(shut).not.toContain("rm -rf /tmp/review-danger");
     expect(shut).toContain("<strong>4,988 more lines not shown</strong>");
-    expect(shut).toContain(">Open the full command</button>");
+    expect(shut).toContain("aria-label=\"Open the full command\"");
     expect(allows(shut)).toEqual({ always: true, once: true });
     const open = drawOpen(bash(reviewer));
     // Every character of it is in the two blocks the card draws.
@@ -784,9 +784,10 @@ describe("a command on the permission card", () => {
       expect(why, "no reason on the card").not.toBeNull();
       expect(html.indexOf("ask-command-unseen")).toBeLessThan(html.indexOf("ask-card-foot"));
       expect(allows(html)).toEqual({ always: true, once: true });
-      expect(html).toMatch(new RegExp(`<button class="ask-btn is-primary"[^>]*aria-describedby="${why![1]}"[^>]*>Allow once</button>`));
+      expect(html).toMatch(new RegExp(`<button class="ask-btn is-primary"[^>]*aria-describedby="${why![1]}"[^>]*aria-label="Allow once"[^>]*>`));
       // Deny is an ordinary button.
-      expect(deny(html)).toBe(' type="button"');
+      expect(deny(html)).toContain('type="button"');
+      expect(deny(html)).not.toContain("aria-disabled");
       expect(html).toContain('<span class="ask-card-script">75,759-line script</span>');
     }
   });
@@ -808,8 +809,9 @@ describe("a command on the permission card", () => {
       const why = /<p class="ask-command-unseen"><strong>2 more lines not shown<\/strong><span class="ask-card-why" id="([^"]+)"> This command is too long to show in full \(800,036 characters, 6,400,036 as drawn: the ones that cannot be seen as typed are drawn as their codes\), so it cannot be allowed here\. Deny it and ask for it in smaller steps\.<\/span><\/p>/.exec(html);
       expect(why, "no reason on the card").not.toBeNull();
       expect(allows(html)).toEqual({ always: true, once: true });
-      expect(html).toMatch(new RegExp(`<button class="ask-btn is-primary"[^>]*aria-describedby="${why![1]}"[^>]*>Allow once</button>`));
-      expect(deny(html)).toBe(' type="button"');
+      expect(html).toMatch(new RegExp(`<button class="ask-btn is-primary"[^>]*aria-describedby="${why![1]}"[^>]*aria-label="Allow once"[^>]*>`));
+      expect(deny(html)).toContain('type="button"');
+      expect(deny(html)).not.toContain("aria-disabled");
       // How many it holds is still said, at full strength.
       expect(html).toContain("<strong>800,000 characters that cannot be seen as typed</strong>");
     }
@@ -954,9 +956,9 @@ describe("a command on the permission card", () => {
   it("treats a script or code an MCP tool runs as a command too", () => {
     const html = draw({ id: "c3", toolName: "mcp__playwright__browser_run_code_unsafe", toolInput: { code: lines(13) } });
     expect(html).toContain(">code · 13 lines<");
-    expect(html).toContain(">Open the full code</button>");
+    expect(html).toContain("aria-label=\"Open the full code\"");
     expect(html).toContain("Open the full code to allow it.");
-    expect(html).toMatch(/<button class="ask-btn is-primary"[^>]*aria-disabled="true"[^>]*>Allow once<\/button>/);
+    expect(html).toMatch(/<button(?=[^>]*aria-label="Allow once") class="ask-btn is-primary"[^>]*aria-disabled="true"[^>]*>[\s\S]*?<\/button>/);
     const short = draw({ id: "c4", toolName: "mcp__sandbox__exec", toolInput: { script: "make\nmake install" } });
     expect(short).toContain('<pre class="ask-card-body is-command">make\nmake install</pre>');
   });

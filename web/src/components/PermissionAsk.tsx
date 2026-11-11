@@ -26,6 +26,7 @@
 // inside the card; a text the page cannot draw whole (`lib/cardFold`'s
 // `WHOLE_MAX`) is not opened in part, and the card will not take an Allow
 // for it at all: it says why, and Deny still answers.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useId, useMemo, useState } from "react";
 import { ASK_WAIT_SECS, askDeadline, askRemaining, askWaitSecs, clockText } from "../lib/askClock";
 import { askDetail, changeFacts, isCommand, type ChangeRow } from "../lib/askDetail";
@@ -494,8 +495,8 @@ export function PermissionAsk({ ask, agent, onAnswered, startOpen = false }: {
             type="button"
             disabled={!!sending}
             onClick={() => void answer("deny")}
-          >
-            {sending === "deny" ? "Denying…" : "Deny"}
+           data-icon-action title={sending === "deny" ? "Denying…" : "Deny"} aria-label={sending === "deny" ? "Denying…" : "Deny"}>
+            <ActionIcon name="deny" />
           </button>
           {!ask.once && (
             <button
@@ -506,15 +507,15 @@ export function PermissionAsk({ ask, agent, onAnswered, startOpen = false }: {
               // its reason read out, and Deny beside it still answers.
               aria-disabled={off || undefined}
               aria-describedby={off ? whyId : undefined}
-              title={
+              title={sending === "always" ? "Allowing…" : "Always"}
+              onClick={() => { if (!off) void answer("always"); }}
+             data-icon-action aria-label={sending === "always" ? "Allowing…" : "Always"} aria-description={
                 off ? why
                   : ask.toolName?.toLowerCase() === "bash"
                   ? "Stop asking about this program for the rest of this chat"
                   : "Stop asking about this tool for the rest of this chat"
-              }
-              onClick={() => { if (!off) void answer("always"); }}
-            >
-              {sending === "always" ? "Allowing…" : "Always"}
+              }>
+              <ActionIcon name="always" />
             </button>
           )}
           <button
@@ -523,10 +524,10 @@ export function PermissionAsk({ ask, agent, onAnswered, startOpen = false }: {
             disabled={!!sending}
             aria-disabled={off || undefined}
             aria-describedby={off ? whyId : undefined}
-            title={off ? why : undefined}
+            title={sending === "allow" ? "Allowing…" : ask.once ? "Allow" : "Allow once"}
             onClick={() => { if (!off) void answer("allow"); }}
-          >
-            {sending === "allow" ? "Allowing…" : ask.once ? "Allow" : "Allow once"}
+           data-icon-action aria-label={sending === "allow" ? "Allowing…" : ask.once ? "Allow" : "Allow once"} aria-description={off ? why : undefined}>
+            <ActionIcon name="allow" />
           </button>
         </div>
       </div>

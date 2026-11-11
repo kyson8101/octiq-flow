@@ -7,6 +7,7 @@
 //
 // A card each, and the card IS the button: there is exactly one thing you come
 // here to do, so it does not hide behind a menu.
+import { ActionIcon } from "./ActionIcon";
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
 import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
@@ -71,8 +72,8 @@ export function ShelvedProjects({
               <RollingText>{`${list.length - done.size} put away · tap one to bring it back`}</RollingText>
             </div>
           </div>
-          <button className="panel-close" type="button" onClick={onClose} aria-label="Close">
-            ×
+          <button className="panel-close" type="button" onClick={onClose} aria-label="Close" data-icon-action title="Close">
+            <ActionIcon name="dismiss" />
           </button>
         </header>
 

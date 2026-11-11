@@ -15,6 +15,7 @@ import { useRunDetail, useOrchestrationSnapshot } from "../lib/useOrchestrationS
 // approved and its whole brief, scrolling inside the card. Nothing the person
 // approves is a second press away. The run panel is where a plan is browsed,
 // and keeps a disclosure per task.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { approvePlan, rejectPlan } from "../lib/agentsMode";
 import { modelFromReported } from "../lib/agentProviders";
@@ -340,7 +341,9 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
                     }
                   }}
                 />
-                <button className="plan-review-quiet" type="button" disabled={!note.trim()} onClick={requestChanges}>Request changes</button>
+                <button className="plan-review-quiet" type="button" disabled={!note.trim()} onClick={requestChanges} data-icon-action title="Request changes" aria-label="Request changes">
+                  <ActionIcon name="edit" />
+                </button>
               </div>}
               {surface === "chat" && (!autoEnabled || offerFull) && <label className="auto-plan-future"
                 onClickCapture={(event) => {
@@ -363,11 +366,11 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
                 onCancel={() => { setRejecting(false); setReason(""); }} />}
               <div className="plan-review-approve">
                 <span className="plan-review-hint" title={folded ? chatHint : undefined}>{waitReason || (blocked ? "Some tasks wait on each other and will never start." : goesOn ? PLAN_GOES_ON : PLAN_STARTS_NOTHING)}</span>
-                {!rejecting && <button className="plan-review-reject" type="button" disabled={busy || holding} onClick={() => setRejecting(true)}>
-                  Reject
+                {!rejecting && <button className="plan-review-reject" type="button" disabled={busy || holding} onClick={() => setRejecting(true)} data-icon-action title="Reject" aria-label="Reject">
+                  <ActionIcon name="deny" />
                 </button>}
-                <button className="orch-primary" type="button" disabled={busy || holding} onClick={() => void approve()}>
-                  {busyAction === "approve" ? "Approving…" : busy ? "Deciding…" : "Approve plan"}
+                <button className="orch-primary" type="button" disabled={busy || holding} onClick={() => void approve()} data-icon-action title={busyAction === "approve" ? "Approving…" : busy ? "Deciding…" : "Approve plan"} aria-label={busyAction === "approve" ? "Approving…" : busy ? "Deciding…" : "Approve plan"}>
+                  <ActionIcon name="approve" />
                 </button>
               </div>
             </footer>}
@@ -397,9 +400,11 @@ export function PlanRejectConfirmation({ reason, busy, disabled, rejecting, onRe
         }
         if (event.key === "Escape") onCancel();
       }} />
-    <button className="plan-review-quiet" type="button" disabled={busy} onClick={onCancel}>Cancel</button>
-    <button className="plan-review-reject" type="button" disabled={busy || disabled} onClick={onConfirm}>
-      {rejecting ? "Rejecting…" : "Confirm reject"}
+    <button className="plan-review-quiet" type="button" disabled={busy} onClick={onCancel} data-icon-action title="Cancel" aria-label="Cancel">
+      <ActionIcon name="cancel" />
+    </button>
+    <button className="plan-review-reject" type="button" disabled={busy || disabled} onClick={onConfirm} data-icon-action title={rejecting ? "Rejecting…" : "Confirm reject"} aria-label={rejecting ? "Rejecting…" : "Confirm reject"}>
+      <ActionIcon name="deny" />
     </button>
   </div>;
 }

@@ -1389,15 +1389,23 @@ narrow Windows window gets the phone's layout.
   still at its end, both on a phone only: the way back from the chat list
   (`Return to chat`), and the usage number on a page that has no action bar.
 - **The action bar** (`components/ActionBar`, 36px; 45px on a phone): every
-  action for what is on screen, each a button with an icon and a short word
-  (`Tasks`, `Git`, `Focus`, `New task`, `Details`,
-  `Agents`, `Pinned`, `Full width`, `Run`, `Reload`, `Copy ID`, `Complete`,
-  `Delete`),
-  in that order. The word is short and stays the same; the sentence is the
-  button's name and tooltip (`Complete this chat`), and a button's result is
-  its icon and name, never a longer word (`Copy ID` does not become `Chat ID
-  copied` in the row). A page's own buttons (`WorkspaceHeader`'s `actions`)
-  are drawn at its start on a desktop.
+  action for what is on screen, each an icon-only button from
+  `components/ActionIcon`, with any count badge kept. The original action
+  words stay in both `aria-label` and `title`; no visible label is needed.
+  Desktop targets are 28px; phone and coarse-pointer targets are 44px.
+  `Tasks`, `Git`, `Focus`, `New task`, `Details`, `Agents`, `Pinned`,
+  `Full width`, `Run`, `Reload`, `History`, `Back to thread`, `Copy ID`,
+  `Complete`, `Delete` keep their order. Results change the icon, colour
+  and accessible name, without adding words to the row. A page's own
+  buttons (`WorkspaceHeader`'s `actions`) are drawn at its start on desktop.
+  The same registry covers secondary actions and decision answers. Decision
+  glyphs differ by shape (Deny is a slashed circle; Dismiss is ×); the
+  primary answer keeps `--decide` and quiet answers stay quiet. Preserve
+  every press guard, pending key, disabled reason and submitted value.
+  Final destructive confirmations (`Confirm removal`, `Delete`, `Remove
+  all` and other danger dialogs) retain icon plus words. Arbitrary gate
+  options, question choices, navigation/data rows and their disclosures
+  retain their content: those words identify data, rather than an action.
   - **Adding a button is one line** in `App.tsx`'s `barActions`:
     `act(id, keep, node)`. `keep` is how long it stays as a desktop narrows.
   - **A desktop measures; a phone scrolls.** On a desktop what does not fit
@@ -1413,8 +1421,7 @@ narrow Windows window gets the phone's layout.
     on it: a mask would also cut the panel a button opens.
   - **Its height never changes.** One line, `white-space: nowrap`, and no
     scrollbar that takes room (`scrollbar-width: none` and the WebKit rule:
-    a Windows browser draws classic ones). Widths are measured, never
-    assumed from a font: a wider fallback font moves buttons behind More.
+    a Windows browser draws classic ones). Widths are measured, including badges, never assumed from the glyph.
     The bar reads layout when a size changes (`ResizeObserver`), never on
     every render.
   - **It is there before its buttons are.** On a chat's page the bar is

@@ -11,7 +11,7 @@ function Card({ startOpen = false, labels = ["Brief · 12 lines", "Checkout"] }:
     <div>
       <FoldLine fold={fold} labels={labels} />
       <FoldBody fold={fold}><p>the whole brief</p></FoldBody>
-      <button type="button">Allow</button>
+      <button type="button" aria-label="Allow">Allow</button>
     </div>
   );
 }
@@ -30,7 +30,7 @@ function Stages({ startOpen = false }: { startOpen?: boolean }) {
 describe("the disclosure of a decision card", () => {
   it("is a real button that says whether it is open and what it opens", () => {
     const html = renderToStaticMarkup(<Card />);
-    const button = /<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="([^"]+)" aria-describedby="([^"]+)" aria-label="Show details" title="Show details"><span class="card-fold-chevron" aria-hidden="true"><\/span><\/button>/.exec(html);
+    const button = /<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="([^"]+)" aria-describedby="([^"]+)" aria-label="Show details" title="Show details"[^>]*><svg[^>]*data-action-icon="expand"[\s\S]*?<\/svg><\/button>/.exec(html);
     expect(button).not.toBeNull();
     // What is folded, by name and size, is what describes it.
     expect(html).toContain(`<span class="card-fold-labels" id="${button![2]}"><span>Brief · 12 lines</span><span>Checkout</span></span>`);
@@ -45,14 +45,14 @@ describe("the disclosure of a decision card", () => {
     expect(html).toContain('aria-expanded="true"');
     expect(html).toContain('aria-label="Hide details" title="Hide details"');
     expect(html).toMatch(/<div id="[^"]+" class="card-fold"><div class="card-fold-in is-bounded"><p>the whole brief<\/p><\/div><\/div>/);
-    expect(html.indexOf("the whole brief")).toBeLessThan(html.indexOf(">Allow<"));
+    expect(html.indexOf("the whole brief")).toBeLessThan(html.indexOf("aria-label=\"Allow\""));
   });
 
   it("draws no line, and so no control, when nothing is folded", () => {
     const html = renderToStaticMarkup(<Card labels={[false]} />);
     expect(html).not.toContain("card-fold-line");
     expect(html).not.toContain("<button type=\"button\" class=\"card-fold-toggle\"");
-    expect(html).toContain(">Allow<");
+    expect(html).toContain("aria-label=\"Allow\"");
   });
 
   it("opens several boxes from the one control, and names each", () => {

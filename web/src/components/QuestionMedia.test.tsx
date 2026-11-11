@@ -87,7 +87,7 @@ describe("media under a pending question", () => {
 
   it("keeps the block's rules: the recommended row selected, the button on, nothing focused, nothing folded", () => {
     expect(block.match(/checked=""/g)).toHaveLength(1);
-    expect(block).toMatch(/class="qa-submit" aria-disabled="false">Send answer</);
+    expect(block).toMatch(/class="qa-submit" aria-disabled="false"[^>]*aria-label="Send answer"[^>]*></);
     expect(block).not.toMatch(/autofocus|aria-expanded|<details/i);
   });
 
@@ -151,7 +151,7 @@ describe("exactly one media item beside a question", () => {
     expect(block.indexOf("media-beside-copy")).toBeLessThan(block.indexOf("qa-q-title"));
     expect(block).toContain("Other…");
     expect(block).toContain('class="qa-row-shot"');
-    expect(block).toMatch(/class="qa-submit" aria-disabled="false">Send answer</);
+    expect(block).toMatch(/class="qa-submit" aria-disabled="false"[^>]*aria-label="Send answer"[^>]*></);
     expect(block).not.toMatch(/autofocus/i);
   });
   it("leaves two or more media in the existing strip", () => {

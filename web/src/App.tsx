@@ -1,4 +1,5 @@
 import { withStreamActivity, type ChatStreamActivity } from "./lib/chatActivity";
+import { ActionIcon } from "./components/ActionIcon";
 import { ProviderFallbackChoices } from "./components/ProviderFallback";
 // OctiqFlow v2 — the chat client.
 //
@@ -5419,7 +5420,6 @@ export default function App() {
 
   if (conn === "unauthorized") return <Connect />;
 
-
   /** Opens one main-area page in place of the chat, closing any other. */
   const showPage = (page: "search" | "projects" | "settings" | "agents" | "pulls" | "disk") => {
     setProjectsScreen(false);
@@ -5461,11 +5461,8 @@ export default function App() {
       aria-label="Start new task"
       title="Start new task"
       onClick={newChat}
-    >
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-        <path d="M12 5v14M5 12h14" />
-      </svg>
-      <span className="topbar-action-label">New task</span>
+     data-icon-action>
+      <ActionIcon name="new" />
     </button>),
     onChat && conversationId && act("details", 60, <ChatTaskBar
       action
@@ -5491,17 +5488,15 @@ export default function App() {
       setRunOpened((before) => ({ ...before, [workflowKey]: true }));
       showWorkflowView("run");
       showTasks(true);
-    }}>
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <circle cx="5.5" cy="12" r="2.2" /><circle cx="18.5" cy="6" r="2.2" /><circle cx="18.5" cy="18" r="2.2" />
-        <path d="M7.7 12h3.1a2.2 2.2 0 0 0 2.2-2.2V8.2A2.2 2.2 0 0 1 15.2 6h1.1M7.7 12h3.1a2.2 2.2 0 0 1 2.2 2.2v1.6a2.2 2.2 0 0 0 2.2 2.2h1.1" />
-      </svg>
-      <span className="topbar-action-label">Run</span>
+    }} data-icon-action>
+      <ActionIcon name="run" />
     </button>),
     // Only drawn for a home-screen app, which has no browser chrome.
     push.installed() && act("reload", 40, <InstalledReload />),
     onChat && threadAgentId && act("history", 55, <LeadHistoryButton onClick={() => setLeadHistoryFor(threadAgentId)} />),
-    onChat && historyReturn?.chatId === conversationId && act("lead-back", 90, <button className="icon-btn" type="button" onClick={() => void showLeadThread(historyReturn.agentId)}><span aria-hidden="true">←</span><span className="topbar-action-label">Back to thread</span></button>),
+    onChat && historyReturn?.chatId === conversationId && act("lead-back", 90, <button className="icon-btn" type="button" onClick={() => void showLeadThread(historyReturn.agentId)} data-icon-action title="Back to thread" aria-label="Back to thread">
+      <ActionIcon name="back" />
+    </button>),
     onChat && conversationId && act("copy-id", 20, <CopyChatIdButton chatId={conversationId} />),
     onChat && conversationId && !threadAgentId && completeChatAction.shown && act("complete", 50, <CompleteChatButton
       action={completeChatAction}
@@ -6132,8 +6127,8 @@ export default function App() {
                     dismissFailure(conversationId, failure);
                     patch(conversationId, (s) => ({ ...s, failure: undefined }));
                   }}
-                >
-                  ×
+                 data-icon-action title="Dismiss">
+                  <ActionIcon name="dismiss" />
                 </button>
               )}
               <div className="failure-title">{failure?.title ?? "Auto-resume scheduled"}</div>
@@ -6164,8 +6159,8 @@ export default function App() {
                           }));
                         });
                     }}
-                  >
-                    {autoResume.fallbackAgent ? "Cancel switch" : "Cancel auto-resume"}
+                   data-icon-action title={autoResume.fallbackAgent ? "Cancel switch" : "Cancel auto-resume"} aria-label={autoResume.fallbackAgent ? "Cancel switch" : "Cancel auto-resume"}>
+                    <ActionIcon name="cancel" />
                   </button>}
                 </div>
               )}

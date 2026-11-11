@@ -147,7 +147,7 @@ describe("a chat that was handed a task and handed it on", () => {
     expect(count(html, "handover-card ")).toBe(1);
     expect(at("Handed over from Potato")).toBeLessThan(at("the brief from Potato"));
     expect(at('aria-label="Hand this task to Tofu?"')).toBeGreaterThan(at("a later answer"));
-    expect(at("Hand over to Tofu<")).toBeGreaterThan(at('aria-label="Hand this task to Tofu?"'));
+    expect(at('aria-label="Hand over to Tofu"')).toBeGreaterThan(at('aria-label="Hand this task to Tofu?"'));
     expect(html).toContain('data-pending-keys="handover:handover_out"');
     expect(html).not.toContain("Handed over to");
     expect(html).not.toContain("handover-line is-confirmed");

@@ -9,6 +9,7 @@
 // Folded it is the ask, the two levels, the reason on one line and when a
 // raise takes hold. A reason that runs on, and the sentences about what the
 // agent does meanwhile, open above the buttons (`components/CardFold`).
+import { ActionIcon } from "./ActionIcon";
 import { useState } from "react";
 import { accessLabel } from "../lib/agentProviders";
 import {
@@ -92,11 +93,11 @@ export function AccessRequestCard({ request, onAnswer, startOpen = false }: {
       <div className="ask-card-foot">
         <p className="ask-card-wait" title={note}>{accessRequestShort(request)}</p>
         <div className="ask-card-actions">
-          <button className="ask-btn" type="button" disabled={!!sending} onClick={() => void answer("decline")}>
-            {sending === "decline" ? "Declining…" : "Not now"}
+          <button className="ask-btn" type="button" disabled={!!sending} onClick={() => void answer("decline")} data-icon-action title={sending === "decline" ? "Declining…" : "Not now"} aria-label={sending === "decline" ? "Declining…" : "Not now"}>
+            <ActionIcon name="keep" />
           </button>
-          <button className="ask-btn is-primary" type="button" disabled={!!sending} onClick={() => void answer("raise")}>
-            {sending === "raise" ? "Raising…" : `Raise to ${label(request.requested)}`}
+          <button className="ask-btn is-primary" type="button" disabled={!!sending} onClick={() => void answer("raise")} data-icon-action title={sending === "raise" ? "Raising…" : `Raise to ${label(request.requested)}`} aria-label={sending === "raise" ? "Raising…" : `Raise to ${label(request.requested)}`}>
+            <ActionIcon name="allow" />
           </button>
         </div>
       </div>

@@ -102,7 +102,7 @@ describe("a pending question, at the call that asked it", () => {
 
   it("has one full-width button, on because the recommended option answers it", () => {
     expect(html.match(/class="qa-submit"/g)).toHaveLength(1);
-    expect(html).toMatch(/<button type="button" class="qa-submit" aria-disabled="false">Send answer<\/button>/);
+    expect(html).toMatch(/<button(?=[^>]*aria-label="Send answer") type="button" class="qa-submit" aria-disabled="false"[^>]*>[\s\S]*?<\/button>/);
     expect(html).toContain('<p class="qa-why" id=');
   });
 
@@ -123,7 +123,7 @@ describe("what a question can be", () => {
     expect(html).not.toContain('checked=""');
     expect(html).toContain('class="qa-submit" aria-disabled="true"');
     // The reason is in words on the page, and the button points at it.
-    expect(html).toMatch(/aria-describedby="([^"]+)"[^>]*>Send answer<\/button><div class="qa-foot"><p class="qa-why" id="\1">Choose an answer to send it\.<\/p>/);
+    expect(html).toMatch(/aria-describedby="([^"]+)"[^>]*aria-label="Send answer"[^>]*>[\s\S]*?<\/button><div class="qa-foot"><p class="qa-why" id="\1">Choose an answer to send it\.<\/p>/);
     // Off for a reader, not removed from the keyboard's way.
     expect(html).not.toMatch(/class="qa-submit"[^>]* disabled/);
   });
@@ -156,7 +156,7 @@ describe("what a question can be", () => {
     expect(html.match(/class="qa-block/g)).toHaveLength(1);
     expect(html.match(/class="qa-q-title"/g)).toHaveLength(3);
     expect(html.match(/class="qa-submit"/g)).toHaveLength(1);
-    expect(html).toContain(">Send 3 answers<");
+    expect(html).toContain("aria-label=\"Send 3 answers\"");
     expect(html).toContain("2 of 3 questions still need an answer.");
     expect(html).toContain('aria-label="The agent has 3 questions"');
     expect(html).toContain('data-pending-keys="question:b1"');
@@ -239,7 +239,7 @@ describe("answers the host still lists", () => {
     expect(html).not.toContain("qa-block");
     // Saved and on its way asks nothing: no badge leads here.
     expect(html).not.toContain("data-pending-keys");
-    expect(html).toContain(">Cancel pending delivery<");
+    expect(html).toContain("aria-label=\"Cancel pending delivery\"");
     expect(html).not.toContain("Retry delivery");
   });
 
@@ -254,7 +254,7 @@ describe("answers the host still lists", () => {
   it("offers the retry when delivery failed, under the delivery's own key", () => {
     const html = record({ status: "failed", error: "Could not continue the agent", retryable: true });
     expect(html).toContain("Answers need attention");
-    expect(html).toContain(">Retry delivery<");
+    expect(html).toContain("aria-label=\"Retry delivery\"");
     expect(html).toContain('data-pending-keys="delivery:a"');
   });
 });

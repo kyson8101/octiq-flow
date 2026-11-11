@@ -2,6 +2,7 @@
 // ChatGPT draw one (through the person's own Codex sign-in), regenerate it,
 // and accept it. Nothing here saves: the form's Save does, like every other
 // field, so a picture that was only previewed never becomes the agent's.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { bridge } from "../lib/bridge";
 import {
@@ -190,12 +191,20 @@ export function AgentAvatarEditorView({
           <div className="avatar-editor-buttons">
             {gen.kind === "candidate" ? (
               <>
-                <button className="settings-primary" type="button" onClick={onAccept}>Use this</button>
-                <button className="vault-button" type="button" onClick={onGenerate}>Regenerate</button>
-                <button className="vault-button" type="button" onClick={onDiscard}>Discard</button>
+                <button className="settings-primary" type="button" onClick={onAccept} data-icon-action title="Use this" aria-label="Use this">
+                  <ActionIcon name="confirm" />
+                </button>
+                <button className="vault-button" type="button" onClick={onGenerate} data-icon-action title="Regenerate" aria-label="Regenerate">
+                  <ActionIcon name="retry" />
+                </button>
+                <button className="vault-button" type="button" onClick={onDiscard} data-icon-action title="Discard" aria-label="Discard">
+                  <ActionIcon name="cancel" />
+                </button>
               </>
             ) : busy ? (
-              <button className="vault-button" type="button" onClick={onCancel}>Cancel</button>
+              <button className="vault-button" type="button" onClick={onCancel} data-icon-action title="Cancel" aria-label="Cancel">
+                <ActionIcon name="cancel" />
+              </button>
             ) : (
               <>
                 <button className="vault-button" type="button" onClick={onUpload}>Upload image</button>
@@ -208,7 +217,9 @@ export function AgentAvatarEditorView({
                 >
                   Generate with ChatGPT
                 </button>
-                {avatar && <button className="vault-button" type="button" onClick={onRemove}>Remove</button>}
+                {avatar && <button className="vault-button" type="button" onClick={onRemove} data-icon-action title="Remove" aria-label="Remove">
+                  <ActionIcon name="delete" />
+                </button>}
               </>
             )}
           </div>

@@ -20,6 +20,7 @@
 //   · A file that changed underneath you is not overwritten silently. Agents
 //     are editing these same files while you read them, so Save checks what is
 //     on disk against what we last read before it writes.
+import { ActionIcon } from "./ActionIcon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { baseName, isHtml } from "../lib/files";
@@ -326,8 +327,8 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
                     type="button"
                     aria-label={`Close ${baseName(tab.path)}`}
                     onClick={() => void closeFile(tab.path)}
-                  >
-                    ✕
+                   data-icon-action title={`Close ${baseName(tab.path)}`}>
+                    <ActionIcon name="dismiss" />
                   </button>
                 </div>
               );
@@ -340,8 +341,8 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
               type="button"
               disabled={!editable || !dirty || saving}
               onClick={() => void save()}
-            >
-              {saving ? "Saving…" : justSaved === active && !dirty ? "Saved" : "Save"}
+             data-icon-action title={saving ? "Saving…" : justSaved === active && !dirty ? "Saved" : "Save"} aria-label={saving ? "Saving…" : justSaved === active && !dirty ? "Saved" : "Save"}>
+              <ActionIcon name="save" />
             </button>
           )}
         </div>
@@ -361,12 +362,12 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
                 onClick={() =>
                   setSourceView((prev) => ({ ...prev, [current.path]: !prev[current.path] }))
                 }
-              >
-                {sourceView[current.path] ? "Preview" : "Edit"}
+               data-icon-action title={sourceView[current.path] ? "Preview" : "Edit"} aria-label={sourceView[current.path] ? "Preview" : "Edit"}>
+                <ActionIcon name={sourceView[current.path] ? "preview" : "edit"} />
               </button>
             )}
-            <button className="ws-mini-btn" type="button" onClick={() => void reload(current.path)}>
-              Reload
+            <button className="ws-mini-btn" type="button" onClick={() => void reload(current.path)} data-icon-action title="Reload" aria-label="Reload">
+              <ActionIcon name="refresh" />
             </button>
           </div>
         )}

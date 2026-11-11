@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { ActionIcon } from "./ActionIcon";
 import { bridge } from "../lib/bridge";
 import { mediaTime, orderedComments, reviewQuote, type MediaThread } from "../lib/mediaComments";
 import { canQuote, sendQuote } from "../lib/quote";
@@ -79,7 +80,9 @@ export function MediaComments({ path, captureTime, seekTime, duration, onQuote }
   const comments = orderedComments(thread?.comments ?? []);
   return <span className="media-comments" role="region" aria-label="Media comments" onClick={event => event.stopPropagation()}>
     <span className="media-comments-heading"><strong>Comments</strong><span>{comments.length}</span></span>
-    {error && <span className="media-comments-error" role="alert">{error} {unread && <button type="button" onClick={() => void reload()}>Retry loading</button>}</span>}
+    {error && <span className="media-comments-error" role="alert">{error} {unread && <button type="button" onClick={() => void reload()} data-icon-action title="Retry loading" aria-label="Retry loading">
+      <ActionIcon name="retry" />
+    </button>}</span>}
     {!thread && !error && <span role="status">Loading comments…</span>}
     {!!seekTime && !!duration && duration > 0 && comments.some(comment => comment.timeMs !== undefined) && <span className="media-comment-timeline" role="group" aria-label="Comment timeline">
       {comments.filter(comment => comment.timeMs !== undefined).map(comment => <button type="button" key={comment.id}
@@ -98,7 +101,9 @@ export function MediaComments({ path, captureTime, seekTime, duration, onQuote }
           {canQuote() && <button type="button" onClick={() => {
             sendQuote({ path: thread!.target.path, text: reviewQuote(thread!, comment), from: 0, to: 0 }); onQuote?.();
           }}>Add to chat</button>}
-          <button type="button" disabled={saving || unread} onClick={() => void remove(comment.id)}>Remove</button>
+          <button type="button" disabled={saving || unread} onClick={() => void remove(comment.id)} data-icon-action title="Remove" aria-label="Remove">
+            <ActionIcon name="delete" />
+          </button>
         </span>
       </span>)}
       {thread && !comments.length && <span className="media-comments-empty">No comments on this version yet.</span>}

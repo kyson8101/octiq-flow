@@ -655,7 +655,7 @@
   cursor: pointer;
 }
 .orch-gate-options button:hover:not([aria-disabled="true"]),
-.orch-gate-write button:hover:not([aria-disabled="true"]) { border-color: var(--accent); color: var(--fg-0); }
+.orch-gate-write button:hover:not([aria-disabled="true"]) { border-color: var(--decide); color: var(--fg-0); }
 .orch-gate-write { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
 .orch-gate-write input { min-width: 0; flex: 1 1 150px; height: 34px; padding: 0 10px; font-size: 12px; }
 /* Off is said to a screen reader and kept on the keyboard: an answer that
@@ -1287,3 +1287,11 @@
 .orch-task-reassign:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .orch-task-handoffs { margin: 0 0 10px; padding-left: 16px; color: var(--fg-2); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .orch-task-ledger { overflow-wrap: anywhere; }
+
+.orch-gate-write button[data-icon-action],
+.orch-followup .orch-delivery-go[data-icon-action],
+.orch-cleanup-confirm .orch-delivery-go[data-icon-action] {
+  border-color: var(--decide);
+  background: color-mix(in srgb, var(--decide) 18%, var(--bg-1));
+  color: var(--fg-0);
+}

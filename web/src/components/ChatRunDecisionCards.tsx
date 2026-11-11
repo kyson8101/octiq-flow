@@ -1,5 +1,6 @@
 // The run's person gates and failures in its coordinator's existing card stack.
 // runWaits owns eligibility and identity; the panel owns the shared controls.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useRef, useState } from "react";
 import type { OrchestrationGate, OrchestrationRun, OrchestrationSnapshot, OrchestrationTask } from "../lib/orchestration";
 import { gateDoor } from "../lib/orchestration";
@@ -122,7 +123,9 @@ function DecisionCard({ card: { wait, run, task, gate }, snapshot, waits, ready,
         void perform(() => runWorkspaceAction(run, "orchestration_task_reopen", { taskId: task.id, spec }));
       }} />
       : <button ref={opener} type="button" className="orch-delivery-opener" disabled={!ready || flying} onKeyDown={dropHeld}
-        onClick={event => { if (repeatsAnother(event)) return; notePress(event); setReopening(true); }}>{reopen.label}</button>)}
+        onClick={event => { if (repeatsAnother(event)) return; notePress(event); setReopening(true); }} data-icon-action title={reopen.label} aria-label={reopen.label}>
+        <ActionIcon name="reopen" />
+      </button>)}
     {!ready && <p role="status">{detailError ?? "Reading the task's decision…"}</p>}
     {error && <p className="chat-run-decision-error" role="alert">{error}</p>}
   </article>;

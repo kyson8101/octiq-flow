@@ -36,7 +36,7 @@ const chat = (questions: Question[], messages: Message[] = TALK) => renderToStat
     <MessageList messages={messages} busy={false} conversationId="c1" />
   </ChatQuestionsContext.Provider>,
 );
-const submit = (html: string) => /<button type="button" class="qa-submit"[^>]*>[^<]*<\/button>/.exec(html)?.[0] ?? "";
+const submit = (html: string) => /<button type="button" class="qa-submit"[^>]*>[\s\S]*?<\/button>/.exec(html)?.[0] ?? "";
 const titles = (html: string) => [...html.matchAll(/<p class="qa-q-title"[^>]*>([^<]*)<\/p>/g)].map((match) => match[1]);
 const bubbles = (html: string) => [...html.matchAll(/<p class="qa-said-line[^"]*">(.*?)<\/p>/g)].map((match) => match[1].replace(/<[^>]+>/g, ""));
 
@@ -84,7 +84,7 @@ describe("a call whose questions have not all arrived", () => {
     const html = chat([a, b]);
     expect(titles(html)).toEqual(["Which branch?", "Which target?"]);
     expect(submit(html)).toContain('aria-disabled="false"');
-    expect(submit(html)).toContain(">Send 2 answers<");
+    expect(submit(html)).toContain("aria-label=\"Send 2 answers\"");
     expect(html).not.toContain("Still reading");
   });
 
@@ -109,7 +109,7 @@ describe("a call that is answered in part", () => {
     expect(titles(html)).toEqual(["Which target?"]);
     expect(html.match(/class="qa-block/g)).toHaveLength(1);
     expect(submit(html)).toContain('aria-disabled="false"');
-    expect(submit(html)).toContain(">Send answer<");
+    expect(submit(html)).toContain("aria-label=\"Send answer\"");
     // What was answered is said, with its question, above what is asked.
     expect(html).toContain('<p class="qa-asked-q">Which branch?</p>');
     expect(bubbles(html)).toEqual(["Which branch? develop"]);
@@ -186,7 +186,7 @@ describe("a part of a call that the host's own list named", () => {
     const html = chat([b]);
     expect(titles(html)).toEqual(["Which target?"]);
     expect(submit(html)).toContain('aria-disabled="false"');
-    expect(submit(html)).toContain(">Send answer<");
+    expect(submit(html)).toContain("aria-label=\"Send answer\"");
     expect(html).not.toContain("Still reading");
   });
 

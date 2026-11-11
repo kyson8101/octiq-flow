@@ -704,14 +704,14 @@ it("keeps pushed work available for review without offering merged cleanup", () 
   const html = deliveryHtml(workspace);
   expect(html).toContain("Pushed · awaiting review");
   expect(html).toContain("Continue after review");
-  expect(html).not.toContain(">Clean up worktree<");
+  expect(html).not.toContain("aria-label=\"Clean up worktree\"");
   expect(html).toContain("Abandon workspace");
 });
 it("offers cleanup only for a clean managed worktree with verified merge", () => {
   const merged = { ...workspace, delivery: { ...workspace.delivery!, merged: true } };
-  expect(deliveryHtml(merged)).toContain(">Clean up worktree<");
-  expect(deliveryHtml({ ...merged, delivery: { ...merged.delivery, dirty: true } })).not.toContain(">Clean up worktree<");
-  expect(deliveryHtml({ ...merged, plan: { ...merged.plan, mode: "direct", managed: false } })).not.toContain(">Clean up worktree<");
+  expect(deliveryHtml(merged)).toContain("aria-label=\"Clean up worktree\"");
+  expect(deliveryHtml({ ...merged, delivery: { ...merged.delivery, dirty: true } })).not.toContain("aria-label=\"Clean up worktree\"");
+  expect(deliveryHtml({ ...merged, plan: { ...merged.plan, mode: "direct", managed: false } })).not.toContain("aria-label=\"Clean up worktree\"");
 });
 it("keeps every workspace mutation hidden in read-only worker chats", () => {
   const html = deliveryHtml(workspace, true);
@@ -786,7 +786,7 @@ describe("embedded chat runs", () => {
       initialSnapshot={snapshot} onOpenChat={() => {}} onOpenBeside={() => {}} besideChatKey={besideChatKey} onClose={() => {}} />);
     const main = render("chat:master", null);
     expect(main).toContain('aria-label="Open task chat: Build the host ledger"');
-    expect(main).toMatch(/<button type="button" class="open-beside orch-task-beside" aria-label="Open beside main: Build the host ledger" title="Open beside main">/);
+    expect(main).toMatch(/<button type="button" class="open-beside orch-task-beside" aria-label="Open beside main: Build the host ledger" title="Open beside main"[^>]*>/);
     // Already beside main: marked like an open task, and no second button.
     const beside = render("chat:master", "chat:worker");
     expect(beside).toContain('aria-current="page" aria-label="Open task chat: Build the host ledger"');

@@ -11,6 +11,7 @@
 // are lifted out of the conversation here and kept by that call's id. The
 // alternative is a reply where a subagent's thinking, tool calls and prose all
 // read as the main agent's own.
+import { ActionIcon } from "./ActionIcon";
 import { readDeskRoute, readTaskBrief } from "../lib/taskBrief";
 import { Fragment, createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
@@ -1032,8 +1033,10 @@ function TurnView({
           <div className="job-wake-line">
             <WrapUpNote label={jobEnd.label} detail={jobEnd.detail} text={answer} mark="job" />
             {cancel && <button className="job-wake-cancel" type="button" disabled={!!message.queueAction}
-              title="Take this turn back. The agent is not told that the job ended."
-              aria-label="Cancel telling the agent the job ended" onClick={cancel}>×</button>}
+              title="Cancel telling the agent the job ended"
+              aria-label="Cancel telling the agent the job ended" onClick={cancel} data-icon-action>
+              <ActionIcon name="dismiss" />
+            </button>}
           </div>
           {message.queueError && <p className="message-delivery-error" role="alert">{message.queueError}</p>}
         </div>
@@ -1182,7 +1185,7 @@ function TurnView({
         {role === "assistant" && answer && (
           <div className={`msg-foot${streaming || turnLive ? " is-placeholder" : ""}`}>
             {streaming || turnLive
-              ? <span className="msg-copy" aria-hidden="true"><CopyIcon />Copy</span>
+              ? <span className="msg-copy" aria-hidden="true"><ActionIcon name="copy" /></span>
               : <CopyAnswer text={answer} what="reply" />}
           </div>
         )}
@@ -1205,34 +1208,16 @@ function CopyAnswer({ text, what }: { text: string; what: "reply" | "message" })
       <button
         className={`msg-copy ${state === "done" ? "is-done" : ""}`}
         type="button"
-        title={`Copy this ${what}`}
+        title={state === "done" ? "Copied" : state === "failed" ? "Could not copy" : `Copy this ${what}`}
         onClick={async () => {
           const ok = await copyText(text);
           setState(ok ? "done" : "failed");
           setTimeout(() => setState("idle"), 1600);
         }}
-      >
-        {state === "done" ? <TickIcon /> : <CopyIcon />}
-        {state === "done" ? "Copied" : state === "failed" ? "Could not copy" : "Copy"}
+       data-icon-action aria-label={state === "done" ? "Copied" : state === "failed" ? "Could not copy" : `Copy this ${what}`} aria-description={`Copy this ${what}`}>
+        <ActionIcon name={state === "done" ? "allow" : "copy"} />
       </button>
     </div>
-  );
-}
-
-function CopyIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="9" y="9" width="12" height="12" rx="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
-}
-
-function TickIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="m20 6-11 11-5-5" />
-    </svg>
   );
 }
 

@@ -159,10 +159,10 @@ describe("the turn that wakes the agent", () => {
     expect(delivered).not.toContain("Copy");
     const queued = draw(storeOf(), { ...turn, echo: undefined, delivery: "queued" });
     expect(queued).toContain("Cancel telling the agent the job ended");
-    expect(queued).toContain('>×</button>');
+    expect(queued).toContain('data-action-icon="dismiss"');
     expect(queued).not.toContain("Send now");
     expect(queued).not.toContain("message-delivery");
-    expect(queued).not.toContain(">Edit</button>");
+    expect(queued).not.toContain("aria-label=\"Edit\"");
     const failed = draw(storeOf(), { ...turn, echo: undefined, delivery: "failed" });
     expect(failed).not.toContain("Restore to composer");
     expect(failed).not.toContain("Cancel telling");

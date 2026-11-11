@@ -1,4 +1,5 @@
 import { ProviderFallbackSettings } from "./ProviderFallback";
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useState } from "react";
 import { charCount } from "../lib/agentsMode";
 import {
@@ -89,9 +90,11 @@ export function PreferencesBlock({ saved, text, loading, busy, done, unread = fa
       <div className="agent-policy-actions">
         {done && !changed && <span className="settings-note" role="status">Saved</span>}
         <button className="vault-button" type="button" disabled={loading || busy || !saved}
-          onClick={onClear}>Clear</button>
-        <button className="settings-primary" type="submit" disabled={loading || busy || !changed || over}>
-          {busy ? "Saving…" : "Save preferences"}
+          onClick={onClear} data-icon-action title="Clear" aria-label="Clear">
+          <ActionIcon name="dismiss" />
+        </button>
+        <button className="settings-primary" type="submit" disabled={loading || busy || !changed || over} data-icon-action title={busy ? "Saving…" : "Save preferences"} aria-label={busy ? "Saving…" : "Save preferences"}>
+          <ActionIcon name="save" />
         </button>
       </div>
     </form>

@@ -27,23 +27,24 @@ import noteSource from "./ReopenedNote.tsx?raw";
 
 const sources = import.meta.glob("../**/*.{ts,tsx}", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 
-const buttons = (html: string) => [...html.matchAll(/<button[^>]*>[^<]*<\/button>/g)].map((match) => match[0]);
+const buttons = (html: string) => [...html.matchAll(/<button[^>]*>[\s\S]*?<\/button>/g)].map((match) => match[0]);
 
 describe("where the keyboard is put when a question opens", () => {
   it("is the safe answer, for a question that stops something", () => {
     const html = renderToStaticMarkup(<ConfirmDialog options={stopConfirm({ title: "Implement" })} onAnswer={() => {}} />);
     const [cancel, confirm] = buttons(html);
-    expect(cancel).toContain(">Keep it running</button>");
+    expect(cancel).toContain("aria-label=\"Keep it running\"");
     expect(cancel).toContain('autofocus=""');
-    expect(confirm).toContain(">Stop worker</button>");
+    expect(confirm).toContain("aria-label=\"Stop worker\"");
     expect(confirm).not.toContain("autofocus");
     expect(confirm).toContain("is-danger");
+    expect(confirm).toContain('data-action-icon="stop"');
   });
 
   it("is the safe answer for every other question too", () => {
     const html = renderToStaticMarkup(<ConfirmDialog options={{ title: "Close this mission?", confirmLabel: "Close mission" }} onAnswer={() => {}} />);
     const [cancel, confirm] = buttons(html);
-    expect(cancel).toContain(">Cancel</button>");
+    expect(cancel).toContain("aria-label=\"Cancel\"");
     expect(cancel).toContain('autofocus=""');
     expect(confirm).not.toContain("autofocus");
   });
@@ -52,7 +53,7 @@ describe("where the keyboard is put when a question opens", () => {
     for (const loading of [true, false]) {
       const html = renderToStaticMarkup(<CompleteChatConfirm content={confirmContent(undefined)} loading={loading} onCancel={() => {}} onConfirm={() => {}} />);
       const all = buttons(html);
-      const cancel = all.find((button) => button.includes(">Cancel</button>"))!;
+      const cancel = all.find((button) => button.includes("aria-label=\"Cancel\""))!;
       const complete = all.find((button) => button.includes("Complete"))!;
       expect(cancel).toContain('autofocus=""');
       expect(complete).not.toContain("autofocus");
@@ -147,8 +148,8 @@ describe("confirming a shell command", () => {
     expect(html.match(/echo whole-command/g)).toHaveLength(100);
     const [cancel, run] = buttons(html);
     expect(cancel).toContain('autofocus=""');
-    expect(cancel).toContain(">Cancel</button>");
-    expect(run).toContain(">Run</button>");
+    expect(cancel).toContain("aria-label=\"Cancel\"");
+    expect(run).toContain('aria-label="Run"');
     expect(run).toContain("is-primary");
     expect(run).not.toContain("autofocus");
   });

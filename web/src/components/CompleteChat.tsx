@@ -10,6 +10,7 @@
 // a new message reopens the chat, and the wrap-up can be taken back from its
 // own queued bubble. So it is drawn in the decision colour, compact, with the
 // steps the agent is asked behind one disclosure.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import {
@@ -38,9 +39,8 @@ export function CompleteChatButton({ action, onClick }: { action: CompleteAction
       title={action.label}
       disabled={action.disabled}
       onClick={onClick}
-    >
-      <CompleteIcon />
-      <span className="topbar-action-label">Complete</span>
+     data-icon-action>
+      <ActionIcon name="complete" />
     </button>
   );
 }
@@ -190,14 +190,14 @@ export function CompleteChatConfirm({
           {/* The safe answer has the focus, once, from the first draw: the
               page behind re-renders on every delta and must not pull it
               back, and a key pressed again cancels. */}
-          <button className="ask-btn" type="button" autoFocus onClick={onCancel}>
-            {content.refusal ? "Close" : "Cancel"}
+          <button className="ask-btn" type="button" autoFocus onClick={onCancel} data-icon-action title={content.refusal ? "Close" : "Cancel"} aria-label={content.refusal ? "Close" : "Cancel"}>
+            <ActionIcon name="cancel" />
           </button>
           {/* Nothing can be confirmed until the host has said what it knows,
               or that it will not: the answer is what the question is about. */}
           {!content.refusal && (
-            <button className="ask-btn is-primary" type="button" disabled={loading} onClick={careful.confirm}>
-              Complete
+            <button className="ask-btn is-primary" type="button" disabled={loading} onClick={careful.confirm} data-icon-action title="Complete" aria-label="Complete">
+              <ActionIcon name="complete" />
             </button>
           )}
         </div>

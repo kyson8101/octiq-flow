@@ -22,6 +22,7 @@
 //
 // Folded is the state a card starts in. A card the person opened stays open
 // while it is on screen, by the id of what it asks; nothing is kept past that.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useId, useState, type AnimationEvent, type ReactNode } from "react";
 import {
   foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart,
@@ -74,7 +75,6 @@ export function useFold(id: string, { parts = 1, startOpen = false }: { parts?: 
   };
 }
 
-
 /** The control: a chevron, with what it does in its tooltip. `describedBy`
  *  is the id of the words beside it that say what is folded. */
 export function FoldToggle({ fold, describedBy, what = "details" }: {
@@ -97,8 +97,8 @@ export function FoldToggle({ fold, describedBy, what = "details" }: {
         notePress(event);
         fold.toggle();
       }}
-    >
-      <span className="card-fold-chevron" aria-hidden="true" />
+     data-icon-action>
+      <ActionIcon name={fold.open ? "collapse" : "expand"} />
     </button>
   );
 }
@@ -127,8 +127,8 @@ export function FoldButton({ fold, describedBy, shut, open, className }: {
         notePress(event);
         fold.toggle();
       }}
-    >
-      {fold.open ? open : shut}
+     data-icon-action title={fold.open ? open : shut} aria-label={fold.open ? open : shut}>
+      <ActionIcon name={fold.open ? "collapse" : "expand"} />
     </button>
   );
 }

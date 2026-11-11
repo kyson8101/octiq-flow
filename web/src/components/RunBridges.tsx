@@ -3,6 +3,7 @@
 // run's main agent may send to which, one way, and what that does not allow,
 // before anything is opened. The host checks the pair against what this page
 // showed, so a page drawn before a run changed hands opens nothing.
+import { ActionIcon } from "./ActionIcon";
 import { useId, useState } from "react";
 import type { OrchestrationRun, OrchestrationSnapshot, RunBridge } from "../lib/orchestration";
 import { BRIDGE_NOTES_MAX, bridgeScope, bridgeTargets, runBridges } from "../lib/runBridges";
@@ -33,7 +34,9 @@ export function RunBridges({ run, snapshot, busy, readOnly, onBridge }: {
         <span className="orch-bridge-count"> · {bridge.sends.length} of {BRIDGE_NOTES_MAX} sent</span>
       </p>
       {!readOnly && <button type="button" className="orch-quiet" disabled={busy}
-        onClick={() => onBridge("orchestration_bridge_close", { bridgeId: bridge.id })}>Close</button>}
+        onClick={() => onBridge("orchestration_bridge_close", { bridgeId: bridge.id })} data-icon-action title="Close" aria-label="Close">
+        <ActionIcon name="cancel" />
+      </button>}
     </li>
   );
 
@@ -56,7 +59,9 @@ export function RunBridges({ run, snapshot, busy, readOnly, onBridge }: {
             {bridgeScope(run, target).map((line) => <li key={line}>{line}</li>)}
           </ul>}
           <div className="orch-bridge-actions">
-            <button type="button" className="orch-quiet" disabled={busy} onClick={cancel}>Cancel</button>
+            <button type="button" className="orch-quiet" disabled={busy} onClick={cancel} data-icon-action title="Cancel" aria-label="Cancel">
+              <ActionIcon name="cancel" />
+            </button>
             <button type="button" className="orch-quiet is-primary" disabled={busy || !target}
               onClick={() => {
                 if (!target) return;

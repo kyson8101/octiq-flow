@@ -52,7 +52,7 @@ describe("ChatPlanCards", () => {
     expect(html).not.toContain("Write the tests.");
     // One control, in the heading, that names the box under each stage and
     // the line on answering in chat; each box is there, shut and empty.
-    const button = /<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="([^"]+)" aria-describedby="([^"]+)" aria-label="Show the tasks" title="Show the tasks">/.exec(html);
+    const button = /<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="([^"]+)" aria-describedby="([^"]+)" aria-label="Show the tasks" title="Show the tasks"[^>]*>/.exec(html);
     expect(button).not.toBeNull();
     const boxes = button![1].split(" ");
     expect(boxes).toHaveLength(3);
@@ -62,7 +62,7 @@ describe("ChatPlanCards", () => {
     // The answers, and the one line that matters beside them.
     expect(html).toContain("No worker starts until you approve.");
     expect(html).toContain("Approve plan");
-    expect(html).toContain(">Reject<");
+    expect(html).toContain("aria-label=\"Reject\"");
     // How to answer in chat is the line's tooltip, and in the opened card.
     expect(html).toContain('title="Reply &quot;approve this plan&quot; below, or ask for changes.');
     expect(html).not.toContain('<p class="plan-review-chat-hint">');
@@ -85,7 +85,7 @@ describe("ChatPlanCards", () => {
     expect(html.lastIndexOf("plan-task")).toBeLessThan(html.indexOf("plan-review-actions"));
     expect(html.indexOf("plan-review-chat-hint")).toBeLessThan(html.indexOf("plan-review-actions"));
     expect(html).toContain("Approve plan");
-    expect(html).toContain(">Reject<");
+    expect(html).toContain("aria-label=\"Reject\"");
   });
 
   it("draws a brief whole whatever its length: nothing beside Approve is cut", () => {
@@ -95,7 +95,7 @@ describe("ChatPlanCards", () => {
     const html = renderOpen(waiting, [task("a", "run_2278aa", { spec })]);
     expect(html).toContain(`<div class="plan-task-spec">${spec}</div>`);
     expect(html).not.toContain("not shown");
-    expect(html).toMatch(/<button class="orch-primary" type="button">Approve plan<\/button>/);
+    expect(html).toMatch(/<button(?=[^>]*aria-label="Approve plan") class="orch-primary" type="button"[^>]*>[\s\S]*?<\/button>/);
   });
 
   it("shows the whole of every task in that one opening, with nothing a second press away", () => {

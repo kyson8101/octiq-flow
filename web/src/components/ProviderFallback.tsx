@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ActionIcon } from "./ActionIcon";
 import { bridge } from "../lib/bridge";
 import { effortSteps, providerFor, type AccessLevel, type Provider } from "../lib/agentProviders";
 import { loadTeam, teamModels, type TeamAgent } from "../lib/agentsMode";
@@ -51,8 +52,12 @@ export function ChoiceCard({ choice, onDone }: { choice: Choice; onDone: () => v
       <label><input type="checkbox" checked={remember} disabled={busy} onChange={e => setRemember(e.target.checked)} /> {choice.rememberLabel ?? "Save as this agent’s backup"}</label>
     </div>
     {error && <p className="set-warn" role="alert">{error}</p>}
-    <div className="provider-choice-actions"><button type="button" className="vault-button" disabled={busy} onClick={() => void answer(null)}>Cancel</button>
-      <button type="button" className="settings-primary" disabled={busy || !available.length || !value.model} onClick={() => void answer(value)}>{busy ? "Saving…" : "Continue with selection"}</button></div>
+    <div className="provider-choice-actions"><button type="button" className="vault-button" disabled={busy} onClick={() => void answer(null)} data-icon-action title="Cancel" aria-label="Cancel">
+      <ActionIcon name="cancel" />
+    </button>
+      <button type="button" className="settings-primary" disabled={busy || !available.length || !value.model} onClick={() => void answer(value)} data-icon-action title={busy ? "Saving…" : "Continue with selection"} aria-label={busy ? "Saving…" : "Continue with selection"}>
+        <ActionIcon name="confirm" />
+      </button></div>
   </section>;
 }
 
@@ -121,7 +126,9 @@ export function ProviderFallbackSettings() {
       <label className="fallback-inherit"><input type="checkbox" checked={!!rule.backup} disabled={busy || (!!scope && !own)} onChange={e => change({ ...rule, backup: e.target.checked ? { agent: "claude", model: "sonnet", effort: null } : null })} /> Preferred backup configuration</label>
       {rule.backup && <FallbackFields value={rule.backup} onChange={backup => change({ ...rule, backup })} disabled={busy || (!!scope && !own)} />}
       <p className="settings-note">Automatic mode uses a compatible backup, then equivalent available providers. “Let me choose” waits for your selection. For Antigravity, effort is part of the model. Ordinary chats use the global policy; registered agents can override it.</p>
-      <div className="provider-choice-actions">{done && <span role="status">Saved</span>}<button className="settings-primary" disabled={busy} onClick={() => void save()}>{busy ? "Saving…" : "Save fallback preferences"}</button></div>
+      <div className="provider-choice-actions">{done && <span role="status">Saved</span>}<button className="settings-primary" disabled={busy} onClick={() => void save()} data-icon-action title={busy ? "Saving…" : "Save fallback preferences"} aria-label={busy ? "Saving…" : "Save fallback preferences"}>
+        <ActionIcon name="save" />
+      </button></div>
     </>}
   </section>;
 }

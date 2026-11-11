@@ -43,7 +43,7 @@ const panel = (snapshot: OrchestrationSnapshot) => {
 };
 const rows = (html: string) => html.split('<article class="orch-task').slice(1).map((part) => part.slice(0, part.indexOf("</article>")));
 /** Every control of a row that starts an attempt, as it is drawn. */
-const starts = (row: string) => [...row.matchAll(/<button type="button" class="task-start"[^>]*>([^<]*)<\/button>/g)].map((match) => match[0]);
+const starts = (row: string) => [...row.matchAll(/<button type="button" class="task-start"[^>]*>([\s\S]*?)<\/button>/g)].map((match) => match[0]);
 const control = (snapshot: OrchestrationSnapshot, index = 0) => {
   const task = snapshot.tasks[index];
   const run = snapshot.runs.find((item) => item.id === task.runId)!;
@@ -73,7 +73,7 @@ describe("a reopened task whose notice is not confirmed", () => {
     const [row] = rows(panel(held));
     const [button, ...more] = starts(row);
     expect(more).toEqual([]);
-    expect(button).toContain(">Start next attempt</button>");
+    expect(button).toContain("aria-label=\"Start next attempt\"");
     expect(button).toContain('aria-disabled="true"');
     const why = /aria-describedby="([^"]+)"/.exec(button)![1];
     expect(row).toContain(`<span id="${why}" class="task-start-why">${REOPEN_DETAIL.replace(/'/g, "&#x27;")}</span>`);
@@ -83,7 +83,7 @@ describe("a reopened task whose notice is not confirmed", () => {
     const told = hostFacts.reopenNoticeDelivered();
     expect(control(told)).toMatchObject({ kind: "next", blocked: null });
     const [button] = starts(rows(panel(told))[0]);
-    expect(button).toContain(">Start next attempt</button>");
+    expect(button).toContain("aria-label=\"Start next attempt\"");
     expect(button).not.toContain("aria-disabled");
     expect(rows(panel(told))[0]).toContain('<p class="orch-task-ledger">Ledger status: Ready</p>');
   });
@@ -101,7 +101,7 @@ describe("a task the plan holds", () => {
     for (const snapshot of [hostFacts.planAfterFailed(), hostFacts.planAfterBlocked()]) {
       expect(control(snapshot)).toMatchObject({ kind: "retry", label: "Start retry", blocked: null });
       const [button] = starts(rows(panel(snapshot))[0]);
-      expect(button).toContain(">Start retry</button>");
+      expect(button).toContain("aria-label=\"Start retry\"");
       expect(button).not.toContain("aria-disabled");
     }
   });
@@ -137,7 +137,7 @@ describe("a task the person stopped", () => {
     const row = rows(panel(snapshot)).find((item) => item.includes('data-hold="stopped"'))!;
     const buttons = starts(row);
     expect(buttons).toHaveLength(1);
-    expect(buttons[0]).toContain(">Start it again</button>");
+    expect(buttons[0]).toContain("aria-label=\"Start it again\"");
     expect(buttons[0]).not.toContain("aria-disabled");
   });
 
@@ -153,7 +153,7 @@ describe("a task the person stopped", () => {
     const planned = hostFacts.planAfterStopped();
     planned.tasks[0].heldByPlan = true;
     expect(control(planned)).toMatchObject({ kind: "again", blocked: PLAN_DETAIL });
-    const [button] = starts(rows(panel(planned)).find((item) => item.includes(">Start it again<"))!);
+    const [button] = starts(rows(panel(planned)).find((item) => item.includes("aria-label=\"Start it again\""))!);
     expect(button).toContain('aria-disabled="true"');
     // Changed for this test: it was reopened and the notice is not saved.
     const reopened = hostFacts.planAfterStopped();
@@ -222,12 +222,12 @@ describe("an opened row's tabs", () => {
   ];
 
   it.each(ledgers)("keep %s above both, in neither", (_name, ledger, label) => {
-    const row = rows(panel(ledger())).find((item) => item.includes(`>${label}</button>`))!;
+    const row = rows(panel(ledger())).find((item) => item.includes(`aria-label="${label}"`))!;
     const { above, steps, details } = parts(row);
     // The one start, with its reason when it is switched off, stands above
     // the tablist: on screen whichever tab is open.
     expect(starts(above)).toHaveLength(1);
-    expect(starts(above)[0]).toContain(`>${label}</button>`);
+    expect(starts(above)[0]).toContain(`aria-label="${label}"`);
     const why = /aria-describedby="([^"]+)"/.exec(starts(above)[0])?.[1];
     if (why) expect(above).toContain(`<span id="${why}" class="task-start-why">`);
     for (const tab of [steps, details]) {
@@ -351,7 +351,7 @@ describe("what decides a task's workspace", () => {
     snapshot.tasks[0].workspace = workspace;
     return rows(panel(snapshot))[0];
   };
-  const buttons = (html: string) => [...html.matchAll(/<button[^>]*>([^<]*)/g)].map((match) => match[1]);
+  const buttons = (html: string) => [...html.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map((match) => /aria-label="([^"]+)"/.exec(match[0])?.[1] ?? match[1].replace(/<[^>]+>/g, ""));
 
   it("is a row of buttons above both tabs, and no button of either", () => {
     for (const [merged, labels] of [
@@ -438,8 +438,8 @@ describe("what decides a task's workspace", () => {
     expect(panelSource.match(/className="orch-delivery-keep" onClick=\{\(event\) => \{ notePress\(event\); onCancel\(\); \}\}/g)).toHaveLength(2);
     // The two answers that reopen or remove: a held key is dropped, and a
     // press that repeats the one the question was opened with.
-    expect(panelSource).toMatch(/className="orch-delivery-go" disabled=\{busy \|\| flying \|\| !spec\.trim\(\)\} onKeyDown=\{careful\.keys\} onClick=\{careful\.confirm\}>Reopen task in this workspace</);
-    expect(panelSource).toMatch(/className="orch-delivery-go" disabled=\{busy \|\| !allowed\} onClick=\{careful\.confirm\}>Confirm removal</);
+    expect(panelSource).toMatch(/className="orch-delivery-go" disabled=\{busy \|\| flying \|\| !spec\.trim\(\)\} onKeyDown=\{careful\.keys\} onClick=\{careful\.confirm\}[^>]*aria-label="Reopen task in this workspace"/);
+    expect(panelSource).toMatch(/className="orch-delivery-go" disabled=\{busy \|\| !allowed\} onClick=\{careful\.confirm\}[^>]*aria-label="Confirm removal"/);
     expect(panelSource).toMatch(/className="orch-cleanup-confirm"[^>]*\n\s*onKeyDown=\{\(event\) => \{ careful\.keys\(event\);/);
     expect(panelSource.match(/const careful = useCarefulAnswer\(/g)).toHaveLength(2);
     // A question puts the focus on its safe answer: the box, where Enter is

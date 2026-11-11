@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ActionIcon } from "./ActionIcon";
 import { bridge } from "../lib/bridge";
 import { copyText } from "../lib/clipboard";
 import { feedbackBrief, feedbackStatuses, feedbackUpdatedBy, type FeedbackPage, type FeedbackReport, type FeedbackStatus } from "../lib/feedback";
@@ -52,7 +53,9 @@ export function FeedbackInbox({ onClose, onOpenChat, availableChatIds }: {
     <div className="feedback-shell">
       <header className="feedback-head">
         <div><h2 id="feedback-heading">Feedback inbox</h2><p>OctiqFlow bugs and hiccups reported by your agents.</p></div>
-        <button type="button" className="feedback-close" onClick={onClose} aria-label="Close feedback inbox">×</button>
+        <button type="button" className="feedback-close" onClick={onClose} aria-label="Close feedback inbox" data-icon-action title="Close feedback inbox">
+          <ActionIcon name="dismiss" />
+        </button>
       </header>
       <div className="feedback-toolbar">
         <input type="search" aria-label="Search feedback" placeholder="Search reports…" maxLength={200} value={query}
@@ -61,7 +64,9 @@ export function FeedbackInbox({ onClose, onOpenChat, availableChatIds }: {
           <option value="">All statuses</option>
           {Object.entries(feedbackStatuses).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
-        <button type="button" onClick={() => void refresh()} disabled={loading}>Refresh</button>
+        <button type="button" onClick={() => void refresh()} disabled={loading} data-icon-action title="Refresh" aria-label="Refresh">
+          <ActionIcon name="refresh" />
+        </button>
       </div>
       {error && <p className="feedback-error" role="alert">{error}</p>}
       <div className={`feedback-content${selected ? " has-selection" : ""}`}>
@@ -135,11 +140,13 @@ export function FeedbackDetail({ report, available, onOpenChat, onBack, onSaved 
     {updatedBy && <p className="feedback-origin">Last updated {date(report.updatedAt)} by {updatedBy}</p>}
     <div className="feedback-actions">
       <button type="button" disabled={!available} onClick={() => onOpenChat(report.source.chatId)} title={available ? report.source.chatTitle : "The source chat is no longer available"}>Open source chat</button>
-      <button type="button" disabled={dirty} title={dirty ? "Save your triage changes before copying" : undefined} onClick={async event => {
+      <button type="button" disabled={dirty} title={copied ? "Brief copied" : "Copy fix brief"} onClick={async event => {
         setError(null);
         if (await copyText(feedbackBrief(report), event.currentTarget.closest("dialog") ?? undefined)) setCopied(true);
         else setError("The fix brief could not be copied. Try again.");
-      }}>{copied ? "Brief copied" : "Copy fix brief"}</button>
+      }} data-icon-action aria-label={copied ? "Brief copied" : "Copy fix brief"} aria-description={dirty ? "Save your triage changes before copying" : undefined}>
+        <ActionIcon name="copy" />
+      </button>
     </div>
     {!available && <p className="feedback-origin">Source chat unavailable. This report is still saved.</p>}
     {([["Description", report.description], ["Steps to reproduce", report.steps], ["Expected behaviour", report.expected],
@@ -153,8 +160,12 @@ export function FeedbackDetail({ report, available, onOpenChat, onBack, onSaved 
       <label>Triage note<textarea aria-label="Triage note" value={note} maxLength={8000} rows={4} disabled={busy} onChange={event => setNote(event.target.value)} placeholder="What needs fixing, a workaround, or the commit that resolved it…" /></label>
       {error && <p className="feedback-error" role="alert">{error}</p>}
       {changed && <p className="feedback-origin" role="status">This report may have changed. Reload it to see the latest triage.</p>}
-      <div className="feedback-actions"><button type="submit" className="feedback-save" disabled={busy || !dirty}>{busy ? "Saving…" : "Save changes"}</button>
-        <button type="button" disabled={busy} onClick={() => void reload()}>{dirty ? "Discard changes and reload" : "Reload report"}</button></div>
+      <div className="feedback-actions"><button type="submit" className="feedback-save" disabled={busy || !dirty} data-icon-action title={busy ? "Saving…" : "Save changes"} aria-label={busy ? "Saving…" : "Save changes"}>
+        <ActionIcon name="save" />
+      </button>
+        <button type="button" disabled={busy} onClick={() => void reload()} data-icon-action title={dirty ? "Discard changes and reload" : "Reload report"} aria-label={dirty ? "Discard changes and reload" : "Reload report"}>
+          <ActionIcon name="refresh" />
+        </button></div>
     </form>
     <p className="feedback-id">Report {report.id}</p>
   </article>;

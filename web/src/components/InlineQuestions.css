@@ -465,6 +465,9 @@
   transition: background-color 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out;
 }
 
+/* The answer is now one icon target rather than a full-width label. */
+.qa-submit[data-icon-action] { align-self: flex-end; }
+
 @media (hover: hover) {
   .qa-submit:not([aria-disabled="true"]):hover { background: color-mix(in srgb, var(--decide) 28%, var(--bg-1)); }
 }

@@ -1,7 +1,7 @@
 .provider-choice {
   margin: 12px 20px;
   padding: 18px 20px;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--decide) 30%, var(--border));
   border-radius: 14px;
   background: var(--bg-1);
   color: var(--fg-1);
@@ -23,4 +23,13 @@
 @media (max-width: 600px) {
   .provider-choice { margin: 10px; padding: 14px; }
   .fallback-fields { grid-template-columns: 1fr; gap: 10px; }
+}
+
+.provider-choice-actions .settings-primary {
+  border-color: var(--decide);
+  background: color-mix(in srgb, var(--decide) 18%, var(--bg-1));
+  color: var(--fg-0);
+}
+.provider-choice-actions .settings-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--decide) 28%, var(--bg-1));
 }

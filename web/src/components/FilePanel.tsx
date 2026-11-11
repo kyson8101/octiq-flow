@@ -23,6 +23,7 @@
 //     of a large file it returns, and writing that back would cut the real file
 //     down to the part we happened to be shown. So saving is refused outright
 //     for those, rather than warned about.
+import { ActionIcon } from "./ActionIcon";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type React from "react";
 import { createPortal } from "react-dom";
@@ -454,8 +455,8 @@ export function FilePanel({
                   extension being tested here, so this button and what the body
                   actually draws can never disagree. */}
               {hasTwoViews(path, preview) && (
-                <button className="panel-btn" type="button" onClick={() => setEditing((v) => !v)}>
-                  {editing ? "Preview" : "Edit"}
+                <button className="panel-btn" type="button" onClick={() => setEditing((v) => !v)} data-icon-action title={editing ? "Preview" : "Edit"} aria-label={editing ? "Preview" : "Edit"}>
+                  <ActionIcon name={editing ? "preview" : "edit"} />
                 </button>
               )}
               {preview?.kind === "text" && !preview.truncated && (
@@ -464,8 +465,8 @@ export function FilePanel({
                   type="button"
                   onClick={save}
                   disabled={!canSave || saving}
-                >
-                  {saving ? "Saving…" : saved ? "Saved" : "Save"}
+                 data-icon-action title={saving ? "Saving…" : saved ? "Saved" : "Save"} aria-label={saving ? "Saving…" : saved ? "Saved" : "Save"}>
+                  <ActionIcon name="save" />
                 </button>
               )}
               <button
@@ -473,8 +474,8 @@ export function FilePanel({
                 type="button"
                 onClick={() => void requestClose()}
                 aria-label="Close"
-              >
-                ✕
+               data-icon-action title="Close">
+                <ActionIcon name="dismiss" />
               </button>
             </header>
 
@@ -483,8 +484,8 @@ export function FilePanel({
             {staleOnDisk && (
               <div className="panel-warn is-stale">
                 This file changed on disk while you were editing it.
-                <button className="panel-inline-btn" type="button" onClick={() => void load(true)}>
-                  Reload and lose my changes
+                <button className="panel-inline-btn" type="button" onClick={() => void load(true)} data-icon-action title="Reload and lose my changes" aria-label="Reload and lose my changes">
+                  <ActionIcon name="refresh" /> Reload and lose my changes
                 </button>
               </div>
             )}

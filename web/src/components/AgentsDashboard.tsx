@@ -1,3 +1,4 @@
+import { ActionIcon } from "./ActionIcon";
 // Agents mode's dashboard, a main-area page opened from the sidebar: every
 // registered agent across every project, and what each is doing right now.
 // Registering and editing agents stays in Settings (Manage agents). A lead's
@@ -116,7 +117,9 @@ export function AgentsDashboard({
       <section className="projects-page agents-dashboard" aria-label="Agents">
         <WorkspaceHeader root back={{ label: "All agents", ariaLabel: "Back to all agents", onClick: () => setProfileId(null) }}
           title={<h1>{profileRow.name}</h1>}
-          actions={<button type="button" className="projects-page-secondary" onClick={onManage}>Manage agents</button>} />
+          actions={<button type="button" className="projects-page-secondary" onClick={onManage} data-icon-action aria-label="Manage agents" title="Manage agents">
+            <ActionIcon name="agents" />
+          </button>} />
         <div className="projects-page-body">
           <AgentProfile agent={profileRow} connected={connected}
             onOpenRun={onOpenRun}
@@ -132,7 +135,9 @@ export function AgentsDashboard({
     return next;
   });
 
-  const manage = <button type="button" className="projects-page-secondary" onClick={onManage}>Manage agents</button>;
+  const manage = <button type="button" className="projects-page-secondary" onClick={onManage} data-icon-action aria-label="Manage agents" title="Manage agents">
+    <ActionIcon name="agents" />
+  </button>;
   return (
     <section className="projects-page agents-dashboard" aria-label="Agents">
       <WorkspaceHeader root back={{ label: "Chat", ariaLabel: "Back to chat", onClick: onClose }}

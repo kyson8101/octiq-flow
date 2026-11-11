@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { ActionIcon } from "./ActionIcon";
 import { canStepFocusFontSize, savedFocusFontSize, saveFocusFontSize, stepFocusFontSize } from "../lib/focusFontSize";
 import { cancelZenTransition, transitionZen } from "../lib/zenMotion";
 
@@ -77,14 +78,11 @@ export function FocusModeButton({ active = false, onClick }: { active?: boolean;
       className={active ? "focus-mode-exit" : "icon-btn focus-mode-enter"}
       type="button"
       aria-label={active ? "Exit focus mode" : "Enter focus mode"}
-      title={active ? "Exit focus mode (Esc)" : "Focus mode"}
+      title={active ? "Exit focus mode" : "Enter focus mode"}
       aria-pressed={active}
       onClick={onClick}
-    >
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d={active ? "M9 4v5H4m16 0h-5V4M4 15h5v5m6 0v-5h5" : "M9 4H4v5m11-5h5v5M4 15v5h5m6 0h5v-5"} />
-      </svg>
-      <span className={active ? undefined : "topbar-action-label"}>{active ? "Exit focus" : "Focus"}</span>
+     data-icon-action aria-description={active ? "Exit focus mode (Esc)" : "Focus mode"}>
+      <ActionIcon name="focus" />
     </button>
   );
 }

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ActionIcon } from "./ActionIcon";
 import { saveScheduling, useAgentLanes, type SchedulingSettings as Settings } from "../lib/agentLanes";
 import "./SchedulingSettings.css";
 
@@ -43,7 +44,9 @@ export function SchedulingBlock({ agentsMode = false, settings, unread, loading,
         <option value="off">Off</option>{Array.from({ length: 32 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
       </select></label>
       <p className="set-hint" aria-live="polite">{running ?? "—"} workers running now</p>
-      <button className="settings-primary" type="button" disabled={busy || !changed} onClick={onSave}>{busy ? "Saving…" : "Save scheduling"}</button>
+      <button className="settings-primary" type="button" disabled={busy || !changed} onClick={onSave} data-icon-action title={busy ? "Saving…" : "Save scheduling"} aria-label={busy ? "Saving…" : "Save scheduling"}>
+        <ActionIcon name="save" />
+      </button>
       {done && !error && <span role="status">Saved</span>}
     </>}
     {error && <details className="scheduling-refusal"><summary>{unread ? "Could not read scheduling" : "Not saved"}</summary><p>{error}</p></details>}

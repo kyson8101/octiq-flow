@@ -9,6 +9,7 @@ import { PlaybackSpeed } from "./PlaybackSpeed";
 // Same two rules as the picture. Nothing is fetched until it is within a screen
 // of being seen — a long session names a lot of files — and a file that will
 // not load leaves nothing behind: the words above it are still a link.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useRef, useState } from "react";
 import { nowPlaying } from "../lib/nowPlaying";
 import { bridge } from "../lib/bridge";
@@ -74,7 +75,9 @@ function ProsePlayerForPath({ path, kind }: { path: string; kind: "video" | "aud
         Media unavailable. <button type="button" onClick={() => {
           setFailed(false);
           holder.current?.querySelector<HTMLMediaElement>("video, audio")?.load();
-        }}>Retry</button>
+        }} data-icon-action title="Retry" aria-label="Retry">
+          <ActionIcon name="retry" />
+        </button>
       </span>}
       {!near && !kept.current ? <span className="prose-player-wait"><span className="prose-media-wait" aria-hidden="true" /><span className="media-playback-tools" aria-hidden="true" /></span>
         : kind === "video"

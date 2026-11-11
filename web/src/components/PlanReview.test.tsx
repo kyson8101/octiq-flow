@@ -27,7 +27,7 @@ describe("PlanReview", () => {
     expect(html).toContain("Maya");
     expect(html).toContain("after #1, #2");
     expect(html).toContain("Approve plan");
-    expect(html).toContain(">Reject<");
+    expect(html).toContain("aria-label=\"Reject\"");
     expect(html).not.toContain("Reason (optional)");
     expect(html).not.toMatch(/disabled=""[^>]*>Approve/);
   });
@@ -71,7 +71,7 @@ describe("PlanReview", () => {
     expect(empty).toContain("Tasks appear here as the main agent writes them.");
     // Nothing to approve is nothing to offer: no answers at all, not greyed ones.
     expect(empty).not.toContain("Approve plan");
-    expect(empty).not.toContain(">Reject<");
+    expect(empty).not.toContain("aria-label=\"Reject\"");
   });
 
   it("is one line while the plan is being drafted: no ghost rows, no answers", () => {

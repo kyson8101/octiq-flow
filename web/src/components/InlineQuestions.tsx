@@ -32,6 +32,7 @@
 // - A block is whole before it can be sent. The host says how many
 //   questions a call carried and sends them one event each; until the last
 //   has arrived the button is off and says it is still reading them.
+import { ActionIcon } from "./ActionIcon";
 import { StatusDismiss } from "./ChatStatus";
 import { createContext, useContext, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import type { AskItem } from "../lib/askAnswer";
@@ -292,8 +293,8 @@ function QuestionForm({ batch, questions, onDone, onSent }: {
         aria-describedby={reason ? `${uid}-why` : undefined}
         onKeyDown={dropHeld}
         onClick={guarded(() => void submit())}
-      >
-        {sending ? "Sending…" : total === 1 ? "Send answer" : `Send ${total} answers`}
+       data-icon-action title={sending ? "Sending…" : total === 1 ? "Send answer" : `Send ${total} answers`} aria-label={sending ? "Sending…" : total === 1 ? "Send answer" : `Send ${total} answers`}>
+        <ActionIcon name="send" />
       </button>
       {/* The reason is under the button, so nothing above it moves when the
           last question gets its answer. */}
@@ -413,13 +414,13 @@ function Recorded({ batch, onDone }: { batch: Batch; onDone: (ids: string[]) => 
         <div className="qa-asked-actions">
           {failed && (
             <button type="button" className="qa-link" aria-disabled={working} onKeyDown={dropHeld}
-              onClick={() => void act(() => bridge.invoke("question_retry", { ids }).then(() => {}))}>
-              Retry delivery
+              onClick={() => void act(() => bridge.invoke("question_retry", { ids }).then(() => {}))} data-icon-action title="Retry delivery" aria-label="Retry delivery">
+              <ActionIcon name="retry" />
             </button>
           )}
           <button type="button" className="qa-link" aria-disabled={working} onKeyDown={dropHeld}
-            onClick={() => void act(async () => { await cancelQuestions(ids); onDone(ids); })}>
-            Cancel pending delivery
+            onClick={() => void act(async () => { await cancelQuestions(ids); onDone(ids); })} data-icon-action title="Cancel pending delivery" aria-label="Cancel pending delivery">
+            <ActionIcon name="cancel" />
           </button>
         </div>
       </Asked>

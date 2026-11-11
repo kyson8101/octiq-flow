@@ -4,6 +4,7 @@
 // on every screen and could only answer inside the list's current view. As a
 // page it has the whole workspace for its results, searches every chat
 // whatever the sidebar's Recent view says, and opens the chat a result names.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useRef, useState } from "react";
 import {
   chatSearchResults, isSearchable, type ChatSearchHit,
@@ -147,8 +148,8 @@ export function ChatSearchPage({
               else onClose();
             }} />
           {query && <button type="button" className="chat-search-clear" aria-label="Clear chat search"
-            onClick={() => { setQuery(""); input.current?.focus(); }}>
-            <ClearIcon />
+            onClick={() => { setQuery(""); input.current?.focus(); }} data-icon-action title="Clear chat search">
+            <ActionIcon name="dismiss" />
           </button>}
         </form>
 
@@ -188,4 +189,3 @@ export function ChatSearchPage({
 }
 
 function SearchIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>; }
-function ClearIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>; }

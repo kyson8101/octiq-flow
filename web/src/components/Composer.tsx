@@ -11,6 +11,7 @@
 //
 // Detected from the POINTER, not the screen width: a narrow window on a desktop
 // still has a real keyboard and should still send on Enter.
+import { ActionIcon } from "./ActionIcon";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { transitionZen } from "../lib/zenMotion";
 import { bridge } from "../lib/bridge";
@@ -301,7 +302,9 @@ export function AttachmentChip({ attachment: a, onRemove, onInsert }: {
       {a.isImage ? <Thumb attachment={a} /> : <PaperIcon />}
       <span className="chip-name">{label}</span>
       {a.pasted && <button className="chip-insert" type="button" onClick={onInsert}>Insert as text</button>}
-      <button className="chip-x" type="button" aria-label={`Remove ${label}`} onClick={onRemove}>✕</button>
+      <button className="chip-x" type="button" aria-label={`Remove ${label}`} onClick={onRemove} data-icon-action title={`Remove ${label}`}>
+        <ActionIcon name="dismiss" />
+      </button>
     </span>
   );
 }
@@ -1242,8 +1245,8 @@ export function Composer({
           </div>
           {onReloadSkills && (
             <div className="skill-reload">
-              <button type="button" disabled={skillsStatus === "loading"} onClick={onReloadSkills}>
-                {skillsStatus === "loading" ? "Reloading…" : "Reload skills"}
+              <button type="button" disabled={skillsStatus === "loading"} onClick={onReloadSkills} data-icon-action title={skillsStatus === "loading" ? "Reloading…" : "Reload skills"} aria-label={skillsStatus === "loading" ? "Reloading…" : "Reload skills"}>
+                <ActionIcon name="refresh" />
               </button>
               {skillsStatus && skillsStatus !== "loading" && <span role="alert">{skillsStatus}</span>}
             </div>
@@ -1479,10 +1482,10 @@ export function Composer({
               className="picker-btn attach-btn clear-btn"
               type="button"
               aria-label="Clear the message"
-              title="Clear the message and its files"
+              title="Clear the message"
               onClick={clearAll}
-            >
-              <BinIcon />
+             data-icon-action>
+              <ActionIcon name="dismiss" />
             </button>
           )}
 
@@ -2328,7 +2331,9 @@ function ModelPicker({
       {!modelStatus?.loading && modelStatus?.error && (
         <div className="mp-catalog is-warn" title={modelStatus.error}>
           Could not refresh models. Showing built-in choices.
-          <button type="button" onClick={() => onReloadModels(tab)}>Try again</button>
+          <button type="button" onClick={() => onReloadModels(tab)} data-icon-action title="Try again" aria-label="Try again">
+            <ActionIcon name="retry" />
+          </button>
         </div>
       )}
       {!modelStatus?.loading && !modelStatus?.error && modelStatus?.note && (
@@ -2860,18 +2865,6 @@ function short(n: number): string {
   return String(n);
 }
 
-
-function BinIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M4 7h16" />
-      <path d="M9.5 7V5.2a1.2 1.2 0 0 1 1.2-1.2h2.6a1.2 1.2 0 0 1 1.2 1.2V7" />
-      <path d="M6.5 7.5 7.3 19a1.8 1.8 0 0 0 1.8 1.7h5.8a1.8 1.8 0 0 0 1.8-1.7l.8-11.5" />
-      <path d="M10.5 11v6M13.5 11v6" />
-    </svg>
-  );
-}
-
 function ClipboardIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2897,7 +2890,6 @@ function PaperIcon() {
     </svg>
   );
 }
-
 
 function TerminalIcon() {
   return (

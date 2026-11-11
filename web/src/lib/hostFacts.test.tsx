@@ -92,7 +92,7 @@ describe("awaits on an open gate", () => {
     // resolution of this gate from the coordinator).
     expect(words(box)).toContain("This mission Ship today?");
     expect(box).toContain('<input placeholder="Write a decision" aria-label="Decision for Ship today?" value=""/>');
-    expect(box).toContain(">Send to main chat</button>");
+    expect(box).toContain("aria-label=\"Send to main chat\"");
     expect(html).toContain('aria-label="1 decision waiting. Show"');
     const others = html.slice(html.indexOf(">Open decisions</h3>"), html.indexOf('class="orch-tabs-row"'));
     expect(words(others)).toContain("Implement Waiting on the coordinator Which sprite size?");
@@ -112,7 +112,7 @@ describe("awaits on an open gate", () => {
     const html = panel(peer);
     const box = html.slice(html.indexOf(">Needs you</h3>"), html.indexOf('class="orch-tabs-row"'));
     expect(words(box)).toContain("Report volume usage Which volume?");
-    expect(box).toContain(">Answer</button>");
+    expect(box).toContain("aria-label=\"Answer\"");
     expect(box).not.toContain("Send to main chat");
   });
 });

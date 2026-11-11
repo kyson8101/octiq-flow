@@ -48,7 +48,7 @@ describe("agent teams in Settings", () => {
     };
     const fresh = renderToStaticMarkup(createElement(TeamsBlock, { ...props, draft: { name: "", projectId: null } }));
     expect(fresh).toContain('aria-label="New team"');
-    expect(fresh).toMatch(/<button class="settings-primary" type="submit" disabled="">Add<\/button>/);
+    expect(fresh).toMatch(/<button(?=[^>]*aria-label="Add") class="settings-primary" type="submit" disabled=""[^>]*>[\s\S]*?<\/button>/);
     const rename = renderToStaticMarkup(createElement(TeamsBlock, { ...props, draft: { id: "team_web", name: "Web", projectId: null } }));
     expect(rename).toContain('aria-label="Rename team"');
     expect(rename).toContain('value="Web"');

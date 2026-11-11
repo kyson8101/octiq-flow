@@ -1,4 +1,5 @@
 import { useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { ActionIcon } from "./ActionIcon";
 import { bridge } from "../lib/bridge";
 import { jobLine, jobRowNote } from "../lib/jobs";
 import { elapsedLabel } from "../lib/working";
@@ -478,8 +479,8 @@ export function OrchestrationPanel({
             <div className="panel-name" id="orch-title">Orchestrator</div>
             <div className="panel-path">{project?.name ?? "All projects"}</div>
           </div>
-          <button className="panel-close" type="button" onClick={onClose} aria-label="Close">
-            <CloseIcon />
+          <button className="panel-close" type="button" onClick={onClose} aria-label="Close" data-icon-action title="Close">
+            <ActionIcon name="dismiss" />
           </button>
         </header>
         </>}
@@ -1050,7 +1051,9 @@ function RunDetail({
                 <div className="orch-stop-confirm" role="group" aria-labelledby={`${tabsId}-stop`}
                   onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onCancelStop(); } }}>
                   <p id={`${tabsId}-stop`}>Stop this mission? Workers stop and open tasks are cancelled. Archiving also hides it; its history and worktrees are kept.</p>
-                  <button ref={cancelRef} type="button" disabled={inputBusy} onClick={onCancelStop}>Cancel</button>
+                  <button ref={cancelRef} type="button" disabled={inputBusy} onClick={onCancelStop} data-icon-action title="Cancel" aria-label="Cancel">
+                    <ActionIcon name="cancel" />
+                  </button>
                   <button className="is-danger" type="button" disabled={inputBusy} onClick={() => onStop(false)}>Stop</button>
                   <button className="is-danger" type="button" disabled={busy} onClick={() => { if (!busy) onStop(true); }}>Stop and archive</button>
                 </div>
@@ -1068,7 +1071,9 @@ function RunDetail({
                   <p id={`${tabsId}-end`}>{confirmEnd === "close"
                     ? "Close this mission? Once git confirms the merge, its worktree is removed and its local branch deleted. The remote branch and the history are kept."
                     : "Abandon this mission? Open tasks are cancelled. Its worktree is removed only if every commit is pushed, and the branch is kept."}</p>
-                  <button type="button" disabled={busy} autoFocus onClick={() => setConfirmEnd(null)}>Cancel</button>
+                  <button type="button" disabled={busy} autoFocus onClick={() => setConfirmEnd(null)} data-icon-action title="Cancel" aria-label="Cancel">
+                    <ActionIcon name="cancel" />
+                  </button>
                   <button className={confirmEnd === "abandon" ? "is-danger" : undefined} type="button" disabled={busy}
                     onClick={() => { const abandon = confirmEnd === "abandon"; setConfirmEnd(null); onWorkspaceAction("orchestration_mission_close", { runId: run.id, abandon }); }}>
                     {confirmEnd === "close" ? "Close mission" : "Abandon mission"}
@@ -1087,7 +1092,9 @@ function RunDetail({
                 <div className="orch-stop-confirm" role="group" aria-labelledby={`${tabsId}-archive`}
                   onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setConfirmArchive(false); } }}>
                   <p id={`${tabsId}-archive`}>Archive this mission? It leaves the list; its history and worktrees are kept, and it can be restored.</p>
-                  <button type="button" disabled={busy} autoFocus onClick={() => setConfirmArchive(false)}>Cancel</button>
+                  <button type="button" disabled={busy} autoFocus onClick={() => setConfirmArchive(false)} data-icon-action title="Cancel" aria-label="Cancel">
+                    <ActionIcon name="cancel" />
+                  </button>
                   <button type="button" disabled={busy} onClick={() => { setConfirmArchive(false); onArchive(true); }}>Archive</button>
                 </div>
               ) : (
@@ -1532,9 +1539,9 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, taskNames, gate
             open={reassigning} busy={busy} onToggle={() => setReassigning(!reassigning)} />}
           <button type="button" className="orch-task-expand" aria-expanded={expanded} aria-controls={detailId}
             aria-label={`${expanded ? "Collapse" : "Expand"} task progress: ${task.title}`}
-            title={expanded ? "Collapse task progress" : "Expand task progress"}
+            title={`${expanded ? "Collapse" : "Expand"} task progress: ${task.title}`} data-icon-action
             onClick={(event) => { notePress(event); setExpanded(!expanded); }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={expanded ? "m6 15 6-6 6 6" : "m9 6 6 6-6 6"} /></svg>
+            <ActionIcon name={expanded ? "collapse" : "expand"} />
           </button>
         </span>
       </div>
@@ -1740,7 +1747,9 @@ export function GateAnswer({ gate, door, mine, busy, value, onChange, onResolve 
         onChange={(event) => onChange(event.target.value)}
       />
       <button type="button" className="orch-gate-answer" aria-disabled={off || !value.trim() || undefined} aria-describedby={noteId}
-        onKeyDown={dropHeld} onClick={answer(value)}>{flying ? "Sending…" : door === "person" ? "Answer" : "Send to main chat"}</button>
+        onKeyDown={dropHeld} onClick={answer(value)} data-icon-action title={flying ? "Sending…" : door === "person" ? "Answer" : "Send to main chat"} aria-label={flying ? "Sending…" : door === "person" ? "Answer" : "Send to main chat"}>
+        <ActionIcon name={door === "person" ? "answer" : "send"} />
+      </button>
     </div>
     <p className="orch-gate-door" id={noteId}>{note}</p>
   </>;
@@ -1777,7 +1786,9 @@ export function StartButton({ start, busy, onStart }: {
         if (busy || flying || repeatsAnother(event)) { event.preventDefault(); return; }
         setQueued(null);
         void Promise.resolve(onStart()).then(words => setQueued(words ?? null));
-      }}>{start.label}</button>
+      }} data-icon-action title={start.label} aria-label={start.label}>
+      <ActionIcon name={start.kind === "retry" ? "retry" : "run"} />
+    </button>
     {queued && <span className="task-start-why" role="status">{queued}</span>}
     {start.blocked && <span id={whyId} className="task-start-why">{start.blocked}</span>}
   </>;
@@ -1864,14 +1875,20 @@ function DeliveryActions({ task, run, busy, active, onAction }: {
       onConfirm={() => { close(); onAction("orchestration_workspace_cleanup", { taskId: task.id, abandon: asking === "abandon", expectedHead: delivery?.headSha }); }} />;
   }
   return <div className="orch-delivery-actions" role="group" aria-label={`Delivery of ${task.title}`} ref={row}>
-    <button type="button" className="orch-delivery-action" disabled={busy} onClick={() => onAction("orchestration_workspace_refresh", { taskId: task.id })}>Refresh delivery status</button>
+    <button type="button" className="orch-delivery-action" disabled={busy} onClick={() => onAction("orchestration_workspace_refresh", { taskId: task.id })} data-icon-action title="Refresh delivery status" aria-label="Refresh delivery status">
+      <ActionIcon name="refresh" />
+    </button>
     {/* The person's own reopen (`taskHold.reopenControl`). For a failed
         check whose retries are used, or whose coordinator is gone, it is
         the one door: a completed task takes no Start. */}
     {reopen && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("reopen"); }}
-      data-asks="reopen" disabled={busy || flying} onKeyDown={dropHeld}>{reopen.label}</button>}
+      data-asks="reopen" disabled={busy || flying} onKeyDown={dropHeld} data-icon-action title={reopen.label} aria-label={reopen.label}>
+      <ActionIcon name="reopen" />
+    </button>}
     {canCleanup && delivery.merged && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("merged"); }}
-      data-asks="merged" disabled={busy} onKeyDown={dropHeld}>Clean up worktree</button>}
+      data-asks="merged" disabled={busy} onKeyDown={dropHeld} data-icon-action title="Clean up worktree" aria-label="Clean up worktree">
+      <ActionIcon name="cleanup" />
+    </button>}
     {canAbandon && !delivery.merged && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("abandon"); }}
       data-asks="abandon" disabled={busy} onKeyDown={dropHeld}>Abandon workspace…</button>}
     {workspace.validationPaths.map((path) => <button type="button" className="orch-delivery-action" key={path} disabled={busy} title={path} onKeyDown={dropHeld}
@@ -1898,8 +1915,12 @@ export function ReopenQuestion({ task, busy, onCancel, onReopen }: {
       // The key that opened this, still held, writes nothing into it.
       onKeyDown={(event) => { if (!spec) dropHeld(event); }} /></label>
     <div className="orch-delivery-answers">
-      <button type="button" className="orch-delivery-keep" onClick={(event) => { notePress(event); onCancel(); }} disabled={busy} onKeyDown={dropHeld}>Cancel</button>
-      <button type="button" className="orch-delivery-go" disabled={busy || flying || !spec.trim()} onKeyDown={careful.keys} onClick={careful.confirm}>Reopen task in this workspace</button>
+      <button type="button" className="orch-delivery-keep" onClick={(event) => { notePress(event); onCancel(); }} disabled={busy} onKeyDown={dropHeld} data-icon-action title="Cancel" aria-label="Cancel">
+        <ActionIcon name="cancel" />
+      </button>
+      <button type="button" className="orch-delivery-go" disabled={busy || flying || !spec.trim()} onKeyDown={careful.keys} onClick={careful.confirm} data-icon-action title="Reopen task in this workspace" aria-label="Reopen task in this workspace">
+        <ActionIcon name="reopen" />
+      </button>
     </div>
   </div>;
 }
@@ -1917,8 +1938,12 @@ function RemovalQuestion({ abandon, allowed, busy, onCancel, onConfirm }: {
   return <div className="orch-cleanup-confirm" role="group" aria-labelledby={questionId}
     onKeyDown={(event) => { careful.keys(event); if (event.key === "Escape") { event.stopPropagation(); onCancel(); } }}>
     <p id={questionId}>{abandon ? "Abandon this task and remove its clean worktree?" : "Remove this merged worktree?"} Branches and published history are kept.</p>
-    <button ref={keep} type="button" className="orch-delivery-keep" onClick={(event) => { notePress(event); onCancel(); }} disabled={busy}>Keep worktree</button>
-    <button type="button" className="orch-delivery-go" disabled={busy || !allowed} onClick={careful.confirm}>Confirm removal</button>
+    <button ref={keep} type="button" className="orch-delivery-keep" onClick={(event) => { notePress(event); onCancel(); }} disabled={busy} data-icon-action title="Keep worktree" aria-label="Keep worktree">
+      <ActionIcon name="keepWorktree" />
+    </button>
+    <button type="button" className="orch-delivery-go" disabled={busy || !allowed} onClick={careful.confirm} data-icon-action title="Confirm removal" aria-label="Confirm removal">
+      <ActionIcon name="delete" /> Confirm removal
+    </button>
   </div>;
 }
 
@@ -1938,7 +1963,6 @@ function messageOf(problem: unknown): string {
   return String((problem as Error)?.message ?? problem);
 }
 
-
 function OrchestratorGlyph() {
   return <div className="orch-glyph" aria-hidden="true"><span /><span /><span /><i /><i /></div>;
 }
@@ -1949,10 +1973,6 @@ function SettingsIcon() {
 
 function PlusIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>;
-}
-
-function CloseIcon() {
-  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>;
 }
 
 function MoreIcon() {

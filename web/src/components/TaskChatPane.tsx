@@ -6,6 +6,7 @@
 // composer: a task chat is read-only (the badge by its title says so), and
 // instructions go through the main chat on the left, exactly as they do when
 // the task is open on its own.
+import { ActionIcon } from "./ActionIcon";
 import { forwardRef, type Ref } from "react";
 import type { Message } from "../lib/chat";
 import type { Persona } from "../lib/agentPersona";
@@ -70,12 +71,12 @@ export const TaskChatPane = forwardRef(function TaskChatPane(props: TaskChatPane
         <ChatTaskBar chatId={chatId} connected={props.connected} context={props.context} busy={busy} waiting={props.waiting} />
         <div className="beside-actions">
           <button type="button" className="beside-btn" onClick={props.onExpand}
-            aria-label={`Expand to full chat: ${title}`} title="Expand to full chat">
-            <ExpandIcon />
+            aria-label={`Expand to full chat: ${title}`} title={`Expand to full chat: ${title}`} data-icon-action>
+            <ActionIcon name="width" />
           </button>
           {split && <button type="button" className="beside-btn" onClick={props.onClose}
-            aria-label="Close split" title="Close split · keep the main chat">
-            <CloseIcon />
+            aria-label="Close split" title="Close split" data-icon-action>
+            <ActionIcon name="dismiss" />
           </button>}
         </div>
       </header>
@@ -151,20 +152,9 @@ export function BesideBar({ showing, taskTitle, onShow, onClose }: {
           <span>Task</span><span className="beside-switch-title">{taskTitle}</span>
         </button>
       </div>
-      <button type="button" className="beside-btn" onClick={onClose} aria-label="Close split" title="Close split · keep the main chat">
-        <CloseIcon />
+      <button type="button" className="beside-btn" onClick={onClose} aria-label="Close split" title="Close split" data-icon-action>
+        <ActionIcon name="dismiss" />
       </button>
     </div>
   );
-}
-
-function ExpandIcon() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7" />
-  </svg>;
-}
-function CloseIcon() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true">
-    <path d="M6 6l12 12M18 6 6 18" />
-  </svg>;
 }

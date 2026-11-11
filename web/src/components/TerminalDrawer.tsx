@@ -12,6 +12,7 @@
 // you run in a project are the same few every day, and typing them into a fresh
 // shell each time is the part worth removing: one click opens a tab named after
 // the command, in this project's folder, with the command already running.
+import { ActionIcon } from "./ActionIcon";
 import { useCallback, useState } from "react";
 
 import { bridge } from "../lib/bridge";
@@ -156,8 +157,8 @@ export function TerminalDrawer({
           type="button"
           title="Hide the terminal (every shell keeps running)"
           onClick={onHide}
-        >
-          ✕
+         data-icon-action aria-label="Hide the terminal (every shell keeps running)">
+          <ActionIcon name="dismiss" />
         </button>
       </div>
 
@@ -199,8 +200,8 @@ export function TerminalDrawer({
                 type="button"
                 title="Close this terminal (ends what is running in it)"
                 onClick={() => close(term.id)}
-              >
-                ✕
+               data-icon-action aria-label="Close this terminal (ends what is running in it)">
+                <ActionIcon name="dismiss" />
               </button>
             </span>
           ),
@@ -210,8 +211,8 @@ export function TerminalDrawer({
           type="button"
           title="Another shell in this project"
           onClick={() => write(addTab(tabs, project.id))}
-        >
-          +
+         data-icon-action aria-label="Another shell in this project">
+          <ActionIcon name="new" />
         </button>
       </div>
 
@@ -322,16 +323,16 @@ function CommandForm({
         value={command}
         onChange={(e) => setCommand(e.target.value)}
       />
-      <button className="cmd-form-save" type="submit" disabled={!ready}>
-        Save
+      <button className="cmd-form-save" type="submit" disabled={!ready} data-icon-action title="Save" aria-label="Save">
+        <ActionIcon name="save" />
       </button>
       {onDelete && (
-        <button className="cmd-form-delete" type="button" onClick={onDelete}>
-          Delete
+        <button className="cmd-form-delete" type="button" onClick={onDelete} data-icon-action title="Delete" aria-label="Delete">
+          <ActionIcon name="delete" /> Delete
         </button>
       )}
-      <button className="cmd-form-cancel" type="button" onClick={onCancel}>
-        Cancel
+      <button className="cmd-form-cancel" type="button" onClick={onCancel} data-icon-action title="Cancel" aria-label="Cancel">
+        <ActionIcon name="cancel" />
       </button>
       {error && <span className="cmd-form-error">{error}</span>}
     </form>

@@ -44,7 +44,7 @@ describe("HandoverCards", () => {
     // named by what they are and how much: the agent's words stay unread
     // until asked for, the fact that there are some does not.
     expect(html).toContain('<span>Brief · 1 line</span><span>1 said to carry over</span><span>1 not authorized</span><span>Checkout</span>');
-    expect(html).toMatch(/<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="[^"]+" aria-describedby="[^"]+" aria-label="Show the brief" title="Show the brief">/);
+    expect(html).toMatch(/<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="[^"]+" aria-describedby="[^"]+" aria-label="Show the brief" title="Show the brief"[^>]*>/);
     expect(html).not.toContain("Finish the login fix");
     expect(html).not.toContain("commit on the task branch");
     expect(html).not.toContain("<details");
@@ -77,7 +77,7 @@ describe("HandoverCards", () => {
     const html = opened([handover({ brief: { objective: "Finish the login fix", remaining } })], "chat:source");
     expect(html).toContain(`<p>${remaining}</p>`);
     expect(html).not.toContain("not shown");
-    expect(html).toContain('<button type="button" class="handover-go">Hand over to Mango</button>');
+    expect(html).toMatch(new RegExp("<button(?=[^>]*aria-label=\"Hand over to Mango\")(?=[^>]*type=\"button\")(?=[^>]*class=\"handover-go\")[^>]*>[\\s\\S]*?</button>"));
   });
 
   it("sizes a brief by every section of it", () => {
@@ -181,11 +181,11 @@ describe("HandoverCards", () => {
       const why = /<p class="handover-over" id="([^"]+)">This brief is too long to show in full \(5,000,035 characters\), so it cannot be handed over from here\. Keep it here and ask for a shorter one\.<\/p>/.exec(html);
       expect(why, "no reason on the card").not.toBeNull();
       // Off, not disabled and not gone: it points at the sentence above it.
-      expect(html).toMatch(new RegExp(`<button type="button" class="handover-go" aria-disabled="true" aria-describedby="${why![1]}"[^>]*>Hand over to Mango</button>`));
+      expect(html).toMatch(new RegExp(`<button type="button" class="handover-go" aria-disabled="true" aria-describedby="${why![1]}"[^>]*aria-label="Hand over to Mango"[^>]*>`));
       expect(html).not.toMatch(/<button[^>]*class="handover-go"[^>]* disabled=""/);
       expect(html.indexOf("handover-over")).toBeLessThan(html.indexOf("handover-actions"));
       // Keeping it here is an ordinary button, and none of the brief is drawn.
-      expect(html).toContain('<button type="button" class="handover-quiet">Keep it here</button>');
+      expect(html).toMatch(new RegExp("<button(?=[^>]*aria-label=\"Keep it here\")(?=[^>]*type=\"button\")(?=[^>]*class=\"handover-quiet\")[^>]*>[\\s\\S]*?</button>"));
       expect(html).not.toContain("rrrr");
       expect(html).not.toContain("card-fold-toggle");
       // The card still waits on the person, and is still found by its badge.
@@ -193,8 +193,8 @@ describe("HandoverCards", () => {
     }
     // A failed start offers no way round it, and giving up stays.
     const retry = render([handover({ status: "starting", targetChatKey: "chat:new", error: "CLI unavailable", abandonable: true, brief: long })], "chat:source").tail;
-    expect(retry).toMatch(/<button type="button" class="handover-go" aria-disabled="true"[^>]*>Try again<\/button>/);
-    expect(retry).toContain('<button type="button" class="handover-quiet">Give up</button>');
+    expect(retry).toMatch(/<button(?=[^>]*aria-label="Try again") type="button" class="handover-go" aria-disabled="true"[^>]*>[\s\S]*?<\/button>/);
+    expect(retry).toMatch(/<button(?=[^>]*class="handover-quiet")(?=[^>]*aria-label="Give up")[^>]*>/);
     // The bound is on the whole brief, counted in characters, and one
     // character short of it is an ordinary card.
     expect(briefOver(handover({ brief: { objective: "o".repeat(WHOLE_MAX) } }))).toBe("");

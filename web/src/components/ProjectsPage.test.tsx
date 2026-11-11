@@ -95,7 +95,7 @@ describe("ProjectsPage", () => {
     expect(out).toContain('aria-label="Task open, Working"');
     expect(out).toContain('aria-label="Task saved, Pinned"');
     expect(out).toContain('aria-label="Task ticked, Done"');
-    expect(out).toContain(">Projects</span>");
+    expect(out).toContain('aria-label="Back to projects"');
   });
 
   it("finds the same canonical coordinator on each linked project page", () => {
@@ -160,19 +160,19 @@ describe("ProjectsPage", () => {
     expect(out).toContain("No tasks in old-site yet.");
     expect(out).not.toContain("Start a task");
     expect(out).not.toContain("New task</span>");
-    expect(out).toContain("Project settings</button>");
+    expect(out).toContain('aria-label="Project settings"');
   });
 
   it("owns New project and the shelf, which left the sidebar", () => {
     const out = html({ onShowShelved: () => {}, onRestoreProject: async () => {} });
-    expect(out).toContain("New project</span>");
+    expect(out).toContain('aria-label="New project"');
     expect(out).toContain('aria-label="Shelved projects"');
     expect(out).toContain("Restore shelved projects</button>");
   });
 
   it("offers Restore on a shelved project's page, and only there", () => {
     const shelvedPage = html({ selectedProjectId: "p3", onRestoreProject: async () => {} });
-    expect(shelvedPage).toContain("Restore project</span>");
+    expect(shelvedPage).toContain('aria-label="Restore project"');
     const livePage = html({ selectedProjectId: "p1", onRestoreProject: async () => {} });
     expect(livePage).not.toContain("Restore project");
   });

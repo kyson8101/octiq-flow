@@ -10,6 +10,7 @@
 // It sits under the hero rather than in a modal on purpose. Starting fresh and
 // carrying on are the same decision, made at the same moment, so they belong in
 // the same place; a dialog would make one of them feel like a detour.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { claudeModelName } from "../lib/agentProviders";
 import {
@@ -152,8 +153,8 @@ export function SessionSearch({
           type="button"
           title="Close the search"
           onClick={() => setOpen(false)}
-        >
-          ✕
+         data-icon-action aria-label="Close the search">
+          <ActionIcon name="dismiss" />
         </button>
       </div>
 
@@ -240,8 +241,8 @@ export function SessionSearch({
               },
             );
           }}
-        >
-          Look again
+         data-icon-action title="Look again" aria-label="Look again">
+          <ActionIcon name="refresh" />
         </button>
       </div>
     </div>

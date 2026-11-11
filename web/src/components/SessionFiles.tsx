@@ -24,6 +24,7 @@
 // the file. Both answer the same question the column does — this file matters —
 // for the case where the answer is wanted somewhere else: a terminal, another
 // chat, a message to somebody. See `PinRow`.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { bridge } from "../lib/bridge";
@@ -234,12 +235,10 @@ export function FilesButton({
       // Named apart from the view switch's "Files", which opens the editor.
       // Two controls one bar apart, both called Files, would be a coin toss.
       aria-label={`Files worth opening — ${count}`}
-      title={`${count} file${count === 1 ? "" : "s"} worth opening`}
+      title={`Files worth opening — ${count}`}
       onClick={onToggle}
-    >
-      <FileIcon />
-      <span className="topbar-action-label">Pinned</span>
-      <span className="sfp-count">
+     data-icon-action aria-description={`${count} file${count === 1 ? "" : "s"} worth opening`}>
+      <ActionIcon name="pinned" /><span className="sfp-count">
         <RollingNumber value={count} />
       </span>
     </button>
@@ -338,8 +337,8 @@ export function SessionFilesPanel({
                 : `${pins.length} to read`}
             </RollingText>
           </span>
-          <button className="gitp-close" type="button" aria-label="Close" onClick={onClose}>
-            ✕
+          <button className="gitp-close" type="button" aria-label="Close" onClick={onClose} data-icon-action title="Close">
+            <ActionIcon name="dismiss" />
           </button>
         </header>
 

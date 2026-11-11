@@ -60,8 +60,7 @@
 }
 .actionbar-item.is-separated:first-child::before { display: none; }
 
-/* Every button of the row is one shape: an icon, a short word, and at most a
-   count. Each kept the look of the place it came from (a square icon in the
+/* Every button of the row is one shape: an icon and at most a count. Each kept the look of the place it came from (a square icon in the
    top bar, a bordered pill beside it); here they are one family. */
 .actionbar .actionbar-item > :is(.icon-btn, .gitp-toggle, .orch-toggle),
 .actionbar .actionbar-item > .chat-task > .chat-task-action,
@@ -72,10 +71,10 @@
   flex: 0 0 auto;
   gap: 6px;
   width: auto;
-  min-width: 0;
+  min-width: 28px;
   height: 28px;
   min-height: 0;
-  padding: 0 8px;
+  padding: 0 5px;
   border: 1px solid transparent;
   border-radius: var(--r-sm);
   background: transparent;
@@ -119,12 +118,11 @@
 .actionbar .actionbar-row > .actionbar-item svg,
 .actionbar .actionbar-row > .mobile-actions > .mobile-actions-trigger > svg {
   flex: 0 0 auto;
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
 }
 
-.actionbar .actionbar-row > .actionbar-item .topbar-action-label,
-.actionbar .actionbar-row > .mobile-actions > .mobile-actions-trigger > .topbar-action-label { display: inline; }
+
 
 /* More carries the count of what waits on the person behind it, in the
    colour of a decision: it is asking, nothing is wrong. */

@@ -50,12 +50,12 @@ describe("the Complete action", () => {
   );
   const main = { key: "chat:c1", worker: false, frontDesk: false };
 
-  it("is a button with a short word, and the whole sentence as its name and tooltip", () => {
+  it("is an icon-only button, and the whole sentence as its name and tooltip", () => {
     const html = draw(main);
     expect(html).toContain('class="icon-btn complete-chat"');
     expect(html).toContain('title="Complete this chat"');
     expect(html).toContain('aria-label="Complete this chat"');
-    expect(html).toContain('<span class="topbar-action-label">Complete</span>');
+    expect(html).toContain('data-action-icon="complete"');
     expect(html).not.toContain("disabled");
   });
 
@@ -99,7 +99,7 @@ describe("the question before a chat is completed", () => {
     const html = draw();
     // The shared control: a real button that says what it opens and names
     // the box it opens, shut until asked for.
-    const button = /<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="([^"]+)" aria-describedby="([^"]+)" aria-label="Show the steps" title="Show the steps">/.exec(html);
+    const button = /<button type="button" class="card-fold-toggle" aria-expanded="false" aria-controls="([^"]+)" aria-describedby="([^"]+)" aria-label="Show the steps" title="Show the steps"[^>]*>/.exec(html);
     expect(button, "no disclosure button").not.toBeNull();
     expect(html).toContain(`<span class="card-fold-labels" id="${button![2]}"><span>What the agent is asked · 5 steps</span></span>`);
     expect(html).toContain(`<div id="${button![1]}" class="card-fold" hidden=""></div>`);
@@ -117,7 +117,7 @@ describe("the question before a chat is completed", () => {
     for (const step of ["Work", "Clean up", "Memory", "Run", "Report"]) expect(html).toContain(`<strong>${step}</strong>`);
     expect(html).toContain("A worktree and its branch go only if merged.");
     expect(html.lastIndexOf("</ol>")).toBeLessThan(html.indexOf("ask-buttons"));
-    expect(html).toContain(">Complete</button>");
+    expect(html).toContain("aria-label=\"Complete\"");
   });
 
   it("never shows the agent's instructions or an absolute path", () => {
@@ -135,8 +135,8 @@ describe("the question before a chat is completed", () => {
   it("is a decision, not a warning and not a deletion", () => {
     const html = draw();
     expect(html).toContain('class="ask-btn is-primary"');
-    expect(html).toContain(">Complete</button>");
-    expect(html).toContain(">Cancel</button>");
+    expect(html).toContain("aria-label=\"Complete\"");
+    expect(html).toContain("aria-label=\"Cancel\"");
     expect(html).not.toContain("is-danger");
     // The sheet reads the decision colour only.
     expect(sheet).toContain("var(--decide)");
@@ -146,7 +146,7 @@ describe("the question before a chat is completed", () => {
   it("shows no facts, and still asks, when the host has none", () => {
     const html = draw(confirmContent({ ...preview, workspace: undefined, delivery: undefined, runs: [] }));
     expect(html).not.toContain("<dl");
-    expect(html).toContain(">Complete</button>");
+    expect(html).toContain("aria-label=\"Complete\"");
   });
 
   it("says it is checking while the preview is on its way, and cannot be confirmed until it is in", () => {
@@ -162,8 +162,8 @@ describe("the question before a chat is completed", () => {
   it("shows the host's refusal and offers nothing to confirm", () => {
     const html = draw(confirmContent({ ...preview, refusal: "This chat is not in the active chat index." }));
     expect(html).toContain("This chat is not in the active chat index.");
-    expect(html).not.toContain(">Complete</button>");
-    expect(html).toContain(">Close</button>");
+    expect(html).not.toContain("aria-label=\"Complete\"");
+    expect(html).toContain("aria-label=\"Close\"");
   });
 });
 
@@ -243,12 +243,12 @@ describe("the wrap-up's bubble", () => {
   it("is an ordinary queued bubble: it can be sent now, and its take-back cancels the completion", () => {
     const html = draw(wrapUp());
     expect(html).toContain(">Queued</span>");
-    expect(html).toContain(">Send now</button>");
-    expect(html).toContain('title="Stop the current reply and wrap up now"');
+    expect(html).toContain("aria-label=\"Send this queued message now\"");
+    expect(html).toContain('aria-description="Stop the current reply and wrap up now"');
     expect(html).toContain('aria-label="Cancel completing this chat"');
-    expect(html).toContain(">Cancel</button>");
+    expect(html).toContain('aria-description="Take the wrap-up back. The chat is not completed."');
     // There are no typed words to return to the composer, and none to copy.
-    expect(html).not.toContain(">Edit</button>");
+    expect(html).not.toContain("aria-label=\"Take this queued message back to edit\"");
     expect(html).not.toContain("Take this queued message back to edit");
     expect(html).not.toContain("Copy this message");
   });
@@ -274,7 +274,7 @@ describe("the wrap-up's bubble", () => {
 
   it("leaves a message the person typed exactly as it was", () => {
     const html = draw({ ...wrapUp(), id: "m1", turnId: "u-1", blocks: [{ kind: "text", text: "do the thing" }] });
-    expect(html).toContain(">Edit</button>");
+    expect(html).toContain("aria-label=\"Take this queued message back to edit\"");
     expect(html).toContain("do the thing");
     expect(html).not.toContain("wrap-up-note");
   });

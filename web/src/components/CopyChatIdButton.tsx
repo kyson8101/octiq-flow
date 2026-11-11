@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { ActionIcon } from "./ActionIcon";
 import { copyText } from "../lib/clipboard";
-import { CopyIcon, TickIcon } from "./CopyBit";
 
 export function CopyChatIdButton({ chatId }: { chatId: string }) {
   const [result, setResult] = useState<"idle" | "done" | "failed">("idle");
@@ -26,11 +26,8 @@ export function CopyChatIdButton({ chatId }: { chatId: string }) {
         if (timer.current !== null) clearTimeout(timer.current);
         timer.current = setTimeout(() => setResult("idle"), 1600);
       }}
-    >
-      {result === "done" ? <TickIcon /> : <CopyIcon />}
-      {/* The words stay put: what happened is the icon, its colour and the
-          button's name, so a copy never changes the bar's widths. */}
-      <span className="topbar-action-label">Copy ID</span>
+     data-icon-action>
+      <ActionIcon name={result === "done" ? "allow" : "copy"} />
     </button>
   );
 }

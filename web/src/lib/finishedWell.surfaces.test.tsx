@@ -743,7 +743,7 @@ describe("a failure that waits on the person is one decision, with what moves it
     expect(row.indexOf(sentence)).toBeLessThan(row.indexOf('class="orch-task-detail"'));
     expect(row).toContain(`data-pending-keys="failure:${a.task.id}"`);
     // The one start, where the row's other starts are, and offered once.
-    expect(row.split(">Start retry<").length - 1).toBe(1);
+    expect(row.split("aria-label=\"Start retry\"").length - 1).toBe(1);
     expect(panelHtml).toContain('aria-label="1 decision waiting, 1 task failed. Show"');
     expect(panelHtml).toContain("Needs you · 1 decision");
   });
@@ -764,7 +764,7 @@ describe("a failure that waits on the person is one decision, with what moves it
     expect(box).toContain(`data-pending-keys="gate:${gate.id}"`);
     expect(box).toContain(`>${a.task.title}</p>`);
     expect(box).not.toContain("This mission");
-    expect(box).toContain(">Answer</button>");
+    expect(box).toContain("aria-label=\"Answer\"");
     expect(box).not.toContain("Send to main chat");
   });
 
@@ -788,11 +788,11 @@ describe("a failure that waits on the person is one decision, with what moves it
     expect(row).not.toMatch(/>Start (retry|next attempt|it again)</);
     // The door itself: once, on the row of what decides the task's
     // workspace, which stands above the two tabs.
-    expect(row.split(">Continue after review<").length - 1).toBe(1);
+    expect(row.split("aria-label=\"Continue after review\"").length - 1).toBe(1);
     const actions = row.indexOf('class="orch-delivery-actions"');
     expect(actions).toBeGreaterThan(-1);
-    expect(row.indexOf(">Continue after review<")).toBeGreaterThan(actions);
-    expect(row.indexOf(">Continue after review<")).toBeLessThan(row.indexOf('class="orch-task-tabs"'));
+    expect(row.indexOf("aria-label=\"Continue after review\"")).toBeGreaterThan(actions);
+    expect(row.indexOf("aria-label=\"Continue after review\"")).toBeLessThan(row.indexOf('class="orch-task-tabs"'));
     expect(reopenControl(a.task, ledger.runs[0])).toEqual({ label: "Continue after review" });
     expect(line).toBe("1 failed · 0/1 done");
     expect(attentionLabel(attention)).toBe("1 failed");
@@ -826,7 +826,7 @@ describe("a failure that waits on the person is one decision, with what moves it
     expect(a.failure).toMatchObject({ askCoordinator: true });
     expect(a.failure!.note).toBe("Its 2 automatic retries are used. It cannot be started from here: ask the coordinator in its chat, or stop or archive the run.");
     expect(drawnRows[0]).toContain(`<span>${a.failure!.note}</span><button type="button" class="orch-task-ask-go">Open the coordinator&#x27;s chat</button>`);
-    expect(drawnRows[0]).not.toContain(">Continue after review<");
+    expect(drawnRows[0]).not.toContain("aria-label=\"Continue after review\"");
   });
 
   it("a failed task whose coordinator is gone, and a peer request out of time, are started by the person", () => {
@@ -838,12 +838,12 @@ describe("a failure that waits on the person is one decision, with what moves it
       const { a, drawnRows } = surfaces(ledger);
       expect(a).toMatchObject({ state: "failed", group: "needs", why: "Failed", tone: "danger", decisions: 1 });
       expect(a.failure!.note).toBe(`${why} Open this row for Start retry, or stop or archive the run.`);
-      expect(drawnRows[0].split(">Start retry<").length - 1).toBe(1);
+      expect(drawnRows[0].split("aria-label=\"Start retry\"").length - 1).toBe(1);
       expect(drawnRows[0]).not.toContain("orch-task-ask-go");
       // Neither is reopened from the page: one did not complete, and a peer
       // request is one approved job.
       expect(reopenControl(a.task, ledger.runs[0])).toBeNull();
-      expect(drawnRows[0]).not.toContain(">Continue after review<");
+      expect(drawnRows[0]).not.toContain("aria-label=\"Continue after review\"");
     }
   });
 

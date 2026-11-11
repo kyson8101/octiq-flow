@@ -10,6 +10,7 @@
 // there is no shape of this screen where a lost Save button is acceptable on a
 // phone. The name and description are the exception: they save when you stop
 // typing, so a rename is not 14 writes.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { moveSiblingGroupBy } from "../lib/projectOrder";
@@ -350,8 +351,8 @@ export function ProjectSettings({
                     type="button"
                     disabled={busy || !icon}
                     onClick={() => void removeIcon()}
-                  >
-                    Remove
+                   data-icon-action title="Remove" aria-label="Remove">
+                    <ActionIcon name="delete" />
                   </button>
                   <input
                     ref={iconInput}
@@ -581,14 +582,14 @@ export function ProjectSettings({
                     className="set-row-btn is-quiet"
                     type="button"
                     disabled={busy}
-                    title="Remove this folder"
+                    title="Remove"
                     onClick={() =>
                       void run(() =>
                         bridge.invoke("remove_workspace_path", { id: project.id, path: p }),
                       )
                     }
-                  >
-                    Remove
+                   data-icon-action aria-label="Remove" aria-description="Remove this folder">
+                    <ActionIcon name="delete" />
                   </button>
                 </div>
               ))}
@@ -658,8 +659,8 @@ export function ProjectSettings({
                     onClose();
                   });
                 }}
-              >
-                Delete project
+               data-icon-action title="Delete project" aria-label="Delete project">
+                <ActionIcon name="delete" />
               </button>
             </div>
           )}

@@ -9,6 +9,7 @@
 // and caches for a few seconds, so several open tabs asking at once cost one
 // `git status`. Refreshes are tied to things that actually change the answer:
 // the chat opening, a turn ending, git moving under it, and the panel opening.
+import { ActionIcon } from "./ActionIcon";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { singleFlight, withTrailingRun } from "../lib/singleFlight";
@@ -285,11 +286,7 @@ export function ChatTaskBarView({
       >
         {action ? (
           <>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z" />
-              <path d="M8 9h8M8 13h8M8 17h5" />
-            </svg>
-            <span className="topbar-action-label">Details</span>
+            <ActionIcon name="details" />
           </>
         ) : (
           <>
@@ -352,7 +349,9 @@ function ChatTaskPanel({
     <div className="chat-task-panel" role="dialog" aria-label="Task and workspace">
       <div className="chat-task-head">
         <strong>Task &amp; workspace</strong>
-        <button type="button" className="chat-task-close" aria-label="Close" onClick={onClose}>×</button>
+        <button type="button" className="chat-task-close" aria-label="Close" onClick={onClose} data-icon-action title="Close">
+          <ActionIcon name="dismiss" />
+        </button>
       </div>
 
       {persona && (
@@ -476,13 +475,13 @@ function EnvField({ row }: { row: ReturnType<typeof taskEnvironment>["rows"][num
               type="button"
               className="chat-task-copy"
               aria-label={`Copy ${row.label.toLowerCase()} path`}
-              title={copied === "failed" ? "Could not copy" : copied === "done" ? "Copied" : `Copy ${row.path}`}
+              title={`Copy ${row.label.toLowerCase()} path`}
               onClick={async () => {
                 setCopied((await copyText(row.path ?? "")) ? "done" : "failed");
                 setTimeout(() => setCopied("idle"), 1600);
               }}
-            >
-              {copied === "done" ? "Copied" : "Copy"}
+             data-icon-action aria-description={copied === "failed" ? "Could not copy" : copied === "done" ? "Copied" : `Copy ${row.path}`}>
+              <ActionIcon name="copy" />
             </button>
           )}
         </span>
@@ -530,7 +529,9 @@ function ReleaseCheckField({ onSave }: { onSave: (check: ReleaseCheck) => void }
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={(event) => { if (event.key === "Escape") setEditing(false); }}
       />
-      <button type="submit">Save</button>
+      <button type="submit" data-icon-action title="Save" aria-label="Save">
+        <ActionIcon name="save" />
+      </button>
       <span className="chat-task-note">
         {kind === "reference"
           ? "Released means the commit is an ancestor of this ref."

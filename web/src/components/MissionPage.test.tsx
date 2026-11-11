@@ -127,7 +127,7 @@ describe("a mission whose plan waits for approval", () => {
     const html = render(pending("pending"));
     // The failed task's retry stays on the page, switched off, with the
     // reason beside it (`lib/taskHold.startControl`).
-    const retry = /<button type="button" class="task-start"[^>]*>Start retry<\/button>/.exec(html)![0];
+    const retry = /<button(?=[^>]*aria-label="Start retry") type="button" class="task-start"[^>]*>[\s\S]*?<\/button>/.exec(html)![0];
     expect(retry).toContain('aria-disabled="true"');
     const why = /aria-describedby="([^"]+)"/.exec(retry)![1];
     expect(html).toContain(`<span id="${why}" class="task-start-why">${PLAN_DETAIL}</span>`);

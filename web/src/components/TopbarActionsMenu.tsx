@@ -1,3 +1,4 @@
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 /** More: the one disclosure for the actions a desktop's action bar has no
@@ -48,22 +49,12 @@ export function TopbarActionsMenu({
           : "More actions"}
         aria-expanded={open}
         aria-controls={panelId}
-        title="More actions"
+        title={attentionCount > 0
+          ? `More actions, ${attentionCount} ${attentionCount === 1 ? "item needs" : "items need"} attention`
+          : "More actions"}
         onClick={() => setOpen((value) => !value)}
-      >
-        <svg
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="currentColor"
-          aria-hidden="true"
-        >
-          <circle cx="5" cy="12" r="1.7" />
-          <circle cx="12" cy="12" r="1.7" />
-          <circle cx="19" cy="12" r="1.7" />
-        </svg>
-        <span className="topbar-action-label">More</span>
-        {attentionCount > 0 && <span className="mobile-actions-attention" aria-hidden="true">{attentionCount}</span>}
+       data-icon-action aria-description="More actions">
+        <ActionIcon name="more" />{attentionCount > 0 && <span className="mobile-actions-attention" aria-hidden="true">{attentionCount}</span>}
       </button>
 
       {open && (

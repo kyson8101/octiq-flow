@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ActionIcon } from "./ActionIcon";
 import { createPortal } from "react-dom";
 import type { LeadHistoryEntry } from "../lib/leadThreads";
 import { readLeadHistory } from "../lib/leadThreadFeed";
@@ -15,8 +16,8 @@ export function LeadHistoryList({ entries, onOpen }: { entries: readonly LeadHis
 }
 
 export function LeadHistoryButton({ onClick }: { onClick: () => void }) {
-  return <button className="icon-btn" type="button" aria-label="Open lead history" title="Open lead history" aria-haspopup="dialog" onClick={onClick}>
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 11a9 9 0 1 1 2 7M3 4v7h7M12 7v5l3 2" /></svg><span className="topbar-action-label">History</span>
+  return <button className="icon-btn" type="button" aria-label="Open lead history" title="Open lead history" aria-haspopup="dialog" onClick={onClick} data-icon-action>
+    <ActionIcon name="history" />
   </button>;
 }
 
@@ -34,7 +35,9 @@ export function LeadHistoryPanel({ agentId, onOpen, onClose }: { agentId: string
     return () => { alive = false; };
   }, [agentId]);
   return createPortal(<dialog ref={dialog} className="lead-history-panel" aria-label="Lead history" onCancel={onClose} onClick={event => { if (event.target === dialog.current) onClose(); }}>
-    <header><h2>History</h2><button type="button" onClick={onClose} aria-label="Close lead history">Close</button></header>
+    <header><h2>History</h2><button type="button" onClick={onClose} aria-label="Close lead history" data-icon-action title="Close lead history">
+      <ActionIcon name="cancel" />
+    </button></header>
     {error ? <p role="alert">{error}</p> : entries === null ? <p role="status">Loading history…</p> : entries.length === 0 ? <p>No earlier chats.</p>
       : <LeadHistoryList entries={entries} onOpen={entry => { onClose(); onOpen(entry); }} />}
   </dialog>, document.body);

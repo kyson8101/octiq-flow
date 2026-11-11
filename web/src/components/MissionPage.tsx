@@ -4,6 +4,7 @@
 // and the branches are one click away. The board (MissionTrack) and the tasks
 // stay where they were, and so do Close and Abandon, in the mission options.
 // See lib/missionPage for where each line comes from.
+import { ActionIcon } from "./ActionIcon";
 import { useContext, useEffect, useId, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { AgentRosterContext, ChatPersonaContext } from "../lib/agentRoster";
@@ -193,7 +194,9 @@ export function ReassignForm({ run, task, crew, busy: inputBusy, onDone }: {
       </>}
     {error && <p className="orch-run-error" role="alert">{error}</p>}
     <div className="mission-reassign-actions">
-      <button type="button" className="orch-quiet" disabled={busy} onClick={onDone}>Cancel</button>
+      <button type="button" className="orch-quiet" disabled={busy} onClick={onDone} data-icon-action title="Cancel" aria-label="Cancel">
+        <ActionIcon name="cancel" />
+      </button>
       {choices && choices.length > 0 && <button type="button" className="orch-quiet is-primary" disabled={busy || !assignee || !why.trim()}
         onClick={() => void submit()}>{sending ? "Reassigning…" : "Reassign"}</button>}
     </div>

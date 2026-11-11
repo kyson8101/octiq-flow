@@ -86,13 +86,13 @@ describe("Registered agents table", () => {
     (name.props.onChange as (event: unknown) => void)({ target: { value: "OCTIQ FE" } });
     const model = nodes(row()).find((node) => node.type === ModelFields)!;
     (model.props.onProvider as (value: string) => void)("codex");
-    const save = nodes(row()).find((node) => node.type === "button" && node.props.children === "Save")!;
+    const save = nodes(row()).find((node) => node.type === "button" && node.props["aria-label"] === "Save")!;
     await (save.props.onClick as () => Promise<unknown>)();
     expect(invoke).toHaveBeenLastCalledWith("team_save", { agent: {
       ...report, name: "OCTIQ FE", agent: "codex", model: teamModels("codex")[0].flag,
     } });
     invoke.mockClear();
-    const cancel = nodes(row()).find((node) => node.type === "button" && node.props.children === "Cancel")!;
+    const cancel = nodes(row()).find((node) => node.type === "button" && node.props["aria-label"] === "Cancel")!;
     (cancel.props.onClick as () => void)();
     expect(onCancel).toHaveBeenCalledOnce();
     expect(invoke).not.toHaveBeenCalled();

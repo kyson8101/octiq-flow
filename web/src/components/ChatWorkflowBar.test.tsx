@@ -10,7 +10,7 @@ describe("ChatWorkflowBar", () => {
       snapshot={{ ...EMPTY_ORCHESTRATION, runs: [run] }} orchestrated view="chat" onView={() => {}} />);
     expect(html).toMatch(/<h1 class="workflow-title" id="[^"]+">Ship the unified workspace<\/h1>/);
     expect(html).toMatch(/<button[^>]+workflow-title-toggle[^>]+hidden=""[^>]+aria-expanded="false"[^>]+aria-controls="[^"]+"[^>]+aria-label="Show full objective details"/);
-    expect(html).toContain("Show details</button>");
+    expect(html).toContain('aria-label="Show full objective details"');
     expect(html).toContain('aria-pressed="false">Tasks');
     expect(html).toContain('aria-pressed="true">Chat');
     expect(html).not.toContain('aria-label="Execution mode"');
@@ -22,7 +22,7 @@ describe("ChatWorkflowBar", () => {
     const html = renderToStaticMarkup(<ChatWorkflowBar unified worker selectedRun={run} snapshot={{ ...EMPTY_ORCHESTRATION, runs: [run] }}
       orchestrated view="chat" onView={() => {}} onBackToMain={() => {}} onOpenBeside={() => {}} besideTitle="Build the roster" />);
     expect(html).toContain('aria-label="Back to main chat"');
-    expect(html).toMatch(/<button type="button" class="open-beside is-bar" aria-label="Open beside main: Build the roster" title="Open beside main">/);
+    expect(html).toMatch(/<button type="button" class="open-beside is-bar" aria-label="Open beside main: Build the roster" title="Open beside main"[^>]*>/);
     expect(html.indexOf("Back to main chat")).toBeLessThan(html.indexOf("Open beside main"));
     expect(html).not.toContain("read-only-badge");
     const readOnly = renderToStaticMarkup(<ChatWorkflowBar unified worker readOnly selectedRun={run} snapshot={{ ...EMPTY_ORCHESTRATION, runs: [run] }}

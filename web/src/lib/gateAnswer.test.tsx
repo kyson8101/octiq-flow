@@ -46,7 +46,7 @@ const box = (html: string, heading: "Needs you" | "Open decisions") => {
   const ends = [rest.indexOf("</h3>", 8), rest.indexOf('class="orch-tabs-row"')].filter((at) => at >= 0);
   return rest.slice(0, Math.min(...ends));
 };
-const buttons = (html: string) => [...html.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((match) => match[0]);
+const buttons = (html: string) => [...html.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map((match) => match[0]);
 
 describe("a press on a control that answers where it stands", () => {
   const at = 10_000;
@@ -141,7 +141,7 @@ describe("where a gate's answer goes", () => {
   it("is drawn as that door, with every control guarded and the door said in words", () => {
     const html = panel(hostFacts.failureEscalated());
     const mine = box(html, "Needs you");
-    expect(buttons(mine).map((button) => button.replace(/<[^>]+>/g, ""))).toEqual(["Start it again", "Leave it", "Answer"]);
+    expect(buttons(mine).map((button) => (/aria-label="([^"]+)"/.exec(button)?.[1] ?? button.replace(/<[^>]+>/g, "")))).toEqual(["Start it again", "Leave it", "Answer"]);
     for (const button of buttons(mine)) expect(button).toContain('class="orch-gate-answer"');
     // Nothing is written yet, so the written answer is off: said, not removed.
     expect(buttons(mine)[2]).toContain('aria-disabled="true"');
@@ -159,14 +159,14 @@ describe("where a gate's answer goes", () => {
     const html = panel(snapshot);
     const others = box(html, "Open decisions");
     expect(others).not.toBe("");
-    expect(buttons(others).map((button) => button.replace(/<[^>]+>/g, ""))).toEqual(["Start it again", "Leave it", "Send to main chat"]);
-    expect(others).not.toContain(">Answer</button>");
+    expect(buttons(others).map((button) => (/aria-label="([^"]+)"/.exec(button)?.[1] ?? button.replace(/<[^>]+>/g, "")))).toEqual(["Start it again", "Leave it", "Send to main chat"]);
+    expect(others).not.toContain("aria-label=\"Answer\"");
     expect(others).toContain(`>${GATE_DOOR_NOTE.chat.others}</p>`);
 
     // The host's own ledger with a worker's gate that waits on its coordinator.
     const open = panel(hostFacts.gatesOpen());
     expect(box(open, "Open decisions")).toContain(`>${GATE_DOOR_NOTE.chat.others}</p>`);
-    expect(box(open, "Open decisions")).not.toContain(">Answer</button>");
+    expect(box(open, "Open decisions")).not.toContain("aria-label=\"Answer\"");
     expect(box(open, "Needs you")).toContain(`>${GATE_DOOR_NOTE.chat.mine}</p>`);
 
     // A peer request's gate that does not wait on the person: no control.

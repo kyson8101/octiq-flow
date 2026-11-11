@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { ActionIcon } from "./ActionIcon";
 import type { OrchestrationRun, OrchestrationSnapshot } from "../lib/orchestration";
 import { isActiveRun } from "../lib/chatWorkflow";
 import { createPortal } from "react-dom";
@@ -51,8 +52,8 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onView, planPend
   // bar itself goes rather than leaving an empty rule across the column.
   if (!views && !run && !held) return null;
   const title = unified && <>
-    {onBackToMain && <button type="button" className="workflow-back-main" title="Back to main chat" aria-label="Back to main chat" onClick={onBackToMain}>
-      <BackIcon />
+    {onBackToMain && <button type="button" className="workflow-back-main" title="Back to main chat" aria-label="Back to main chat" onClick={onBackToMain} data-icon-action>
+      <ActionIcon name="back" />
     </button>}
     {onOpenBeside && <OpenBesideButton className="is-bar" title={besideTitle} onClick={onOpenBeside} />}
     {held && !run
@@ -86,21 +87,10 @@ export function TasksButton({ tasks, decisions, open, onToggle }: {
   const label = `${open ? "Hide" : "Show"} the task column${tasks ? ` — ${tasks} ${tasks === 1 ? "task" : "tasks"}` : ""}${owed ? `, ${decisions} waiting for you` : ""}`;
   return (
     <button className={`icon-btn tasks-toggle${open ? " is-on" : ""}`} type="button"
-      aria-expanded={open} aria-label={label} title={label} onClick={onToggle}>
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="3" y="4" width="18" height="16" rx="2.5" />
-        <path d="M9.5 4v16" />
-      </svg>
-      <span className="topbar-action-label">Tasks</span>
-      {tasks > 0 && <span className="tasks-toggle-count">{tasks}</span>}
-      {owed && <span className="tasks-toggle-owed" aria-hidden="true">{decisions}</span>}
+      aria-expanded={open} aria-label={label} title={label} onClick={onToggle} data-icon-action>
+      <ActionIcon name="tasks" />{tasks > 0 && <span className="tasks-toggle-count">{tasks}</span>}{owed && <span className="tasks-toggle-owed" aria-hidden="true">{decisions}</span>}
     </button>
   );
-}
-
-function BackIcon() {
-  return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>;
 }
 
 /** An objective is written for the agent, and can run to a paragraph. It gets
@@ -128,6 +118,8 @@ function RunTitle({ text }: { text: string }) {
     <h1 className="workflow-title" id={id} ref={ref} tabIndex={open ? 0 : undefined}>{text}</h1>
     <button type="button" className="workflow-title-toggle" hidden={!clipped && !open} aria-expanded={open} aria-controls={id}
       aria-label={open ? "Show less of the objective" : "Show full objective details"}
-      onClick={() => setOpen(!open)}>{open ? "Show less" : "Show details"}</button>
+      onClick={() => setOpen(!open)} data-icon-action title={open ? "Show less of the objective" : "Show full objective details"}>
+      <ActionIcon name={open ? "collapse" : "expand"} />
+    </button>
   </div>;
 }

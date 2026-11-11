@@ -6,7 +6,7 @@
 // the real App, served by Vite from web/. It checks, in the browsers named by
 // BROWSERS (chromium by default):
 //   * a desktop draws three rows of fixed height, every action as a button
-//     with an icon and a short word, and puts what does not fit behind More,
+//     with an icon and an accessible name, and puts what does not fit behind More,
 //     with what waits on the person counted on More;
 //   * the usage row draws every window the host reports, never Antigravity,
 //     and opens the full breakdown by a press;
@@ -113,14 +113,15 @@ function resultFor(request) {
     case "chat_index_deleted": return [];
     case "chat_page": return { events: [], context: [], before: null };
     case "chat_list": case "chat_activity": case "permission_pending": case "question_pending":
-    case "safety_block_pending": case "pr_repositories": case "codex_skills":
+    case "safety_block_pending": case "pr_repositories": case "codex_skills": case "provider_fallback_choices":
       return [];
     case "team_list": return [head];
     case "team_head": return head;
     case "team_leads": return [{ chatKey: "chat:main", leadId: head.id, leadName: head.name, projectId: "octiq", crossProject: false, createdAt: now - 500_000 }];
     case "team_home": return "octiq";
+    case "scheduling_get": return { orientation: "tasks", hostCap: null, live: { total: 0 }, lanes: [] };
     case "chat_queue_state": return { live: false, queuedTurnIds: [] };
-    case "orchestration_snapshot": return snapshot;
+    case "orchestration_snapshot": case "orchestration_summary": case "orchestration_run_detail": return snapshot;
     case "memory_usage": return { totalMb: 0, procs: 0, rows: [] };
     case "usage_summary": return usageAnswer;
     case "agent_installs": return [{ id: "claude", installed: true, path: "/mock/claude" }, { id: "antigravity", installed: true, path: "/mock/agy" }];
@@ -190,7 +191,7 @@ async function open(browser, { width, height, phone = false, seed = true, hash =
   }));
   const page = await context.newPage();
   page.setDefaultTimeout(60_000);
-  page.on("pageerror", (error) => errors.push(error.stack ?? String(error)));
+  page.on("pageerror", (error) => { errors.push(error.stack ?? String(error)); console.error(error.stack ?? String(error)); });
   const base = `http://127.0.0.1:${server.httpServer.address().port}/`;
   await page.goto(`${base}${hash}`, { waitUntil: "domcontentloaded", timeout: 180_000 });
   return { context, page };
@@ -224,6 +225,7 @@ async function ready(page) {
   await page.waitForFunction(() => !document.querySelector(".actionbar.gate-held, .actionbar.gate-entering, .usage-strip.gate-held, .usage-strip.gate-entering, .usage.gate-held, .usage.gate-entering")
     && [...document.querySelectorAll(".actionbar-item button")].every((each) => getComputedStyle(each).visibility === "visible"));
   await page.waitForTimeout(600);
+  await page.locator(".actionbar").waitFor();
 }
 const shift = (page) => page.evaluate(() => window.__shift);
 
@@ -260,16 +262,15 @@ async function desktop(browser, name, out) {
     "no action is left in the top bar");
   assert.equal(await page.locator(".topbar .usage, .topbar .mobile-actions").count(), 0);
 
-  // Every action is a button with an icon and a short word, in one line.
+  // Every action is a button with an icon and an accessible name, in one line.
   const row = await buttons(page);
-  out.buttons = row.map((each) => `${each.id}:${each.label}`);
+  out.buttons = row.map((each) => `${each.id}:${each.name}`);
   const order = ["tasks", "git", "focus", "details", "copy-id", "complete", "delete"];
-  const words = { tasks: "Tasks", git: "Git", focus: "Focus", details: "Details", "copy-id": "Copy ID", complete: "Complete", delete: "Delete", more: "More" };
   const inRow = row.map((each) => each.id).filter((id) => id !== "more");
   // A wider font may already have put the last of them behind More here.
   if (!wideFont) assert.deepEqual(inRow, order, "the direct actions lead, then what was behind the menu, in its order");
   assert.deepEqual(inRow, order.filter((id) => inRow.includes(id)), "what is in the row is in the bar's order");
-  assert.deepEqual(row.map((each) => each.label), row.map((each) => words[each.id]));
+  assert(row.every(each => !each.label), "the actions have no visible words");
   for (const each of row) assert(each.right <= 1280, `${each.id} is inside the window`);
   if (classic) assert(out.classicScrollbar > 0, "this run draws scrollbars that take room");
   for (const each of row) {
@@ -381,7 +382,13 @@ async function desktop(browser, name, out) {
     for (const each of narrow) assert(each.right <= width, `${each.id} is inside the window at ${width}`);
     await page.screenshot({ path: join(artifacts, `${name}-${width}-chat.png`), clip: { x: 0, y: 0, width, height: 200 } });
   }
-  assert(out.narrow[862].includes("more"), "at 862px some actions are behind More");
+  // Icons fit naturally where text labels overflowed. Constrain the row
+  // itself to exercise the same measured More path independently of fonts.
+  out.natural862 = out.narrow[862];
+  await page.locator(".actionbar-scroll").evaluate(el => { el.style.maxWidth = "180px"; });
+  await page.getByRole("button", { name: /^More actions/ }).waitFor();
+  out.narrow[862] = (await buttons(page)).map(each => each.id).join(" ");
+  assert(out.narrow[862].includes("more"), "a constrained icon row puts overflow behind More");
   const moreNames = async () => {
     await page.getByRole("button", { name: /^More actions/ }).click();
     const names = await page.locator(".mobile-actions-panel button").evaluateAll((list) => list.map((each) => each.getAttribute("aria-label")));
@@ -453,10 +460,10 @@ async function phone(browser, name, out) {
     assert.equal(await page.locator(".usage-strip").count(), 0, "a phone has no usage row");
     assert.equal(await page.locator(".actionbar .mobile-actions").count(), 0, "a phone has no More: the row scrolls");
     const row = await buttons(page);
-    out.buttons = row.map((each) => `${each.id}:${each.label}`);
+    out.buttons = row.map((each) => `${each.id}:${each.name}`);
     for (const each of row) {
       assert(each.h >= 44 && each.w >= 44, `${each.id} is a 44px target (${each.w}x${each.h})`);
-      assert(each.icon && each.label, `${each.id} has an icon and a word`);
+      assert(each.icon && each.name && !each.label, `${each.id} has an icon and an accessible name`);
     }
     assert.equal(new Set(row.map((each) => each.top)).size, 1, "one line");
     const scroller = page.locator(".actionbar-row");
@@ -472,7 +479,7 @@ async function phone(browser, name, out) {
     assert.equal(start.overscroll, "contain");
     assert.equal(start.wrap, "nowrap");
     assert.equal(start.cut, "end", "the cut end is faded before any scroll");
-    await scroller.evaluate((el) => { el.scrollLeft = 60; });
+    await scroller.evaluate((el) => { el.scrollLeft = (el.scrollWidth - el.clientWidth) / 2; });
     await settle(page, 200);
     assert.equal((await read()).cut, "start end");
     await page.screenshot({ path: join(artifacts, `${name}-390-bar-midway.png`), clip: { x: 0, y: 0, width: 390, height: 140 } });

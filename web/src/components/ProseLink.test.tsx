@@ -48,8 +48,8 @@ describe("ProseLink", () => {
     expect(html).toContain(
       'aria-label="File actions for /Users/kyson/03-projects/starfall/bible/seasons/01/prose-01.md"',
     );
-    expect(html).toContain(">Copy path</span>");
-    expect(html).toContain(">Open in OctiqFlow</span>");
+    expect(html).toContain('aria-label="Copy path:');
+    expect(html).toContain('data-action-icon="handover"');
     expect(html).not.toContain("<a");
     expect(html).not.toContain('target="_blank"');
   });

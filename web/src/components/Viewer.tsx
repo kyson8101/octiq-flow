@@ -3,6 +3,7 @@
 // Shared: the file list under a reply opens files here, and so do the chips on
 // a message you sent with files attached. Both are the same question — "let me
 // see that" — and it would be two different answers if each drew its own.
+import { ActionIcon } from "./ActionIcon";
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { bridge } from "../lib/bridge";
@@ -258,14 +259,14 @@ export function Viewer({ path, onClose }: { path: string; onClose: () => void })
               onClick={() => zoomBy((from) => stepScale(from, 1))}
               disabled={view.scale >= MAX_SCALE}
               aria-label="Zoom in"
-              title="Zoom in (+)"
-            >
-              +
+              title="Zoom in"
+             data-icon-action>
+              <ActionIcon name="new" />
             </button>
           </div>
         )}
-        <button className="viewer-close" type="button" onClick={onClose} aria-label="Close">
-          ✕
+        <button className="viewer-close" type="button" onClick={onClose} aria-label="Close" data-icon-action title="Close">
+          <ActionIcon name="dismiss" />
         </button>
       </div>
       {error ? (

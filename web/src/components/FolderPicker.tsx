@@ -8,6 +8,7 @@
 //
 // Only folders are listed. Files are not choices here, and showing them would
 // bury the two or three folders that are.
+import { ActionIcon } from "./ActionIcon";
 import { useCallback, useEffect, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { isAbsoluteFolderPath, parentFolderPath, visiblePickerEntries, type FolderEntry } from "../lib/folderPicker";
@@ -88,8 +89,8 @@ export function FolderPicker({
       <div className="fp-picker" role="dialog" aria-label={title}>
         <header className="fp-picker-head">
           <span className="fp-picker-title">{title}</span>
-          <button className="panel-close" type="button" onClick={onClose} aria-label="Close">
-            ✕
+          <button className="panel-close" type="button" onClick={onClose} aria-label="Close" data-icon-action title="Close">
+            <ActionIcon name="dismiss" />
           </button>
         </header>
 

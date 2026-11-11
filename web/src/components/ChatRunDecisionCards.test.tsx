@@ -32,14 +32,14 @@ describe("the coordinator's run decision cards", () => {
   it("carries the row's one retry, and folds the brief and worker report", () => {
     const snapshot = hostFacts.failureAwaitsPerson();
     snapshot.tasks[0].spec = "Full task detail behind the only fold.";
-    expect(draw(snapshot)).toContain('>Start retry</button>');
+    expect(draw(snapshot)).toContain("aria-label=\"Start retry\"");
     expect(draw(snapshot)).not.toContain(snapshot.tasks[0].spec);
     expect(draw(snapshot, true)).toContain(snapshot.tasks[0].spec);
     expect(draw(snapshot, true)).toContain(snapshot.attempts[0].summary);
   });
   it("offers the person's reopen, with no worker start for a failed check", () => {
     const html = draw(hostFacts.failureCheckRetriesUsed());
-    expect(html).toContain('>Continue after review</button>');
+    expect(html).toContain("aria-label=\"Continue after review\"");
     expect(html).not.toContain('class="task-start"');
   });
   it("shows the row's sentence when no start or kept workspace is available", () => {

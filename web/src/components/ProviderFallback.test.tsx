@@ -16,7 +16,7 @@ describe("provider-limit choices", () => {
     expect(html).toContain("Finish the task");
     expect(html).toContain('value="low" selected=""');
     expect(html).toContain("Access stays <strong>manual</strong>");
-    expect(html).toContain(">Cancel</button>");
+    expect(html).toContain("aria-label=\"Cancel\"");
     expect(html).toContain("Continue with selection");
   });
   it("keeps cancel available when all compatible alternatives are limited", () => {
@@ -25,8 +25,8 @@ describe("provider-limit choices", () => {
       options: [{ agent: "codex", installed: true, limited: true, suggestion }],
     }, onDone: () => {} }));
     expect(html).toContain("No compatible provider is available");
-    expect(html).toMatch(/disabled=""[^>]*>Continue with selection/);
-    expect(html).toContain('class="vault-button">Cancel</button>');
+    expect(html).toMatch(/disabled=""[^>]*aria-label="Continue with selection"[^>]*>/);
+    expect(html).toMatch(/<button(?=[^>]*class="vault-button")(?=[^>]*aria-label="Cancel")[^>]*>/);
   });
   it("uses model-encoded effort for Antigravity", () => {
     const html = renderToStaticMarkup(createElement(FallbackFields, {

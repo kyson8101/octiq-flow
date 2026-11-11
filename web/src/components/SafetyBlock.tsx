@@ -10,6 +10,7 @@
 // agent the rule exists, so the agent retries itself. Its outage card (the
 // classifier gave no verdict) offers the one as-is retry Claude itself allows,
 // and an allow rule the person adds to their own settings.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { AUTO_MODE_BLOCKED } from "../lib/safetyToast";
@@ -269,27 +270,27 @@ function OutageBlock({
 
       <div className="ask-card-buttons safety-card-buttons">
         <button className="ask-btn is-primary" type="button" disabled={!!sending || !actions.length}
-          title="Ask the agent to make the same call once more. Claude checks it again."
-          onClick={() => void answer("retry")}>
-          {sending === "retry" ? "Retrying…" : "Retry once"}
+          title={sending === "retry" ? "Retrying…" : "Retry once"}
+          onClick={() => void answer("retry")} data-icon-action aria-label={sending === "retry" ? "Retrying…" : "Retry once"} aria-description="Ask the agent to make the same call once more. Claude checks it again.">
+          <ActionIcon name="retry" />
         </button>
         {projectPath && (
           <button className="ask-btn safety-allow" type="button" disabled={!!sending}
-            title={`Adds ${ruleText} to ${projectPath}, then retries. In a task worktree the rule goes when the worktree does.`}
-            onClick={() => void answer("project")}>
-            {sending === "project" ? "Saving…" : "Always allow in this project"}
+            title={sending === "project" ? "Saving…" : "Always allow in this project"}
+            onClick={() => void answer("project")} data-icon-action aria-label={sending === "project" ? "Saving…" : "Always allow in this project"} aria-description={`Adds ${ruleText} to ${projectPath}, then retries. In a task worktree the rule goes when the worktree does.`}>
+            <ActionIcon name="alwaysProject" />
           </button>
         )}
         {userPath && (
           <button className="ask-btn safety-allow" type="button" disabled={!!sending}
-            title={`Adds ${ruleText} to ${userPath}, then retries`}
-            onClick={() => void answer("user")}>
-            {sending === "user" ? "Saving…" : "Always allow everywhere"}
+            title={sending === "user" ? "Saving…" : "Always allow everywhere"}
+            onClick={() => void answer("user")} data-icon-action aria-label={sending === "user" ? "Saving…" : "Always allow everywhere"} aria-description={`Adds ${ruleText} to ${userPath}, then retries`}>
+            <ActionIcon name="alwaysEverywhere" />
           </button>
         )}
         <button className="ask-btn" type="button" disabled={!!sending} aria-expanded={open}
-          onClick={() => setOpen((shown) => !shown)}>
-          {open ? "Hide technical details" : "Technical details"}
+          onClick={() => setOpen((shown) => !shown)} data-icon-action title={open ? "Hide technical details" : "Technical details"} aria-label={open ? "Hide technical details" : "Technical details"}>
+          <ActionIcon name={open ? "collapse" : "expand"} />
         </button>
         <StatusDismiss label="Dismiss" visible disabled={!!sending} onClick={() => void answer("dismiss")} />
       </div>
@@ -559,8 +560,8 @@ function ClaudeSafetyBlock({
       : "";
 
   const saferAnswer = <button className="ask-btn is-primary" type="button" disabled={!!sending} onKeyDown={dropHeld}
-    onClick={(event) => { if (!repeatsAnother(event)) void answer("safer"); }}>
-    {sending === "safer" ? "Continuing…" : "Use safer approach"}
+    onClick={(event) => { if (!repeatsAnother(event)) void answer("safer"); }} data-icon-action title={sending === "safer" ? "Continuing…" : "Use safer approach"} aria-label={sending === "safer" ? "Continuing…" : "Use safer approach"}>
+    <ActionIcon name="safer" />
   </button>;
   const dismissAnswer = <StatusDismiss label="Dismiss" visible disabled={!!sending} onKeyDown={dropHeld}
     onClick={(event) => { if (!repeatsAnother(event)) void answer("dismiss"); }} />;
@@ -583,14 +584,8 @@ function ClaudeSafetyBlock({
       <div className="ask-card-buttons safety-card-buttons">
         <button className="safety-card-toggle" type="button" aria-expanded={open}
           aria-controls={open ? detailsId : undefined} onKeyDown={dropHeld}
-          onClick={(event) => { notePress(event); setOpen((was) => !was); }}>
-          {/* One label both ways, so the row never re-wraps on a phone:
-              the chevron and aria-expanded carry the state. */}
-          Details
-          <svg className="safety-card-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="m6 9 6 6 6-6" />
-          </svg>
+          onClick={(event) => { notePress(event); setOpen((was) => !was); }} data-icon-action title="Details" aria-label="Details">
+          <ActionIcon name={open ? "collapse" : "expand"} />
         </button>
         {folded && answers}
       </div>
@@ -638,16 +633,16 @@ function ClaudeSafetyBlock({
             <div className="ask-card-buttons safety-card-buttons">
               {projectPath && (
                 <button className="ask-btn safety-allow" type="button" disabled={!!sending}
-                  title={`Adds ${rules.join(", ")} to ${projectPath}, then tells the agent`}
-                  onKeyDown={dropHeld} onClick={(event) => { if (!repeatsAnother(event)) void allow("project"); }}>
-                  {sending === "project" ? "Saving…" : "Always allow in this project"}
+                  title={sending === "project" ? "Saving…" : "Always allow in this project"}
+                  onKeyDown={dropHeld} onClick={(event) => { if (!repeatsAnother(event)) void allow("project"); }} data-icon-action aria-label={sending === "project" ? "Saving…" : "Always allow in this project"} aria-description={`Adds ${rules.join(", ")} to ${projectPath}, then tells the agent`}>
+                  <ActionIcon name="alwaysProject" />
                 </button>
               )}
               {userPath && (
                 <button className="ask-btn safety-allow" type="button" disabled={!!sending}
-                  title={`Adds ${rules.join(", ")} to ${userPath}, then tells the agent`}
-                  onKeyDown={dropHeld} onClick={(event) => { if (!repeatsAnother(event)) void allow("user"); }}>
-                  {sending === "user" ? "Saving…" : "Always allow everywhere"}
+                  title={sending === "user" ? "Saving…" : "Always allow everywhere"}
+                  onKeyDown={dropHeld} onClick={(event) => { if (!repeatsAnother(event)) void allow("user"); }} data-icon-action aria-label={sending === "user" ? "Saving…" : "Always allow everywhere"} aria-description={`Adds ${rules.join(", ")} to ${userPath}, then tells the agent`}>
+                  <ActionIcon name="alwaysEverywhere" />
                 </button>
               )}
             </div>
@@ -819,8 +814,8 @@ function CodexSafetyBlock({
           type="button"
           disabled={!!sending}
           onClick={() => void choose("local")}
-        >
-          {sending === "local" ? "Continuing…" : external ? "Keep it local" : "Use safer approach"}
+         data-icon-action title={sending === "local" ? "Continuing…" : external ? "Keep it local" : "Use safer approach"} aria-label={sending === "local" ? "Continuing…" : external ? "Keep it local" : "Use safer approach"}>
+          <ActionIcon name="safer" />
         </button>
         <button
           className="ask-btn"
@@ -828,25 +823,25 @@ function CodexSafetyBlock({
           disabled={!!sending}
           aria-expanded={open}
           onClick={() => setOpen((shown) => !shown)}
-        >
-          {open ? "Hide technical details" : "Technical details"}
+         data-icon-action title={open ? "Hide technical details" : "Technical details"} aria-label={open ? "Hide technical details" : "Technical details"}>
+          <ActionIcon name={open ? "collapse" : "expand"} />
         </button>
         <button
           className="ask-btn safety-allow"
           type="button"
           disabled={!!sending}
-          title="Remember this exact authorization for future chats and sessions in this project"
+          title={sending === "always" ? "Saving…" : "Always allow in this project"}
           onClick={() => void choose("always")}
-        >
-          {sending === "always" ? "Saving…" : "Always allow in this project"}
+         data-icon-action aria-label={sending === "always" ? "Saving…" : "Always allow in this project"} aria-description="Remember this exact authorization for future chats and sessions in this project">
+          <ActionIcon name="alwaysProject" />
         </button>
         <button
           className="ask-btn safety-allow"
           type="button"
           disabled={!!sending}
           onClick={() => void choose("allow")}
-        >
-          {sending === "allow" ? "Authorizing…" : "Allow once"}
+         data-icon-action title={sending === "allow" ? "Authorizing…" : "Allow once"} aria-label={sending === "allow" ? "Authorizing…" : "Allow once"}>
+          <ActionIcon name="allow" />
         </button>
       </div>
 

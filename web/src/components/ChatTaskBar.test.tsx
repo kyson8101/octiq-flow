@@ -72,7 +72,7 @@ describe("the status line above the chat", () => {
   it("offers the same panel behind a stable Details action of the action bar", () => {
     const closed = bar({ status: status(), open: false, now: NOW, action: true, onToggle: () => {} });
     expect(closed).toContain('aria-label="Task details"');
-    expect(closed).toContain('<span class="topbar-action-label">Details</span>');
+    expect(closed).toContain('data-action-icon="details"');
     expect(closed).not.toContain("To commit");
     expect(closed).not.toContain("feature/chat-context");
     const open = bar({ status: status(), open: true, now: NOW, action: true, onToggle: () => {} });

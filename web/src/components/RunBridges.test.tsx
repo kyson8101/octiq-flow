@@ -34,7 +34,7 @@ describe("RunBridges", () => {
     expect(html).toContain("Sends notes to <span class=\"orch-bridge-run\">“Objective run_b”</span>");
     expect(html).toContain("3 of 50 sent");
     expect(html).toContain("Receives notes from <span class=\"orch-bridge-run\">“Objective run_b”</span>");
-    expect(html.match(/>Close</g)?.length).toBe(2);
+    expect(html.match(/aria-label="Close"/g)?.length).toBe(2);
     // Both ways are open, so nothing is left to offer.
     expect(html).not.toContain("send notes to another run");
   });
@@ -42,6 +42,6 @@ describe("RunBridges", () => {
   it("shows open bridges read-only without controls", () => {
     const html = draw({ runs: [a, b], bridges: [open("run_a", "run_b")], readOnly: true });
     expect(html).toContain("Sends notes to");
-    expect(html).not.toContain(">Close<");
+    expect(html).not.toContain("aria-label=\"Close\"");
   });
 });

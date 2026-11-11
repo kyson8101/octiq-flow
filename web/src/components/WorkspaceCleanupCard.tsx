@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ActionIcon } from "./ActionIcon";
 import { once, useInFlight } from "../lib/inFlight";
 import { dropHeld, repeatsAnother } from "../lib/pressGuard";
 import { cleanupAsk, cleanupFlight, cleanupOutcome, cleanupRequest, cleanupResult, type CleanupAsked, type CleanupCard } from "../lib/workspaceCleanup";
@@ -71,8 +72,12 @@ export function WorkspaceCleanupCard({ card, onAnswer, startOpen = false }: {
         <div className="ask-card-foot">
           {busy && !processing && <span className="ask-card-wait" role="status">Waiting for the host…</span>}
           <div className="ask-card-actions">
-            <button type="button" className="ask-btn" disabled={busy} onClick={(event) => { if (!repeatsAnother(event)) void answer(false); }}>Keep them</button>
-            <button type="button" className="ask-btn is-primary" disabled={busy} onClick={(event) => { if (!repeatsAnother(event)) void answer(true); }}>Remove all</button>
+            <button type="button" className="ask-btn" disabled={busy} onClick={(event) => { if (!repeatsAnother(event)) void answer(false); }} data-icon-action title="Keep them" aria-label="Keep them">
+              <ActionIcon name="keep" />
+            </button>
+            <button type="button" className="ask-btn is-primary" disabled={busy} onClick={(event) => { if (!repeatsAnother(event)) void answer(true); }} data-icon-action title="Remove all" aria-label="Remove all">
+              <ActionIcon name="delete" /> Remove all
+            </button>
           </div>
         </div>
       </>}

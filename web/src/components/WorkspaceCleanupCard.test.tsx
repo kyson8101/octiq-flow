@@ -16,7 +16,7 @@ describe("the coordinator's cleanup card", () => {
     expect(html).toContain("Remove 3 finished worktrees and close 1 mission? Their work is merged.");
     expect(html).toContain("2 items");
     expect(html).toContain("Keep them");
-    expect(html).toMatch(/class="ask-btn is-primary"[^>]*>Remove all/);
+    expect(html).toMatch(/class="ask-btn is-primary"[^>]*aria-label="Remove all"[^>]*>/);
     expect(html).toContain('aria-expanded="false"');
     expect(html.match(/aria-expanded=/g)).toHaveLength(1);
     expect(html).not.toContain("feature/client");

@@ -1,0 +1,42 @@
+.action-icon { flex: 0 0 auto; width: 16px; height: 16px; pointer-events: none; }
+
+/* Keep the original button, guards, pending state and decision paint. Only
+   its contents and target change. :has also covers shared icon components. */
+:root button[data-icon-action]:has(> .action-icon),
+:root button[data-icon-action], :root button:has(> .action-icon) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: auto;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 5px;
+  gap: 6px;
+}
+:root button[data-icon-action]:focus-visible, :root button:has(> .action-icon):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+@media (pointer: coarse), (max-width: 859.98px) {
+  :root button[data-icon-action]:has(> .action-icon),
+:root button[data-icon-action], :root button:has(> .action-icon) {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+:root button[data-icon-action][hidden], :root button:has(> .action-icon)[hidden] { display: none; }
+
+/* General confirmation dialogs are decisions too. Destructive confirmations
+   retain their existing danger paint and their visible consequence words. */
+.ask-buttons .ask-btn.is-primary:not(.is-danger) {
+  border-color: var(--decide);
+  background: color-mix(in srgb, var(--decide) 18%, var(--bg-1));
+  color: var(--fg-0);
+}
+.ask-buttons .ask-btn.is-primary:not(.is-danger):hover {
+  background: color-mix(in srgb, var(--decide) 28%, var(--bg-1));
+}

@@ -36,6 +36,7 @@
 //     commit in a terminal, an edit from another machine — repaints the toolbar
 //     without the window having to be re-focused. The older refreshes are still
 //     there as a floor: on open, on focus, after every write, and on Refresh.
+import { ActionIcon } from "./ActionIcon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
@@ -236,30 +237,13 @@ export function GitButton({
    *
    * The chat's own repo leads, since that is the one the agent is working in;
    * the rest follow in the order the project lists them. */
+
   const chips = useMemo(() => {
     if (summary.length === 0) return [];
     const rest = summary.filter((r) => r.repo_root !== sessionRepo?.repo_root);
     return sessionRepo ? [sessionRepo, ...rest] : rest;
   }, [summary, sessionRepo]);
-
-  return (
-    <button
-      className={`gitp-toggle ${open ? "is-on" : ""}`}
-      type="button"
-      aria-expanded={open}
-      // The button itself is an icon and two numbers, so its NAME is here: what
-      // it opens, and what a screen reader would otherwise read as "↑ 3".
-      aria-label={[
-        "Git",
-        changed > 0 ? `${changed} changed` : null,
-        ahead > 0 ? `${ahead} to push` : null,
-      ]
-        .filter(Boolean)
-        .join(", ")}
-      // The full picture, since the bar shows totals only. Each repo on its own
-      // line, named, so nothing here is a number you cannot attribute.
-      title={
-        project
+  const label = project
           ? [
               `Git — ${project.name}`,
               ...chips.map((r, i) => {
@@ -275,29 +259,24 @@ export function GitButton({
                 }`;
               }),
             ].join("\n")
-          : "Git"
-      }
+          : "Git";
+
+  return (
+    <button
+      className={`gitp-toggle ${open ? "is-on" : ""}`}
+      type="button"
+      aria-expanded={open}
+      // The button itself is an icon and two numbers, so its NAME is here: what
+      // it opens, and what a screen reader would otherwise read as "↑ 3".
+      aria-label={label}
+          title={label}
       onClick={onToggle}
-    >
-      <BranchIcon />
-      <span className="topbar-action-label">Git</span>
-
-      {/* Two numbers and nothing else: how much is uncommitted, and how much is
-          committed and waiting to be pushed. Both are totals across the
-          project's repos.
-
-          It used to draw a chip per repo — each with its name and its branch —
-          which on a four-repo project was most of the bar, in text you cannot
-          act on and cannot finish reading. Which repo, which branch and which
-          file are what the PANEL is, one click away; the bar's job is to say
-          whether there is anything in there. The tooltip still names every
-          repo, for the glance that does not want to open it. */}
-      {changed > 0 && (
+     data-icon-action>
+      <ActionIcon name="git" />{changed > 0 && (
         <span className="gitp-badge">
           <RollingNumber value={changed} />
         </span>
-      )}
-      {ahead > 0 && (
+      )}{ahead > 0 && (
         <span className="gitp-badge is-ahead">
           ↑<RollingNumber value={ahead} />
         </span>
@@ -605,13 +584,13 @@ export function GitPanel({
           type="button"
           onClick={() => void load()}
           disabled={busy || loading || folders.length === 0}
-        >
-          {loading ? "…" : "Refresh"}
+         data-icon-action title={loading ? "…" : "Refresh"} aria-label={loading ? "…" : "Refresh"}>
+          <ActionIcon name="refresh" />
         </button>
         {/* Both shapes close from here. A column with no way out is furniture
             you cannot move, and the width it takes is the chat's. */}
-        <button className="gitp-close" type="button" aria-label="Close" onClick={onClose}>
-          ✕
+        <button className="gitp-close" type="button" aria-label="Close" onClick={onClose} data-icon-action title="Close">
+          <ActionIcon name="dismiss" />
         </button>
       </header>
 
@@ -1004,16 +983,4 @@ function lineClass(line: string): string {
   if (line.startsWith("+")) return "is-add";
   if (line.startsWith("-")) return "is-del";
   return "";
-}
-
-function BranchIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="6" cy="5" r="2.2" />
-      <circle cx="6" cy="19" r="2.2" />
-      <circle cx="18" cy="9" r="2.2" />
-      <path d="M6 7.2v9.6" />
-      <path d="M18 11.2a5 5 0 0 1-5 5H9.5" />
-    </svg>
-  );
 }

@@ -29,7 +29,7 @@ describe("turns triggered by the person", () => {
     expect(queued).toContain("message-bubble");
     expect(queued).toContain(`wrap-up-note-label">${label}</span>`);
     expect(queued).toContain(cancel);
-    expect(queued).toContain(">Send now</button>");
+    expect(queued).toContain("aria-label=\"Send this queued message now\"");
     expect(queued).not.toContain("msg-host");
     expect(draw({ turnId, echo: "e1" })).toContain('aria-label="Sent"');
   });
@@ -42,8 +42,8 @@ describe("historical plan-start turns", () => {
     expect(html).not.toContain("wrap-up-note");
     expect(html).not.toContain("Plan started");
     if (delivery === "queued") {
-      expect(html).toContain(">Send now</button>");
-      expect(html).toContain(">Edit</button>");
+      expect(html).toContain("aria-label=\"Send this queued message now\"");
+      expect(html).toContain("aria-label=\"Take this queued message back to edit\"");
     }
   });
 });
@@ -52,9 +52,9 @@ describe("message delivery controls", () => {
   it.each([false, true])("offers queued actions independently of another turn's busy state (%s)", (busy) => {
     const html = draw({}, busy);
     expect(html).toContain('>Queued</span>');
-    expect(html).toContain('>Send now</button>');
-    expect(html).toContain('>Edit</button>');
-    expect(html.match(/Send this queued message now/g)).toHaveLength(1);
+    expect(html).toContain("aria-label=\"Send this queued message now\"");
+    expect(html).toContain("aria-label=\"Take this queued message back to edit\"");
+    expect(html.match(/aria-label="Send this queued message now"/g)).toHaveLength(1);
     expect(html).toContain("Send now stops that reply");
     // What it waits for is the status's tooltip; the bubble carries no sentence about it.
     expect(html).not.toContain(">Runs after the current reply");

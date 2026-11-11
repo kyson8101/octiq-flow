@@ -151,7 +151,7 @@ describe("the row after a stop", () => {
 
   it("offers the one start that is the person's, of the attempt they stopped", () => {
     const html = article(panel());
-    expect(html).toContain('<div class="orch-task-start"><button type="button" class="task-start">Start it again</button></div>');
+    expect(html).toMatch(new RegExp("<div class=\"orch-task-start\"><button(?=[^>]*aria-label=\"Start it again\")(?=[^>]*type=\"button\")(?=[^>]*class=\"task-start\")[^>]*>[\\s\\S]*?</button></div>"));
     // No "Start retry": the stopped attempt is cancelled, not failed.
     expect(html).not.toContain("Start retry");
     const attempt = snapshot.attempts.find((item) => item.id === answer.stopped!.attemptId)!;

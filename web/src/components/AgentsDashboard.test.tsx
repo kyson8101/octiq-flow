@@ -39,8 +39,8 @@ describe("Agents page rows", () => {
       waitingOn: () => 0, held: new Map(), chatTitle: () => undefined, chatExists: () => false,
       onOpenChat: () => {}, onOpenRun: () => {}, onManage: () => {}, onClose: () => {},
     }));
-    expect(html).toContain('<div class="workspace-actions"><button type="button" class="projects-page-secondary">Manage agents</button></div>');
+    expect(html).toMatch(/<div class="workspace-actions"><button(?=[^>]*class="projects-page-secondary")(?=[^>]*aria-label="Manage agents")[^>]*>/);
     expect(html).toContain('<div class="dash-top">');
-    expect(html.match(/Manage agents/g)).toHaveLength(1);
+    expect(html.match(/aria-label="Manage agents"/g)).toHaveLength(1);
   });
 });

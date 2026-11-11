@@ -32,17 +32,17 @@ describe("personal preferences in Settings", () => {
 
   it("saves only a change, clears only something saved, and refuses too much", () => {
     const empty = block();
-    expect(empty).toMatch(/<button class="vault-button" type="button" disabled="">Clear<\/button>/);
-    expect(empty).toMatch(/<button class="settings-primary" type="submit" disabled="">Save preferences<\/button>/);
+    expect(empty).toMatch(/<button(?=[^>]*aria-label="Clear") class="vault-button" type="button" disabled=""[^>]*>[\s\S]*?<\/button>/);
+    expect(empty).toMatch(/<button(?=[^>]*class="settings-primary")(?=[^>]*type="submit")(?=[^>]*disabled="")(?=[^>]*aria-label="Save preferences")[^>]*>/);
     const typed = block({ text: "Reply in Malay." });
-    expect(typed).toMatch(/<button class="settings-primary" type="submit">Save preferences<\/button>/);
+    expect(typed).toMatch(/<button(?=[^>]*class="settings-primary")(?=[^>]*type="submit")(?=[^>]*aria-label="Save preferences")[^>]*>/);
     const saved = block({ saved: "Reply in Malay.", text: "Reply in Malay.", done: true });
-    expect(saved).toMatch(/<button class="vault-button" type="button">Clear<\/button>/);
-    expect(saved).toMatch(/<button class="settings-primary" type="submit" disabled="">Save preferences<\/button>/);
+    expect(saved).toMatch(/<button(?=[^>]*aria-label="Clear") class="vault-button" type="button"[^>]*>[\s\S]*?<\/button>/);
+    expect(saved).toMatch(/<button(?=[^>]*class="settings-primary")(?=[^>]*type="submit")(?=[^>]*disabled="")(?=[^>]*aria-label="Save preferences")[^>]*>/);
     expect(saved).toContain("role=\"status\">Saved</span>");
     const long = block({ text: "x".repeat(PERSONAL_PREFERENCES_MAX + 1) });
     expect(long).toContain("too long");
-    expect(long).toMatch(/<button class="settings-primary" type="submit" disabled="">/);
+    expect(long).toMatch(/<button(?=[^>]*class="settings-primary")(?=[^>]*type="submit")(?=[^>]*disabled="")(?=[^>]*aria-label="Save preferences")[^>]*>/);
   });
 
   // Preferences the host could not read (its profile folder is away) are not
@@ -51,8 +51,8 @@ describe("personal preferences in Settings", () => {
   it("offers no save over preferences it could not read", () => {
     const html = block({ unread: true, text: "typed on a blank form" } as never);
     expect(html).toMatch(/<textarea[^>]*disabled=""/);
-    expect(html).toMatch(/<button class="vault-button" type="button" disabled="">Clear<\/button>/);
-    expect(html).toMatch(/<button class="settings-primary" type="submit" disabled="">Save preferences<\/button>/);
+    expect(html).toMatch(/<button(?=[^>]*aria-label="Clear") class="vault-button" type="button" disabled=""[^>]*>[\s\S]*?<\/button>/);
+    expect(html).toMatch(/<button(?=[^>]*class="settings-primary")(?=[^>]*type="submit")(?=[^>]*disabled="")(?=[^>]*aria-label="Save preferences")[^>]*>/);
   });
 
   it("does not read preferences the host could not read as empty ones", async () => {

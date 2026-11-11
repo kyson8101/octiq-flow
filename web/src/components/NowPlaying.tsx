@@ -5,6 +5,7 @@
 // Its stage is always on the page, out of sight unless something floats: the
 // element lives there while the browser's picture-in-picture window shows it,
 // with a visible fallback after that window closes.
+import { ActionIcon } from "./ActionIcon";
 import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { nowPlaying } from "../lib/nowPlaying";
 import "./NowPlaying.css";
@@ -56,8 +57,8 @@ export function NowPlaying({ onBack, chatTitle }: {
             </button>
           )}
           <button type="button" className="now-playing-btn" onClick={() => nowPlaying.close()}
-            aria-label="Stop and close" title="Stop and close">
-            <CloseIcon />
+            aria-label="Stop and close" title="Stop and close" data-icon-action>
+            <ActionIcon name="dismiss" />
           </button>
         </div>
       )}
@@ -77,8 +78,4 @@ function PauseIcon() {
 
 function PipIcon() {
   return <svg {...icon}><rect x="1.5" y="3" width="13" height="10" rx="1.5" /><rect x="8" y="8" width="5" height="3.5" rx=".5" fill="currentColor" stroke="none" /></svg>;
-}
-
-function CloseIcon() {
-  return <svg {...icon}><path d="M4 4l8 8M12 4l-8 8" /></svg>;
 }

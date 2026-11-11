@@ -28,6 +28,7 @@
 //
 // Escape cancels, and so does clicking away — a way out is always the easier
 // path.
+import { ActionIcon } from "./ActionIcon";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type MouseEvent } from "react";
 import { dropHeld, lastPointerPress, strayAnswer } from "../lib/pressGuard";
 
@@ -143,15 +144,15 @@ export function ConfirmDialog({
         {options.command !== undefined && <pre className="ask-command"><code>{options.command}</code></pre>}
         <div className="ask-buttons">
           {/* The safe answer has the focus: a key pressed again cancels. */}
-          <button className="ask-btn" type="button" autoFocus onClick={() => onAnswer(false)}>
-            {options.cancelLabel ?? "Cancel"}
+          <button className="ask-btn" type="button" autoFocus onClick={() => onAnswer(false)} data-icon-action title={options.cancelLabel ?? "Cancel"} aria-label={options.cancelLabel ?? "Cancel"}>
+            <ActionIcon name="cancel" />
           </button>
           <button
             className={`ask-btn is-primary ${options.danger ? "is-danger" : ""} ${options.decision ? "is-decision" : ""}`}
             type="button"
             onClick={careful.confirm}
-          >
-            {options.confirmLabel ?? "OK"}
+           data-icon-action title={options.confirmLabel ?? "OK"} aria-label={options.confirmLabel ?? "OK"}>
+            <ActionIcon name={options.confirmLabel?.startsWith("Stop") ? "stop" : options.danger ? "delete" : "confirm"} />{options.danger && (options.confirmLabel ?? "OK")}
           </button>
         </div>
       </div>

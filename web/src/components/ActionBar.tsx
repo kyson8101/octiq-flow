@@ -1,5 +1,5 @@
 // The row of actions under the top bar: every action for what is on screen,
-// each a button with an icon and a short label, in one line.
+// each an icon-only button with an accessible name, in one line.
 //
 // The top bar above it names the page and nothing else. A title can run to
 // two lines there, and the actions used to be squeezed against it, most of
@@ -37,8 +37,8 @@ export type BarAction = {
 };
 
 /** What More takes in the row before it has been drawn once; after that it
- *  is measured like every button (a wider font makes a wider More). */
-const MORE_WIDTH = 68;
+ *  is measured like every button, including its attention count. */
+const MORE_WIDTH = 28;
 const NONE: readonly string[] = [];
 
 export function ActionBar({

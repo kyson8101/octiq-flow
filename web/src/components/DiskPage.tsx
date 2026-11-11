@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { ActionIcon } from "./ActionIcon";
 import { bridge } from "../lib/bridge";
 import { diskBytes, diskDate, diskGroupLabel, diskSection, diskSelectable, diskSelection, toggleDiskSection, type DiskItem, type DiskProgress, type DiskReport } from "../lib/diskReport";
 import { aggregateDiskMap, layoutDiskMap, type DiskMapTile, type Tile } from "../lib/diskTreemap";
@@ -66,8 +67,8 @@ export function DiskReportPage({ report, running = null, error, pending = false,
   const fileName = download?.scanId === report?.scanId ? download?.fileName : report?.platform === "windows" ? "disk-cleanup.ps1" : "disk-cleanup.sh";
   return <section className="disk-page" aria-label="Disk report">
     <WorkspaceHeader root title={<h1>Disk</h1>} back={{ label: "Chat", onClick: onClose }} actions={
-      <button className={`disk-button${running ? " is-scanning" : ""}`} type="button" disabled={!connected || pending || loading} onClick={onScan}>
-        {pending ? (running ? "Cancelling…" : "Starting…") : running ? "Cancel scan" : "Scan"}
+      <button className={`disk-button${running ? " is-scanning" : ""}`} type="button" disabled={!connected || pending || loading} onClick={onScan} data-icon-action title={pending ? (running ? "Cancelling…" : "Starting…") : running ? "Cancel scan" : "Scan"} aria-label={pending ? (running ? "Cancelling…" : "Starting…") : running ? "Cancel scan" : "Scan"}>
+        <ActionIcon name={running ? "cancel" : "refresh"} />
       </button>
     } />
     <div className="disk-body">

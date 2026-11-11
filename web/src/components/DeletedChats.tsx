@@ -3,6 +3,7 @@
 // The server keeps the transcript where it is and marks only its index row, so
 // restore is deliberately small: clear that marker and let the ordinary chat
 // loader replay the transcript when the row is opened again.
+import { ActionIcon } from "./ActionIcon";
 import { useState } from "react";
 import type { DeletedIndexEntry } from "../lib/chatIndex";
 import { RollingText } from "./RollingNumber";
@@ -59,8 +60,8 @@ export function DeletedChats({
               <RollingText>{`${list.length - done.size} restorable · permanently deleted after 24 hours`}</RollingText>
             </div>
           </div>
-          <button className="panel-close" type="button" onClick={onClose} aria-label="Close">
-            ×
+          <button className="panel-close" type="button" onClick={onClose} aria-label="Close" data-icon-action title="Close">
+            <ActionIcon name="dismiss" />
           </button>
         </header>
 

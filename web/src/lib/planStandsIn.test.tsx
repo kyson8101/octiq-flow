@@ -213,7 +213,7 @@ describe("the run panel", () => {
     // The one the person stopped leads the group.
     expect(rows(planned)[0]).toContain(`>${STOPPED_LABEL}</span>`);
     expect(rows(planned)[0]).toContain('data-hold="stopped"');
-    expect(rows(planned)[0]).toContain(">Start it again</button>");
+    expect(rows(planned)[0]).toContain("aria-label=\"Start it again\"");
     expect(group(html, "running")).toBe("");
   });
 

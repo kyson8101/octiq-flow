@@ -1,3 +1,4 @@
+import { ActionIcon } from "./ActionIcon";
 // The Projects page: every project, and under one of them every chat it holds.
 //
 // A main-area view like the pull request desk — the chat stays mounted behind
@@ -75,7 +76,9 @@ export function ProjectsPage({
             <h1 ref={heading} tabIndex={-1}>{selected?.name ?? "Project unavailable"}</h1>
           </>}
           actions={selected && <>
-            <button type="button" className="projects-page-secondary" onClick={() => onProjectSettings(selected.id)}>Project settings</button>
+            <button type="button" className="projects-page-secondary" onClick={() => onProjectSettings(selected.id)} data-icon-action aria-label="Project settings" title="Project settings">
+              <ActionIcon name="edit" />
+            </button>
             {isShelved && onRestoreProject && <button type="button" className="projects-page-primary" disabled={restoring}
               onClick={async () => {
                 setRestoring(true);
@@ -83,11 +86,11 @@ export function ProjectsPage({
                 try { await onRestoreProject(selected.id); }
                 catch (error) { setRestoreError(error instanceof Error ? error.message : String(error)); }
                 finally { setRestoring(false); }
-              }}>
-              <span>{restoring ? "Restoring…" : "Restore project"}</span>
+              }} data-icon-action aria-label={restoring ? "Restoring…" : "Restore project"} title={restoring ? "Restoring…" : "Restore project"}>
+              <ActionIcon name="reopen" />
             </button>}
-            {allowNewTask && !isShelved && <button type="button" className="projects-page-primary" onClick={() => onNewTask(selected.id)}>
-              <PlusIcon /><span>New task</span>
+            {allowNewTask && !isShelved && <button type="button" className="projects-page-primary" onClick={() => onNewTask(selected.id)} data-icon-action aria-label="New task" title="New task">
+              <ActionIcon name="new" />
             </button>}
           </>} />
         {restoreError && <p className="projects-page-error" role="alert">{restoreError}</p>}
@@ -165,8 +168,8 @@ export function ProjectsPage({
     <section className="projects-page" aria-label="Projects">
       <WorkspaceHeader root back={{ label: "Chat", ariaLabel: "Back to chat", onClick: onClose }}
         title={<h1 ref={heading} tabIndex={-1}>Projects</h1>}
-        actions={<button type="button" className="projects-page-primary" onClick={onNewProject}>
-          <PlusIcon /><span>New project</span>
+        actions={<button type="button" className="projects-page-primary" onClick={onNewProject} data-icon-action aria-label="New project" title="New project">
+          <ActionIcon name="new" />
         </button>} />
       <div className="projects-page-body">
         {known.length === 0 ? (
@@ -193,4 +196,3 @@ export function ProjectsPage({
 }
 
 function ForwardIcon() { return <svg className="projects-row-go" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>; }
-function PlusIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>; }

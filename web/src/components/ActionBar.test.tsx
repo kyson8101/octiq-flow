@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { ActionIcon, type ActionName } from "./ActionIcon";
 import { ActionBar, type BarAction } from "./ActionBar";
 import { TasksButton } from "./ChatWorkflowBar";
 import { ChatDeleteButton } from "./ChatDeleteButton";
@@ -14,7 +15,9 @@ import appSource from "../App.tsx?raw";
 // The buttons' modules reach the socket bridge, which opens a connection on import.
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: vi.fn(), on: vi.fn(() => () => {}), onState: vi.fn(() => () => {}) } }));
 
-const button = (label: string) => <button type="button">{label}</button>;
+const button = (label: string) => <button type="button" aria-label={label} title={label}>
+  <ActionIcon name={({ Tasks: "tasks", Git: "git", "Copy ID": "copy", Delete: "delete" } as Record<string, ActionName>)[label]} />
+</button>;
 const actions: BarAction[] = [
   { id: "tasks", keep: 100, attention: 2, node: button("Tasks") },
   { id: "git", keep: 85, node: button("Git") },
@@ -27,7 +30,7 @@ const draw = (props: Partial<Parameters<typeof ActionBar>[0]> = {}) =>
 describe("the action bar", () => {
   it("draws every action as a button of the row, in the order given", () => {
     const html = draw();
-    const places = ["Tasks", "Git", "Copy ID", "Delete"].map((label) => html.indexOf(`>${label}<`));
+    const places = ["Tasks", "Git", "Copy ID", "Delete"].map((label) => html.indexOf(`aria-label="${label}"`));
     expect(places.every((place) => place > 0)).toBe(true);
     expect([...places].sort((a, b) => a - b)).toEqual(places);
     expect(html.match(/class="actionbar-item/g)).toHaveLength(4);
@@ -45,15 +48,15 @@ describe("the action bar", () => {
     const html = draw({ initiallyOver: ["copy", "delete"], initiallyOpen: true });
     expect(html.match(/class="mobile-actions"/g)).toHaveLength(1);
     const more = html.indexOf('class="mobile-actions"');
-    expect(html.indexOf(">Tasks<")).toBeLessThan(more);
-    expect(html.indexOf(">Git<")).toBeLessThan(more);
+    expect(html.indexOf('aria-label="Tasks"')).toBeLessThan(more);
+    expect(html.indexOf('aria-label="Git"')).toBeLessThan(more);
     const menu = html.slice(html.indexOf('class="mobile-actions-panel"'));
     expect(menu).toContain("Copy ID");
     expect(menu.indexOf('role="separator"')).toBeGreaterThan(menu.indexOf("Copy ID"));
     expect(menu.indexOf('role="separator"')).toBeLessThan(menu.indexOf("Delete"));
     expect(html.match(/class="actionbar-item/g)).toHaveLength(2);
     expect(html).toContain('aria-label="More actions"');
-    expect(html).toContain('<span class="topbar-action-label">More</span>');
+    expect(html).toContain('data-action-icon="more"');
   });
 
   it("keeps what waits on the person counted on More while its button is behind it", () => {
@@ -77,7 +80,7 @@ describe("the action bar", () => {
   it("keeps a page's own buttons ahead of the row and a phone's usage after it", () => {
     const html = draw({ lead: <div className="lead">Lead</div>, end: <div className="end">End</div> });
     expect(html.indexOf('class="lead"')).toBeLessThan(html.indexOf('class="actionbar-scroll"'));
-    expect(html.indexOf('class="end"')).toBeGreaterThan(html.indexOf(">Delete<"));
+    expect(html.indexOf('class="end"')).toBeGreaterThan(html.indexOf("aria-label=\"Delete\""));
   });
 
   it("is held for a chat's page before its buttons are known", () => {
@@ -97,10 +100,11 @@ describe("the buttons of the action bar", () => {
     ["Undo", <ChatDeleteButton deleting deleteMs={2000} onDelete={() => {}} />],
   ] as const;
 
-  it.each(drawn)("%s is an icon and a short word, with a name of its own", (label, node) => {
+  it.each(drawn)("%s is an icon with its original name, with a name of its own", (label, node) => {
     const html = renderToStaticMarkup(node);
     expect(html).toContain("<svg");
-    expect(html).toContain(`<span class="topbar-action-label">${label}</span>`);
+    if (label !== "Undo") expect(html).toContain("data-action-icon=");
+    expect(html).not.toContain("topbar-action-label");
     expect(html).toMatch(/aria-label="[^"]+"/);
     expect(label.length).toBeLessThanOrEqual(10);
   });

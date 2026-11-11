@@ -3,6 +3,7 @@
 // whole they turned a phone's roster into a wall of text. A list shows two
 // lines; the rest opens on request, in place, and is never cut from what is
 // stored — this only decides how much of it is on screen.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import "./AgentRole.css";
 
@@ -35,7 +36,9 @@ export function AgentRole({ text, name, className }: {
     <button type="button" className="agent-role-toggle" hidden={!clipped && !open}
       aria-expanded={open} aria-controls={id}
       aria-label={open ? `Show less of ${name}'s role` : `Full role for ${name}`}
-      onClick={() => setOpen(!open)}>{open ? "Show less" : "Full role"}</button>
+      onClick={() => setOpen(!open)} data-icon-action title={open ? `Show less of ${name}'s role` : `Full role for ${name}`}>
+      <ActionIcon name={open ? "collapse" : "expand"} />
+    </button>
   </div>;
 }
 

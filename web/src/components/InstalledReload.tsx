@@ -14,6 +14,7 @@
 // `replaceState` deliberately, so switching chats never pushes a history
 // entry and there is only ever one: back would have nowhere to go and would
 // simply drop the reader out of the app.
+import { ActionIcon } from "./ActionIcon";
 import { useState } from "react";
 // Straight from `lib/installed`, NOT from `lib/push` which re-exports it:
 // `push.ts` reaches the socket bridge, and `bridge.ts` opens a connection at
@@ -51,22 +52,8 @@ export function InstalledReload({
         setSpinning(true);
         onReload();
       }}
-    >
-      <svg
-        width="17"
-        height="17"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M20 11a8 8 0 1 0-.6 4" />
-        <path d="M20 4v6h-6" />
-      </svg>
-      <span className="topbar-action-label">Reload</span>
+     data-icon-action>
+      <ActionIcon name="refresh" />
     </button>
   );
 }

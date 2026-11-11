@@ -13,6 +13,7 @@
 //
 // The group grows upward: it sits on the composer, so a row arriving never
 // moves the box under it.
+import { ActionIcon } from "./ActionIcon";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import "./ChatStatus.css";
 
@@ -40,10 +41,8 @@ export function StatusDismiss({ label, visible = false, className, disabled, ...
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children" | "title" | "aria-label">) {
   return (
     <button {...props} type="button" className={["status-row-dismiss", visible && "is-visible", className].filter(Boolean).join(" ")}
-      aria-label={label} title={label} disabled={disabled} aria-disabled={props["aria-disabled"] ?? (disabled || undefined)}>
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" aria-hidden="true">
-        <path d="M6 6l12 12M18 6 6 18" />
-      </svg>
+      aria-label={label} title={label} disabled={disabled} aria-disabled={props["aria-disabled"] ?? (disabled || undefined)} data-icon-action>
+      <ActionIcon name="dismiss" />
     </button>
   );
 }

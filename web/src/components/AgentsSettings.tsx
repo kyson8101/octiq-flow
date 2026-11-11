@@ -2,6 +2,7 @@
 // agents — each a name, a role, and the provider/model/effort/access it runs
 // on, either global or belonging to one project — and the peer-help teams they
 // sit on, which group agents sideways and never change the org chart.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import "./AgentsSettings.css";
 import {
@@ -536,21 +537,15 @@ export function AgentPolicyBlock({ saved, text, loading, busy, unread = false, o
       />
       <div className="agent-policy-actions">
         <button className="vault-button" type="button" disabled={loading || busy || !saved}
-          onClick={onClear}>Clear</button>
-        <button className="settings-primary" type="submit" disabled={loading || busy || !changed || over}>
-          {busy ? "Saving…" : "Save policy"}
+          onClick={onClear} data-icon-action title="Clear" aria-label="Clear">
+          <ActionIcon name="dismiss" />
+        </button>
+        <button className="settings-primary" type="submit" disabled={loading || busy || !changed || over} data-icon-action title={busy ? "Saving…" : "Save policy"} aria-label={busy ? "Saving…" : "Save policy"}>
+          <ActionIcon name="save" />
         </button>
       </div>
     </form>
   );
-}
-
-function EditIcon() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4Z" /><path d="m13.5 6.5 4 4" /></svg>;
-}
-
-function RemoveIcon() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16" /><path d="M10 11v6M14 11v6" /><path d="M6 7l1 13h10l1-13" /><path d="M9 7V4h6v3" /></svg>;
 }
 
 /** The peer-help teams: add, rename, move between global and one project,
@@ -576,8 +571,12 @@ export function TeamsBlock({ teams, agents, draft, projects, projectName, onDraf
         <option value="">Every project</option>
         {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
       </select>
-      <button className="vault-button" type="button" onClick={() => onDraft(null)}>Cancel</button>
-      <button className="settings-primary" type="submit" disabled={!draft?.name.trim()}>{draft?.id ? "Save" : "Add"}</button>
+      <button className="vault-button" type="button" onClick={() => onDraft(null)} data-icon-action title="Cancel" aria-label="Cancel">
+        <ActionIcon name="cancel" />
+      </button>
+      <button className="settings-primary" type="submit" disabled={!draft?.name.trim()} data-icon-action title={draft?.id ? "Save" : "Add"} aria-label={draft?.id ? "Save" : "Add"}>
+        <ActionIcon name="save" />
+      </button>
     </form>
   );
   return (
@@ -603,13 +602,13 @@ export function TeamsBlock({ teams, agents, draft, projects, projectName, onDraf
                   </span>
                 </span>
                 <span className="team-row-actions">
-                  <button className="vault-button team-row-action" type="button" aria-label={`Rename ${group.name}`} title="Rename"
-                    onClick={() => onDraft({ id: group.id, name: group.name, projectId: group.projectId ?? null })}>
-                    <EditIcon /><span className="team-row-action-text">Rename</span>
+                  <button className="vault-button team-row-action" type="button" aria-label={`Rename ${group.name}`} title={`Rename ${group.name}`}
+                    onClick={() => onDraft({ id: group.id, name: group.name, projectId: group.projectId ?? null })} data-icon-action aria-description="Rename">
+                    <ActionIcon name="edit" />
                   </button>
-                  <button className="vault-button team-row-action" type="button" aria-label={`Remove team ${group.name}`} title="Remove team"
-                    onClick={() => onRemove(group)}>
-                    <RemoveIcon /><span className="team-row-action-text">Remove</span>
+                  <button className="vault-button team-row-action" type="button" aria-label={`Remove team ${group.name}`} title={`Remove team ${group.name}`}
+                    onClick={() => onRemove(group)} data-icon-action aria-description="Remove team">
+                    <ActionIcon name="delete" />
                   </button>
                 </span>
               </li>
@@ -810,8 +809,12 @@ export function RegisteredAgentsTable({ team, teams, projects, draft, saving, on
             <AgentValue label="Team" text={teams.find((group) => group.id === agent.teamId)?.name ?? "None"} />
             <td data-label="Actions"><div className="agents-row-actions">
               <button type="button" className="vault-button agents-icon-action" disabled={saving || !!draft} aria-label={`Edit ${agent.name}`} title={`Edit ${agent.name}`}
-                onClick={() => onDraft({ ...agent, projectId: agent.projectId ?? null, reportsTo: agent.reportsTo ?? null, teamId: agent.teamId ?? null })}><EditIcon /></button>
-              <button type="button" className="vault-button agents-icon-action" disabled={saving || !!draft} aria-label={`Remove ${agent.name}`} title={`Remove ${agent.name}`} onClick={() => onRemove(agent)}><RemoveIcon /></button>
+                onClick={() => onDraft({ ...agent, projectId: agent.projectId ?? null, reportsTo: agent.reportsTo ?? null, teamId: agent.teamId ?? null })} data-icon-action>
+                <ActionIcon name="edit" />
+              </button>
+              <button type="button" className="vault-button agents-icon-action" disabled={saving || !!draft} aria-label={`Remove ${agent.name}`} title={`Remove ${agent.name}`} onClick={() => onRemove(agent)} data-icon-action>
+                <ActionIcon name="delete" />
+              </button>
             </div></td>
           </tr>)}
       </tbody>
@@ -877,10 +880,16 @@ export function InlineAgentRow({ draft, depth, team, teams, projects, saving, on
       </div>
       {leadOnly(draft) && <small className="team-field-note">Fable and Astra can lead a task, but they cannot be given one.</small>}
       <div className="agents-edit-footer">
-        <button type="button" className="vault-button" disabled={saving} onClick={() => onDetails(draft)}>Edit role, prompt & avatar</button>
+        <button type="button" className="vault-button" disabled={saving} onClick={() => onDetails(draft)} data-icon-action title="Edit role, prompt & avatar" aria-label="Edit role, prompt & avatar">
+          <ActionIcon name="edit" />
+        </button>
         <div className="agents-row-actions">
-          <button type="button" className="settings-primary" disabled={saving || !valid} onClick={onSave}>{saving ? "Saving…" : "Save"}</button>
-          <button type="button" className="vault-button" disabled={saving} onClick={onCancel}>Cancel</button>
+          <button type="button" className="settings-primary" disabled={saving || !valid} onClick={onSave} data-icon-action title={saving ? "Saving…" : "Save"} aria-label={saving ? "Saving…" : "Save"}>
+            <ActionIcon name="save" />
+          </button>
+          <button type="button" className="vault-button" disabled={saving} onClick={onCancel} data-icon-action title="Cancel" aria-label="Cancel">
+            <ActionIcon name="cancel" />
+          </button>
         </div>
       </div>
     </td>
@@ -921,8 +930,12 @@ export function AgentDetailsDialog({ draft, staged, saving, error, onChange, onS
       {error && <p role="alert" className="set-warn">{error}</p>}
       <fieldset disabled={saving} className="agent-details-fields"><AgentLongFields draft={draft} onChange={onChange} /></fieldset>
       <div className="team-form-actions">
-        <button type="button" className="vault-button" disabled={saving} onClick={onClose}>Cancel</button>
-        <button type="submit" className="settings-primary" disabled={saving}>{saving ? "Saving…" : "Save details"}</button>
+        <button type="button" className="vault-button" disabled={saving} onClick={onClose} data-icon-action title="Cancel" aria-label="Cancel">
+          <ActionIcon name="cancel" />
+        </button>
+        <button type="submit" className="settings-primary" disabled={saving} data-icon-action title={saving ? "Saving…" : "Save details"} aria-label={saving ? "Saving…" : "Save details"}>
+          <ActionIcon name="save" />
+        </button>
       </div>
     </form>
   </dialog>;
@@ -1007,9 +1020,11 @@ export function TeamForm({ draft, team, teams, projects, saving, onChange, onSav
         </p>
       )}
       <div className="team-form-actions team-form-wide">
-        <button className="vault-button" type="button" onClick={onCancel}>Cancel</button>
-        <button className="settings-primary" type="submit" disabled={saving || !draft.name.trim() || !draft.model}>
-          {saving ? "Saving…" : draft.id ? "Save" : "Add"}
+        <button className="vault-button" type="button" onClick={onCancel} data-icon-action title="Cancel" aria-label="Cancel">
+          <ActionIcon name="cancel" />
+        </button>
+        <button className="settings-primary" type="submit" disabled={saving || !draft.name.trim() || !draft.model} data-icon-action title={saving ? "Saving…" : draft.id ? "Save" : "Add"} aria-label={saving ? "Saving…" : draft.id ? "Save" : "Add"}>
+          <ActionIcon name="save" />
         </button>
       </div>
     </form>

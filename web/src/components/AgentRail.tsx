@@ -11,6 +11,7 @@
 //
 // A dynamic workflow is one run holding many agents, so it opens into its own
 // phases. A Task subagent is a single row: it has no tree to show.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useState } from "react";
 import { claudeModelName } from "../lib/agentProviders";
 import type { AgentRun, WorkflowAgent } from "../lib/chat";
@@ -223,25 +224,10 @@ export function RailButton({
       type="button"
       aria-expanded={open}
       aria-label={`Agents in this chat — ${count}`}
-      title={`${count} agent${count === 1 ? "" : "s"} this chat has started`}
+      title={`Agents in this chat — ${count}`}
       onClick={onToggle}
-    >
-      <svg
-        width="15"
-        height="15"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M11 3l1.7 4.3L17 9l-4.3 1.7L11 15l-1.7-4.3L5 9l4.3-1.7z" />
-        <path d="M18 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" />
-      </svg>
-      <span className="topbar-action-label">Agents</span>
-      <span className="rail-count">
+     data-icon-action aria-description={`${count} agent${count === 1 ? "" : "s"} this chat has started`}>
+      <ActionIcon name="agents" /><span className="rail-count">
         <RollingNumber value={count} />
       </span>
     </button>
@@ -272,8 +258,8 @@ export function AgentRail({
       <header className="rail-head">
         <span className="rail-title">Agents</span>
         {onClose && (
-          <button className="rail-close" type="button" aria-label="Hide agents" onClick={onClose}>
-            ✕
+          <button className="rail-close" type="button" aria-label="Hide agents" onClick={onClose} data-icon-action title="Hide agents">
+            <ActionIcon name="dismiss" />
           </button>
         )}
       </header>

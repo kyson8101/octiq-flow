@@ -1,3 +1,4 @@
+import { ActionIcon } from "./ActionIcon";
 // The delete action shown in the chat's action bar. It uses the same two-second
 // undo window as the sidebar row: the first press starts deleting, and the
 // second press cancels while the ring is still draining.
@@ -22,9 +23,8 @@ export function ChatDeleteButton({
       title={label}
       disabled={disabled}
       onClick={onDelete}
-    >
-      {deleting ? <DeleteCountdownIcon ms={deleteMs} /> : <TrashIcon />}
-      <span className="topbar-action-label">{deleting ? "Undo" : "Delete"}</span>
+     data-icon-action>
+      {deleting ? <DeleteCountdownIcon ms={deleteMs} /> : <ActionIcon name="delete" />}
     </button>
   );
 }
@@ -42,27 +42,6 @@ export function DeleteCountdownIcon({ ms }: { ms: number }) {
         style={{ animationDuration: `${ms}ms` }}
       />
       <path className="chat-drain-x" d="M9.9 6.1 6.1 9.9M6.1 6.1l3.8 3.8" />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg
-      width="17"
-      height="17"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.9"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M4 7h16" />
-      <path d="M9 7V4h6v3" />
-      <path d="m6 7 1 13h10l1-13" />
-      <path d="M10 11v5M14 11v5" />
     </svg>
   );
 }

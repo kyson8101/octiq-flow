@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { ActionIcon } from "./ActionIcon";
 import { StatusDismiss } from "./ChatStatus";
 import type { Message } from "../lib/chat";
 import "./MessageBubble.css";
@@ -53,14 +54,20 @@ export function MessageBubble({ user, message, wrapUp = false, onStart, onCancel
             </span>
             <div className="message-delivery-actions" role="group" aria-label="Message actions">
               {onStart && <button type="button" disabled={pending}
-                title={wrapUp ? "Stop the current reply and wrap up now" : "Stop the current reply and send this message next"}
-                aria-label="Send this queued message now" onClick={onStart}>Send now</button>}
+                title="Send this queued message now"
+                aria-label="Send this queued message now" onClick={onStart} data-icon-action aria-description={wrapUp ? "Stop the current reply and wrap up now" : "Stop the current reply and send this message next"}>
+                <ActionIcon name="send" />
+              </button>}
               {onCancel && (wrapUp ? <button type="button" disabled={pending}
-                title="Take the wrap-up back. The chat is not completed."
-                aria-label="Cancel completing this chat" onClick={onCancel}>Cancel</button>
+                title="Cancel completing this chat"
+                aria-label="Cancel completing this chat" aria-description="Take the wrap-up back. The chat is not completed." onClick={onCancel} data-icon-action>
+                <ActionIcon name="cancel" />
+              </button>
                 : <button type="button" disabled={pending}
-                title="Return this message and its attachments to the composer"
-                aria-label="Take this queued message back to edit" onClick={onCancel}>Edit</button>)}
+                title="Take this queued message back to edit"
+                aria-label="Take this queued message back to edit" aria-description="Return this message and its attachments to the composer" onClick={onCancel} data-icon-action>
+                  <ActionIcon name="edit" />
+                </button>)}
               {onRestore && <button type="button" onClick={onRestore}>Restore to composer</button>}
               {footer}
               {onDismiss && <StatusDismiss label="Dismiss" visible onClick={onDismiss} />}

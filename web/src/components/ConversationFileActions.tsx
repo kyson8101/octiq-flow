@@ -4,12 +4,12 @@
 // reveals the two named actions without leaving a pair of unexplained icons in
 // every paragraph: "Copy path" puts the canonical server path on the clipboard
 // for sharing, and "Open in OctiqFlow" uses the app's usual file viewer.
+import { ActionIcon } from "./ActionIcon";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { copyText } from "../lib/clipboard";
 import { hideFileActionPopover, showFileActionPopover } from "../lib/fileActionPopover";
 import { focusAt, keepsEscape } from "../lib/placeTip";
 import { useOpenFile } from "./OpenFileContext";
-import { CopyIcon, TickIcon } from "./CopyBit";
 
 export function ConversationFileActions({
   path,
@@ -192,11 +192,8 @@ export function ConversationFileActions({
           title={copied ? "Path copied" : `Copy path: ${path}`}
           aria-label={copied ? "Path copied" : `Copy path: ${path}`}
           onClick={() => void copy()}
-        >
-          {copied ? <TickIcon /> : <CopyIcon />}
-          <span className="prose-file-action-label">
-            {copied ? "Path copied" : "Copy path"}
-          </span>
+         data-icon-action>
+          <ActionIcon name={copied ? "allow" : "copy"} />
         </button>
         <button
           className="prose-file-action"
@@ -204,32 +201,10 @@ export function ConversationFileActions({
           title={`Open in OctiqFlow: ${path}`}
           aria-label={`Open in OctiqFlow: ${path}`}
           onClick={openPath}
-        >
-          <OpenIcon />
-          <span className="prose-file-action-label">Open in OctiqFlow</span>
+         data-icon-action>
+          <ActionIcon name="handover" />
         </button>
       </span>
     </span>
-  );
-}
-
-/** An arrow leaving a document: open this file in OctiqFlow's viewer. */
-function OpenIcon() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M14 3h7v7" />
-      <path d="m21 3-9 9" />
-      <path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6" />
-    </svg>
   );
 }

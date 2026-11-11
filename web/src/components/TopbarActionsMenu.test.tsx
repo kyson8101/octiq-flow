@@ -9,7 +9,7 @@ describe("More, the action bar's one disclosure", () => {
     );
     expect(closed).toContain('aria-label="More actions"');
     expect(closed).toContain('aria-expanded="false"');
-    expect(closed).toContain('<span class="topbar-action-label">More</span>');
+    expect(closed).toContain('data-action-icon="more"');
     expect(closed).not.toContain("Settings");
 
     const open = renderToStaticMarkup(
