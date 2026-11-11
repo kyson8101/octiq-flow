@@ -85,7 +85,7 @@ it("shows retained run detail before the reacquisition effect, with gate answers
     expect(html).not.toContain("Reading run");
     expect(html).toContain("Persist authoritative worker state.");
     expect(html).toMatch(/<button[^>]*aria-disabled="true"[^>]*>Yes<\/button>/);
-    const stop = html.match(/<button[^>]*>Stop<\/button>/)?.[0];
+    const stop = html.match(/<button[^>]*aria-label="Stop"[^>]*>[\s\S]*?<\/button>/)?.[0];
     expect(stop).toBeDefined();
     expect(stop).not.toContain("disabled");
   } finally { vi.restoreAllMocks(); }
@@ -927,7 +927,7 @@ describe("compact run panel", () => {
   it("offers Stop without Pause, and never a percentage or a full-width bar", () => {
     const automatic = { ...snapshot, runs: [{ ...snapshot.runs[0], workerDefaults: { access: "auto" } }] };
     const html = agents(automatic);
-    expect(html).toContain(">Stop</button>");
+    expect(html).toContain('aria-label="Stop"');
     expect(html).not.toContain("Stop run");
     expect(html).not.toContain("Pause automatic dispatch");
     expect(html).not.toContain("task-meter");
@@ -978,8 +978,8 @@ describe("compact run panel", () => {
   it("offers to archive a finished run behind a confirmation, never by default", () => {
     const done = { ...snapshot, runs: [{ ...snapshot.runs[0], status: "stopped" as const }], gates: [] };
     const html = agents(done);
-    expect(html).toContain(">Archive mission</button>");
-    expect(html).not.toContain(">Stop</button>");
+    expect(html).toContain('aria-label="Archive mission"');
+    expect(html).not.toContain('aria-label="Stop"');
     expect(html).not.toContain('type="checkbox"');
   });
 
@@ -993,9 +993,9 @@ describe("compact run panel", () => {
     const done = agents(mission("completed"));
     expect(done).toContain('aria-label="Mission: Ready to merge"');
     expect(done).toContain('aria-current="step"');
-    expect(done).toContain(">Check merge</button>");
-    expect(done).toContain(">Close mission</button>");
-    expect(done).toContain(">Abandon</button>");
+    expect(done).toContain('aria-label="Check merge"');
+    expect(done).toContain('aria-label="Close mission"');
+    expect(done).toContain('aria-label="Abandon"');
 
     const merged = agents(mission("completed", { missionDelivery: [{
       repositoryRoot: "/repo", checkoutRoot: "/w", branch: "feature/mission-1", baseBranch: "develop",
@@ -1007,12 +1007,12 @@ describe("compact run panel", () => {
 
     // Still working: nothing to close yet.
     const working = agents(mission("running"));
-    expect(working).not.toContain(">Close mission</button>");
+    expect(working).not.toContain('aria-label="Close mission"');
 
     const closed = agents(mission("closed", { closedAt: 3, abandoned: true }));
     expect(closed).toContain('aria-label="Mission: Abandoned"');
-    expect(closed).not.toContain(">Check merge</button>");
-    expect(closed).not.toContain(">Close mission</button>");
+    expect(closed).not.toContain('aria-label="Check merge"');
+    expect(closed).not.toContain('aria-label="Close mission"');
   });
 
   it("draws no mission board for a run from before missions", () => {

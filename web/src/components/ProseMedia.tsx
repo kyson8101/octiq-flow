@@ -76,7 +76,7 @@ function ProsePlayerForPath({ path, kind }: { path: string; kind: "video" | "aud
           setFailed(false);
           holder.current?.querySelector<HTMLMediaElement>("video, audio")?.load();
         }} data-icon-action title="Retry" aria-label="Retry">
-          <ActionIcon name="retry" />
+          <ActionIcon name="retry" label="Retry" />
         </button>
       </span>}
       {!near && !kept.current ? <span className="prose-player-wait"><span className="prose-media-wait" aria-hidden="true" /><span className="media-playback-tools" aria-hidden="true" /></span>

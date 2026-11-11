@@ -358,9 +358,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
 
       <div className="team-head">
         <h3>Registered agents</h3>
-        <button className="settings-primary" type="button" onClick={() => setDraft(blank(null))} disabled={loading || !!draft || saving}>
-          Add agent
-        </button>
+        <button className="settings-primary" type="button" onClick={() => setDraft(blank(null))} disabled={loading || !!draft || saving} data-icon-action aria-label="Add agent" title="Add agent"><ActionIcon name="new" label="Add agent" /></button>
       </div>
 
       {error && <p className="set-warn" role="alert">{error}</p>}
@@ -538,10 +536,10 @@ export function AgentPolicyBlock({ saved, text, loading, busy, unread = false, o
       <div className="agent-policy-actions">
         <button className="vault-button" type="button" disabled={loading || busy || !saved}
           onClick={onClear} data-icon-action title="Clear" aria-label="Clear">
-          <ActionIcon name="dismiss" />
+          <ActionIcon name="dismiss" label="Clear" />
         </button>
         <button className="settings-primary" type="submit" disabled={loading || busy || !changed || over} data-icon-action title={busy ? "Saving…" : "Save policy"} aria-label={busy ? "Saving…" : "Save policy"}>
-          <ActionIcon name="save" />
+          <ActionIcon name="save" label="Save" />
         </button>
       </div>
     </form>
@@ -572,10 +570,10 @@ export function TeamsBlock({ teams, agents, draft, projects, projectName, onDraf
         {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
       </select>
       <button className="vault-button" type="button" onClick={() => onDraft(null)} data-icon-action title="Cancel" aria-label="Cancel">
-        <ActionIcon name="cancel" />
+        <ActionIcon name="cancel" label="Cancel" />
       </button>
       <button className="settings-primary" type="submit" disabled={!draft?.name.trim()} data-icon-action title={draft?.id ? "Save" : "Add"} aria-label={draft?.id ? "Save" : "Add"}>
-        <ActionIcon name="save" />
+        <ActionIcon name="save" label={draft?.id ? "Save" : "Add"} />
       </button>
     </form>
   );
@@ -584,7 +582,7 @@ export function TeamsBlock({ teams, agents, draft, projects, projectName, onDraf
       <div className="team-head">
         <h3>Teams</h3>
         <button className="vault-button" type="button" disabled={!!draft && !draft.id}
-          onClick={() => onDraft({ name: "", projectId: null })}>Add team</button>
+          onClick={() => onDraft({ name: "", projectId: null })} data-icon-action aria-label="Add team" title="Add team"><ActionIcon name="new" label="Add team" /></button>
       </div>
       <p className="settings-note">Agents on one team may ask each other questions while they work. Teammates answer; they never take the work, and a team changes no one's manager.</p>
       {draft && !draft.id && editor}
@@ -881,14 +879,14 @@ export function InlineAgentRow({ draft, depth, team, teams, projects, saving, on
       {leadOnly(draft) && <small className="team-field-note">Fable and Astra can lead a task, but they cannot be given one.</small>}
       <div className="agents-edit-footer">
         <button type="button" className="vault-button" disabled={saving} onClick={() => onDetails(draft)} data-icon-action title="Edit role, prompt & avatar" aria-label="Edit role, prompt & avatar">
-          <ActionIcon name="edit" />
+          <ActionIcon name="edit" label="Edit details" />
         </button>
         <div className="agents-row-actions">
           <button type="button" className="settings-primary" disabled={saving || !valid} onClick={onSave} data-icon-action title={saving ? "Saving…" : "Save"} aria-label={saving ? "Saving…" : "Save"}>
-            <ActionIcon name="save" />
+            <ActionIcon name="save" label="Save" />
           </button>
           <button type="button" className="vault-button" disabled={saving} onClick={onCancel} data-icon-action title="Cancel" aria-label="Cancel">
-            <ActionIcon name="cancel" />
+            <ActionIcon name="cancel" label="Cancel" />
           </button>
         </div>
       </div>
@@ -931,10 +929,10 @@ export function AgentDetailsDialog({ draft, staged, saving, error, onChange, onS
       <fieldset disabled={saving} className="agent-details-fields"><AgentLongFields draft={draft} onChange={onChange} /></fieldset>
       <div className="team-form-actions">
         <button type="button" className="vault-button" disabled={saving} onClick={onClose} data-icon-action title="Cancel" aria-label="Cancel">
-          <ActionIcon name="cancel" />
+          <ActionIcon name="cancel" label="Cancel" />
         </button>
         <button type="submit" className="settings-primary" disabled={saving} data-icon-action title={saving ? "Saving…" : "Save details"} aria-label={saving ? "Saving…" : "Save details"}>
-          <ActionIcon name="save" />
+          <ActionIcon name="save" label="Save details" />
         </button>
       </div>
     </form>
@@ -1021,10 +1019,10 @@ export function TeamForm({ draft, team, teams, projects, saving, onChange, onSav
       )}
       <div className="team-form-actions team-form-wide">
         <button className="vault-button" type="button" onClick={onCancel} data-icon-action title="Cancel" aria-label="Cancel">
-          <ActionIcon name="cancel" />
+          <ActionIcon name="cancel" label="Cancel" />
         </button>
         <button className="settings-primary" type="submit" disabled={saving || !draft.name.trim() || !draft.model} data-icon-action title={saving ? "Saving…" : draft.id ? "Save" : "Add"} aria-label={saving ? "Saving…" : draft.id ? "Save" : "Add"}>
-          <ActionIcon name="save" />
+          <ActionIcon name="save" label={draft.id ? "Save" : "Add"} />
         </button>
       </div>
     </form>

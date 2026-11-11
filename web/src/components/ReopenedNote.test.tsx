@@ -165,7 +165,7 @@ describe("the reopened line", () => {
     expect(draw(), "folded").not.toMatch(/Stop/);
     expect(line({ state: "can" }, false), "folded, with a worker to stop").not.toMatch(/Stop/);
     const opened = line({ state: "can" });
-    expect(opened).toContain('<button type="button" class="reopened-note-stop">Stop this task…</button>');
+    expect(opened).toMatch(/class="reopened-note-stop"[^>]*aria-label="Stop this task…"[^>]*>[\s\S]*?class="action-label"[^>]*>Stop<\/span><\/button>/);
     // Below what was opened: the instructions, then the control.
     expect(opened.indexOf("reopened-note-spec")).toBeLessThan(opened.indexOf("reopened-note-stop"));
     expect(opened).toContain('<div class="reopened-note-actions" data-stop="can">');
@@ -174,7 +174,7 @@ describe("the reopened line", () => {
   it("keeps Stop off, with the reason beside it, when there is no worker to stop", () => {
     const reason = "No worker is running on this task yet, so there is nothing to stop.";
     const html = line({ state: "cannot", reason });
-    expect(html).toMatch(/<button type="button" class="reopened-note-stop" aria-disabled="true" aria-describedby="([^"]+)">Stop this task…<\/button><span id="\1" class="reopened-note-why">No worker is running on this task yet, so there is nothing to stop\.<\/span>/);
+    expect(html).toMatch(/<button type="button" class="reopened-note-stop" aria-disabled="true" aria-describedby="([^"]+)"[^>]*>[\s\S]*?>Stop<\/span><\/button><span id="\1" class="reopened-note-why">No worker is running on this task yet, so there is nothing to stop\.<\/span>/);
     // Before the ledger is read the line says so, and guesses nothing.
     expect(draw({}, true)).toContain("The run&#x27;s ledger has not been read yet.");
     expect(draw({}, true)).toContain('aria-disabled="true"');
@@ -190,7 +190,7 @@ describe("the reopened line", () => {
   it("shows the host's own words when a stop is refused, and says it is working while it asks", () => {
     const refused = line({ state: "can" }, true, { error: "No worker is running on this task, so there is nothing to stop." });
     expect(refused).toContain('<p class="reopened-note-error" role="alert">No worker is running on this task, so there is nothing to stop.</p>');
-    expect(line({ state: "can" }, true, { busy: true })).toContain('<button type="button" class="reopened-note-stop" disabled="">Stopping…</button>');
+    expect(line({ state: "can" }, true, { busy: true })).toMatch(/class="reopened-note-stop" disabled=""[^>]*aria-label="Stopping…"/);
   });
 
   it("asks before it stops, in the app's own dialog and in words that say what follows", () => {

@@ -530,7 +530,7 @@ function ReleaseCheckField({ onSave }: { onSave: (check: ReleaseCheck) => void }
         onKeyDown={(event) => { if (event.key === "Escape") setEditing(false); }}
       />
       <button type="submit" data-icon-action title="Save" aria-label="Save">
-        <ActionIcon name="save" />
+        <ActionIcon name="save" label="Save" />
       </button>
       <span className="chat-task-note">
         {kind === "reference"

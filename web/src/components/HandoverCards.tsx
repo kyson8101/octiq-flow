@@ -333,10 +333,10 @@ function SourceCard({ handover, onDecide, startOpen = false }: {
         <footer className="handover-actions">
           <span className="handover-hint">Nothing starts until you choose</span>
           <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("decline")} data-icon-action title={busy === "decline" ? "Keeping…" : "Keep it here"} aria-label={busy === "decline" ? "Keeping…" : "Keep it here"}>
-            <ActionIcon name="keep" />
+            <ActionIcon name="keep" label="Keep here" />
           </button>
           <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")} data-icon-action title={busy === "confirm" ? "Handing over…" : `Hand over to ${handover.to.name}`} aria-label={busy === "confirm" ? "Handing over…" : `Hand over to ${handover.to.name}`}>
-            <ActionIcon name="handover" />
+            <ActionIcon name="handover" label="Hand over" />
           </button>
         </footer>
       )}
@@ -351,12 +351,12 @@ function SourceCard({ handover, onDecide, startOpen = false }: {
           </span>
           {handover.error && handover.abandonable && (
             <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("abandon")} data-icon-action title={busy === "abandon" ? "Giving up…" : "Give up"} aria-label={busy === "abandon" ? "Giving up…" : "Give up"}>
-              <ActionIcon name="cancel" />
+              <ActionIcon name="cancel" label="Give up" />
             </button>
           )}
           {handover.error && (
             <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")} data-icon-action title={busy === "confirm" ? "Starting…" : "Try again"} aria-label={busy === "confirm" ? "Starting…" : "Try again"}>
-              <ActionIcon name="retry" />
+              <ActionIcon name="retry" label="Try again" />
             </button>
           )}
         </footer>
@@ -493,10 +493,10 @@ export function RouteCard({ handover, onDecide, startOpen = false }: {
         <footer className="handover-actions">
           <span className="handover-hint">Nothing opens until you choose</span>
           <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("decline")} data-icon-action title={busy === "decline" ? "Cancelling…" : "Cancel"} aria-label={busy === "decline" ? "Cancelling…" : "Cancel"}>
-            <ActionIcon name="cancel" />
+            <ActionIcon name="cancel" label="Cancel" />
           </button>
           <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")} data-icon-action title={busy === "confirm" ? "Opening…" : route?.discuss ? `Discuss with ${handover.to.name}` : `Open chat with ${handover.to.name}`} aria-label={busy === "confirm" ? "Opening…" : route?.discuss ? `Discuss with ${handover.to.name}` : `Open chat with ${handover.to.name}`}>
-            <ActionIcon name="handover" />
+            <ActionIcon name="handover" label={route?.discuss ? "Discuss" : "Open chat"} />
           </button>
         </footer>
       )}
@@ -511,12 +511,12 @@ export function RouteCard({ handover, onDecide, startOpen = false }: {
           </span>
           {handover.error && handover.abandonable && (
             <button type="button" className="handover-quiet" disabled={!!busy} onClick={() => void decide("abandon")} data-icon-action title={busy === "abandon" ? "Giving up…" : "Give up"} aria-label={busy === "abandon" ? "Giving up…" : "Give up"}>
-              <ActionIcon name="cancel" />
+              <ActionIcon name="cancel" label="Give up" />
             </button>
           )}
           {handover.error && (
             <button type="button" className="handover-go" disabled={!!busy} {...send("confirm")} data-icon-action title={busy === "confirm" ? "Opening…" : "Try again"} aria-label={busy === "confirm" ? "Opening…" : "Try again"}>
-              <ActionIcon name="retry" />
+              <ActionIcon name="retry" label="Try again" />
             </button>
           )}
         </footer>

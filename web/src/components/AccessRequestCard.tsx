@@ -94,10 +94,10 @@ export function AccessRequestCard({ request, onAnswer, startOpen = false }: {
         <p className="ask-card-wait" title={note}>{accessRequestShort(request)}</p>
         <div className="ask-card-actions">
           <button className="ask-btn" type="button" disabled={!!sending} onClick={() => void answer("decline")} data-icon-action title={sending === "decline" ? "Declining…" : "Not now"} aria-label={sending === "decline" ? "Declining…" : "Not now"}>
-            <ActionIcon name="keep" />
+            <ActionIcon name="keep" label="Keep" />
           </button>
           <button className="ask-btn is-primary" type="button" disabled={!!sending} onClick={() => void answer("raise")} data-icon-action title={sending === "raise" ? "Raising…" : `Raise to ${label(request.requested)}`} aria-label={sending === "raise" ? "Raising…" : `Raise to ${label(request.requested)}`}>
-            <ActionIcon name="allow" />
+            <ActionIcon name="allow" label="Upgrade" />
           </button>
         </div>
       </div>

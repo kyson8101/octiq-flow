@@ -91,10 +91,10 @@ export function PreferencesBlock({ saved, text, loading, busy, done, unread = fa
         {done && !changed && <span className="settings-note" role="status">Saved</span>}
         <button className="vault-button" type="button" disabled={loading || busy || !saved}
           onClick={onClear} data-icon-action title="Clear" aria-label="Clear">
-          <ActionIcon name="dismiss" />
+          <ActionIcon name="dismiss" label="Clear" />
         </button>
         <button className="settings-primary" type="submit" disabled={loading || busy || !changed || over} data-icon-action title={busy ? "Saving…" : "Save preferences"} aria-label={busy ? "Saving…" : "Save preferences"}>
-          <ActionIcon name="save" />
+          <ActionIcon name="save" label="Save" />
         </button>
       </div>
     </form>

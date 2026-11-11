@@ -65,7 +65,7 @@ export function FeedbackInbox({ onClose, onOpenChat, availableChatIds }: {
           {Object.entries(feedbackStatuses).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
         <button type="button" onClick={() => void refresh()} disabled={loading} data-icon-action title="Refresh" aria-label="Refresh">
-          <ActionIcon name="refresh" />
+          <ActionIcon name="refresh" label="Refresh" />
         </button>
       </div>
       {error && <p className="feedback-error" role="alert">{error}</p>}
@@ -161,10 +161,10 @@ export function FeedbackDetail({ report, available, onOpenChat, onBack, onSaved 
       {error && <p className="feedback-error" role="alert">{error}</p>}
       {changed && <p className="feedback-origin" role="status">This report may have changed. Reload it to see the latest triage.</p>}
       <div className="feedback-actions"><button type="submit" className="feedback-save" disabled={busy || !dirty} data-icon-action title={busy ? "Saving…" : "Save changes"} aria-label={busy ? "Saving…" : "Save changes"}>
-        <ActionIcon name="save" />
+        <ActionIcon name="save" label="Save" />
       </button>
         <button type="button" disabled={busy} onClick={() => void reload()} data-icon-action title={dirty ? "Discard changes and reload" : "Reload report"} aria-label={dirty ? "Discard changes and reload" : "Reload report"}>
-          <ActionIcon name="refresh" />
+          <ActionIcon name="refresh" label="Reload" />
         </button></div>
     </form>
     <p className="feedback-id">Report {report.id}</p>

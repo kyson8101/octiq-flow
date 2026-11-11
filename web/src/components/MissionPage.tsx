@@ -195,7 +195,7 @@ export function ReassignForm({ run, task, crew, busy: inputBusy, onDone }: {
     {error && <p className="orch-run-error" role="alert">{error}</p>}
     <div className="mission-reassign-actions">
       <button type="button" className="orch-quiet" disabled={busy} onClick={onDone} data-icon-action title="Cancel" aria-label="Cancel">
-        <ActionIcon name="cancel" />
+        <ActionIcon name="cancel" label="Cancel" />
       </button>
       {choices && choices.length > 0 && <button type="button" className="orch-quiet is-primary" disabled={busy || !assignee || !why.trim()}
         onClick={() => void submit()}>{sending ? "Reassigning…" : "Reassign"}</button>}

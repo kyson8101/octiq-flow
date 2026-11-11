@@ -382,7 +382,7 @@ describe("what decides a task's workspace", () => {
     expect(one.details).toContain("Validation: <code>/tmp/octiq-validation-1</code>");
     expect(one.details).not.toContain("Remove validation checkout");
     const two = parts(settled(retained(false, ["/tmp/octiq-validation-1", "/tmp/octiq-validation-2"])));
-    expect(two.above.match(/Remove validation checkout/g)).toHaveLength(2);
+    expect(two.above.match(/aria-label="Remove validation checkout/g)).toHaveLength(2);
     expect(two.above).toContain("octiq-validation-2</code>");
   });
 
@@ -471,9 +471,10 @@ describe("every control that starts an attempt", () => {
     expect(panelSource).toContain("useInFlight(taskFlight(start.attempt.taskId))");
     expect(panelSource.match(/onRetry\(/g)).toHaveLength(1);
     expect(panelSource).toMatch(/const start = startControl\(/);
-    // No label of a start is written anywhere but the reader.
+    // The full wording still comes from the reader; the visible label may be shortened.
     expect(panelSource).not.toMatch(/>Start (retry|next attempt|it again)</);
-    expect(panelSource).not.toMatch(/"Start (retry|next attempt|it again)"/);
+    expect(panelSource).toContain('title={start.label} aria-label={start.label}');
+    expect(panelSource).toContain('label={start.kind === "retry" ? "Start retry"');
   });
 
 });

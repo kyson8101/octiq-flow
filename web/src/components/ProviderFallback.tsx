@@ -53,10 +53,10 @@ export function ChoiceCard({ choice, onDone }: { choice: Choice; onDone: () => v
     </div>
     {error && <p className="set-warn" role="alert">{error}</p>}
     <div className="provider-choice-actions"><button type="button" className="vault-button" disabled={busy} onClick={() => void answer(null)} data-icon-action title="Cancel" aria-label="Cancel">
-      <ActionIcon name="cancel" />
+      <ActionIcon name="cancel" label="Cancel" />
     </button>
       <button type="button" className="settings-primary" disabled={busy || !available.length || !value.model} onClick={() => void answer(value)} data-icon-action title={busy ? "Saving…" : "Continue with selection"} aria-label={busy ? "Saving…" : "Continue with selection"}>
-        <ActionIcon name="confirm" />
+        <ActionIcon name="confirm" label="Continue" />
       </button></div>
   </section>;
 }
@@ -127,7 +127,7 @@ export function ProviderFallbackSettings() {
       {rule.backup && <FallbackFields value={rule.backup} onChange={backup => change({ ...rule, backup })} disabled={busy || (!!scope && !own)} />}
       <p className="settings-note">Automatic mode uses a compatible backup, then equivalent available providers. “Let me choose” waits for your selection. For Antigravity, effort is part of the model. Ordinary chats use the global policy; registered agents can override it.</p>
       <div className="provider-choice-actions">{done && <span role="status">Saved</span>}<button className="settings-primary" disabled={busy} onClick={() => void save()} data-icon-action title={busy ? "Saving…" : "Save fallback preferences"} aria-label={busy ? "Saving…" : "Save fallback preferences"}>
-        <ActionIcon name="save" />
+        <ActionIcon name="save" label="Save" />
       </button></div>
     </>}
   </section>;

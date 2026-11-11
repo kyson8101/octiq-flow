@@ -535,7 +535,7 @@ export function PullRequestsDashboard({
       </div>
 
       {repositoriesError && <div className="pr-banner is-error" role="alert"><span>Could not list repositories: {repositoriesError}</span><button type="button" onClick={() => setRepositoriesRefresh((value) => value + 1)} data-icon-action title="Retry" aria-label="Retry">
-        <ActionIcon name="retry" />
+        <ActionIcon name="retry" label="Retry" />
       </button></div>}
       {!connected && <div className="pr-banner is-error" role="alert">The server is disconnected. Existing chats keep running; reconnect to refresh pull requests.</div>}
 
@@ -757,7 +757,7 @@ function Overview({
         {pr.source === "github" && (
           <section className="pr-workflow-card">
             <div className="pr-workflow-head"><div><h3>Tracked completion</h3><p>Link this PR to its work, then choose the verified event that completes it.</p></div><button type="button" disabled={workflowLoading} onClick={onRefresh} data-icon-action title="Refresh" aria-label="Refresh">
-              <ActionIcon name="refresh" />
+              <ActionIcon name="refresh" label="Refresh" />
             </button></div>
             <label>Originating chat<select value={linkChatId} onChange={(event) => onLinkChat(event.target.value)}><option value="">No linked chat</option>{chats.map((chat) => <option key={chat.id} value={chat.id}>{chat.title}</option>)}</select></label>
             <div className="pr-workflow-ticket-row">
@@ -766,7 +766,7 @@ function Overview({
             </div>
             <fieldset><legend>Complete this work when</legend><label><input type="radio" name="pr-complete-on" checked={completeOn === "merged"} onChange={() => onCompleteOn("merged")} /> PR is merged <span>default</span></label><label><input type="radio" name="pr-complete-on" checked={completeOn === "approved"} onChange={() => onCompleteOn("approved")} /> Current head is approved</label></fieldset>
             <button type="button" className="is-primary" disabled={workflowLoading} onClick={onSave} data-icon-action title={workflowLoading ? "Saving…" : "Save tracking"} aria-label={workflowLoading ? "Saving…" : "Save tracking"}>
-              <ActionIcon name="save" />
+              <ActionIcon name="save" label="Save tracking" />
             </button>
             {workflowError && <p className="pr-inline-error" role="alert">{workflowError}</p>}
             {workflow && (
@@ -782,7 +782,7 @@ function Overview({
                 {action?.chatId && <button type="button" onClick={() => onOpenChat(action.chatId!)}>Open agent chat</button>}
                 {action?.status === "pending" && <p className="pr-ticket-note">This pending action can be claimed after a reload or interrupted launch. Continue it, or mark it failed before starting over.</p>}
                 {canPrepareTicket && <button type="button" className="is-primary" disabled={workflowLoading} onClick={onPrepareTicket} data-icon-action title={action?.status === "failed" ? "Retry ticket update" : action?.status === "pending" ? "Continue pending update" : "Start ticket update"} aria-label={action?.status === "failed" ? "Retry ticket update" : action?.status === "pending" ? "Continue pending update" : "Start ticket update"}>
-                  <ActionIcon name="retry" />
+                  <ActionIcon name="retry" label={action?.status === "failed" ? "Retry update" : action?.status === "pending" ? "Continue update" : "Start update"} />
                 </button>}
                 {action?.status === "pending" && <button type="button" disabled={workflowLoading} onClick={() => onConfirmTicket(false)}>Mark pending action failed</button>}
                 {action?.status === "running" && ticketAgentBusy && <p className="pr-ticket-note">The agent turn is still running. Confirmation unlocks when it finishes.</p>}
@@ -791,7 +791,7 @@ function Overview({
                     <label>Confirmation note <span>optional</span><textarea value={ticketMessage} onChange={(event) => onTicketMessage(event.target.value)} placeholder="What did you verify in the ticket?" /></label>
                     <label className="pr-check"><input type="checkbox" checked={ticketChecked} onChange={(event) => onTicketChecked(event.target.checked)} /> I checked the ticket after the agent finished and the PR link and resolution are present.</label>
                     <div><button type="button" className="is-primary" disabled={!ticketChecked || workflowLoading} onClick={() => onConfirmTicket(true)} data-icon-action title="Confirm ticket updated" aria-label="Confirm ticket updated">
-                      <ActionIcon name="confirm" />
+                      <ActionIcon name="confirm" label="Confirm update" />
                     </button><button type="button" disabled={workflowLoading} onClick={() => onConfirmTicket(false)}>Mark failed</button></div>
                     <p>User-confirmed status is recorded here; OctiqFlow does not claim an independent remote verification.</p>
                   </div>

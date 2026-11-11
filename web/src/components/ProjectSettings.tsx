@@ -660,7 +660,7 @@ export function ProjectSettings({
                   });
                 }}
                data-icon-action title="Delete project" aria-label="Delete project">
-                <ActionIcon name="delete" />
+                <ActionIcon name="delete" label="Delete project" />
               </button>
             </div>
           )}

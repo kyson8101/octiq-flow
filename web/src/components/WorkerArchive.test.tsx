@@ -69,7 +69,7 @@ describe("worker archive controls", () => {
     // The sidebar navigates; archiving and attempt history are the dashboard's.
     expect(out).not.toContain("Archive worker");
     expect(out).not.toContain("Attempt 2");
-    expect(panel(snapshot)).toContain(">Archive worker</button>");
+    expect(panel(snapshot)).toContain('aria-label="Archive worker"');
     expect(panel(snapshot)).toContain("Previous attempts (1)");
   });
 });

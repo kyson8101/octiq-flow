@@ -124,7 +124,7 @@ function DecisionCard({ card: { wait, run, task, gate }, snapshot, waits, ready,
       }} />
       : <button ref={opener} type="button" className="orch-delivery-opener" disabled={!ready || flying} onKeyDown={dropHeld}
         onClick={event => { if (repeatsAnother(event)) return; notePress(event); setReopening(true); }} data-icon-action title={reopen.label} aria-label={reopen.label}>
-        <ActionIcon name="reopen" />
+        <ActionIcon name="reopen" label={reopen.label === "Continue after review" ? "Continue review" : "Reopen task"} />
       </button>)}
     {!ready && <p role="status">{detailError ?? "Reading the task's decision…"}</p>}
     {error && <p className="chat-run-decision-error" role="alert">{error}</p>}

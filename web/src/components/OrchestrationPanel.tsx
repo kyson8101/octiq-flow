@@ -851,9 +851,7 @@ function RunDetail({
     const reason = archivedWorker ? null : workerArchiveDisabledReason(snapshot, attempt);
     return <button type="button" disabled={busy || !!reason}
       title={reason ?? (archivedWorker ? "Return this worker to the chat list." : "Hide this worker; its chat and task history are kept.")}
-      onClick={() => onWorkspaceAction("orchestration_worker_archive", { attemptId: attempt.id, archived: !archivedWorker })}>
-      {archivedWorker ? "Restore worker" : "Archive worker"}
-    </button>;
+      onClick={() => onWorkspaceAction("orchestration_worker_archive", { attemptId: attempt.id, archived: !archivedWorker })} data-icon-action aria-label={archivedWorker ? "Restore worker" : "Archive worker"}><ActionIcon name="history" label={archivedWorker ? "Restore worker" : "Archive worker"} /></button>;
   };
   // A finished run's specs, results and bodies are left out of the tab's
   // whole-ledger read; showing the run is when they are asked for.
@@ -1039,31 +1037,31 @@ function RunDetail({
             </li>)}
           </ul>}
           <div className="orch-run-actions">
-            {onStartMaster && !readOnly && ACTIVE_RUNS.has(run.status) && !confirmStop && <button className="orch-quiet" type="button" disabled={busy} onClick={() => void onStartMaster()}>Continue main agent</button>}
+            {onStartMaster && !readOnly && ACTIVE_RUNS.has(run.status) && !confirmStop && <button className="orch-quiet" type="button" disabled={busy} onClick={() => void onStartMaster()} data-icon-action aria-label="Continue main agent" title="Continue main agent"><ActionIcon name="run" label="Continue" /></button>}
             {!readOnly && run.status === "completed" && archivable.length > 0 && !confirmStop && <button className="orch-quiet" type="button" disabled={busy}
               title="Hide merged workers from the chat list. Chats, reports, and workspaces are kept."
-              onClick={() => onWorkspaceAction("orchestration_workers_archive_merged", { runId: run.id })}>Archive all merged workers ({archivable.length})</button>}
+              onClick={() => onWorkspaceAction("orchestration_workers_archive_merged", { runId: run.id })} data-icon-action aria-label={`Archive all merged workers (${archivable.length})`}><ActionIcon name="history" label="Archive workers" /><span aria-hidden="true">{archivable.length}</span></button>}
             {!readOnly && !run.workerDefaults && ACTIVE_RUNS.has(run.status) && !confirmStop && <button className="orch-quiet" type="button" disabled={busy}
               onClick={() => onWorkspaceAction("orchestration_automation_configure", { runId: run.id,
-                workerDefaults: { access: "auto" } })}>Enable automatic dispatch</button>}
+                workerDefaults: { access: "auto" } })} data-icon-action aria-label="Enable automatic dispatch" title="Enable automatic dispatch"><ActionIcon name="run" label="Enable dispatch" /></button>}
             {!readOnly && ACTIVE_RUNS.has(run.status) && (
               confirmStop ? (
                 <div className="orch-stop-confirm" role="group" aria-labelledby={`${tabsId}-stop`}
                   onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onCancelStop(); } }}>
                   <p id={`${tabsId}-stop`}>Stop this mission? Workers stop and open tasks are cancelled. Archiving also hides it; its history and worktrees are kept.</p>
                   <button ref={cancelRef} type="button" disabled={inputBusy} onClick={onCancelStop} data-icon-action title="Cancel" aria-label="Cancel">
-                    <ActionIcon name="cancel" />
+                    <ActionIcon name="cancel" label="Cancel" />
                   </button>
-                  <button className="is-danger" type="button" disabled={inputBusy} onClick={() => onStop(false)}>Stop</button>
-                  <button className="is-danger" type="button" disabled={busy} onClick={() => { if (!busy) onStop(true); }}>Stop and archive</button>
+                  <button className="is-danger" type="button" disabled={inputBusy} onClick={() => onStop(false)} data-icon-action aria-label="Stop" title="Stop"><ActionIcon name="stop" label="Stop" /></button>
+                  <button className="is-danger" type="button" disabled={busy} onClick={() => { if (!busy) onStop(true); }} data-icon-action aria-label="Stop and archive" title="Stop and archive"><ActionIcon name="stop" label="Stop + archive" /></button>
                 </div>
               ) : (
-                <button className="orch-quiet" type="button" disabled={inputBusy} onClick={(event) => { notePress(event); onAskStop(); }}>Stop</button>
+                <button className="orch-quiet" type="button" disabled={inputBusy} onClick={(event) => { notePress(event); onAskStop(); }} data-icon-action aria-label="Stop" title="Stop"><ActionIcon name="stop" label="Stop" /></button>
               )
             )}
             {!readOnly && mission && !closed && !confirmStop && !confirmEnd && <button className="orch-quiet" type="button" disabled={busy}
               title="Ask git whether the mission's branch is merged, and released"
-              onClick={() => onWorkspaceAction("orchestration_mission_refresh", { runId: run.id })}>Check merge</button>}
+              onClick={() => onWorkspaceAction("orchestration_mission_refresh", { runId: run.id })} data-icon-action aria-label="Check merge"><ActionIcon name="refresh" label="Check merge" /></button>}
             {!readOnly && mission && !closed && !ACTIVE_RUNS.has(run.status) && (
               confirmEnd ? (
                 <div className="orch-stop-confirm" role="group" aria-labelledby={`${tabsId}-end`}
@@ -1072,19 +1070,17 @@ function RunDetail({
                     ? "Close this mission? Once git confirms the merge, its worktree is removed and its local branch deleted. The remote branch and the history are kept."
                     : "Abandon this mission? Open tasks are cancelled. Its worktree is removed only if every commit is pushed, and the branch is kept."}</p>
                   <button type="button" disabled={busy} autoFocus onClick={() => setConfirmEnd(null)} data-icon-action title="Cancel" aria-label="Cancel">
-                    <ActionIcon name="cancel" />
+                    <ActionIcon name="cancel" label="Cancel" />
                   </button>
                   <button className={confirmEnd === "abandon" ? "is-danger" : undefined} type="button" disabled={busy}
-                    onClick={() => { const abandon = confirmEnd === "abandon"; setConfirmEnd(null); onWorkspaceAction("orchestration_mission_close", { runId: run.id, abandon }); }}>
-                    {confirmEnd === "close" ? "Close mission" : "Abandon mission"}
-                  </button>
+                    onClick={() => { const abandon = confirmEnd === "abandon"; setConfirmEnd(null); onWorkspaceAction("orchestration_mission_close", { runId: run.id, abandon }); }} data-icon-action aria-label={confirmEnd === "close" ? "Close mission" : "Abandon mission"} title={confirmEnd === "close" ? "Close mission" : "Abandon mission"}><ActionIcon name="complete" label={confirmEnd === "close" ? "Close mission" : "Abandon mission"} /></button>
                 </div>
               ) : !confirmArchive && <>
                 {/* Each of these is replaced, where it stands, by the question
                     it opens: the press is remembered, so one that repeats it
                     cannot land on the question's confirming answer. */}
-                <button className="orch-quiet" type="button" disabled={busy} onClick={(event) => { notePress(event); setConfirmEnd("close"); }}>Close mission</button>
-                <button className="orch-quiet" type="button" disabled={busy} onClick={(event) => { notePress(event); setConfirmEnd("abandon"); }}>Abandon</button>
+                <button className="orch-quiet" type="button" disabled={busy} onClick={(event) => { notePress(event); setConfirmEnd("close"); }} data-icon-action aria-label="Close mission" title="Close mission"><ActionIcon name="complete" label="Close mission" /></button>
+                <button className="orch-quiet" type="button" disabled={busy} onClick={(event) => { notePress(event); setConfirmEnd("abandon"); }} data-icon-action aria-label="Abandon" title="Abandon"><ActionIcon name="cancel" label="Abandon" /></button>
               </>
             )}
             {!readOnly && !archived && !ACTIVE_RUNS.has(run.status) && !confirmEnd && (
@@ -1093,15 +1089,15 @@ function RunDetail({
                   onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setConfirmArchive(false); } }}>
                   <p id={`${tabsId}-archive`}>Archive this mission? It leaves the list; its history and worktrees are kept, and it can be restored.</p>
                   <button type="button" disabled={busy} autoFocus onClick={() => setConfirmArchive(false)} data-icon-action title="Cancel" aria-label="Cancel">
-                    <ActionIcon name="cancel" />
+                    <ActionIcon name="cancel" label="Cancel" />
                   </button>
-                  <button type="button" disabled={busy} onClick={() => { setConfirmArchive(false); onArchive(true); }}>Archive</button>
+                  <button type="button" disabled={busy} onClick={() => { setConfirmArchive(false); onArchive(true); }} data-icon-action aria-label="Archive" title="Archive"><ActionIcon name="history" label="Archive" /></button>
                 </div>
               ) : (
-                <button className="orch-quiet" type="button" disabled={busy} onClick={(event) => { notePress(event); setConfirmArchive(true); }}>Archive mission</button>
+                <button className="orch-quiet" type="button" disabled={busy} onClick={(event) => { notePress(event); setConfirmArchive(true); }} data-icon-action aria-label="Archive mission" title="Archive mission"><ActionIcon name="history" label="Archive mission" /></button>
               )
             )}
-            {!readOnly && archived && <button className="orch-quiet" type="button" disabled={busy} onClick={() => onArchive(false)}>Restore mission</button>}
+            {!readOnly && archived && <button className="orch-quiet" type="button" disabled={busy} onClick={() => onArchive(false)} data-icon-action aria-label="Restore mission" title="Restore mission"><ActionIcon name="reopen" label="Restore mission" /></button>}
           </div>
           <RunBridges run={run} snapshot={snapshot} busy={busy} readOnly={readOnly} onBridge={onBridge} />
           {runError && <p className="orch-run-error" role="alert">{runError}</p>}
@@ -1748,7 +1744,7 @@ export function GateAnswer({ gate, door, mine, busy, value, onChange, onResolve 
       />
       <button type="button" className="orch-gate-answer" aria-disabled={off || !value.trim() || undefined} aria-describedby={noteId}
         onKeyDown={dropHeld} onClick={answer(value)} data-icon-action title={flying ? "Sending…" : door === "person" ? "Answer" : "Send to main chat"} aria-label={flying ? "Sending…" : door === "person" ? "Answer" : "Send to main chat"}>
-        <ActionIcon name={door === "person" ? "answer" : "send"} />
+        <ActionIcon name={door === "person" ? "answer" : "send"} label={door === "person" ? "Answer" : "Send"} />
       </button>
     </div>
     <p className="orch-gate-door" id={noteId}>{note}</p>
@@ -1787,7 +1783,7 @@ export function StartButton({ start, busy, onStart }: {
         setQueued(null);
         void Promise.resolve(onStart()).then(words => setQueued(words ?? null));
       }} data-icon-action title={start.label} aria-label={start.label}>
-      <ActionIcon name={start.kind === "retry" ? "retry" : "run"} />
+      <ActionIcon name={start.kind === "retry" ? "retry" : "run"} label={start.kind === "retry" ? "Start retry" : start.label === "Start it again" ? "Start again" : "Next attempt"} />
     </button>
     {queued && <span className="task-start-why" role="status">{queued}</span>}
     {start.blocked && <span id={whyId} className="task-start-why">{start.blocked}</span>}
@@ -1876,25 +1872,23 @@ function DeliveryActions({ task, run, busy, active, onAction }: {
   }
   return <div className="orch-delivery-actions" role="group" aria-label={`Delivery of ${task.title}`} ref={row}>
     <button type="button" className="orch-delivery-action" disabled={busy} onClick={() => onAction("orchestration_workspace_refresh", { taskId: task.id })} data-icon-action title="Refresh delivery status" aria-label="Refresh delivery status">
-      <ActionIcon name="refresh" />
+      <ActionIcon name="refresh" label="Refresh" />
     </button>
     {/* The person's own reopen (`taskHold.reopenControl`). For a failed
         check whose retries are used, or whose coordinator is gone, it is
         the one door: a completed task takes no Start. */}
     {reopen && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("reopen"); }}
       data-asks="reopen" disabled={busy || flying} onKeyDown={dropHeld} data-icon-action title={reopen.label} aria-label={reopen.label}>
-      <ActionIcon name="reopen" />
+      <ActionIcon name="reopen" label={reopen.label === "Continue after review" ? "Continue review" : "Reopen task"} />
     </button>}
     {canCleanup && delivery.merged && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("merged"); }}
       data-asks="merged" disabled={busy} onKeyDown={dropHeld} data-icon-action title="Clean up worktree" aria-label="Clean up worktree">
-      <ActionIcon name="cleanup" />
+      <ActionIcon name="cleanup" label="Clean up" />
     </button>}
     {canAbandon && !delivery.merged && <button type="button" className="orch-delivery-opener" onClick={(event) => { notePress(event); setAsking("abandon"); }}
-      data-asks="abandon" disabled={busy} onKeyDown={dropHeld}>Abandon workspace…</button>}
-    {workspace.validationPaths.map((path) => <button type="button" className="orch-delivery-action" key={path} disabled={busy} title={path} onKeyDown={dropHeld}
-      onClick={() => onAction("orchestration_validation_remove", { taskId: task.id, path })}>
-      Remove validation checkout{several && <> <code>{shortWorkspacePath(path)}</code></>}
-    </button>)}
+      data-asks="abandon" disabled={busy} onKeyDown={dropHeld} data-icon-action aria-label="Abandon workspace…" title="Abandon workspace…"><ActionIcon name="cancel" label="Abandon workspace" /></button>}
+    {workspace.validationPaths.map((path) => <button type="button" className="orch-delivery-action" key={path} disabled={busy} title={`Remove validation checkout: ${path}`} onKeyDown={dropHeld}
+      onClick={() => onAction("orchestration_validation_remove", { taskId: task.id, path })} data-icon-action aria-label={several ? `Remove validation checkout ${shortWorkspacePath(path)}` : "Remove validation checkout"}><ActionIcon name="delete" label="Remove checkout" />{several && <> <code>{shortWorkspacePath(path)}</code></>}</button>)}
   </div>;
 }
 
@@ -1916,10 +1910,10 @@ export function ReopenQuestion({ task, busy, onCancel, onReopen }: {
       onKeyDown={(event) => { if (!spec) dropHeld(event); }} /></label>
     <div className="orch-delivery-answers">
       <button type="button" className="orch-delivery-keep" onClick={(event) => { notePress(event); onCancel(); }} disabled={busy} onKeyDown={dropHeld} data-icon-action title="Cancel" aria-label="Cancel">
-        <ActionIcon name="cancel" />
+        <ActionIcon name="cancel" label="Cancel" />
       </button>
       <button type="button" className="orch-delivery-go" disabled={busy || flying || !spec.trim()} onKeyDown={careful.keys} onClick={careful.confirm} data-icon-action title="Reopen task in this workspace" aria-label="Reopen task in this workspace">
-        <ActionIcon name="reopen" />
+        <ActionIcon name="reopen" label="Reopen task" />
       </button>
     </div>
   </div>;
@@ -1939,10 +1933,10 @@ function RemovalQuestion({ abandon, allowed, busy, onCancel, onConfirm }: {
     onKeyDown={(event) => { careful.keys(event); if (event.key === "Escape") { event.stopPropagation(); onCancel(); } }}>
     <p id={questionId}>{abandon ? "Abandon this task and remove its clean worktree?" : "Remove this merged worktree?"} Branches and published history are kept.</p>
     <button ref={keep} type="button" className="orch-delivery-keep" onClick={(event) => { notePress(event); onCancel(); }} disabled={busy} data-icon-action title="Keep worktree" aria-label="Keep worktree">
-      <ActionIcon name="keepWorktree" />
+      <ActionIcon name="keepWorktree" label="Keep worktree" />
     </button>
     <button type="button" className="orch-delivery-go" disabled={busy || !allowed} onClick={careful.confirm} data-icon-action title="Confirm removal" aria-label="Confirm removal">
-      <ActionIcon name="delete" /> Confirm removal
+      <ActionIcon name="delete" label="Confirm removal" />
     </button>
   </div>;
 }

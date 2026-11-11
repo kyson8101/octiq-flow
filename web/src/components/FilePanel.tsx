@@ -456,7 +456,7 @@ export function FilePanel({
                   actually draws can never disagree. */}
               {hasTwoViews(path, preview) && (
                 <button className="panel-btn" type="button" onClick={() => setEditing((v) => !v)} data-icon-action title={editing ? "Preview" : "Edit"} aria-label={editing ? "Preview" : "Edit"}>
-                  <ActionIcon name={editing ? "preview" : "edit"} />
+                  <ActionIcon name={editing ? "preview" : "edit"} label={editing ? "Preview" : "Edit"} />
                 </button>
               )}
               {preview?.kind === "text" && !preview.truncated && (
@@ -466,7 +466,7 @@ export function FilePanel({
                   onClick={save}
                   disabled={!canSave || saving}
                  data-icon-action title={saving ? "Saving…" : saved ? "Saved" : "Save"} aria-label={saving ? "Saving…" : saved ? "Saved" : "Save"}>
-                  <ActionIcon name="save" />
+                  <ActionIcon name="save" label="Save" />
                 </button>
               )}
               <button
@@ -485,7 +485,7 @@ export function FilePanel({
               <div className="panel-warn is-stale">
                 This file changed on disk while you were editing it.
                 <button className="panel-inline-btn" type="button" onClick={() => void load(true)} data-icon-action title="Reload and lose my changes" aria-label="Reload and lose my changes">
-                  <ActionIcon name="refresh" /> Reload and lose my changes
+                  <ActionIcon name="refresh" label="Reload" />
                 </button>
               </div>
             )}

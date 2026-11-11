@@ -202,7 +202,7 @@ export function ConversationFileActions({
           aria-label={`Open in OctiqFlow: ${path}`}
           onClick={openPath}
          data-icon-action>
-          <ActionIcon name="handover" />
+          <ActionIcon name="handover" label="Open" />
         </button>
       </span>
     </span>

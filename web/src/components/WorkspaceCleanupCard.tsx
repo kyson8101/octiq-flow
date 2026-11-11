@@ -73,10 +73,10 @@ export function WorkspaceCleanupCard({ card, onAnswer, startOpen = false }: {
           {busy && !processing && <span className="ask-card-wait" role="status">Waiting for the host…</span>}
           <div className="ask-card-actions">
             <button type="button" className="ask-btn" disabled={busy} onClick={(event) => { if (!repeatsAnother(event)) void answer(false); }} data-icon-action title="Keep them" aria-label="Keep them">
-              <ActionIcon name="keep" />
+              <ActionIcon name="keep" label="Keep them" />
             </button>
             <button type="button" className="ask-btn is-primary" disabled={busy} onClick={(event) => { if (!repeatsAnother(event)) void answer(true); }} data-icon-action title="Remove all" aria-label="Remove all">
-              <ActionIcon name="delete" /> Remove all
+              <ActionIcon name="delete" label="Remove all" />
             </button>
           </div>
         </div>

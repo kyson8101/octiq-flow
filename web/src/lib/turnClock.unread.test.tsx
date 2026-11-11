@@ -122,7 +122,7 @@ function page({ unknownIsNotWaiting = false } = {}) {
           effort="high" onEffort={() => {}} lite={false} onLite={() => {}} identity={null} onRecheckWaits={() => {}}
           busy={state.busy} thinking turnStartedAt={state.turnStartedAt} turnWaits={state.turnWaits} waiting={hold} />,
       );
-      return html.includes('<button type="button" class="working-recheck">Check again</button>');
+      return /class="working-recheck"[^>]*[\s\S]*?class="action-label"[^>]*>Check again<\/span>/.test(html);
     },
     /** The page's look at `now`, and what it then draws. */
     at(now: number): Drawn {

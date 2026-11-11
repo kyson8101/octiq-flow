@@ -60,7 +60,7 @@ export function RunBridges({ run, snapshot, busy, readOnly, onBridge }: {
           </ul>}
           <div className="orch-bridge-actions">
             <button type="button" className="orch-quiet" disabled={busy} onClick={cancel} data-icon-action title="Cancel" aria-label="Cancel">
-              <ActionIcon name="cancel" />
+              <ActionIcon name="cancel" label="Cancel" />
             </button>
             <button type="button" className="orch-quiet is-primary" disabled={busy || !target}
               onClick={() => {

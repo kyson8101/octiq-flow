@@ -81,7 +81,7 @@ export function MediaComments({ path, captureTime, seekTime, duration, onQuote }
   return <span className="media-comments" role="region" aria-label="Media comments" onClick={event => event.stopPropagation()}>
     <span className="media-comments-heading"><strong>Comments</strong><span>{comments.length}</span></span>
     {error && <span className="media-comments-error" role="alert">{error} {unread && <button type="button" onClick={() => void reload()} data-icon-action title="Retry loading" aria-label="Retry loading">
-      <ActionIcon name="retry" />
+      <ActionIcon name="retry" label="Retry" />
     </button>}</span>}
     {!thread && !error && <span role="status">Loading comments…</span>}
     {!!seekTime && !!duration && duration > 0 && comments.some(comment => comment.timeMs !== undefined) && <span className="media-comment-timeline" role="group" aria-label="Comment timeline">

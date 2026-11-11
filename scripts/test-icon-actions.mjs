@@ -7,13 +7,16 @@ import {browserPaths} from './browser-paths.mjs';
 const {webRoot,require,moduleUrl}=browserPaths(import.meta.url);
 const {createServer}=await import(moduleUrl(require.resolve('vite')));
 const {chromium}=await import(moduleUrl(process.env.PLAYWRIGHT_MODULE||'playwright'));
-const output=process.env.OCTIQ_EVIDENCE_DIR||'/tmp/octiq-icon-actions';
+const output=process.env.OCTIQ_EVIDENCE_DIR||'/tmp/octiq-icon-labels';
 await mkdir(output,{recursive:true});
 const entry=`
 import React,{useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {ActionIcon,ACTION_NAMES} from '/src/components/ActionIcon';
 import {ActionBar} from '/src/components/ActionBar';
+import {GitPanel} from '/src/components/GitPanel';
+import {AgentsSettings} from '/src/components/AgentsSettings';
+import {hostFacts} from '/src/lib/__fixtures__/hostFacts';
 import {PermissionAsk} from '/src/components/PermissionAsk';
 import {AccessRequestCard} from '/src/components/AccessRequestCard';
 import {SafetyBlock} from '/src/components/SafetyBlock';
@@ -40,7 +43,14 @@ import '@fontsource-variable/inter';
 import '/src/design-system.css';
 import '/src/styles.css';
 window.calls=[];
-window.iconInvoke=async(cmd,args)=>{window.calls.push({cmd,args}); if(['orchestration_snapshot','orchestration_summary','orchestration_run_detail'].includes(cmd))return merged;return null;};
+window.iconInvoke=async(cmd,args)=>{window.calls.push({cmd,args});
+ if(['orchestration_snapshot','orchestration_summary','orchestration_run_detail'].includes(cmd))return args?.runId ? (args.runId===retrySnapshot.runs[0].id?retrySnapshot:merged) : {...merged,runs:[...merged.runs,...retrySnapshot.runs],tasks:[...merged.tasks,...retrySnapshot.tasks],attempts:[...merged.attempts,...retrySnapshot.attempts]};
+ if(cmd==='git_changed_files')return [{root:'/repo',branch:'feature/icons',ahead:2,behind:1,has_upstream:true,files:[{path:'src/chat.ts',display:'src/chat.ts',status:'modified',untracked:false,added:12,removed:3,binary:false}]}];
+ if(cmd==='git_branches')return {is_repo:true,current:'feature/icons',branches:['develop','feature/icons']};
+ if(cmd==='team_list')return [{id:'fe',name:'Frontend',role:'Owns the web client',agent:'codex',model:'gpt-6.1-sol',effort:'high',access:'auto',teamId:'web',createdAt:1,updatedAt:1}];
+ if(cmd==='agent_team_list')return [{id:'web',name:'Web team',projectId:null,createdAt:1,updatedAt:1}];
+ if(cmd==='team_policy')return {text:'Preserve approval guards.',updatedAt:1};
+ return null;};
 const noop=()=>{};
 const record=(cmd)=>(...args)=>window.calls.push({cmd,args});
 const theme=new URL(location.href).searchParams.get('theme')||'dark';applyTheme(theme);
@@ -50,6 +60,7 @@ const run=pending.runs[0], tasks=pending.tasks;
 // fixture. It is isolated from captured failure/retry evidence.
 const merged={runs:[{id:'icons-run',objective:'Review merged work',coordinatorChatKey:'chat:icons',workspaceId:'icons',rootPath:'/repo',status:'completed',maxConcurrent:2,createdAt:1,updatedAt:2}],tasks:[{id:'icons-task',runId:'icons-run',title:'Implement icons',spec:'',dependsOn:[],status:'completed',activeAttemptId:'icons-attempt',createdAt:1,updatedAt:2}],attempts:[{id:'icons-attempt',runId:'icons-run',taskId:'icons-task',number:1,workerChatKey:'chat:icons-worker',agent:'codex',access:'auto',status:'completed',cwd:'/repo-task',branch:'feature/icons',isWorktree:true,filesModified:[],createdAt:1,updatedAt:2}],gates:[],messages:[]};
 merged.tasks[0].workspace={plan:{mode:'worktree',cwd:'/repo-task',checkoutRoot:'/repo-task',repositoryRoot:'/repo',branch:'feature/icons',baseBranch:'develop',baseSha:'a'.repeat(40),managed:true,isRepo:true,warnings:[],initialStatus:''},state:'retained',abandoned:false,validationPaths:[],delivery:{headSha:'b'.repeat(40),dirty:false,hasCommits:true,pushed:true,merged:true,checkedAt:Date.now(),notes:[]}};
+const retrySnapshot=hostFacts.planAfterFailed();retrySnapshot.tasks[0].workspace=structuredClone(merged.tasks[0].workspace);
 const claude={id:'claude',chatKey:'chat:c1',provider:'claude',kind:'high-risk-action',title:"Claude's auto mode blocked an action",summary:'Production Deploy',detail:'The auto mode classifier refused this action.',action:'eas update --branch production'};
 const external={id:'external',chatKey:'chat:c1',kind:'external-data',title:'Codex blocked external data sharing',summary:'This would send the project brief to an external service.',detail:'The reviewer requires approval for this transfer.'};
 const outage={...claude,id:'outage',kind:'outage',title:'The safety classifier is unavailable',actions:['git push origin feature/icons'],commands:[{action:'git push origin feature/icons',count:1,tool:'Bash',words:'git push',rule:'Bash(git push:*)'}],allow:{project:'/work/.claude/settings.local.json',user:'~/.claude/settings.json'}};
@@ -87,6 +98,9 @@ scene('confirm','General confirmation',<ConfirmDialog options={{title:'Confirm t
 scene('stop','Stop worker confirmation · words retained',<ConfirmDialog options={{title:'Stop this worker?',body:'This stops the active attempt.',confirmLabel:'Stop worker',cancelLabel:'Keep it running',danger:true}} onAnswer={record('stop')}/>);
 scene('delete','Delete confirmation · words retained',<ConfirmDialog options={{title:'Delete this saved project?',body:'This removes the project record.',confirmLabel:'Delete',danger:true}} onAnswer={record('delete')}/>);
 scene('delivery','Merged worktree · cleanup then Confirm removal',<div style={{height:600,display:'flex'}}><OrchestrationPanel embedded initialSnapshot={merged} project={{id:merged.runs[0].workspaceId,name:'Review fixture'}} coordinatorKey={merged.runs[0].coordinatorChatKey} onOpenChat={noop} onClose={noop}/></div>);
+scene('run-retry','Run panel · Start retry and delivery',<div style={{height:640,display:'flex'}}><OrchestrationPanel embedded initialSnapshot={retrySnapshot} project={{id:retrySnapshot.runs[0].workspaceId,name:'Retry fixture'}} coordinatorKey={retrySnapshot.runs[0].coordinatorChatKey} onOpenChat={noop} onClose={noop}/></div>);
+scene('git','Git panel',<div className='fixture-git'><GitPanel open persistent project={{id:'icons',name:'OctiqFlow',primary_path:'/repo'}} onClose={noop}/></div>);
+scene('agents-settings','Settings · Agents and team row',<AgentsSettings on onToggle={noop} projects={[{id:'icons',name:'OctiqFlow'}]}/>);
 scene('legend','Fixed action glyphs',<div className='icon-legend'>{ACTION_NAMES.map(name=><span key={name}><ActionIcon name={name}/>{name}</span>)}</div>);
 createRoot(document.getElementById('root')).render(<main className='icon-scenes'><h1>Icon actions · {theme} · {innerWidth}px</h1>{scenes}</main>);
 `;
@@ -97,7 +111,7 @@ const server=await createServer({root:webRoot,configFile:join(webRoot,'vite.conf
  name:'icon-actions-scenes',enforce:'pre',resolveId(id){if(id==='/__icon-actions.tsx')return id;if(id.endsWith('/lib/bridge')||id.endsWith('/lib/bridge.ts')||id==='./bridge')return '\0icon-bridge';},
  load(id){if(id==='/__icon-actions.tsx')return entry;if(id==='\0icon-bridge')return 'export const bridge={invoke:(...args)=>window.iconInvoke(...args),on:()=>()=>{},onState:()=>()=>{},state:()=>"open"};';},
  configureServer(vite){vite.middlewares.use(async(req,res,next)=>{if(req.url?.split('?')[0]!=='/__icon-actions')return next();res.setHeader('Content-Type','text/html');res.end(await vite.transformIndexHtml('/__icon-actions',`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>
-body{margin:0;overflow:auto!important}.icon-scenes{max-width:1000px;margin:auto;padding:16px}.icon-scenes>h1{font-size:20px}.icon-scenes>section{border-bottom:1px solid var(--border);padding:18px 0;min-width:0}.icon-scenes>section>h2{font-size:13px;color:var(--fg-2);margin:0 0 14px}.icon-scenes .ask-scrim{position:static;display:block;padding:0;background:transparent;backdrop-filter:none}.icon-scenes .ask{margin:0;width:100%;max-width:none;box-shadow:none}.icon-scenes .plan-review-foot{position:static}.icon-scenes .provider-choice{margin:0}.icon-scenes .handover-card{margin:0}.icon-scenes .actionbar{z-index:0}.icon-legend{display:flex;gap:16px;flex-wrap:wrap}.icon-legend>span{display:flex;align-items:center;gap:8px;min-width:140px;font-size:12px}@media(max-width:600px){.icon-scenes{padding:12px}}
+body{margin:0;overflow:auto!important}.icon-scenes{max-width:1000px;margin:auto;padding:16px}.icon-scenes>h1{font-size:20px}.icon-scenes>section{border-bottom:1px solid var(--border);padding:18px 0;min-width:0}.icon-scenes>section>h2{font-size:13px;color:var(--fg-2);margin:0 0 14px}.icon-scenes .ask-scrim{position:static;display:block;padding:0;background:transparent;backdrop-filter:none}.icon-scenes .ask{margin:0;width:100%;max-width:none;box-shadow:none}.icon-scenes .plan-review-foot{position:static}.icon-scenes .provider-choice{margin:0}.icon-scenes .handover-card{margin:0}.icon-scenes .actionbar{z-index:0}.fixture-git{height:540px;display:flex}.fixture-git .gitp-scrim{display:none}.fixture-git .gitp-panel{position:relative;inset:auto;width:100%;max-width:100%}.icon-legend{display:flex;gap:16px;flex-wrap:wrap}.icon-legend>span{display:flex;align-items:center;gap:8px;min-width:140px;font-size:12px}@media(max-width:600px){.icon-scenes{padding:12px}}
 </style></head><body><div id="root"></div><script type="module" src="/__icon-actions.tsx"></script></body></html>`));});}
 }]});
 let browser;const errors=[],report={output,scenes:[],answers:[]};
@@ -107,6 +121,15 @@ try{
   const context=await browser.newContext({viewport:{width,height:900},hasTouch:width===390,reducedMotion:'reduce'});const page=await context.newPage();page.on('pageerror',e=>{errors.push(e.message);console.error(e.stack);});page.on('console',m=>{if(m.type()==='error')console.error(m.text());});
   await page.goto(server.resolvedUrls.local[0]+'__icon-actions?theme='+theme);await page.locator('[data-scene="legend"]').waitFor();await page.evaluate(()=>document.fonts.ready);
   if(width===390)await page.locator('[data-scene="bar-end"] .actionbar-row').evaluate(e=>e.scrollLeft=e.scrollWidth);
+  await page.locator('[data-scene="agents-settings"] .team-group-row').waitFor();
+  await page.locator('[data-scene="git"]').getByRole('button',{name:'Commit 1 file',exact:true}).waitFor();
+  const retryPanel=page.locator('[data-scene="run-retry"]');
+  const retryAccordion=retryPanel.locator('.orch-run-accordion-toggle').first();if(await retryAccordion.count()&&await retryAccordion.getAttribute('aria-expanded')==='false')await retryAccordion.click();
+  for(const group of await retryPanel.locator('button.run-group-head[aria-expanded="false"]').all())if(await group.isVisible())await group.click();
+  const retryStart=retryPanel.getByRole('button',{name:'Start retry',exact:true});
+  if(!(await retryStart.isVisible()))await retryPanel.locator('.orch-task-expand').first().click();
+  await retryStart.waitFor();
+  await retryStart.scrollIntoViewIfNeeded();
   // Open the actual worktree removal question without accepting it.
   const delivery=page.locator('[data-scene="delivery"]');
   const clean=delivery.getByRole('button',{name:'Clean up worktree',exact:true});
@@ -118,9 +141,21 @@ try{
   await delivery.getByRole('button',{name:'Confirm removal',exact:true}).waitFor();
   // Fill review fixes so its action can be assessed in its enabled state.
   await page.locator('[data-scene="reopen"] textarea').fill('Address the review findings.');
-  const facts=await page.locator('button[data-icon-action],button:has(>svg.action-icon)').evaluateAll(list=>list.filter(e=>e.getBoundingClientRect().width&&e.getBoundingClientRect().height).map(e=>({name:e.getAttribute('aria-label'),title:e.title,w:e.getBoundingClientRect().width,h:e.getBoundingClientRect().height,icon:e.querySelector('svg')?.getBoundingClientRect().width,words:e.textContent.trim(),scene:e.closest('[data-scene]')?.getAttribute('data-scene')})));
-  for(const f of facts){assert(f.name,JSON.stringify(f));assert(f.title,JSON.stringify(f));assert(f.w>=(width===390?44:28)&&f.h>=(width===390?44:28),JSON.stringify(f));assert.equal(f.icon,16,JSON.stringify(f));if(!f.words)assert.equal(Math.round(f.w),width===390?44:28,JSON.stringify(f));}
+  const facts=await page.locator('button[data-icon-action],button:has(>svg.action-icon)').evaluateAll(list=>list.filter(e=>e.getBoundingClientRect().width&&e.getBoundingClientRect().height).map(e=>({name:e.getAttribute('aria-label'),title:e.title,w:e.getBoundingClientRect().width,h:e.getBoundingClientRect().height,icon:e.querySelector('svg')?.getBoundingClientRect().width,words:e.textContent.trim(),label:e.querySelector('.action-label')?.textContent,labelVisible:(()=>{const l=e.querySelector('.action-label');if(!l)return null;const c=getComputedStyle(l);return c.display!=='none'&&c.visibility!=='hidden'&&Number(c.opacity)>0&&parseFloat(c.fontSize)>0&&l.getBoundingClientRect().width>0&&l.getBoundingClientRect().height>0;})(),scene:e.closest('[data-scene]')?.getAttribute('data-scene')})));
+  for(const f of facts){assert(f.name,JSON.stringify(f));assert(f.title,JSON.stringify(f));assert(f.w>=(width===390?44:28)&&f.h>=(width===390?44:28),JSON.stringify(f));assert.equal(f.icon,16,JSON.stringify(f));if(f.label)assert.equal(f.labelVisible,true,JSON.stringify(f));if(!f.words)assert.equal(Math.round(f.w),width===390?44:28,JSON.stringify(f));}
   assert.equal(await page.locator('[data-scene="permission"] .ask-card-actions button').count(),3);
+  for(const scene of ['permission','access','codex','handover','route','plan','question','gate','gate-main','provider','complete','confirm']){
+   const buttons=page.locator('[data-scene="'+scene+'"] button:has(>svg.action-icon):not(:has(svg[data-action-icon="expand"])):not(:has(svg[data-action-icon="collapse"])):not(.status-row-dismiss)');
+   for(const button of await buttons.all())assert(await button.locator('.action-label').count(),scene+': '+await button.getAttribute('aria-label'));
+  }
+  assert.equal(await page.locator('[data-scene="bar"] .action-label').count(),0);
+  assert.equal(await page.locator('[data-scene="agents-settings"] .team-row-action .action-label').count(),0);
+  assert(await page.locator('[data-scene="agents-settings"] .action-label').count()>0);
+  assert(await page.locator('[data-scene="run-retry"] .task-start .action-label').count()>0);
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'page overflow');
+  for(const section of await page.locator('[data-scene]').all()){
+   assert(await section.evaluate(e=>e.scrollWidth<=e.clientWidth),await section.getAttribute('data-scene')+': scene overflow');
+  }
   // Pointer tooltips explain the scope; the accessible name stays short.
   assert.equal(await page.locator('[data-scene="permission"]').getByRole('button',{name:'Always',exact:true}).getAttribute('title'),'Stop asking about this program for the rest of this chat');
   assert.equal(await page.locator('[data-scene="outage"]').getByRole('button',{name:'Always allow in this project',exact:true}).getAttribute('title'),'Adds Bash(git push:*) to /work/.claude/settings.local.json, then retries. In a task worktree the rule goes when the worktree does.');
@@ -130,6 +165,7 @@ try{
   assert(await page.locator('[data-scene="permission-held"] [aria-disabled="true"]').count()>=2);
   assert.equal((await page.locator('[data-scene="delete"]').getByRole('button',{name:'Delete',exact:true}).textContent()).trim(),'Delete');
   assert.equal(await page.locator('[data-scene="bar"] .topbar-action-label').count(),0);
+  await retryStart.locator('xpath=ancestor::article').screenshot({path:join(output,`retry-row-${width}-${theme}.png`)});
   await page.screenshot({path:join(output,`sheet-${width}-${theme}.png`),fullPage:true});
   // Each card is also saved separately for an unscaled inspection.
   for(const section of await page.locator('[data-scene]').all()){const id=await section.getAttribute('data-scene');if(id!=='legend')await section.screenshot({path:join(output,`${id}-${width}-${theme}.png`)});}
