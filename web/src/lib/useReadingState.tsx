@@ -16,11 +16,19 @@ export function ReadingScope({ id, children }: { id: string | number; children: 
   return <ReadingStateContext.Provider value={value}>{children}</ReadingStateContext.Provider>;
 }
 
+export const readingStateKey = (path: string, name: string) => JSON.stringify([path, name]);
+
+/** Read a presentation choice without treating it as action authority. */
+export function useReadingValue<T extends ReadingValue>(name: string): T | undefined {
+  const { state, path } = useContext(ReadingStateContext);
+  return state?.get<T>(readingStateKey(path, name));
+}
+
 /** Opt-in presentation state. Without a transcript provider this is useState;
  * action/pending/consent state must continue to use ordinary component state. */
 export function useReadingState<T extends ReadingValue>(name: string, initial: T | (() => T)): [T, (next: SetStateAction<T>) => void] {
   const { state, path } = useContext(ReadingStateContext);
-  const key = JSON.stringify([path, name]);
+  const key = readingStateKey(path, name);
   const start = () => {
     const saved = state?.get<T>(key);
     return saved !== undefined ? saved : typeof initial === "function" ? initial() : initial;

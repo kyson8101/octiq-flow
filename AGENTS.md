@@ -1235,9 +1235,26 @@ folded line and are not part of this.
   controls on every side of where a disclosure could go, so opening or
   shutting one would slide a control under the pointer. Only `Other…` grows,
   under itself.
-- **State is the component's.** Folded for every new card; one the person
-  opened stays open while it is on screen, by the id of what it asks. Nothing
-  is remembered past that, and there is no setting.
+- **New cards arrive folded; reading choices survive a chat switch.** In a
+  chat's transcript, request stack and embedded run panel,
+  `lib/chatReadingState` keeps only presentation choices under stable
+  message/tool/ask identities (plan folds
+  include their revision). Its page-memory LRU holds at most 8 chats,
+  including the visible panes; each chat has at most 2048 scalar choices and
+  a conservative 256 KiB budget. Older choices/chats are evicted at those
+  bounds. Transcript-window eviction, record reset and chat deletion release
+  the matching reading state. Reload drops this presentation cache; existing
+  `chatPlace` anchor persistence is separate. There is no new setting,
+  localStorage payload or offscreen DOM. Outside these providers, state
+  remains the component's.
+- **A restored open fold is no proof that a command was drawn.** A command
+  card keeps both Allows held until this mount's `drawnWhole` records the
+  exact `CommandAsked` string; `sameCommand` checks id, tool, argument and
+  text. Replacing a command under the same id while away starts with no
+  such proof. Only the open choice is cached: never `CommandAsked`, consent,
+  pending/sending state, or action freshness. The document's `strayPress`
+  listener and a new confirmation's `lastPointerPress` guard stay active
+  across restores.
 
 ### The route and handover cards are name cards
 
@@ -2547,17 +2564,22 @@ are read by `lib/runProgress` off the ledger this tab already holds.
   its own source (`inTabs`): a scan that stopped at the row's `</article>`
   never saw the helper that drew Reopen, Clean up and Abandon in Details.
 
-  `Steps` is the tab a row opens on: the checklist with its current step, and its count line; a
-  task with no reported steps says `No steps reported yet` there and does
-  not open on the other tab. `Details` is every other field: the plan card
+  A new row opens on `Steps`: the checklist with its current step and its
+  count line; a task with no reported steps says `No steps reported yet`
+  there. Returning to a cached chat restores the person's chosen tab.
+  `Details` is every other field: the plan card
   (project, branch, work directory, worktree, owner, model, effort, size,
   problem, goal, acceptance), peer help and the Task details disclosure.
   It is a real tablist (`runPanel.TASK_TABS`, `taskTabKey`: arrows, Home
   and End, the panel labelled by its tab; a key held down moves it once).
-  The chosen tab is the row's own state while the row is on screen, by its
-  task; nothing remembers it and there is no setting. The chosen tab is the
-  row's ink and a rule under it, never the accent. Choosing a tab changes
-  what is under the pointer, so the press is remembered like a
+  In an embedded chat run panel, the chosen run/task tabs and the task's
+  expanded state survive chat switches by their
+  run/task ids through the bounded page-memory reading cache described above
+  (8 chats, 2048 choices/256 KiB per chat; released on eviction, reset or
+  deletion). Elsewhere they remain local component state. No action form or
+  decision authority is cached. The chosen tab is the row's ink and a rule
+  under it, never the accent. Choosing a tab changes what is under the
+  pointer, so the press is remembered like a
   disclosure's (below). The panel's scroller keeps room for a scrollbar
   that takes room (`scrollbar-gutter: stable` on `.orch-content`): on
   Windows a longer tab brought the scrollbar and made every row 15px

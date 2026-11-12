@@ -6184,6 +6184,7 @@ export default function App() {
           )}</Arrive>}
 
           {conversationId && !workerChat && (
+            <ChatReadingProvider key={conversationId} id={conversationId} scope="requests">
             <ChatRequests
               scope={conversationId}
               agent={modelFromId(conversations.find((item) => item.id === conversationId)?.modelId ?? meta.current[conversationId]?.modelId ?? null)?.agent}
@@ -6200,6 +6201,7 @@ export default function App() {
               onCleanupAnswer={answerCleanup}
               onCleanupDismiss={dismissCleanup}
             />
+            </ChatReadingProvider>
           )}
 
           {/* Keyed by project: switching project gets that project's own

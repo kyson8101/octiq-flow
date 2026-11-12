@@ -125,6 +125,19 @@ try {
       await page.evaluate(()=>{location.hash='#/c/b';});await page.waitForTimeout(250);
       await page.evaluate(()=>{location.hash='#/c/a';});await planFold.waitFor();await page.waitForTimeout(250);
       assert.equal(await planFold.getAttribute('aria-expanded'),'true','CardFold returns open');
+      const command=Array.from({length:13},(_,i)=>`echo pending line ${i+1}`).join('\n');
+      const pending={id:'reading-ask',chatKey:'chat:a',toolName:'Bash',toolInput:{command}};
+      socket.send(JSON.stringify({t:'event',event:'permission-ask',payload:pending}));
+      const permission=page.locator('.permission-card');await permission.waitFor();
+      await permission.locator('.card-fold-button').evaluate(el=>el.click());
+      await page.evaluate(()=>{location.hash='#/c/b';});await page.waitForTimeout(250);
+      socket.send(JSON.stringify({t:'event',event:'permission-ask',payload:{...pending,toolInput:{command:command+'\necho pending replacement'}}}));
+      await page.evaluate(()=>{location.hash='#/c/a';});await permission.waitFor();await page.waitForTimeout(250);
+      assert.equal(await permission.locator('.card-fold-button').getAttribute('aria-expanded'),'true','request-stack CardFold returns open');
+      assert.ok((await permission.innerText()).includes('echo pending replacement'));
+      assert.equal(calls.filter(c=>c.cmd==='permission_decide').length,0,'a restored pending ask never answers itself');
+      socket.send(JSON.stringify({t:'event',event:'permission-expired',payload:{id:pending.id}}));
+      await permission.waitFor({state:'detached'});
       scene='running'; await page.goto(`${origin}/?token=fixture#/c/a`);
       const showRun=async()=>{
         const surface=page.locator('.workflow-run-surface');await surface.waitFor({state:'attached'});
