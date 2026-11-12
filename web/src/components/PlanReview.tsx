@@ -246,7 +246,7 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
     : drafting ? "The main agent is still active. Approving covers the tasks shown." : "";
   const titleId = `plan-review-title-${run.id}`;
   const errorLine = error && <p className="plan-review-error" role="alert">{error}</p>;
-  if (summary.summary && !detail.ready && !detail.available) return <PlanReading error={detail.error} />;
+  if (summary.summary && !detail.ready && !detail.available) return <PlanReading runId={run.id} error={detail.error} placeholder />;
   return (
     <section className="plan-review" aria-labelledby={titleId} data-drafting={stillDrafting || undefined}
       data-compact={empty || undefined} data-updated={holding || undefined}
@@ -270,6 +270,8 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
           {folded && <FoldToggle fold={fold} describedBy={metaId} what="the tasks" />}
         </div>
       </header>
+
+      {refreshing && <PlanReading runId={run.id} error={detail.error} />}
 
       {!approved && heldLine && <div className="auto-plan-held" role="status">
         <p>{heldLong ? autoPlanHeld(run) : heldLine}</p>
@@ -396,7 +398,7 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
 /** Nothing of the plan has been read yet. After `SLOW_READ_MS` it says so and
  *  offers another read, so the line is never an endless placeholder. */
 const SLOW_READ_MS = 8_000;
-function PlanReading({ error }: { error?: string }) {
+function PlanReading({ runId, error, placeholder = false }: { runId: string; error?: string; placeholder?: boolean }) {
   const [slow, setSlow] = useState(false);
   const [asking, setAsking] = useState(false);
   useEffect(() => {
@@ -405,11 +407,14 @@ function PlanReading({ error }: { error?: string }) {
   }, []);
   const retry = () => {
     setAsking(true);
-    orchestrationFeed.refresh().catch(() => {}).finally(() => setAsking(false));
+    orchestrationFeed.refreshRun(runId).catch(() => {}).finally(() => setAsking(false));
   };
-  if (!error && !slow) return <p role="status">Reading plan…</p>;
-  return <p role="alert" className="plan-review-error">
+  // Over a plan that is still on screen there is nothing to say until the
+  // read fails or takes long; the card's own line says it is refreshing.
+  if (!error && !slow) return placeholder ? <p role="status">Reading plan…</p> : null;
+  return <p role="alert" className="plan-review-error" data-plan-read={placeholder ? undefined : "retained"}>
     {error ? `Could not read the plan: ${error}` : "Reading the plan is taking longer than usual."}
+    {!placeholder && " The plan shown may be out of date."}
     {" "}<button type="button" className="plan-review-quiet" disabled={asking} onClick={retry}>{asking ? "Reading…" : "Try again"}</button>
   </p>;
 }

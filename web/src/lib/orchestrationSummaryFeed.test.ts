@@ -305,3 +305,34 @@ it("replaces a run's batches on a lane change and preserves other runs", () => {
   expect(detailedRun(next, before, "r").batches?.map(b => b.id)).toEqual(["new"]);
   expect(detailedRun(summary(), before, "r").batches).toBeUndefined();
 });
+
+it("Try again re-issues a detail read that never answers, and ignores the abandoned one", async () => {
+  const feed = createOrchestrationFeed(), off = feed.subscribe(() => {});
+  mock.reads[0].resolve(summary()); await tick();
+  const release = feed.detail("r");
+  const detailReads = () => mock.reads.filter(r => r.cmd === "orchestration_run_detail");
+  expect(detailReads()).toHaveLength(1);
+  // The first read hangs; asking again must not wait on it.
+  void feed.refreshRun("r").catch(() => {});
+  await tick();
+  expect(detailReads()).toHaveLength(2);
+  detailReads()[1].resolve({ ...summary(), summary: false }); await tick();
+  expect(feed.getState().detailPending?.has("r")).toBe(false);
+  // The abandoned request answering late (or failing) changes nothing.
+  detailReads()[0].reject(new Error("late")); await tick();
+  expect(feed.getState().detailErrors?.has("r")).toBe(false);
+  expect(feed.getState().detailPending?.has("r")).toBe(false);
+  release(); off();
+});
+
+it("keeps a retained plan readable and reports the error of a failed re-read", async () => {
+  const feed = createOrchestrationFeed(), off = feed.subscribe(() => {});
+  mock.reads[0].resolve(summary()); await tick();
+  const release = feed.detail("r");
+  mock.reads[1].resolve({ ...summary(), summary: false }); await tick();
+  release();
+  const again = feed.detail("r");
+  mock.reads.at(-1)!.reject(new Error("offline")); await tick();
+  expect(retainedView(feed.getState())).toMatchObject({ available: true, ready: false, error: expect.stringContaining("offline") });
+  again(); off();
+});
