@@ -32,7 +32,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -9674,24 +9674,30 @@ pub fn chat_index_deleted() -> Vec<crate::chat_index::ChatMeta> {
 }
 
 /// Keeps a chat's list preview current from the agent's own readable output
-/// (`chat_index::set_host_preview`), for every chat, whether or not any
+/// (`chat_index::set_host_previews`), for every chat, whether or not any
 /// browser has it open.
 ///
-/// Two boundaries write it: each readable message the agent finishes
+/// Two boundaries submit text: each readable message the agent finishes
 /// (Claude's `assistant` text, Codex's `agent_message`, Pi's `message_end`),
-/// at most once every `PREVIEW_EVERY` because every write rewrites the chat
-/// index; and the end of a turn that ended cleanly, which always writes, so
-/// the last words are never the throttled ones. A message held back by the
-/// throttle is written at the next boundary. Only a chat's own voice counts
-/// (a worker's, a room seat's and an unlisted chat's writes change nothing).
+/// and the end of a turn that ended cleanly (its closing words). A turn that
+/// failed, was refused or was interrupted submits nothing and withdraws what
+/// it had submitted but the batch has not written yet: its previous preview
+/// stays. Only a chat's own voice counts (a worker's, a room seat's and an
+/// unlisted chat's submissions change nothing).
+///
+/// Every write rewrites the whole chat index, so nothing here writes on its
+/// own: `PreviewBatch` collects what is submitted and writes every chat's
+/// pending preview in one pass, at most about once a second however many
+/// chats are busy.
 #[derive(Default)]
-pub(crate) struct HostPreview {
-    last_write: Option<std::time::Instant>,
-    held: Option<String>,
-}
+pub(crate) struct HostPreview;
 
 impl HostPreview {
-    const PREVIEW_EVERY: Duration = Duration::from_secs(4);
+    /// A message that finished mid-turn is written within this long, with
+    /// everything else pending by then.
+    const MID_TURN: Duration = Duration::from_secs(4);
+    /// A turn's closing words are written within this long.
+    const TURN_END: Duration = Duration::from_secs(1);
 
     /// The readable words of one stream event, if it carries any.
     pub(crate) fn words(event: &Value, spoken: Option<&str>) -> Option<String> {
@@ -9718,43 +9724,125 @@ impl HostPreview {
         (!text.is_empty()).then(|| text.to_owned())
     }
 
+    /// A chat's own voice only; a worker's chat is not a row anyone lists.
+    fn chat_id<'a>(session_key: &str, key: &'a str) -> Option<&'a str> {
+        key.strip_prefix("chat:")
+            .filter(|id| session_key == key && !id.starts_with("orch-"))
+    }
+
     /// A readable message finished mid-turn.
     pub(crate) fn heard(&mut self, session_key: &str, key: &str, text: String) {
-        self.held = Some(text);
-        if self
-            .last_write
-            .is_some_and(|at| at.elapsed() < Self::PREVIEW_EVERY)
-        {
-            return;
+        if let Some(id) = Self::chat_id(session_key, key) {
+            PreviewBatch::global().submit(id, text, Instant::now(), Self::MID_TURN);
         }
-        self.flush(session_key, key);
     }
 
-    /// The turn ended: its closing words (when it ended cleanly) and
-    /// whatever was held back are written now.
+    /// The turn ended. A clean one writes its closing words; any other keeps
+    /// the previous preview, so what this turn had submitted is withdrawn.
     pub(crate) fn turn_ended(&mut self, session_key: &str, key: &str, closing: Option<&str>) {
-        if let Some(text) = closing.map(str::trim).filter(|t| !t.is_empty()) {
-            self.held = Some(text.to_owned());
+        let Some(id) = Self::chat_id(session_key, key) else {
+            return;
+        };
+        match closing.map(str::trim).filter(|t| !t.is_empty()) {
+            Some(text) => {
+                PreviewBatch::global().submit(id, text.to_owned(), Instant::now(), Self::TURN_END)
+            }
+            None => PreviewBatch::global().withdraw(id),
         }
-        self.flush(session_key, key);
+    }
+}
+
+/// Previews waiting to be written, each with the moment it must be written
+/// by. When the earliest comes due, every pending preview goes in the same
+/// index write, so N busy chats cost one rewrite of the index, not N.
+#[derive(Default)]
+pub(crate) struct PreviewBatch {
+    pending: Mutex<HashMap<String, (String, Instant)>>,
+    wake: Condvar,
+}
+
+impl PreviewBatch {
+    /// The batch the host writes through; its writer thread starts with it.
+    pub(crate) fn global() -> &'static PreviewBatch {
+        static BATCH: std::sync::OnceLock<&'static PreviewBatch> = std::sync::OnceLock::new();
+        BATCH.get_or_init(|| {
+            let batch: &'static PreviewBatch = Box::leak(Box::default());
+            std::thread::Builder::new()
+                .name("chat-preview-writer".into())
+                .spawn(move || batch.write_forever())
+                .ok();
+            batch
+        })
     }
 
-    fn flush(&mut self, session_key: &str, key: &str) {
-        let Some(text) = self.held.take() else {
-            return;
-        };
-        self.last_write = Some(std::time::Instant::now());
-        // The chat's own voice only; a worker's chat is not a row anyone lists.
-        let Some(id) = key
-            .strip_prefix("chat:")
-            .filter(|id| session_key == key && !id.starts_with("orch-"))
-        else {
-            return;
-        };
-        match crate::chat_index::set_host_preview(id, &text) {
-            Ok(Some(_)) => announce_index_change(id, false),
-            Ok(None) => {}
-            Err(error) => eprintln!("[chat] {key}: could not keep the preview: {error}"),
+    /// The newest text for a chat replaces any older pending one; the time it
+    /// is due is the earliest anything for this chat asked for.
+    pub(crate) fn submit(&self, id: &str, text: String, now: Instant, within: Duration) {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let due = now + within;
+        let due = pending
+            .get(id)
+            .map_or(due, |(_, earlier)| due.min(*earlier));
+        pending.insert(id.to_owned(), (text, due));
+        self.wake.notify_all();
+    }
+
+    /// Drop whatever is pending for a chat (a failed turn, `/clear`).
+    pub(crate) fn withdraw(&self, id: &str) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+    }
+
+    /// Everything pending, once anything in it is due; nothing otherwise.
+    pub(crate) fn take_due(&self, now: Instant) -> Option<Vec<(String, String)>> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        Self::take_due_locked(&mut pending, now)
+    }
+
+    fn take_due_locked(
+        pending: &mut HashMap<String, (String, Instant)>,
+        now: Instant,
+    ) -> Option<Vec<(String, String)>> {
+        if !pending.values().any(|(_, due)| *due <= now) {
+            return None;
+        }
+        Some(pending.drain().map(|(id, (text, _))| (id, text)).collect())
+    }
+
+    fn write_forever(&self) {
+        loop {
+            let batch = {
+                let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+                loop {
+                    let now = Instant::now();
+                    if let Some(batch) = Self::take_due_locked(&mut pending, now) {
+                        break batch;
+                    }
+                    let wait = pending
+                        .values()
+                        .map(|(_, due)| due.saturating_duration_since(now))
+                        .min();
+                    pending = match wait {
+                        Some(wait) => self.wake.wait_timeout(pending, wait),
+                        None => self.wake.wait_timeout(pending, Duration::from_secs(3600)),
+                    }
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+                }
+            };
+            match crate::chat_index::set_host_previews(&batch) {
+                Ok(changed) => {
+                    for (id, _) in changed {
+                        announce_index_change(&id, false);
+                    }
+                }
+                Err(error) => eprintln!("[chat] could not keep the previews: {error}"),
+            }
+            // One rewrite of the index at most this often, however many
+            // chats keep submitting.
+            std::thread::sleep(Duration::from_secs(1));
         }
     }
 }
@@ -9936,7 +10024,21 @@ pub fn chat_forget_impl(manager: &ChatManager, key: String) -> Result<(), String
     {
         start.forget_session();
     }
+    // The row's preview is the host's and describes a conversation that is
+    // about to have no history: clear it first (a failed write leaves the
+    // transcript intact like every other store here), withdrawing anything
+    // the writer was about to put back.
+    let own_chat = key.strip_prefix("chat:").map(str::to_owned);
+    if let Some(id) = &own_chat {
+        PreviewBatch::global().withdraw(id);
+        crate::chat_index::clear_host_preview(id)?;
+    }
     chat_forget(key.clone())?;
+    if let Some(id) = &own_chat {
+        // A line the reader thread submitted while this ran.
+        PreviewBatch::global().withdraw(id);
+        announce_index_change(id, false);
+    }
     drop(_claim);
     crate::bus::emit("chat-forgotten", &json!({"key":key}));
     Ok(())
@@ -14059,6 +14161,76 @@ mod idle_tests {
             Some("said")
         );
         assert_eq!(HostPreview::words(&json!({}), Some("  ")), None);
+    }
+
+    #[test]
+    fn one_batch_collects_the_newest_text_and_writes_it_once_due() {
+        let batch = PreviewBatch::default();
+        let t0 = Instant::now();
+        batch.submit("a", "one".into(), t0, Duration::from_secs(4));
+        batch.submit("b", "other".into(), t0, Duration::from_secs(4));
+        batch.submit(
+            "a",
+            "two".into(),
+            t0 + Duration::from_secs(1),
+            Duration::from_secs(4),
+        );
+        assert!(batch.take_due(t0 + Duration::from_secs(3)).is_none());
+        // The first ask's time stands, and everything pending goes with it.
+        let mut due = batch.take_due(t0 + Duration::from_secs(4)).unwrap();
+        due.sort();
+        assert_eq!(
+            due,
+            vec![
+                ("a".to_string(), "two".to_string()),
+                ("b".to_string(), "other".to_string())
+            ]
+        );
+        assert!(batch.take_due(t0 + Duration::from_secs(60)).is_none());
+        // A turn's end brings the whole batch forward.
+        batch.submit("a", "x".into(), t0, Duration::from_secs(4));
+        batch.submit("b", "y".into(), t0, Duration::from_secs(1));
+        assert_eq!(
+            batch.take_due(t0 + Duration::from_secs(1)).unwrap().len(),
+            2
+        );
+        batch.submit("a", "z".into(), t0, Duration::ZERO);
+        batch.withdraw("a");
+        assert!(batch.take_due(t0 + Duration::from_secs(60)).is_none());
+    }
+
+    #[test]
+    fn a_turn_that_did_not_end_cleanly_leaves_the_previous_preview() {
+        let key = "chat:failed-turn-preview-test";
+        let mut preview = HostPreview::default();
+        let ours = |due: Vec<(String, String)>| {
+            due.into_iter()
+                .any(|(id, _)| id == "failed-turn-preview-test")
+        };
+        // A failed turn: the words it had heard are withdrawn, none written.
+        preview.heard(key, key, "half an answer".into());
+        preview.turn_ended(key, key, None);
+        let later = Instant::now() + Duration::from_secs(3600);
+        assert!(!ours(
+            PreviewBatch::global().take_due(later).unwrap_or_default()
+        ));
+        // A clean one writes its closing words.
+        preview.heard(key, key, "half an answer".into());
+        preview.turn_ended(key, key, Some("the closing words"));
+        let due = PreviewBatch::global().take_due(later).unwrap_or_default();
+        assert!(due.contains(&(
+            "failed-turn-preview-test".to_string(),
+            "the closing words".to_string()
+        )));
+        // A worker's chat is nobody's row.
+        let worker = "chat:orch-abc";
+        preview.heard(worker, worker, "x".into());
+        preview.turn_ended(worker, worker, Some("done"));
+        assert!(!PreviewBatch::global()
+            .take_due(later)
+            .unwrap_or_default()
+            .iter()
+            .any(|(id, _)| id == "orch-abc"));
     }
 
     #[test]

@@ -45,18 +45,35 @@ Output of every command is identical for the same arguments.
 `chat_index` rows gain **`latestResponseVersion`** (u64, host-owned, omitted
 when 0).
 
-- **Written by the host** (`chat_index::set_host_preview`, driven by
-  `agent_chat::HostPreview`) at the agent's readable-output boundary, for every
-  chat whether or not a browser has it open: each readable message the agent
-  finishes (Claude `assistant` text of the main conversation, Codex
-  `agent_message`, Pi `message_end`) at most once every 4 s, and the closing
-  words of every cleanly ended turn, always. A message held back by the
-  throttle is written at the next boundary or turn end.
+- **Written by the host** (`chat_index::set_host_previews`, driven by
+  `agent_chat::HostPreview` and `PreviewBatch`) at the agent's readable-output
+  boundary, for every chat whether or not a browser has it open: each readable
+  message the agent finishes (Claude `assistant` text of the main
+  conversation, Codex `agent_message`, Pi `message_end`) and the closing words
+  of every cleanly ended turn.
+- **Writes are batched, because every write rewrites the whole index.**
+  Nothing writes the index on its own: a submitted preview waits in
+  `PreviewBatch` (the newest text per chat replaces an older pending one) and
+  is due 4 s after the first mid-turn message, or 1 s after a turn ends. When
+  anything is due, EVERY pending preview goes out in one read/write of the
+  index, and the writer then pauses 1 s, so the index is rewritten at most
+  about once a second however many chats are busy. Each changed row is
+  announced with `chat-index-changed` after the write, so an event means the
+  text is on disk. Latency: up to 4 s mid-turn, about 1-2 s after a turn.
+- **A failed, refused or interrupted turn leaves the previous preview.** It
+  submits nothing and withdraws what it had submitted that was not written
+  yet. A message of that turn the batch had already written stays (it was
+  what the agent said last); the 4 s window keeps that rare.
+- **`/clear` and `chat_forget` reset it.** The row's `latestResponse` is
+  removed and `latestResponseVersion` is bumped (always, so a stale save
+  cannot match it), pending previews for the chat are withdrawn, and
+  `chat-index-changed` announces the row. A browser that still carries the
+  old text with the old (or no) version is refused by `upsert`. For OCTIQ FE:
+  a row that arrives with a higher version and no `latestResponse` means
+  "no preview", not "unknown": drop the local text.
 - **Bounded and ordered**: trimmed, at most 420 characters plus `…` (what the
   page draws today), the version increments by one on every change and never
-  on identical words. `updatedAt` is not touched. Each write announces the
-  row with the existing `chat-index-changed` event (`entry` carries both
-  fields).
+  on identical words. `updatedAt` is not touched.
 - **A browser save can never rewind it.** `chat_index::upsert` takes a save's
   `latestResponse` only when the save's `latestResponseVersion` equals the
   host's (a page that has heard the current preview may refine its text) and,
@@ -64,8 +81,8 @@ when 0).
   without a version, with an older one, or claiming one the host never wrote
   keeps the host's text and version. A new row's version is forced to 0.
 - **Not covered**: a worker's chat (`orch-…`), a room seat, a chat the index
-  does not list, and a failed/cancelled turn (the previous preview stays).
-  A turn the process dies in mid-way keeps the last written boundary.
+  does not list. A turn the process dies in mid-way leaves what it had
+  submitted pending; the writer still writes it.
 
 ### For OCTIQ FE (nothing here is required to ship)
 

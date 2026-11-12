@@ -613,25 +613,62 @@ pub fn bounded_preview(text: &str) -> String {
 /// response, a chat the index does not list or has trashed): nothing is
 /// written then, and activity (`updated_at`) is never touched.
 pub fn set_host_preview(id: &str, response: &str) -> Result<Option<u64>, String> {
-    let preview = bounded_preview(response);
-    if preview.is_empty() {
-        return Ok(None);
+    Ok(set_host_previews(&[(id.to_owned(), response.to_owned())])?
+        .into_iter()
+        .next()
+        .map(|(_, version)| version))
+}
+
+/// `set_host_preview` for several chats in ONE read and write of the index.
+/// Every write rewrites the whole file, so previews that arrive together are
+/// written together (`agent_chat::PreviewBatch`). Answers `(id, new version)`
+/// for each chat whose stored preview changed, in the order given.
+pub fn set_host_previews(previews: &[(String, String)]) -> Result<Vec<(String, u64)>, String> {
+    if previews.iter().all(|(_, text)| text.trim().is_empty()) {
+        return Ok(Vec::new());
     }
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Ok(mut index) = read_checked() else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
-    let Some(chat) = index
-        .chats
-        .iter_mut()
-        .find(|chat| chat.id == id && chat.deleted_at.is_none())
-    else {
-        return Ok(None);
-    };
-    if chat.latest_response.as_deref() == Some(preview.as_str()) {
-        return Ok(None);
+    let mut changed = Vec::new();
+    for (id, response) in previews {
+        let preview = bounded_preview(response);
+        if preview.is_empty() {
+            continue;
+        }
+        let Some(chat) = index
+            .chats
+            .iter_mut()
+            .find(|chat| chat.id == *id && chat.deleted_at.is_none())
+        else {
+            continue;
+        };
+        if chat.latest_response.as_deref() == Some(preview.as_str()) {
+            continue;
+        }
+        chat.latest_response = Some(preview);
+        chat.latest_response_version += 1;
+        changed.push((id.clone(), chat.latest_response_version));
     }
-    chat.latest_response = Some(preview);
+    if changed.is_empty() {
+        return Ok(changed);
+    }
+    write(&index).map(|()| changed)
+}
+
+/// `/clear`: the chat has no response any more, so neither has its row. The
+/// text goes and the version moves on (always), so a page that heard the old
+/// preview drops it and a save that still carries it (an older version, or
+/// none) is refused by `upsert`. Answers the new version, or `None` for a
+/// chat the index does not list.
+pub fn clear_host_preview(id: &str) -> Result<Option<u64>, String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
+    let Some(chat) = index.chats.iter_mut().find(|chat| chat.id == id) else {
+        return Ok(None);
+    };
+    chat.latest_response = None;
     chat.latest_response_version += 1;
     let version = chat.latest_response_version;
     write(&index).map(|()| Some(version))
@@ -1245,7 +1282,31 @@ pub(crate) mod tests {
         assert_ne!(found().latest_response.as_deref(), Some("forged"));
         // Activity is not the preview's to move.
         assert_eq!(found().updated_at, 1);
-        cleanup(&[id]);
+        // /clear: the preview goes, the version moves on, and no save that
+        // still carries the old text (or the old version) brings it back.
+        assert_eq!(clear_host_preview(id).unwrap(), Some(3));
+        assert_eq!(found().latest_response, None);
+        assert_eq!(found().latest_response_version, 3);
+        upsert(saved(Some("stale after clear"), 2)).unwrap();
+        upsert(saved(Some("stale, no version"), 0)).unwrap();
+        upsert(saved(None, 3)).unwrap();
+        assert_eq!(found().latest_response, None);
+        assert_eq!(found().latest_response_version, 3);
+        assert_eq!(clear_host_preview("no-such-chat").unwrap(), None);
+        // The host's next words continue the count.
+        assert_eq!(set_host_preview(id, "after clear").unwrap(), Some(4));
+        // Several chats are one write.
+        let other = "host-preview-contract-2";
+        cleanup(&[other]);
+        upsert(ChatMeta { ..meta(other, 1) }).unwrap();
+        let both = set_host_previews(&[
+            (id.to_owned(), "after clear".to_owned()),
+            (other.to_owned(), "other words".to_owned()),
+            ("no-such-chat".to_owned(), "x".to_owned()),
+        ])
+        .unwrap();
+        assert_eq!(both, vec![(other.to_owned(), 1)]);
+        cleanup(&[id, other]);
     }
 
     #[test]
