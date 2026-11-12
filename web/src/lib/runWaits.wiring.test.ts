@@ -35,7 +35,7 @@ const SITES: { name: string; has: RegExp }[] = [
   // The top bar's Tasks button.
   { name: "the Tasks button", has: /taskColumnCounts\(runWorkflow, pendingHeld\)/ },
   // The chat list and the run panel, which take it from the context.
-  { name: "the context's held", has: /useMemo<PendingActionsView>\(\(\) => \{[^}]*?return \{[^}]*?\bheld: pendingHeld,/s },
+  { name: "the context's held", has: /makePendingActionsView\(pendingByRow\(pendingList\), pendingTasks, pendingHeld, revealPending\)/ },
   { name: "the context is provided", has: /<PendingActionsContext\.Provider value=\{pendingView\}>/ },
   // The phone's Tasks tab says "plan awaiting approval" only of a plan with
   // something to approve (`planWaits`, through `pendingPlan(...).approvable`):
@@ -62,7 +62,7 @@ describe("the app's hand-off of the cards the page holds", () => {
     // A surface is handed a second, empty reading.
     expect(missing(app.replace("chatStrip(currentWorkflow, Date.now(), pendingHeld)", "chatStrip(currentWorkflow, Date.now())"))).toEqual(["the strip"]);
     expect(missing(app.replace("taskColumnCounts(runWorkflow, pendingHeld)", "taskColumnCounts(runWorkflow, new Map())"))).toEqual(["the Tasks button"]);
-    expect(missing(app.replace("held: pendingHeld,", "held: new Map(),"))).toEqual(["the context's held"]);
+    expect(missing(app.replace("pendingTasks, pendingHeld, revealPending)", "pendingTasks, new Map(), revealPending)"))).toEqual(["the context's held"]);
     // The tab reads the run's approval itself again.
     expect(missing(app.replace("planPending={!!plan?.approvable}", "planPending={!!plan}"))).toEqual(["the tab's plan label"]);
   });
