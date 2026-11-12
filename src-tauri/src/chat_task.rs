@@ -33,7 +33,7 @@
 //! head commit, and a chat whose directory has gone is re-verified from the
 //! primary checkout against that remembered commit. It is marked `stale`: the
 //! working tree is gone, but "merged into main" is still a fact git can prove.
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -452,22 +452,95 @@ pub fn chat_task_set_release_check_impl(
 
 /// This chat's status, verified unless it was verified moments ago.
 pub fn chat_task_impl(chat_id: String, refresh: bool) -> Result<TaskStatus, String> {
-    let store = read()?;
-    let mut stored = store.chats.get(&chat_id).cloned().unwrap_or_default();
-    let fresh = verified_at()
+    if !refresh {
+        let store = read()?;
+        let fresh = verified_at()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&chat_id)
+            .is_some_and(|at| at.elapsed() < FRESH_FOR);
+        if fresh {
+            let stored = store.chats.get(&chat_id).cloned().unwrap_or_default();
+            return Ok(assemble(chat_id, stored, &store));
+        }
+    }
+    // Several tabs asking at once (and a page that asks on every git change)
+    // share one verification, each answer from a run that began after its
+    // ask (`coalesce`).
+    static VERIFYING: std::sync::OnceLock<
+        crate::coalesce::Coalesce<String, Result<TaskStatus, String>>,
+    > = std::sync::OnceLock::new();
+    VERIFYING
+        .get_or_init(crate::coalesce::Coalesce::new)
+        .run(&chat_id, || verify_chat(chat_id.clone()))
+}
+
+/// What the PAGE reads on opening a chat and on a change nearby
+/// (`refresh: false`). A chat that has been verified before answers from what
+/// was stored at once, and git is asked in the background: the answer reaches
+/// the page as a `chat-task` event when anything moved. Waiting on git put
+/// seconds between opening a chat and the line above its composer. A chat
+/// never verified has nothing to show, and `refresh: true` is the page asking
+/// for the truth now: both still wait. Host decisions never come through here
+/// (`chat_task_impl` is what they ask).
+pub fn chat_task_for_page(chat_id: String, refresh: bool) -> Result<TaskStatus, String> {
+    if !refresh {
+        let store = read()?;
+        let fresh = verified_at()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&chat_id)
+            .is_some_and(|at| at.elapsed() < FRESH_FOR);
+        let stored = store.chats.get(&chat_id).cloned().unwrap_or_default();
+        if !fresh && (stored.workspace.is_some() || stored.delivery.is_some()) {
+            revalidate_in_background(&chat_id);
+            return Ok(assemble(chat_id, stored, &store));
+        }
+    }
+    chat_task_impl(chat_id, refresh)
+}
+
+/// Verify `chat_id` on a thread of its own, one at a time per chat.
+fn revalidate_in_background(chat_id: &str) {
+    static RUNNING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+    if !RUNNING
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&chat_id)
-        .is_some_and(|at| at.elapsed() < FRESH_FOR);
-    if fresh && !refresh {
-        return Ok(assemble(chat_id, stored, &store));
+        .insert(chat_id.to_owned())
+    {
+        return;
     }
+    let chat_id = chat_id.to_owned();
+    let spawned = std::thread::Builder::new()
+        .name("chat-task-verify".into())
+        .spawn({
+            let chat_id = chat_id.clone();
+            move || {
+                // Emits `chat-task` itself when what git says has moved.
+                let _ = chat_task_impl(chat_id.clone(), true);
+                RUNNING
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&chat_id);
+            }
+        });
+    if spawned.is_err() {
+        RUNNING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&chat_id);
+    }
+}
+
+/// Ask git about one chat, store what it said, and tell the pages when it
+/// moved.
+fn verify_chat(chat_id: String) -> Result<TaskStatus, String> {
+    let store = read()?;
+    let mut stored = store.chats.get(&chat_id).cloned().unwrap_or_default();
 
     // Which project a chat belongs to is the chat index's to answer, and the
     // stored copy is what answers it for a chat the index no longer lists.
-    let chat = crate::chat_index::list()
-        .into_iter()
-        .find(|meta| meta.id == chat_id);
+    let chat = crate::chat_index::find(&chat_id).ok().flatten();
     let cwd = chat.as_ref().and_then(|meta| meta.cwd.clone());
     if let Some(meta) = chat.as_ref() {
         stored.project_id = meta.project_id.clone();

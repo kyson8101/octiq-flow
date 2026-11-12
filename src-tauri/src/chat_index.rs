@@ -44,6 +44,14 @@ pub struct ChatMeta {
     /// transcript; this keeps list rendering independent of opening the chat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_response: Option<String>,
+    /// Host-owned. The host writes `latest_response` itself at the agent's
+    /// readable-output boundary (`set_host_preview`) and counts each change
+    /// here, so the preview of a chat nobody has open is current. A browser
+    /// save carries the version it last heard; its text is taken only when
+    /// that is still the host's (`upsert`), so a stale tab can never put an
+    /// older response back. Zero: the host has not written one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub latest_response_version: u64,
     /// True when the user named the chat explicitly. This keeps a deliberately
     /// chosen `New chat` distinct from the inferred placeholder.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -536,7 +544,34 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
                 .launch
                 .clone()
                 .or_else(|| meta.launch.take().and_then(LaunchPlan::checked));
+            // The preview is the host's once it has written one: the text a
+            // browser carries is taken only from a browser that has heard the
+            // host's latest version, never over a newer one.
+            //
+            // After a `/clear` the host holds "no preview" at a version above
+            // zero (`clear_host_preview`; the host's own writes always carry
+            // text). A browser that heard that very version, or one whose
+            // pending save still carries the old text at it, must not bring
+            // text back: only version zero (the host has said nothing yet)
+            // lets a browser's text in.
+            let (response, response_version) = if meta.latest_response_version
+                == existing.latest_response_version
+                && (meta.latest_response.is_some() || existing.latest_response_version == 0)
+                && (existing.latest_response.is_some() || existing.latest_response_version == 0)
+            {
+                (
+                    meta.latest_response.take(),
+                    existing.latest_response_version,
+                )
+            } else {
+                (
+                    existing.latest_response.clone(),
+                    existing.latest_response_version,
+                )
+            };
             *existing = meta;
+            existing.latest_response = response;
+            existing.latest_response_version = response_version;
             existing.launch = launch;
             existing.created_at = created;
             existing.done_at = done_at;
@@ -556,11 +591,149 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             meta.agent_title = false;
             meta.done_at = None;
             meta.done_held = false;
+            meta.latest_response_version = 0;
             meta.launch = meta.launch.take().and_then(LaunchPlan::checked);
             index.chats.push(meta);
         }
     }
     write(&index)
+}
+
+/// The longest preview the host keeps, in characters: what the page shows
+/// of a response in a list row, with the ellipsis the page adds past it.
+pub const PREVIEW_MAX_CHARS: usize = 420;
+
+/// A response as the bounded preview stored for it: trimmed, and cut at
+/// `PREVIEW_MAX_CHARS` characters with an ellipsis, as the page draws it.
+pub fn bounded_preview(text: &str) -> String {
+    let text = text.trim();
+    if text.chars().count() <= PREVIEW_MAX_CHARS {
+        return text.to_owned();
+    }
+    let cut: String = text.chars().take(PREVIEW_MAX_CHARS).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// What the host last said a chat's response was. Written under the same lock
+/// as browser saves, at the agent's readable-output boundary, and for every
+/// chat whether or not any browser has it open. Answers the new version when
+/// the stored preview changed, `None` when it did not (same words, an empty
+/// response, a chat the index does not list or has trashed): nothing is
+/// written then, and activity (`updated_at`) is never touched.
+pub fn set_host_preview(id: &str, response: &str) -> Result<Option<u64>, String> {
+    Ok(set_host_previews(&[(id.to_owned(), response.to_owned())])?
+        .into_iter()
+        .next()
+        .map(|(_, version)| version))
+}
+
+/// `set_host_preview` for several chats in ONE read and write of the index.
+/// Every write rewrites the whole file, so previews that arrive together are
+/// written together (`agent_chat::PreviewBatch`). Answers `(id, new version)`
+/// for each chat whose stored preview changed, in the order given.
+pub fn set_host_previews(previews: &[(String, String)]) -> Result<Vec<(String, u64)>, String> {
+    let items: Vec<(String, String, Option<u64>)> = previews
+        .iter()
+        .map(|(id, text)| (id.clone(), text.clone(), None))
+        .collect();
+    write_previews(&items)
+}
+
+/// Bumped by every successful `/clear` of a chat's preview (`clear_host_preview`,
+/// under the index lock). A preview carries the epoch its text was heard in
+/// (`clear_epoch`), and `set_host_previews_since` drops one that is older than
+/// the chat's now, under the same lock as the write: a text that was already
+/// taken out of the writer's queue when `/clear` ran can never land after it.
+static CLEAR_EPOCHS: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
+
+/// How many times this chat's preview has been cleared since the server
+/// started. Read when a text is heard, before it is queued.
+pub fn clear_epoch(id: &str) -> u64 {
+    CLEAR_EPOCHS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// `set_host_previews` for text heard at a known `clear_epoch`: an item whose
+/// epoch is older than the chat's current one is dropped, not written.
+pub fn set_host_previews_since(
+    previews: &[(String, String, u64)],
+) -> Result<Vec<(String, u64)>, String> {
+    let items: Vec<(String, String, Option<u64>)> = previews
+        .iter()
+        .map(|(id, text, epoch)| (id.clone(), text.clone(), Some(*epoch)))
+        .collect();
+    write_previews(&items)
+}
+
+fn write_previews(
+    previews: &[(String, String, Option<u64>)],
+) -> Result<Vec<(String, u64)>, String> {
+    if previews.iter().all(|(_, text, _)| text.trim().is_empty()) {
+        return Ok(Vec::new());
+    }
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // An index that cannot be read is an error, never "nothing to write": the
+    // caller still owes these previews (`agent_chat::PreviewBatch`).
+    let mut index = read_checked().map_err(|_| {
+        crate::profile::available()
+            .err()
+            .unwrap_or_else(|| "the chat index could not be read".to_string())
+    })?;
+    let mut changed = Vec::new();
+    for (id, response, epoch) in previews {
+        if epoch.is_some_and(|heard| heard < clear_epoch(id)) {
+            continue;
+        }
+        let preview = bounded_preview(response);
+        if preview.is_empty() {
+            continue;
+        }
+        let Some(chat) = index
+            .chats
+            .iter_mut()
+            .find(|chat| chat.id == *id && chat.deleted_at.is_none())
+        else {
+            continue;
+        };
+        if chat.latest_response.as_deref() == Some(preview.as_str()) {
+            continue;
+        }
+        chat.latest_response = Some(preview);
+        chat.latest_response_version += 1;
+        changed.push((id.clone(), chat.latest_response_version));
+    }
+    if changed.is_empty() {
+        return Ok(changed);
+    }
+    write(&index).map(|()| changed)
+}
+
+/// `/clear`: the chat has no response any more, so neither has its row. The
+/// text goes and the version moves on (always), so a page that heard the old
+/// preview drops it and a save that still carries it (an older version, or
+/// none) is refused by `upsert`. The chat's clear epoch moves on in the same
+/// step, so text already taken out of the writer's queue is dropped too.
+/// Answers the new version, or `None` for a chat the index does not list.
+pub fn clear_host_preview(id: &str) -> Result<Option<u64>, String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
+    let Some(chat) = index.chats.iter_mut().find(|chat| chat.id == id) else {
+        return Ok(None);
+    };
+    chat.latest_response = None;
+    chat.latest_response_version += 1;
+    let version = chat.latest_response_version;
+    write(&index)?;
+    *CLEAR_EPOCHS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(id.to_owned())
+        .or_insert(0) += 1;
+    Ok(Some(version))
 }
 
 /// Move a chat to another folder, and nothing else. Used when the folder it
@@ -1068,6 +1241,7 @@ pub(crate) mod tests {
             project_id: "p1".into(),
             title: format!("chat {id}"),
             latest_response: None,
+            latest_response_version: 0,
             custom_title: false,
             agent_title: false,
             session_id: None,
@@ -1113,6 +1287,125 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(effort().as_deref(), Some("low"));
         cleanup(&[id]);
+    }
+
+    #[test]
+    fn the_host_keeps_the_preview_and_a_stale_browser_cannot_rewind_it() {
+        let _guard = LIFECYCLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let id = "host-preview-contract";
+        cleanup(&[id]);
+        let saved = |text: Option<&str>, version: u64| ChatMeta {
+            latest_response: text.map(str::to_owned),
+            latest_response_version: version,
+            ..meta(id, 1)
+        };
+        let found = || list().into_iter().find(|c| c.id == id).unwrap();
+        // Before the host has written one, the browser's own text stands.
+        upsert(saved(Some("browser words"), 0)).unwrap();
+        assert_eq!(found().latest_response.as_deref(), Some("browser words"));
+        // The host writes: a new version, bounded text, same words once.
+        assert_eq!(set_host_preview(id, "  first answer  ").unwrap(), Some(1));
+        assert_eq!(set_host_preview(id, "first answer").unwrap(), None);
+        assert_eq!(
+            set_host_preview(id, "   ").unwrap(),
+            None,
+            "nothing to keep"
+        );
+        assert_eq!(set_host_preview(id, "newer answer").unwrap(), Some(2));
+        assert_eq!(
+            set_host_preview("no-such-chat", "x").unwrap(),
+            None,
+            "an unlisted chat is not made"
+        );
+        // A tab that last heard version 1 (or none) cannot put its text back.
+        upsert(saved(Some("older answer"), 1)).unwrap();
+        upsert(saved(Some("older still"), 0)).unwrap();
+        upsert(saved(None, 0)).unwrap();
+        let kept = found();
+        assert_eq!(kept.latest_response.as_deref(), Some("newer answer"));
+        assert_eq!(kept.latest_response_version, 2);
+        // A tab that has heard the current version may refine its text; a
+        // save that has none for it does not wipe the host's.
+        upsert(saved(Some("newer answer, as the page reads it"), 2)).unwrap();
+        assert_eq!(
+            found().latest_response.as_deref(),
+            Some("newer answer, as the page reads it")
+        );
+        upsert(saved(None, 2)).unwrap();
+        assert_eq!(
+            found().latest_response.as_deref(),
+            Some("newer answer, as the page reads it")
+        );
+        // A browser cannot claim a version the host never wrote.
+        upsert(saved(Some("forged"), 99)).unwrap();
+        assert_eq!(found().latest_response_version, 2);
+        assert_ne!(found().latest_response.as_deref(), Some("forged"));
+        // Activity is not the preview's to move.
+        assert_eq!(found().updated_at, 1);
+        // /clear: the preview goes, the version moves on, and no save that
+        // still carries the old text (or the old version) brings it back.
+        assert_eq!(clear_host_preview(id).unwrap(), Some(3));
+        assert_eq!(found().latest_response, None);
+        assert_eq!(found().latest_response_version, 3);
+        upsert(saved(Some("stale after clear"), 2)).unwrap();
+        upsert(saved(Some("stale, no version"), 0)).unwrap();
+        upsert(saved(None, 3)).unwrap();
+        assert_eq!(found().latest_response, None);
+        assert_eq!(found().latest_response_version, 3);
+        // A save that carries the old text at the cleared version itself (a
+        // Pin save made before the page heard the clear) keeps "no preview".
+        upsert(saved(Some("old text at the cleared version"), 3)).unwrap();
+        assert_eq!(found().latest_response, None);
+        assert_eq!(found().latest_response_version, 3);
+        // Text heard before the clear is dropped under the index lock, text
+        // heard after it lands.
+        assert_eq!(clear_epoch(id), 1);
+        assert!(
+            set_host_previews_since(&[(id.to_owned(), "heard before".into(), 0)])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(found().latest_response, None);
+        assert_eq!(clear_host_preview("no-such-chat").unwrap(), None);
+        // The host's next words continue the count.
+        assert_eq!(set_host_preview(id, "after clear").unwrap(), Some(4));
+        assert_eq!(
+            set_host_previews_since(&[(id.to_owned(), "heard after".into(), 1)]).unwrap(),
+            vec![(id.to_owned(), 5)]
+        );
+        assert_eq!(set_host_preview(id, "after clear").unwrap(), Some(6));
+        // Several chats are one write.
+        let other = "host-preview-contract-2";
+        cleanup(&[other]);
+        upsert(ChatMeta { ..meta(other, 1) }).unwrap();
+        let both = set_host_previews(&[
+            (id.to_owned(), "after clear".to_owned()),
+            (other.to_owned(), "other words".to_owned()),
+            ("no-such-chat".to_owned(), "x".to_owned()),
+        ])
+        .unwrap();
+        assert_eq!(both, vec![(other.to_owned(), 1)]);
+        cleanup(&[id, other]);
+    }
+
+    #[test]
+    fn a_preview_is_bounded_like_the_page_draws_it() {
+        let long = "é".repeat(500);
+        let kept = bounded_preview(&long);
+        assert_eq!(kept.chars().count(), PREVIEW_MAX_CHARS + 1);
+        assert!(kept.ends_with('…'));
+        assert_eq!(bounded_preview(" short "), "short");
+        assert_eq!(
+            bounded_preview(&"a ".repeat(300))
+                .trim_end_matches('…')
+                .trim_end()
+                .chars()
+                .count()
+                <= PREVIEW_MAX_CHARS,
+            true
+        );
     }
 
     #[test]

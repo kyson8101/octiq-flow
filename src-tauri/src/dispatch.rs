@@ -1246,7 +1246,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // Where this chat is and what became of its work. The report half is
         // whatever the agent last said; everything else is checked with git on
         // the way out (`chat_task.rs`).
-        "chat_task" => to_value(crate::chat_task::chat_task_impl(
+        "chat_task" => to_value(crate::chat_task::chat_task_for_page(
             arg(&args, "chatId")?,
             arg::<Option<bool>>(&args, "refresh")?.unwrap_or(false),
         )),
@@ -1553,30 +1553,58 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             if cmd == "orchestration_run_detail" && run_id.as_deref().is_none_or(str::is_empty) {
                 return Err("orchestration_run_detail needs runId".into());
             }
-            // Capture the invalidation token BEFORE reading. A change during
-            // this read must leave a newer event for the page to refetch by.
-            let revisions = crate::bus::orchestration_revisions();
-            let snapshot = svc
-                .orchestrations
-                .snapshot(run_id.as_deref())?
-                .with_usage(&svc.chats.usage);
-            let mut view = serde_json::to_value(snapshot).map_err(|e| e.to_string())?;
+            // The whole-app summary is read by every open tab, on every
+            // change. Identical reads that overlap share one run (each answer
+            // still post-dates the ask: `coalesce`), and the run reads only
+            // the runs it will show.
+            static SUMMARIES: std::sync::OnceLock<
+                crate::coalesce::Coalesce<String, Result<Value, String>>,
+            > = std::sync::OnceLock::new();
+            let read = || -> Result<Value, String> {
+                // Capture the invalidation token BEFORE reading. A change during
+                // this read must leave a newer event for the page to refetch by.
+                let revisions = crate::bus::orchestration_revisions();
+                let mut view = if cmd == "orchestration_summary" {
+                    let include_ended: Option<bool> = arg(&args, "includeEnded")?;
+                    let held_chats: Option<Vec<String>> = arg(&args, "heldChatKeys")?;
+                    let coordinator: Option<String> = arg(&args, "coordinatorChatKey")?;
+                    let workspace: Option<String> = arg(&args, "workspaceId")?;
+                    // Scope first: which runs, from the ledger's rows alone.
+                    // A full snapshot built and serialised before this
+                    // narrowed it was most of the read's cost.
+                    let scope = svc.orchestrations.summary_scope(
+                        run_id.as_deref(),
+                        include_ended.unwrap_or(false),
+                        &held_chats.unwrap_or_default(),
+                        coordinator.as_deref(),
+                        workspace.as_deref(),
+                    )?;
+                    let snapshot = svc
+                        .orchestrations
+                        .snapshot_scoped(run_id.as_deref(), &scope)?
+                        .with_usage(&svc.chats.usage);
+                    let mut view = serde_json::to_value(snapshot).map_err(|e| e.to_string())?;
+                    crate::orchestration::summary::route(&mut view, &scope);
+                    crate::orchestration::summary::project(&mut view);
+                    view
+                } else {
+                    let snapshot = svc
+                        .orchestrations
+                        .snapshot(run_id.as_deref())?
+                        .with_usage(&svc.chats.usage);
+                    serde_json::to_value(snapshot).map_err(|e| e.to_string())?
+                };
+                revisions.stamp(&mut view, run_id.as_deref());
+                Ok(view)
+            };
             if cmd == "orchestration_summary" {
-                let include_ended: Option<bool> = arg(&args, "includeEnded")?;
-                let held_chats: Option<Vec<String>> = arg(&args, "heldChatKeys")?;
-                let coordinator: Option<String> = arg(&args, "coordinatorChatKey")?;
-                let workspace: Option<String> = arg(&args, "workspaceId")?;
-                crate::orchestration::summary::select(
-                    &mut view,
-                    include_ended.unwrap_or(false),
-                    &held_chats.unwrap_or_default(),
-                    coordinator.as_deref(),
-                    workspace.as_deref(),
-                );
-                crate::orchestration::summary::project(&mut view);
+                let key = format!("{cmd}|{args}");
+                SUMMARIES
+                    .get_or_init(crate::coalesce::Coalesce::new)
+                    .run(&key, read)
+            } else {
+                read()
             }
-            revisions.stamp(&mut view, run_id.as_deref());
-            Ok(view)
         }
         "orchestration_snapshot" => {
             let run_id: Option<String> = arg(&args, "runId")?;

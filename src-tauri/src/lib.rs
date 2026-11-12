@@ -26,6 +26,7 @@ mod chat_recover;
 mod chat_search;
 mod chat_task;
 mod claude_allow;
+mod coalesce;
 mod codex_app_server;
 mod codex_git;
 mod conversation_tools;
@@ -70,6 +71,7 @@ mod record_trim;
 mod retired_features;
 mod safety_block;
 mod scheduling;
+mod shutdown;
 mod team;
 mod team_tools;
 #[cfg(test)]
@@ -98,6 +100,8 @@ pub async fn run_headless() {
         std::process::exit(1);
     }
     retired_features::at_startup();
+    // After the profile is ours: a stop writes what is still owed first.
+    shutdown::install();
     // Once, before anything can be running: tidy away transcripts no chat
     // points at any more.
     chat_index::reconcile();

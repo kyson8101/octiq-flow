@@ -78,6 +78,8 @@ fn clear_all_providers_preserves_settings_and_blocks_stale_save_start_and_init()
             assert_eq!(services.chats.start_context(&key), Some(expected));
             let mut expected_row = serde_json::to_value(&row).unwrap();
             expected_row.as_object_mut().unwrap().remove("sessionId");
+            // The row's preview is reset by /clear: no text, version moved on.
+            expected_row["latestResponseVersion"] = json!(1);
             assert_eq!(
                 serde_json::to_value(crate::chat_index::find(&row.id).unwrap().unwrap()).unwrap(),
                 expected_row
