@@ -14438,6 +14438,38 @@ mod idle_tests {
     }
 
     #[test]
+    fn a_flush_writes_what_is_pending_even_when_it_is_not_due() {
+        // Graceful shutdown: a closing preview still inside the gap, and a
+        // mid-turn one hours from its deadline, reach the index.
+        let id = "flush-at-shutdown-test";
+        let _ = crate::chat_index::remove(id);
+        crate::chat_index::upsert(
+            serde_json::from_value(json!({"id": id, "projectId": "p", "title": "t"})).unwrap(),
+        )
+        .unwrap();
+        let batch: &'static PreviewBatch = Box::leak(Box::default());
+        *batch.last_write.lock().unwrap() = Some(Instant::now());
+        batch.submit(
+            id,
+            "closing words".into(),
+            Instant::now(),
+            Duration::from_secs(3600),
+        );
+        batch.write_due();
+        let row = || {
+            crate::chat_index::list()
+                .into_iter()
+                .find(|chat| chat.id == id)
+                .unwrap()
+        };
+        assert_eq!(row().latest_response, None, "not due: the gap holds it");
+        batch.flush();
+        assert_eq!(row().latest_response.as_deref(), Some("closing words"));
+        assert!(batch.take_all().is_none(), "nothing is left owed");
+        let _ = crate::chat_index::remove(id);
+    }
+
+    #[test]
     fn a_write_that_failed_is_owed_until_newer_text_or_a_withdrawal() {
         let batch = PreviewBatch::default();
         let now = Instant::now();
