@@ -110,4 +110,36 @@ describe("hostPreview", () => {
       .toEqual({ latestResponse: "indexed", latestResponseVersion: undefined });
     expect(hostPreview({ latestResponse: "known", latestResponseVersion: 2 }, { latestResponse: "x", latestResponseVersion: 0 }).latestResponseVersion).toBe(2);
   });
+  it("M3: a versionless host row never overwrites a held versioned preview", () => {
+    expect(hostPreview({ latestResponse: "held", latestResponseVersion: 10 }, { latestResponse: "VERSIONLESS OLD RESPONSE" }))
+      .toEqual({ latestResponse: "held", latestResponseVersion: 10 });
+    expect(hostPreview({ latestResponse: "held", latestResponseVersion: 10 }, { latestResponse: "x", latestResponseVersion: 0 }))
+      .toEqual({ latestResponse: "held", latestResponseVersion: 10 });
+    expect(hostPreview({ latestResponse: "held", latestResponseVersion: 10 }, { latestResponse: "x", latestResponseVersion: Number.NaN }))
+      .toEqual({ latestResponse: "held", latestResponseVersion: 10 });
+  });
+  it("M3: only a row with nothing versioned held takes versionless host text", () => {
+    expect(hostPreview(undefined, { latestResponse: "host" })).toEqual({ latestResponse: "host", latestResponseVersion: undefined });
+    expect(hostPreview({}, { latestResponse: "host" })).toEqual({ latestResponse: "host", latestResponseVersion: undefined });
+  });
+  it("M4: a new or equal version with no text is an authoritative empty preview", () => {
+    expect(hostPreview({ latestResponse: "old", latestResponseVersion: 10 }, { latestResponseVersion: 11 }))
+      .toEqual({ latestResponse: undefined, latestResponseVersion: 11 });
+    expect(hostPreview({ latestResponse: "old", latestResponseVersion: 11 }, { latestResponseVersion: 11 }))
+      .toEqual({ latestResponse: undefined, latestResponseVersion: 11 });
+    expect(hostPreview({ latestResponse: "local" }, { latestResponseVersion: 1 }))
+      .toEqual({ latestResponse: undefined, latestResponseVersion: 1 });
+  });
+  it("M4: an older version with no text is still an out-of-order answer and changes nothing", () => {
+    expect(hostPreview({ latestResponse: "fresh", latestResponseVersion: 12 }, { latestResponseVersion: 11 }))
+      .toEqual({ latestResponse: "fresh", latestResponseVersion: 12 });
+  });
+  it("clear then fresh then late: 10 -> 11 cleared -> 12 -> late 10", () => {
+    let held = hostPreview(undefined, { latestResponse: "ten", latestResponseVersion: 10 });
+    held = hostPreview(held, { latestResponseVersion: 11 });
+    expect(held).toEqual({ latestResponse: undefined, latestResponseVersion: 11 });
+    held = hostPreview(held, { latestResponse: "twelve", latestResponseVersion: 12 });
+    held = hostPreview(held, { latestResponse: "ten", latestResponseVersion: 10 });
+    expect(held).toEqual({ latestResponse: "twelve", latestResponseVersion: 12 });
+  });
 });
