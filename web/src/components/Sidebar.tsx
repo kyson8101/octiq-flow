@@ -8,7 +8,7 @@ import { recall, remember } from "../lib/remember";
 import { latestResponse, plainSnippet } from "../lib/chatPreview";
 import { conversationProjectInfo, conversationProjectSummary } from "../lib/conversationProjects";
 import { isWorkerChat, ordinaryChats, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
-import { chatRunLine, chatSnapshot, rowRun, workerLine, workflowChatList } from "../lib/chatWorkflow";
+import { chatRunLine, chatSnapshot, rowRun, stableWorkflowFacts, workerLine, workflowChatList, type WorkflowFacts } from "../lib/chatWorkflow";
 import { workingTaskCount } from "../lib/agentsDashboard";
 import {
   CHAT_FILTER_LABELS, chatFilterList, chatFilterOptions, isChatDone, isChatFilter, type ChatFilter,
@@ -182,8 +182,15 @@ export function Sidebar({
   const projectLedger = ledgerSnapshot === undefined ? orchestration : ledgerSnapshot;
   const projectById = new Map(knownProjects.map((project) => [project.id, project]));
   const conversationById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
-  const archivedConversations = workerArchiveChatList(conversations, orchestration, true);
-  const activeConversations = workerArchiveChatList(conversations, orchestration);
+  // The chat list reads only which tasks, attempts and runs exist and which
+  // attempts are archived. A running worker patches its attempt's `execution`
+  // many times a second; those must not redo the derivation, so everything
+  // below keys on the facts object, which keeps its identity across them.
+  const factsRef = useRef<WorkflowFacts | null>(null);
+  const facts = stableWorkflowFacts(factsRef.current, orchestration);
+  factsRef.current = facts;
+  const archivedConversations = useMemo(() => workerArchiveChatList(conversations, facts, true), [conversations, facts]);
+  const activeConversations = useMemo(() => workerArchiveChatList(conversations, facts), [conversations, facts]);
   // A later message can make a done chat active again. Stop retaining that
   // row then, so a future mark from another device follows the live filter.
   useEffect(() => {
@@ -211,8 +218,8 @@ export function Sidebar({
   // and handing it a thinned list would unfold every superseded worker under a
   // coordinator that had merely been ticked off.
   const workflowList = useMemo(
-    () => workflowChatList(conversations, orchestration, currentConversation),
-    [conversations, orchestration, currentConversation],
+    () => workflowChatList(conversations, facts, currentConversation),
+    [conversations, facts, currentConversation],
   );
   const tree = useMemo(
     () => buildChatTree(chatFilterList(workflowList, filter, currentConversation, keptMarked), chatParents),
