@@ -523,13 +523,26 @@ pub(crate) fn choices(
         let source = entry.start.settings();
         choices.push(serde_json::json!({ "id": entry.id, "key": entry.chat_key, "label": "Continue this conversation", "source": source, "preferred": entry.fallback, "rememberLabel": if owner(key)?.is_some() { "Save as this agent’s backup" } else { "Save as global backup" }, "options": options(manager, &source, false) }));
     }
-    let snapshot = orchestrations.snapshot(None)?;
-    for choice in load()?.workers.values().filter(|c| {
-        !c.cancelled
-            && c.selection.is_none()
-            && (c.view_key == key || c.chat_key == key)
-            && current_worker(c, &snapshot)
-    }) {
+    let policy = load()?;
+    let waiting: Vec<_> = policy
+        .workers
+        .values()
+        .filter(|c| {
+            !c.cancelled && c.selection.is_none() && (c.view_key == key || c.chat_key == key)
+        })
+        .collect();
+    // Only a chat with a worker's choice waiting reads the ledger. The page
+    // asks this of every chat it opens, and a whole-ledger read for each
+    // queued hundreds of them behind the ledger's lock.
+    let snapshot = if waiting.is_empty() {
+        None
+    } else {
+        Some(orchestrations.snapshot(None)?)
+    };
+    for choice in waiting
+        .into_iter()
+        .filter(|c| snapshot.as_ref().is_some_and(|s| current_worker(c, s)))
+    {
         choices.push(serde_json::json!({ "id": choice.id, "key": choice.chat_key, "label": choice.label, "worker": true, "source": choice.source, "preferred": rule(choice.owner.as_deref())?.backup.and_then(|b| { crate::orchestration::validate_fallback_worker(b.agent, &b.model).ok()?; b.settings(&choice.source).ok() }), "rememberLabel": if choice.owner.is_some() { "Save as this agent’s backup" } else { "Save as global backup" }, "options": options(manager, &choice.source, true) }));
     }
     Ok(choices)

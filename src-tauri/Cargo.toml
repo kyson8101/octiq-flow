@@ -1,6 +1,6 @@
 [package]
 name = "octiq-flow"
-version = "0.3.42"
+version = "0.3.43"
 description = "Agent workflow orchestrator: run agents in real terminals, driven from a browser"
 authors = ["kyson"]
 edition = "2021"
@@ -90,6 +90,9 @@ strip = "symbols"
 inherits = "release"
 lto = "thin"
 codegen-units = 16
+# The local service keeps its symbols (~3 MB), so `sample <pid>` names the
+# functions a stuck server is in. npm/CI builds use `release`, still stripped.
+strip = "none"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time"] }

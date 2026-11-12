@@ -271,14 +271,75 @@ async fn run_command(ctx: &Ctx, cmd: String, args: Value) -> Result<Value, Strin
 async fn run_command_told(ctx: &Ctx, cmd: String, args: Value) -> crate::dispatch::Told {
     let services = ctx.services.clone();
     gated(git_read_slots(), &cmd.clone(), async move {
-        tokio::task::spawn_blocking(move || crate::dispatch::told(&services, &cmd, args))
-            .await
-            .unwrap_or_else(|error| crate::dispatch::Told {
-                result: Err(format!("the backend command did not finish: {error}")),
-                unsaved: Vec::new(),
-            })
+        tokio::task::spawn_blocking(move || {
+            let _timed = Timed::start(&cmd, "page");
+            crate::dispatch::told(&services, &cmd, args)
+        })
+        .await
+        .unwrap_or_else(|error| crate::dispatch::Told {
+            result: Err(format!("the backend command did not finish: {error}")),
+            unsaved: Vec::new(),
+        })
     })
     .await
+}
+
+/// A command that took long enough to notice says so on the error log, with
+/// how many of the same command were running when it ended. A server that
+/// stops answering is otherwise a guess: hundreds of reads queued behind one
+/// lock looked like a phone with a bad connection.
+struct Timed {
+    cmd: String,
+    from: &'static str,
+    began: std::time::Instant,
+}
+
+const SLOW_COMMAND: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn running_commands() -> &'static std::sync::Mutex<std::collections::HashMap<String, usize>> {
+    static RUNNING: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, usize>>,
+    > = std::sync::OnceLock::new();
+    RUNNING.get_or_init(Default::default)
+}
+
+impl Timed {
+    fn start(cmd: &str, from: &'static str) -> Self {
+        *running_commands()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(cmd.to_owned())
+            .or_default() += 1;
+        Self {
+            cmd: cmd.to_owned(),
+            from,
+            began: std::time::Instant::now(),
+        }
+    }
+}
+
+impl Drop for Timed {
+    fn drop(&mut self) {
+        let mut running = running_commands().lock().unwrap_or_else(|e| e.into_inner());
+        let same = running.get(&self.cmd).copied().unwrap_or(1);
+        if same <= 1 {
+            running.remove(&self.cmd);
+        } else {
+            running.insert(self.cmd.clone(), same - 1);
+        }
+        let took = self.began.elapsed();
+        if took >= SLOW_COMMAND {
+            let total: usize = running.values().sum::<usize>() + 1;
+            eprintln!(
+                "[slow] {} from {} took {} ms ({} of it running, {} commands in all)",
+                self.cmd,
+                self.from,
+                took.as_millis(),
+                same,
+                total
+            );
+        }
+    }
 }
 
 /// A page's reply frame. `unsaved` is there only when something was done
@@ -389,6 +450,7 @@ async fn run_hook_command(
     let services = ctx.services.clone();
     gated(git_read_slots(), &cmd.clone(), async move {
         tokio::task::spawn_blocking(move || {
+            let _timed = Timed::start(&cmd, "agent");
             crate::outcome::noted(|| {
                 let told = crate::dispatch::told(&services, &cmd, args);
                 told.result.map(|result| with_unsaved(result, told.unsaved))
