@@ -91,9 +91,15 @@ when 0).
   error, never "nothing to write") puts what it took back in the queue,
   except text a newer one, a withdrawal or a clear replaced meanwhile, and
   the writer tries again about once a second until it goes through (said once
-  per run of failures). This is the "Owe it" rule with a memory-only debt:
-  a restart before the folder is back loses it, and the transcript and the
-  next turn's words stand.
+  per run of failures, as the `unsaved` event "the latest chat previews").
+  This is the "Owe it" rule with a memory-only debt: a restart before the
+  folder is back loses it, and the transcript and the next turn's words
+  stand. While previews are waiting on a failed write, `profile_status.owed`
+  names `chat previews` (`PreviewBatch::owes`); `dispatch::settle_owed` goes
+  through `PreviewBatch::settle`, which retries by the writer's own
+  `write_due` (one writer, `MIN_GAP` apart), and the entry clears once they
+  are written or nothing of them is left (withdrawn, cleared, replaced).
+  Text only waiting for its due time is not owed.
 - **A stop writes what is owed.** SIGTERM and SIGINT (`shutdown.rs`) flush
   the batch, due or not, through the same index door
   (`PreviewBatch::flush`, at most 3 s), then the process dies of the signal

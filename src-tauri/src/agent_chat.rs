@@ -289,6 +289,8 @@ const UNSENT: &str = "the messages that were not sent";
 
 /// Those lines, in the list of what still owes a save (`profile_status`).
 pub(crate) const UNSENT_OWED: &str = "unsent messages";
+/// Chat previews a failed index write kept in memory (`PreviewBatch`).
+pub(crate) const PREVIEWS_OWED: &str = "chat previews";
 
 /// Tell every reader that two durable person turns now form one pending unit.
 /// The individual envelopes are kept so append-only replay and idempotency
@@ -3303,6 +3305,9 @@ pub(crate) fn settle_owed(manager: &ChatManager) -> Vec<&'static str> {
     if manager.settle_unsent().is_err() {
         owed.push(UNSENT_OWED);
     }
+    if PreviewBatch::global().settle().is_err() {
+        owed.push(PREVIEWS_OWED);
+    }
     owed
 }
 
@@ -3320,6 +3325,9 @@ pub(crate) fn owed(manager: &ChatManager) -> Vec<&'static str> {
     }
     if manager.owes_unsent() {
         owed.push(UNSENT_OWED);
+    }
+    if PreviewBatch::global().owes() {
+        owed.push(PREVIEWS_OWED);
     }
     owed
 }
@@ -9889,6 +9897,39 @@ impl PreviewBatch {
         }
     }
 
+    /// Whether previews are waiting on a write that FAILED. Text that is only
+    /// waiting for its due time is not owed. Once nothing is left of a failure
+    /// (everything withdrawn, cleared or replaced and written) the failure run
+    /// is over, so the next one is said again.
+    pub(crate) fn owes(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        if !self.failing.load(Relaxed) {
+            return false;
+        }
+        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        let owed = !pending.is_empty() || !in_flight.is_empty();
+        if !owed {
+            self.failing.store(false, Relaxed);
+        }
+        owed
+    }
+
+    /// `dispatch::settle_owed`'s door: with a failed write outstanding, try
+    /// it through the same `write_due` the writer thread uses (one writer at
+    /// a time, `MIN_GAP` apart), so there is one retry path, not two. Err
+    /// while previews are still owed.
+    pub(crate) fn settle(&self) -> Result<(), ()> {
+        if self.owes() {
+            self.write_due();
+        }
+        if self.owes() {
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+
     fn finished(&self, batch: &[DuePreview]) {
         let mut in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
         for (id, _, _) in batch {
@@ -9924,7 +9965,7 @@ impl PreviewBatch {
                     .failing
                     .swap(true, std::sync::atomic::Ordering::Relaxed)
                 {
-                    eprintln!("[chat] could not keep the previews, will try again: {error}");
+                    crate::unsaved::say("the latest chat previews", error);
                 }
                 self.requeue(batch, Instant::now());
             }
@@ -14498,6 +14539,41 @@ mod idle_tests {
         batch.finished(&done);
         batch.requeue(done, now);
         assert!(take(&batch).is_none());
+    }
+
+    #[test]
+    fn previews_owed_during_an_outage_are_named_and_clear_when_written() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let id = "owed-previews-outage-test";
+        let _ = crate::chat_index::remove(id);
+        crate::chat_index::upsert(
+            serde_json::from_value(json!({"id": id, "projectId": "p", "title": "t"})).unwrap(),
+        )
+        .unwrap();
+        let batch = PreviewBatch::default();
+        batch.submit(id, "closing words".into(), Instant::now(), Duration::ZERO);
+        assert!(!batch.owes(), "text waiting for its time is not owed");
+        let said = crate::bus::tap::Tap::on("the latest chat previews");
+        home.unplug();
+        batch.write_due();
+        assert!(batch.owes(), "a failed write is owed");
+        assert!(batch.settle().is_err(), "still away: still owed");
+        assert!(
+            said.heard().iter().any(|(name, _)| name == "unsaved"),
+            "the failure reaches the pages as `unsaved`"
+        );
+        home.plug_back();
+        // The retry waits out `MIN_GAP`; the test does not.
+        *batch.last_write.lock().unwrap() = None;
+        batch.settle().expect("the profile is back: written");
+        assert!(!batch.owes(), "the item clears once written");
+        let row = crate::chat_index::list()
+            .into_iter()
+            .find(|chat| chat.id == id)
+            .unwrap();
+        assert_eq!(row.latest_response.as_deref(), Some("closing words"));
+        let _ = crate::chat_index::remove(id);
     }
 
     #[test]
