@@ -38,7 +38,7 @@ const instrumentation = {
   name: "chat-window-measurement", enforce: "pre",
   transform(code, id) {
     if (baseline && id.endsWith("/src/lib/chatWindowCache.ts")) {
-      code = code.replace("RECENT_CHAT_BYTES = 512", "RECENT_CHAT_BYTES = 8")
+      code = code.replace("RECENT_CHAT_BYTES = 256", "RECENT_CHAT_BYTES = 8")
         .replace("if (!state || !holds(id)) {", "if (!state || !holds(id) || keep.size >= 2) {")
         .replace("for (const id of shown)", "if (!shown.size) { this.recent.clear(); return new Set(); } for (const id of shown)");
     }

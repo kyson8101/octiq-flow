@@ -5,7 +5,7 @@ import { valueBytes } from "./valueBytes";
 // in addition to the visible pane(s), share only a SAFETY byte budget (the
 // conservative UTF-16 estimate of `valueBytes`), per tab. Past it the oldest
 // window goes first, and never one that holds words typed in this tab only.
-export const RECENT_CHAT_BYTES = 512 * 1024 * 1024;
+export const RECENT_CHAT_BYTES = 256 * 1024 * 1024;
 
 /** Only recency and weak size measurements live here. App owns the single
  * copy of each reducer window, its CatchUp mark and ChatHistory provenance.

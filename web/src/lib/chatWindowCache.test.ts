@@ -51,14 +51,14 @@ it("switches between partial chats without clearing their words or rereading old
 const big = (id: string, bytes: number): ChatState => ({ ...emptyChat(), messages: [{ id, role: "assistant", streaming: false,
   blocks: [{ kind: "text", text: "x".repeat(Math.floor((bytes - 200) / 2)) }] }] });
 
-it("defaults to a 512 MiB safety budget and no count cap", () => {
-  expect(RECENT_CHAT_BYTES).toBe(512 * 1024 * 1024);
+it("defaults to a 256 MiB safety budget and no count cap", () => {
+  expect(RECENT_CHAT_BYTES).toBe(256 * 1024 * 1024);
 });
 
 it("keeps every opened window; only the byte safety budget evicts, oldest first", () => {
   const cache = new ChatWindowCache(BUDGET);
   const states: Record<string, ChatState> = {};
-  // 60 chats is far past the old six-window cap and well under 512 MiB.
+  // 60 chats is far past the old six-window cap and well under 256 MiB.
   for (let n = 0; n < 60; n++) {
     const id = `c${n}`;
     states[id] = big(id, 64 * 1024);

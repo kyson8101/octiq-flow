@@ -12,12 +12,18 @@ its reducer window, its sidebar row's transcript and its replay mark, so returni
 showed a placeholder and a reload could not restore it.
 
 - **Every chat opened in this tab keeps its full window.** There is no count cap.
-  Offscreen windows share only a **safety byte budget of 512 MiB per tab**
-  (`RECENT_CHAT_BYTES`, `valueBytes` estimator: conservative UTF-16 plus object
-  overhead, so real heap is about half). Past it the **oldest** window goes first.
-  A window holding a prompt only this tab has (`hasLocalPrompt`) is never
-  evicted, whatever the budget. Visible panes are outside the budget, as before.
-  Four tabs can retain up to 4 x 512 MiB estimated; typical chats are far below.
+  Offscreen windows share only a **safety byte budget of 256 MiB per tab**
+  (`RECENT_CHAT_BYTES`; the person chose 256, down from 512, after the independent
+  review). Past it the **oldest** window goes first. A window holding a prompt only
+  this tab has (`hasLocalPrompt`) is never evicted, whatever the budget: that is the
+  one exception. Visible panes are outside the budget, as before.
+  **The budget bounds the retained reducer values by the `valueBytes` estimate
+  (conservative UTF-16 plus object overhead). It does not bound process memory.**
+  The review measured 22 MiB running turns at the 512 MiB estimate: 336-359 MiB GC
+  heap per tab, 1.6-2.1 GiB renderer footprint per tab and 7.25-7.40 GiB across
+  four tabs. Rendering, React, V8 slack and decoded media sit on top of the
+  retained values. Four tabs can therefore use several GiB of physical memory
+  when every window is large; typical chats are far below.
 - **Reading state lives as long as the window.** `chatReadingStates` (disclosures,
   tabs, first-message) has no chat-count cap any more; App forgets a chat's state
   exactly when it releases or invalidates the window, or deletes the chat. Only
