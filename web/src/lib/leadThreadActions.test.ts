@@ -13,10 +13,10 @@ vi.mock("./bridge", () => ({ bridge: {
 
 const lead = { agentId: "head", name: "Head", chatKey: "chat:lead-head", cwd: "/repo", exists: true };
 const scheduling: Scheduling = { orientation: "agents", hostCap: null, lanes: [], live: { total: 0 } };
-let reading: LeadThreadsReading, enabled: boolean, stop: () => void;
+let reading: LeadThreadsReading, enabled: boolean, epoch: number, stop: () => void;
 beforeEach(() => {
   vi.resetModules(); invoke.mockReset(); events.clear(); states.clear();
-  reading = { threads: [lead], error: null, freshness: "host" }; enabled = true;
+  reading = { threads: [lead], error: null, freshness: "host" }; enabled = true; epoch = 0;
   invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "scheduling_get" ? scheduling : { id: "lead-head" }));
 });
 afterEach(() => stop?.());
@@ -25,7 +25,7 @@ async function setup() {
   stop = lanes.subscribeScheduling(() => {});
   await Promise.resolve();
   const feed = await import("./leadThreadFeed");
-  return { ...feed, ...lanes, token: () => feed.leadActionToken("head", () => reading, () => enabled) };
+  return { ...feed, ...lanes, token: () => feed.leadActionToken("head", () => reading, () => enabled, () => epoch) };
 }
 
 it("does not send lead_thread_open when a cached row is pressed before confirmation", async () => {
@@ -54,20 +54,55 @@ it("opens a confirmed lead normally", async () => {
   expect(await feed.openConfirmedLeadThread("head", feed.token())).toEqual({ id: "lead-head" });
   expect(invoke).toHaveBeenLastCalledWith("lead_thread_open", { agentId: "head" });
 });
-it.each(["empty", "same-roster", "tasks", "same-orientation", "disconnect", "disabled"])("drops a delayed successful open superseded by %s", async newer => {
+it.each(["same-roster", "self-index", "same-orientation", "worker-lanes"])("delivers an in-flight open after %s confirms the same authority", async newer => {
+  const feed = await setup();
+  let resolve!: (entry: unknown) => void;
+  invoke.mockReturnValue(new Promise(done => { resolve = done; }));
+  const pending = feed.openConfirmedLeadThread("head", feed.token());
+  if (newer === "same-roster" || newer === "self-index") reading = { ...reading, threads: [{ ...lead }] };
+  if (newer === "same-orientation") events.get("scheduling-changed")!({ ...scheduling });
+  if (newer === "worker-lanes") events.get("scheduling-changed")!({ ...scheduling, live: { total: 1 }, lanes: [{ agentId: "fe", state: "working", queued: 1 }] });
+  resolve({ id: "lead-head" });
+  expect(await pending).toEqual({ id: "lead-head" });
+});
+it.each([
+  ["empty", /no longer listed/], ["removed", /no longer listed/],
+  ["tasks", /orientation changed/], ["orientation-returned", /orientation changed/],
+  ["disconnect", /connection/i], ["reconfirmed", /connection/i],
+  ["disabled", /disabled/], ["reenabled", /reset or disabled/],
+] as const)("drops a delayed successful open after %s with a reason", async (newer, reason) => {
   const feed = await setup();
   let resolve!: (entry: unknown) => void;
   invoke.mockReturnValue(new Promise(done => { resolve = done; }));
   const pending = feed.openConfirmedLeadThread("head", feed.token());
   expect(invoke).toHaveBeenLastCalledWith("lead_thread_open", { agentId: "head" });
   if (newer === "empty") reading = { ...reading, threads: [] };
-  if (newer === "same-roster") reading = { ...reading };
-  if (newer === "tasks") events.get("scheduling-changed")!({ ...scheduling, orientation: "tasks" });
-  if (newer === "same-orientation") events.get("scheduling-changed")!({ ...scheduling });
-  if (newer === "disconnect") for (const fn of states) fn("closed");
+  if (newer === "removed") reading = { ...reading, threads: [{ ...lead, agentId: "other" }] };
+  if (newer === "tasks" || newer === "orientation-returned") events.get("scheduling-changed")!({ ...scheduling, orientation: "tasks" });
+  if (newer === "orientation-returned") events.get("scheduling-changed")!({ ...scheduling });
+  if (newer === "disconnect" || newer === "reconfirmed") for (const fn of states) fn("closed");
+  if (newer === "reconfirmed") events.get("scheduling-changed")!({ ...scheduling });
   if (newer === "disabled") enabled = false;
+  if (newer === "reenabled") epoch++;
   resolve({ id: "lead-head" });
-  expect(await pending).toBeNull();
+  await expect(pending).rejects.toThrow(reason);
+});
+it("explains a disconnected open rejection instead of silently swallowing it", async () => {
+  const feed = await setup();
+  let reject!: (reason: Error) => void;
+  invoke.mockReturnValue(new Promise((_, fail) => { reject = fail; }));
+  const pending = feed.openConfirmedLeadThread("head", feed.token());
+  for (const fn of states) fn("closed");
+  reject(new Error("Connection closed before the command answered"));
+  await expect(pending).rejects.toThrow(/connection/i);
+});
+it("keeps the latest confirmed orientation when a same-connection reread fails", async () => {
+  const feed = await setup();
+  const token = feed.token();
+  invoke.mockRejectedValueOnce(new Error("Temporary read failure"));
+  await feed.refreshScheduling();
+  expect(feed.schedulingReading()).toMatchObject({ data: scheduling, fresh: true, error: "Temporary read failure" });
+  expect(token?.()).toBe(true);
 });
 it("retains scheduling display on reconnect but requires a fresh answer before acting", async () => {
   const feed = await setup();

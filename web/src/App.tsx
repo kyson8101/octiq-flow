@@ -921,7 +921,7 @@ export default function App() {
   const leadReading = useLeadThreads(leadsOnly);
   const leadActionsEnabled = useRef(false);
   leadActionsEnabled.current = agentsMode && conn === "open";
-  const leadToken = useCallback((agentId: string) => leadActionToken(agentId, leadReading.current, () => leadActionsEnabled.current), [leadReading.current]);
+  const leadToken = useCallback((agentId: string) => leadActionToken(agentId, leadReading.current, () => leadActionsEnabled.current, leadReading.epoch), [leadReading.current, leadReading.epoch]);
   const leadCanAct = useCallback((agentId: string) => !!leadToken(agentId), [leadToken]);
   const [leadHistoryFor, setLeadHistoryFor] = useState<string | null>(null);
   const [openingLead, setOpeningLead] = useState<string | null>(null);
@@ -5379,7 +5379,9 @@ export default function App() {
     leadOpening.current = true; setOpeningLead(agentId); setLeadOpenError(null);
     try {
       const entry = await openConfirmedLeadThread(agentId, token);
-      if (!entry || !token()) return;
+      if (!entry) return;
+      const reason = token.reason();
+      if (reason) throw new Error(reason);
       setRecipientId(agentId);
       const cached = conversationsRef.current.find(c => c.id === entry.id);
       const conversation = { ...fromIndex(entry), messages: cached?.messages ?? [], seq: cached?.seq };

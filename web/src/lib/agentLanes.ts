@@ -20,10 +20,15 @@ export function recallNavigationOrientation(): SchedulingSettings["orientation"]
 const EMPTY: SchedulingReading = { data: null, error: null, fresh: false };
 let reading = EMPTY;
 let revision = 0;
+// Only a connection/orientation transition revokes an in-flight lead action.
+// Ordinary worker lane and capacity updates do not change its authority.
+let authorityEpoch = 0;
+export const schedulingAuthorityEpoch = () => authorityEpoch;
 let stop: (() => void) | null = null;
 const listeners = new Set<() => void>();
 export const schedulingReading = () => reading;
 function publish(next: SchedulingReading) {
+  if (next.data?.orientation !== reading.data?.orientation) authorityEpoch++;
   if (next.data) remember(ORIENTATION_KEY, next.data.orientation);
   reading = next;
   for (const fn of listeners) fn();
@@ -35,7 +40,9 @@ export async function refreshScheduling(): Promise<void> {
     // A lane event arriving during the read is newer than that read.
     if (at === revision) publish({ data, error: null, fresh: true });
   } catch (error) {
-    if (at === revision) publish({ data: null, error: String((error as Error).message ?? error), fresh: false });
+    // A failed reread is not a new authoritative orientation. Connection
+    // changes already revoke freshness before starting their read.
+    if (at === revision) publish({ ...reading, error: String((error as Error).message ?? error) });
   }
 }
 export async function saveScheduling(settings: SchedulingSettings): Promise<Scheduling> {
@@ -53,6 +60,7 @@ export function subscribeScheduling(listener: () => void): () => void {
     });
     // onState calls once immediately and again on reconnect. No polling.
     const offState = bridge.onState(state => {
+      authorityEpoch++;
       if (state === "open") void refreshScheduling();
       else {
         revision++;
@@ -60,7 +68,7 @@ export function subscribeScheduling(listener: () => void): () => void {
         if (reading.fresh) publish({ ...reading, fresh: false });
       }
     });
-    stop = () => { off(); offState(); revision++; };
+    stop = () => { off(); offState(); revision++; authorityEpoch++; };
   }
   return () => {
     listeners.delete(listener);

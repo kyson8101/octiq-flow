@@ -34,6 +34,7 @@ describe("lead navigation", () => {
     expect(cached).toContain('aria-disabled="true"');
     expect(cached).toContain('aria-description="Checking with the server"');
     expect(cached).toContain('title="Checking with the server"');
+    expect(cached).toContain('data-state="checking">Checking with the server</span>');
     expect(cached).toContain("OCTIQ HEAD");
     expect(sidebar(true)).not.toContain('aria-disabled="true"');
   });

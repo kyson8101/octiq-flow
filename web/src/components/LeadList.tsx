@@ -33,8 +33,8 @@ export function LeadList({ reading, conversations, current, busy, waiting, openi
           onClick={() => { if (reading.freshness === "host" && opening !== lead.agentId) onOpen(lead); }}>
           <AgentAvatar id={lead.agentId} name={lead.name} avatar={roster.find(a => a.id === lead.agentId)?.avatar} size={32} decorative />
           <span className="lead-name">{lead.name}</span>
-          <span className="lead-status" data-state={status.needsYou ? "waiting" : status.working ? "working" : "idle"}>
-            {status.needsYou ? "Needs you" : status.working ? <><span className="lead-working" aria-hidden="true" />Working</> : status.unread ? `${status.unread} unread` : opening === lead.agentId ? "Opening…" : ""}
+          <span className="lead-status" data-state={reading.freshness !== "host" ? "checking" : status.needsYou ? "waiting" : status.working ? "working" : "idle"}>
+            {reading.freshness !== "host" ? "Checking with the server" : status.needsYou ? "Needs you" : status.working ? <><span className="lead-working" aria-hidden="true" />Working</> : status.unread ? `${status.unread} unread` : opening === lead.agentId ? "Opening…" : ""}
           </span>
         </button>
       </li>)}</ul>}
