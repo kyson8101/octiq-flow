@@ -93,3 +93,25 @@ export async function readChatPreview(
   state = await replayChat(state, page.events, 0, cancelled);
   return state.messages;
 }
+
+/** What a sidebar row says of the agent's newest words, once the host's index
+ *  answers. The host keeps `latestResponse` for every chat and numbers each
+ *  change (`latestResponseVersion`), so a row takes the host's text when the
+ *  host's version is not older than the one it holds. A host that sends no
+ *  version (older than the preview contract) leaves the row as last known: the
+ *  text the index carries if it has one, else the text already on the row.
+ *  Nothing here reads a transcript page, and nothing here is saved back: a
+ *  preview this tab did not see on screen is never written to the index. */
+export function hostPreview(
+  held: { latestResponse?: string; latestResponseVersion?: number } | undefined,
+  row: { latestResponse?: string; latestResponseVersion?: number },
+): { latestResponse?: string; latestResponseVersion?: number } {
+  const version = row.latestResponseVersion;
+  if (typeof version !== "number" || version <= 0) {
+    return { latestResponse: row.latestResponse ?? held?.latestResponse, latestResponseVersion: held?.latestResponseVersion };
+  }
+  if (held?.latestResponseVersion !== undefined && held.latestResponseVersion > version) {
+    return { latestResponse: held.latestResponse, latestResponseVersion: held.latestResponseVersion };
+  }
+  return { latestResponse: row.latestResponse ?? held?.latestResponse, latestResponseVersion: version };
+}

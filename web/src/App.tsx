@@ -150,7 +150,7 @@ import { Connect } from "./components/Connect";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import { SessionSearch } from "./components/SessionSearch";
 import { importSession, isUnder, replaySession, type HistorySession } from "./lib/history";
-import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
+import { hostPreview, latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
 import { Sidebar, type Project } from "./components/Sidebar";
 import { recallNavigationOrientation, schedulingReading, useAgentLanes } from "./lib/agentLanes";
 import { leadThreadAgent, leadsOnlyMode, newConversationLead, type LeadHistoryEntry } from "./lib/leadThreads";
@@ -1191,29 +1191,6 @@ export default function App() {
       c.messages,
       cancelled,
     ), []);
-  /** The newest agent words of a chat this tab does not subscribe to. The host
-   *  keeps no latest response of its own (the index is written by browsers),
-   *  and an unsubscribed turn delivers no events, so without this the row and
-   *  the index keep the answer from before the turn. One bounded page. */
-  const refreshOffscreenResponse = useCallback((id: string) => {
-    void readChatPreview(() => bridge.invoke<ChatPage>("chat_page", { key: keyFor(id), before: null }), [], () => false)
-      .then(messages => {
-        const text = latestAgentResponse(messages)?.text;
-        if (!text) return;
-        const held = conversationsRef.current.find(row => row.id === id);
-        if (!held || held.latestResponse === text) return;
-        const next = conversationsRef.current.map(row => row.id === id ? { ...row, latestResponse: text } : row);
-        conversationsRef.current = next;
-        saveConversations(next);
-        setConversations(next);
-        if (!screenChats.current.has(id)) saveIndexEntry({
-          id: held.id, projectId: held.projectId, title: held.title, latestResponse: text,
-          customTitle: held.customTitle, sessionId: held.sessionId ?? null, cwd: held.cwd ?? null,
-          modelId: held.modelId ?? null, access: held.permission ?? null, createdAt: held.createdAt,
-          updatedAt: held.updatedAt, pinned: held.pinned ?? false, generation: held.generation,
-        });
-      }).catch(() => { /* the row keeps its last words; the hover preview reads the record */ });
-  }, []);
   const [earlierReads, setEarlierReads] = useState<Record<string, { loading: boolean; error?: string }>>({});
   // Retained offscreen windows stay still, so a chat that went on without this
   // tab's subscription has a window that is BEHIND the host. Its sidebar line
@@ -1590,6 +1567,7 @@ export default function App() {
             const cached = byId.get(r.id);
             return {
               ...r,
+              ...hostPreview(cached, r),
               permission: r.access ?? cached?.permission,
               effort: r.effort ?? cached?.effort,
               cwd: r.cwd ?? cached?.cwd,
@@ -2169,6 +2147,7 @@ export default function App() {
             projectId: c.projectId,
             title: c.title,
             latestResponse: c.latestResponse,
+            latestResponseVersion: c.latestResponseVersion,
             customTitle: c.customTitle,
             sessionId: c.sessionId ?? null,
             cwd: c.cwd ?? null,
@@ -2901,14 +2880,16 @@ export default function App() {
           saveConversations(next);
           return next;
         });
-        // A turn that ended in a chat no pane shows went unread by this tab:
-        // read its newest words so the row says what the agent just said.
-        if (!screenChats.current.has(id)) void refreshOffscreenResponse(id);
+        // A turn that ended in a chat no pane shows is not read by this tab:
+        // the host keeps that chat's preview itself (latestResponseVersion) and
+        // announces it with chat-index-changed. This tab never fetches a page
+        // for a preview and never writes one it did not see on screen.
         if (screenChats.current.has(id) && catchUp.current.holds(keyFor(id))) saveIndexEntry({
           id: completed.id,
           projectId: completed.projectId,
           title: completed.title,
           latestResponse: completed.latestResponse,
+          latestResponseVersion: completed.latestResponseVersion,
           customTitle: completed.customTitle,
           sessionId: completed.sessionId ?? null,
           cwd: completed.cwd ?? null,
@@ -2921,7 +2902,7 @@ export default function App() {
         });
       }
     }
-  }, [chats, announce, refreshOffscreenResponse]);
+  }, [chats, announce]);
 
   /** End ONE conversation's process for good. Only ever on purpose — deleting
    *  the conversation, or asking for the session to end. Switching away does
@@ -3736,6 +3717,7 @@ export default function App() {
       projectId: held.projectId,
       title: held.title,
       latestResponse: held.latestResponse,
+      latestResponseVersion: held.latestResponseVersion,
       customTitle: held.customTitle,
       sessionId: held.sessionId ?? null,
       cwd: held.cwd ?? null,
@@ -3790,6 +3772,7 @@ export default function App() {
       projectId: renamed.projectId,
       title: renamed.title,
       latestResponse: renamed.latestResponse,
+      latestResponseVersion: renamed.latestResponseVersion,
       customTitle: true,
       sessionId: renamed.sessionId ?? null,
       cwd: renamed.cwd ?? null,
@@ -4151,6 +4134,7 @@ export default function App() {
           projectId: activity.projectId,
           title: activity.title,
           latestResponse: activity.latestResponse,
+          latestResponseVersion: activity.latestResponseVersion,
           customTitle: activity.customTitle,
           sessionId: activity.sessionId ?? null,
           cwd: activity.cwd ?? null,

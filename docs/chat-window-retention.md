@@ -39,10 +39,20 @@ showed a placeholder and a reload could not restore it.
   `chat-stream-activity` frame carries the record sequence even for unsubscribed
   chats. When it passes the window's mark (`chatRetention.windowBehind`), the
   sidebar line and hover preview stop using the window and show the index's
-  `latestResponse` (or read the record for the hover). A turn that ends in a chat
-  no pane shows reads one bounded `chat_page` and updates the row and index
-  (`refreshOffscreenResponse`): the host keeps no latest response of its own.
+  `latestResponse` (the hover reads the record only on demand).
   Selecting the chat clears the mark and catches up.
+- **The preview is the host's.** The host writes `latestResponse` for every chat
+  at the agent's readable-output boundary and bumps `latestResponseVersion`
+  (`docs/scoped-reads-and-previews.md` on OCTIQ BE's branch; commit 444e498f).
+  The page carries the version on `Conversation` / `IndexEntry` and on every
+  `chat_index_save`, and an index row replaces the sidebar row's text when its
+  version is not older than the one the row holds (`chatPreview.hostPreview`).
+  A host that sends no version leaves the row as last known. **This tab never
+  fetches a page to learn a preview and never writes one it read offscreen**:
+  an earlier version did (a `chat_page` per offscreen turn end) and could put an
+  old reply over a fresh one after `/clear` or a replacement, and sent 120
+  concurrent reads of up to 20 MB with four tabs. Only a visible pane, whose
+  words it saw on screen, saves a preview, with the version it heard.
 - **Reload.** IndexedDB checkpoints are **128 MiB total / 32 MiB each**
   (`lib/chatCache`), so a reload restores every open chat, not the last two. A
   full disk (`QuotaExceededError`) halves the budget (oldest rows first) and

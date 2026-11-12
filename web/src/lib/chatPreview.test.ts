@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Message } from "./chat";
-import { latestResponse, plainSnippet, previewMessages, readChatPreview } from "./chatPreview";
+import { hostPreview, latestResponse, plainSnippet, previewMessages, readChatPreview } from "./chatPreview";
 
 const message = (id: string, text: string, extra: Partial<Message> = {}): Message => ({
   id, role: "user", streaming: false, blocks: [{ kind: "text", text }], ...extra,
@@ -87,5 +87,27 @@ describe("plainSnippet", () => {
     expect(plainSnippet("> Quoted\n\n---\n- [x] Done\n- [ ] Next")).toBe("Quoted Done Next");
     expect(plainSnippet("| Check | Result |\n| --- | :---: |\n| tests | ~~red~~ green |"))
       .toBe("Check · Result tests · red green");
+  });
+});
+
+describe("hostPreview", () => {
+  it("takes the host's text when its version is newer than the row's", () => {
+    expect(hostPreview({ latestResponse: "old", latestResponseVersion: 2 }, { latestResponse: "new", latestResponseVersion: 3 }))
+      .toEqual({ latestResponse: "new", latestResponseVersion: 3 });
+  });
+  it("takes the host's text for a row that never heard a version", () => {
+    expect(hostPreview({ latestResponse: "local" }, { latestResponse: "host", latestResponseVersion: 1 }))
+      .toEqual({ latestResponse: "host", latestResponseVersion: 1 });
+  });
+  it("keeps a newer row over an out-of-order older index answer", () => {
+    expect(hostPreview({ latestResponse: "newer", latestResponseVersion: 5 }, { latestResponse: "older", latestResponseVersion: 4 }))
+      .toEqual({ latestResponse: "newer", latestResponseVersion: 5 });
+  });
+  it("leaves the row as last known for a host that sends no version", () => {
+    expect(hostPreview({ latestResponse: "known", latestResponseVersion: undefined }, { latestResponse: undefined }))
+      .toEqual({ latestResponse: "known", latestResponseVersion: undefined });
+    expect(hostPreview({ latestResponse: "known" }, { latestResponse: "indexed" }))
+      .toEqual({ latestResponse: "indexed", latestResponseVersion: undefined });
+    expect(hostPreview({ latestResponse: "known", latestResponseVersion: 2 }, { latestResponse: "x", latestResponseVersion: 0 }).latestResponseVersion).toBe(2);
   });
 });

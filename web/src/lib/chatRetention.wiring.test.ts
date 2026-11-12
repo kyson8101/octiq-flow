@@ -21,6 +21,21 @@ describe("retained windows in App", () => {
   it("draws the sidebar from the host, not a window that is behind it", () => {
     expect(source).toMatch(/getPreviewMessages=\{\(id\) => !behind\.has\(id\) && catchUp\.current\.holds/);
     expect(source).toMatch(/windowBehind\(activity\.seq,/);
-    expect(source).toMatch(/if \(!screenChats\.current\.has\(id\)\) void refreshOffscreenResponse\(id\)/);
+  });
+  it("never fetches a page for a preview or writes one it did not see on screen", () => {
+    expect(source).not.toMatch(/refreshOffscreenResponse/);
+    // The only chat_page reads left are the hover preview (on demand), the
+    // visible pane's open/catch-up and Load earlier; none is started by a turn
+    // ending in a chat no pane shows.
+    const ended = source.slice(source.indexOf("// A turn that ended in a chat no pane shows"));
+    expect(ended.slice(0, 600)).not.toMatch(/chat_page|readChatPreview/);
+  });
+  it("takes the host's preview through hostPreview when the index answers", () => {
+    expect(source).toMatch(/\.\.\.hostPreview\(cached, r\)/);
+  });
+  it("carries the version it heard on every index save", () => {
+    const saves = source.match(/saveIndexEntry\(\{[^}]*?latestResponse: [^\n]*\n/gs) ?? [];
+    expect(saves.length).toBeGreaterThanOrEqual(5);
+    expect(source.match(/latestResponseVersion: \w+\.latestResponseVersion/g)?.length).toBeGreaterThanOrEqual(5);
   });
 });

@@ -30,6 +30,14 @@ export type IndexEntry = {
   projectId: string;
   title: string;
   latestResponse?: string;
+  /** Host-owned. The host writes `latestResponse` itself at the agent's
+   *  readable-output boundary for every chat (bounded to 420 characters plus
+   *  `…`) and bumps this on each change, so a chat nobody has open still has a
+   *  current preview. A save may carry the version the page last heard: its
+   *  `latestResponse` is taken only when that equals the host's, so a stale tab
+   *  can never put an older response back. Absent/0: the host has not written
+   *  one. A page that does not carry it simply keeps the host's text. */
+  latestResponseVersion?: number;
   customTitle?: boolean;
   sessionId: string | null;
   cwd?: string | null;
@@ -75,6 +83,7 @@ function entryFromConversation(chat: Conversation): IndexEntry {
     projectId: chat.projectId,
     title: chat.title,
     latestResponse: chat.latestResponse,
+    latestResponseVersion: chat.latestResponseVersion,
     customTitle: chat.customTitle,
     sessionId: chat.sessionId ?? null,
     cwd: chat.cwd ?? null,
