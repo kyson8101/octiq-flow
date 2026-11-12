@@ -130,31 +130,39 @@ it.each(["summary-first", "detail-first"])("waits for the same run revision in b
   expect(readDetail(next, new Map([["r", { ...next, summary: false }]])).ready).toBe(true);
 });
 
-it("keeps a running detail visible through repeated execution invalidations and a failed refresh", async () => {
+it("keeps a matching detail ready through repeated execution-only events, and reads again after a structural one", async () => {
   const feed = createOrchestrationFeed(), off = feed.subscribe(() => {});
   mock.reads[0].resolve(summary()); await tick();
   const release = feed.detail("r");
   mock.reads[1].resolve({ ...summary(), summary: false }); await tick();
+  const view = () => readDetail(feed.getState().snapshot!, feed.getState().details!, "r", feed.getState().detailPending);
+  expect(view()).toMatchObject({ available: true, ready: true });
+  const reads = () => mock.reads.filter(r => r.cmd === "orchestration_run_detail").length;
   for (let n = 2; n < 5; n++) {
     emit("orchestration-changed", { runId: "r", revision: `epoch:${n}`, attemptId: "a-r", execution: { state: "executing" } });
-    const shown = readDetail(feed.getState().snapshot!, feed.getState().details!, "r", feed.getState().detailPending);
-    expect(shown).toMatchObject({ available: true, ready: false });
-    expect(shown.displaySnapshot.runs[0].status).toBe("running");
     await tick();
-    mock.reads.at(-1)!.reject(new Error("offline")); await tick();
-    expect(readDetail(feed.getState().snapshot!, feed.getState().details!, "r", feed.getState().detailPending)).toMatchObject({ available: true, ready: false });
+    expect(view()).toMatchObject({ available: true, ready: true });
+    expect(view().displaySnapshot.runs[0].status).toBe("running");
   }
+  expect(reads()).toBe(1);
+  // Anything that is not a worker's execution update can change the plan.
+  emit("orchestration-changed", { runId: "r", revision: "epoch:5" });
+  expect(view()).toMatchObject({ available: true, ready: false });
+  await tick();
+  expect(reads()).toBe(2);
+  mock.reads.at(-1)!.reject(new Error("offline")); await tick();
+  expect(view()).toMatchObject({ available: true, ready: false });
   release(); off();
 });
 
-it("can show the first detail even when a busy worker invalidates every in-flight read", async () => {
+it("a busy worker's execution events do not keep the first detail from being ready", async () => {
   const feed = createOrchestrationFeed(), off = feed.subscribe(() => {});
   mock.reads[0].resolve(summary()); await tick();
   const release = feed.detail("r");
   emit("orchestration-changed", { runId: "r", revision: "epoch:2", attemptId: "a-r", execution: { state: "executing" } });
   mock.reads[1].resolve({ ...summary(), summary: false }); await tick();
-  expect(readDetail(feed.getState().snapshot!, feed.getState().details!, "r", feed.getState().detailPending)).toMatchObject({ available: true, ready: false });
-  expect(mock.reads.filter(r => r.cmd === "orchestration_run_detail")).toHaveLength(2);
+  expect(readDetail(feed.getState().snapshot!, feed.getState().details!, "r", feed.getState().detailPending)).toMatchObject({ available: true, ready: true });
+  expect(mock.reads.filter(r => r.cmd === "orchestration_run_detail")).toHaveLength(1);
   release(); off();
 });
 
@@ -296,4 +304,35 @@ it("replaces a run's batches on a lane change and preserves other runs", () => {
   expect(replaceRun(before, summary(), "r").batches?.map(b => b.id)).toEqual(["other"]);
   expect(detailedRun(next, before, "r").batches?.map(b => b.id)).toEqual(["new"]);
   expect(detailedRun(summary(), before, "r").batches).toBeUndefined();
+});
+
+it("Try again re-issues a detail read that never answers, and ignores the abandoned one", async () => {
+  const feed = createOrchestrationFeed(), off = feed.subscribe(() => {});
+  mock.reads[0].resolve(summary()); await tick();
+  const release = feed.detail("r");
+  const detailReads = () => mock.reads.filter(r => r.cmd === "orchestration_run_detail");
+  expect(detailReads()).toHaveLength(1);
+  // The first read hangs; asking again must not wait on it.
+  void feed.refreshRun("r").catch(() => {});
+  await tick();
+  expect(detailReads()).toHaveLength(2);
+  detailReads()[1].resolve({ ...summary(), summary: false }); await tick();
+  expect(feed.getState().detailPending?.has("r")).toBe(false);
+  // The abandoned request answering late (or failing) changes nothing.
+  detailReads()[0].reject(new Error("late")); await tick();
+  expect(feed.getState().detailErrors?.has("r")).toBe(false);
+  expect(feed.getState().detailPending?.has("r")).toBe(false);
+  release(); off();
+});
+
+it("keeps a retained plan readable and reports the error of a failed re-read", async () => {
+  const feed = createOrchestrationFeed(), off = feed.subscribe(() => {});
+  mock.reads[0].resolve(summary()); await tick();
+  const release = feed.detail("r");
+  mock.reads[1].resolve({ ...summary(), summary: false }); await tick();
+  release();
+  const again = feed.detail("r");
+  mock.reads.at(-1)!.reject(new Error("offline")); await tick();
+  expect(retainedView(feed.getState())).toMatchObject({ available: true, ready: false, error: expect.stringContaining("offline") });
+  again(); off();
 });

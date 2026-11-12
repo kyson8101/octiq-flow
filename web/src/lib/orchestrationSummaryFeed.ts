@@ -43,7 +43,9 @@ export function compactExecution(execution: WorkerExecution): WorkerExecution {
     latestError: latestError ? { ...latestError, message: short(latestError.message) } : latestError };
 }
 
-type Lease = { readers: number; reading: boolean; dirty: boolean; timer?: ReturnType<typeof setTimeout> };
+/** `execRev`: the newest revision an execution-only patch carried while this
+ * lease's read was in flight (see `executionOnly`). */
+type Lease = { readers: number; reading: boolean; dirty: boolean; seq: number; execRev?: string; timer?: ReturnType<typeof setTimeout> };
 export function createOrchestrationFeed() {
   let state: OrchestrationFeedState = { snapshot: null, error: null, details: new Map(), retainedDetails: new Map(), detailErrors: new Map(), detailPending: new Set() };
   const listeners = new Set<() => void>();
@@ -95,7 +97,10 @@ export function createOrchestrationFeed() {
   };
   const detailRead = async (id: string, lease: Lease) => {
     if (lease.reading || leases.get(id) !== lease || fallback) return;
-    lease.reading = true; lease.dirty = false;
+    lease.reading = true; lease.dirty = false; lease.execRev = undefined;
+    // `retryDetail` abandons a read that never answers by moving this number:
+    // whatever the old request says later belongs to nobody.
+    const seq = lease.seq;
     try {
       let detail: OrchestrationSnapshot;
       try { detail = await bridge.invoke<OrchestrationSnapshot>("orchestration_run_detail", { runId: id }); }
@@ -106,27 +111,51 @@ export function createOrchestrationFeed() {
       // A busy worker can invalidate every read before it returns. Keep that
       // answer for display; its revision still cannot authorize a decision.
       // The dirty lease schedules a follow-up without blanking the surface.
-      if (leases.get(id) !== lease) return;
+      if (leases.get(id) !== lease || lease.seq !== seq) return;
+      // Execution-only patches that landed during this read changed no plan,
+      // task or approval field, so a read no structural change has outdated
+      // is as current as they are (see `executionOnly`).
+      if (!lease.dirty && lease.execRev && detail.runRevisions) detail = { ...detail, runRevisions: { ...detail.runRevisions, [id]: lease.execRev } };
+      lease.execRev = undefined;
       const details = new Map(state.details).set(id, detail);
       const errors = new Map(state.detailErrors); errors.delete(id);
       const pending = new Set(state.detailPending);
       if (!lease.dirty) pending.delete(id);
       state = { ...state, details, detailErrors: errors, detailPending: pending }; notify(true);
     } catch (e) {
-      if (leases.get(id) === lease && !lease.dirty) {
+      if (leases.get(id) === lease && lease.seq === seq && !lease.dirty) {
         state = { ...state, detailErrors: new Map(state.detailErrors).set(id, String(e)) }; notify(true);
       }
     } finally {
+      if (lease.seq !== seq) return;
       lease.reading = false;
       if (lease.dirty && leases.get(id) === lease) lease.timer = setTimeout(() => { lease.timer = undefined; void detailRead(id, lease); }, READ_GAP_MS);
     }
+  };
+  /** A worker's tool start or end rides an `orchestration-changed` that moves
+   * the run's revision token yet changes nothing a plan card reads. Treating
+   * it as an invalidation kept a busy run's detail never `ready`: its plan
+   * card was a "Reading plan…" line for as long as a worker worked. The held
+   * detail keeps pace with the token instead, but only when it matched the
+   * summary before this patch; any structural event still invalidates. */
+  const executionOnly = (runId: string, revision: string): boolean => {
+    const lease = leases.get(runId);
+    if (!lease || fallback) return false;
+    if (lease.reading) { lease.execRev = revision; return true; }
+    const detail = state.details?.get(runId);
+    const before = state.snapshot?.runRevisions?.[runId];
+    // A detail that did not match the summary before this patch is stale or
+    // not read: it must be read again, or nothing ever would.
+    if (!detail?.runRevisions || !before || detail.runRevisions[runId] !== before || state.detailPending?.has(runId)) return false;
+    state = { ...state, details: new Map(state.details).set(runId, { ...detail, runRevisions: { ...detail.runRevisions, [runId]: revision } }) };
+    return true;
   };
   const invalidateDetail = (id?: string) => {
     const errors = new Map(state.detailErrors);
     const pending = new Set(state.detailPending);
     for (const [key, lease] of leases) {
       if (id && key !== id) continue;
-      lease.dirty = true;
+      lease.dirty = true; lease.execRev = undefined;
       pending.add(key);
       errors.delete(key);
       if (!lease.reading && !lease.timer) lease.timer = setTimeout(() => { lease.timer = undefined; void detailRead(key, lease); }, NOTIFY_MS);
@@ -182,6 +211,17 @@ export function createOrchestrationFeed() {
     if (now) { clearTimeout(timer); timer = undefined; void runRead(); }
     else timer ??= setTimeout(() => { timer = undefined; void runRead(); }, Math.max(0, lastRead + READ_GAP_MS - Date.now()));
   };
+  /** Read one run's detail again now, whether or not an earlier read is still
+   * out: that one is abandoned by its lease and never waited for. */
+  const retryDetail = (id: string) => {
+    const lease = leases.get(id);
+    if (!lease || fallback) return;
+    lease.seq++; lease.reading = false; lease.dirty = false; lease.execRev = undefined;
+    clearTimeout(lease.timer); lease.timer = undefined;
+    const errors = new Map(state.detailErrors); errors.delete(id);
+    state = { ...state, detailErrors: errors, detailPending: new Set(state.detailPending).add(id) }; notify(true);
+    void detailRead(id, lease);
+  };
   const refresh = () => {
     whole = true; invalidateDetail();
     const promise = new Promise<void>((resolve, reject) => waiters.push({ resolve, reject }));
@@ -193,8 +233,9 @@ export function createOrchestrationFeed() {
     const offs = [
       bridge.on<{ runId?: string; revision?: string }>("orchestration-changed", payload => {
         if (fallback) return; // legacy owns its event listeners
-        invalidateDetail(payload?.runId);
         const update = executionUpdate(payload);
+        const execOnly = !!update && !!payload.runId && !!payload.revision && !!state.snapshot?.attempts.some(a => a.id === update.attemptId);
+        if (!(execOnly && executionOnly(payload.runId!, payload.revision!))) invalidateDetail(payload?.runId);
         if (update && state.snapshot?.attempts.some(a => a.id === update.attemptId)) patch(s => ({
           ...withExecution(s, { ...update, execution: compactExecution(update.execution) }),
           runRevisions: payload.runId && payload.revision ? { ...s.runRevisions, [payload.runId]: payload.revision } : s.runRevisions,
@@ -228,6 +269,8 @@ export function createOrchestrationFeed() {
       return () => { listeners.delete(fn); if (!listeners.size) { detach?.(); detach = undefined; clearTimeout(timer); timer = undefined; clearTimeout(notifyTimer); notifyTimer = undefined; } };
     },
     refresh,
+    /** Ask again for the summary and for this run's detail. */
+    refreshRun(id: string) { const done = refresh(); retryDetail(id); return done; },
     holdChats(keys: string[]) {
       const next = [...new Set(keys)].sort();
       if (JSON.stringify(next) === JSON.stringify(heldChatKeys)) return;
@@ -239,7 +282,7 @@ export function createOrchestrationFeed() {
       let lease = leases.get(id);
       if (lease) lease.readers++;
       else {
-        lease = { readers: 1, reading: false, dirty: false }; leases.set(id, lease);
+        lease = { readers: 1, reading: false, dirty: false, seq: 0 }; leases.set(id, lease);
         if (fallback) legacyReleases.set(lease, legacy.detail(id));
         else {
           // Promote only the display evidence. Even equal revisions must wait

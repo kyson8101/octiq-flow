@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 import { renderToStaticMarkup } from "react-dom/server";
+import type { ReactElement } from "react";
 import { PlanRejectConfirmation, PlanReview } from "./PlanReview";
 import type { OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
 
@@ -48,6 +49,22 @@ describe("PlanReview", () => {
     expect(html).toContain("Not this direction");
     expect(html).toContain("Cancel");
     expect(html).toContain("Confirm reject");
+  });
+
+  it("sends nothing on Enter in the reason box while a decision is held, or from a held key", () => {
+    const sent = vi.fn();
+    const key = (disabled: boolean, busy: boolean, event: { repeat?: boolean } = {}) => {
+      const tree = PlanRejectConfirmation({ reason: "no", busy, disabled, rejecting: false,
+        onReason: () => {}, onConfirm: sent, onCancel: () => {} }) as ReactElement<{ children: ReactElement<{ onKeyDown: (e: unknown) => void }>[] }>;
+      const input = tree.props.children[0];
+      input.props.onKeyDown({ key: "Enter", repeat: false, ...event, preventDefault: () => {}, nativeEvent: { isComposing: false } });
+    };
+    key(true, false); // refreshing / holding
+    key(false, true); // an answer already out
+    key(false, false, { repeat: true }); // a key held down
+    expect(sent).not.toHaveBeenCalled();
+    key(false, false);
+    expect(sent).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a spec behind its task's disclosure", () => {

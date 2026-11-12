@@ -69,7 +69,7 @@ import { wrapUpBubble } from "../lib/chatComplete";
 import { foldNoticeReplies, isNoticeTurn, noticeReply, noticeText, readNoticeTurn } from "../lib/hostNotice";
 import { ChatPersonaContext } from "../lib/agentRoster";
 import { HostNotice } from "./HostNotice";
-import { initialTurn, turnWindowStart, TURN_BATCH } from "../lib/messageWindow";
+import { initialTurn, needsEarlierPage, orientedFirst, runningTurns, turnWindowStart, TURN_BATCH } from "../lib/messageWindow";
 import { dropHeld, repeatsAnother } from "../lib/pressGuard";
 import { parseVisualizationReference, VisualizationLink } from "./Visualization";
 import {
@@ -907,7 +907,8 @@ function TurnView({
   /** Arrived while the transcript was already on screen, rather than having
    *  been there when it opened. Only these animate in — see `justArrived`. */
   fresh?: boolean;
-  /** The turn at the bottom — the only one a running agent can still add to. */
+  /** The turn is part of the running one (`runningTurns`): the agent can still
+   *  add to it, so its work is not folded away as finished. */
   last?: boolean;
   /** Whether the chat is working. A turn can only be waiting its turn while
    *  something else is having one. */
@@ -920,6 +921,10 @@ function TurnView({
 }) {
   const [workOpen, setWorkOpen] = useReadingState<boolean>("work", false);
   const wasSettled = useRef(false);
+  // Settling is latched only for a turn this view has seen run. One mounted
+  // before `busy` was restored (coming back to a chat) was latched as finished
+  // and stayed folded after the agent turned out to be working.
+  const sawRunning = useRef(false);
   const role = messages[0].role;
   const nameOf = useContext(ChatPersonaContext);
   // One turn is one voice — `groupTurns` breaks on the seat, so every message
@@ -943,7 +948,8 @@ function TurnView({
   const blocks = messages.flatMap((m) => m.blocks);
   const turnLive = !!busy && !!last && !messages.some((m) => m.turnEnd) && !wasSettled.current;
   useLayoutEffect(() => {
-    if (role === "assistant" && !streaming && !turnLive) wasSettled.current = true;
+    if (turnLive) sawRunning.current = true;
+    else if (role === "assistant" && !streaming && sawRunning.current) wasSettled.current = true;
   }, [role, streaming, turnLive]);
   const plan = turnFold(messages, {
     live: turnLive, stopped,
@@ -1527,7 +1533,7 @@ const MessageListBody = function MessageList({
   const innerRef = useRef<HTMLDivElement>(null);
   const loadMoreRef = useRef<() => void>(() => {});
   const morePending = useRef(false);
-  const prependAnchor = useRef<{ id?: string; first?: string; at: ChatPlace; server: boolean } | null>(null);
+  const prependAnchor = useRef<{ id?: string; first?: string; at: ChatPlace; server: boolean; orient?: { stuck: boolean } } | null>(null);
   const lastScroll = useRef(0);
   const touching = useRef(false);
   // Only follow the stream while the reader is already at the bottom: yanking
@@ -2020,12 +2026,20 @@ const MessageListBody = function MessageList({
     return { turns: foldNoticeReplies(groupTurns(top)), kids };
   }, [messages]);
 
-  const initialWindow = () => ({
-    id: conversationId,
-    ready: turns.length > 0,
-    readingState,
-    first: readingState?.first !== undefined ? readingState.first : initialTurn(turns, conversationId ? chatPlaceOf(conversationId)?.turn : undefined),
-  });
+  const initialWindow = () => {
+    const placed = conversationId ? chatPlaceOf(conversationId)?.turn : undefined;
+    const base = readingState?.first !== undefined ? readingState.first : initialTurn(turns, placed);
+    // A chat left mid-scroll comes back to that place and nothing else. One
+    // that was at the end opens with the person's last real request in it, so
+    // a window cut to the last two or three turns still says what was asked.
+    return {
+      id: conversationId,
+      ready: turns.length > 0,
+      readingState,
+      first: placed ? base : orientedFirst(turns, base),
+      placed: !!placed,
+    };
+  };
   let [visibleWindow, setWindow] = useState(initialWindow);
   if (visibleWindow.id !== conversationId || visibleWindow.readingState !== readingState || (!visibleWindow.ready && turns.length > 0)) {
     visibleWindow = initialWindow();
@@ -2038,14 +2052,35 @@ const MessageListBody = function MessageList({
   // between those two layouts.
   const incoming = prependAnchor.current;
   if (incoming?.server && incoming.id === conversationId && turns[0]?.[0].id !== incoming.first && visibleWindow.first !== null) {
-    visibleWindow = { id: conversationId, readingState, ready: true, first: null };
+    visibleWindow = { id: conversationId, readingState, ready: true, first: null, placed: true };
     setWindow(visibleWindow);
+  }
+  // The turns that tell where the chat stands can arrive after the first
+  // paint (a cached tail, then the page behind it). A window that opened on the
+  // end and still follows it grows back to the last request instead of staying
+  // cut to the turns it first saw.
+  if (visibleWindow.ready && !visibleWindow.placed && stick.current && !prependAnchor.current) {
+    const first = orientedFirst(turns, visibleWindow.first);
+    if (first !== visibleWindow.first) {
+      visibleWindow = { ...visibleWindow, first };
+      setWindow(visibleWindow);
+    }
+  }
+  // The page read to find the last request is here: widen the window to it
+  // in the same commit (the anchor below holds the place), when it is near.
+  if (incoming?.orient && incoming.id === conversationId && turns[0]?.[0].id !== incoming.first && visibleWindow.ready && visibleWindow.first !== null) {
+    const first = orientedFirst(turns, visibleWindow.first);
+    if (first !== visibleWindow.first) {
+      visibleWindow = { ...visibleWindow, first };
+      setWindow(visibleWindow);
+    }
   }
   useLayoutEffect(() => {
     if (readingState && visibleWindow.ready) readingState.first = visibleWindow.first;
   }, [readingState, visibleWindow]);
   const start = turnWindowStart(turns, visibleWindow.first);
   const visibleTurns = useMemo(() => turns.slice(start), [turns, start]);
+  const running = useMemo(() => runningTurns(turns, !!busy), [turns, busy]);
   // Marks whose turn is not shown yet: at the head until it is.
   const earlierMarks = useMemo(
     () => (marks?.size && start > 0
@@ -2062,14 +2097,17 @@ const MessageListBody = function MessageList({
   if (historyRow.id !== conversationId || (showHistoryRow && !historyRow.shown)) {
     setHistoryRow({ id: conversationId, shown: showHistoryRow });
   }
-  const loadMore = async (pressed = false) => {
+  /** `orient`: the transcript has no real request in what it holds, so the
+   *  page is read from the server even though the window could still widen
+   *  over turns already loaded (they hold nothing to orient by). */
+  const loadMore = async (pressed = false, orient = false) => {
     if (!hasMore || loadingEarlier || morePending.current) return;
     const el = scrollerRef.current;
     if (!el) return;
     const id = conversationId;
     const requestedAt = performance.now();
     const at = prependPlaceFrom(el.scrollTop, anchorsIn(el));
-    prependAnchor.current = { id, first: visibleTurns[0]?.[0].id, at, server: start === 0 };
+    prependAnchor.current = { id, first: visibleTurns[0]?.[0].id, at, server: !orient && start === 0, orient: orient ? { stuck: stick.current } : undefined };
     stopGlide();
     releasePlace();
     stick.current = false;
@@ -2095,12 +2133,13 @@ const MessageListBody = function MessageList({
       holdPlace(latest);
     };
     try {
-      if (start > 0) {
+      if (start > 0 && !orient) {
         await ready();
-        if (conv.current === id) setWindow({ id, readingState, ready: true, first: turns[Math.max(0, start - TURN_BATCH)][0].id });
+        if (conv.current === id) setWindow({ id, readingState, ready: true, first: turns[Math.max(0, start - TURN_BATCH)][0].id, placed: true });
       } else await onLoadEarlier?.(ready);
     } catch (error) {
       if (conv.current === id) {
+        if (prependAnchor.current?.orient) stick.current = prependAnchor.current.orient.stuck;
         prependAnchor.current = null;
         releasePlace();
       }
@@ -2108,11 +2147,25 @@ const MessageListBody = function MessageList({
     } finally { morePending.current = false; }
   };
   loadMoreRef.current = () => { if (!earlierError) void loadMore(); };
+  // The last request is not among the turns the chat holds (a long running turn
+  // filled the page that was read): read one more page behind them, once, so the
+  // transcript opens with something to reorient by.
+  const reoriented = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (!conversationId || reoriented.current === conversationId) return;
+    // Only a read that can start spends the chance: one that finds a page
+    // already coming, or no scroller yet, is asked again on the next render.
+    if (!needsEarlierPage(turns, { hasEarlier, loading: loadingEarlier || morePending.current, failed: !!earlierError })) return;
+    if (!scrollerRef.current) return;
+    reoriented.current = conversationId;
+    loadMore(false, true).catch(() => {});
+  });
   useLayoutEffect(() => {
     const saved = prependAnchor.current;
     const el = scrollerRef.current;
     if (!saved || saved.id !== conversationId || !el || (saved.first === visibleTurns[0]?.[0].id && loadingEarlier)) return;
     prependAnchor.current = null;
+    if (saved.orient) stick.current = saved.orient.stuck;
     holdPlace(saved.at);
     restorePlace(saved.at);
     setAway(el.scrollHeight - el.scrollTop - el.clientHeight >= NEAR_BOTTOM);
@@ -2253,7 +2306,7 @@ const MessageListBody = function MessageList({
         )}
         {head}
         {earlierMarks}
-        {visibleTurns.map((turn, i) => (
+        {visibleTurns.map((turn) => (
           <ReadingScope key={turn[0].id} id={turn[0].id}>
             <TurnView
               messages={turn}
@@ -2270,7 +2323,7 @@ const MessageListBody = function MessageList({
               kids={kids}
               agentByTool={agentByTool}
               onOpenAgent={onOpenAgent}
-              last={i === visibleTurns.map((t) => t[0].role === "assistant").lastIndexOf(true)}
+              last={running.has(turn[0].id)}
               busy={busy}
               tints={tints}
               fresh={fresh.has(turn[0].id)}
