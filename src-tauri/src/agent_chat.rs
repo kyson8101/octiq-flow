@@ -9688,7 +9688,7 @@ pub fn chat_index_deleted() -> Vec<crate::chat_index::ChatMeta> {
 /// Every write rewrites the whole chat index, so nothing here writes on its
 /// own: `PreviewBatch` collects what is submitted and writes every chat's
 /// pending preview in one pass, at most about once a second however many
-/// chats are busy.
+/// chats are busy; a turn's end writes at once when the index has been quiet.
 #[derive(Default)]
 pub(crate) struct HostPreview;
 
@@ -9696,8 +9696,9 @@ impl HostPreview {
     /// A message that finished mid-turn is written within this long, with
     /// everything else pending by then.
     const MID_TURN: Duration = Duration::from_secs(4);
-    /// A turn's closing words are written within this long.
-    const TURN_END: Duration = Duration::from_secs(1);
+    /// A turn's closing words are due at once (and written at once unless the
+    /// index was just rewritten, see `PreviewBatch::MIN_GAP`).
+    const TURN_END: Duration = Duration::ZERO;
 
     /// The readable words of one stream event, if it carries any.
     pub(crate) fn words(event: &Value, spoken: Option<&str>) -> Option<String> {
@@ -9745,7 +9746,12 @@ impl HostPreview {
         };
         match closing.map(str::trim).filter(|t| !t.is_empty()) {
             Some(text) => {
-                PreviewBatch::global().submit(id, text.to_owned(), Instant::now(), Self::TURN_END)
+                let batch = PreviewBatch::global();
+                batch.submit(id, text.to_owned(), Instant::now(), Self::TURN_END);
+                // Written on this thread unless the index was rewritten in
+                // the last second; then the writer thread does it with
+                // whatever else has gathered.
+                batch.write_due();
             }
             None => PreviewBatch::global().withdraw(id),
         }
@@ -9759,6 +9765,14 @@ impl HostPreview {
 pub(crate) struct PreviewBatch {
     pending: Mutex<HashMap<String, (String, Instant)>>,
     wake: Condvar,
+    /// When the index was last rewritten for previews; one writer at a time.
+    last_write: Mutex<Option<Instant>>,
+}
+
+impl PreviewBatch {
+    /// The index is rewritten for previews at most this often, however many
+    /// chats are busy.
+    const MIN_GAP: Duration = Duration::from_secs(1);
 }
 
 impl PreviewBatch {
@@ -9811,38 +9825,57 @@ impl PreviewBatch {
         Some(pending.drain().map(|(id, (text, _))| (id, text)).collect())
     }
 
+    /// When the next write may happen: the earliest due preview, but not
+    /// within `MIN_GAP` of the last write. `None` with nothing pending.
+    fn next_write(
+        pending: &HashMap<String, (String, Instant)>,
+        last_write: Option<Instant>,
+        now: Instant,
+    ) -> Option<Instant> {
+        let earliest = pending.values().map(|(_, due)| *due).min()?;
+        Some(earliest.max(last_write.map_or(now, |at| at + Self::MIN_GAP)))
+    }
+
+    /// Write everything pending if something is due and the gap since the
+    /// last write has passed. The caller that is told "now" (a turn's end)
+    /// writes on its own thread, so its words are on disk and announced
+    /// before it returns; the writer thread does the rest.
+    pub(crate) fn write_due(&self) {
+        let mut last = self.last_write.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        if last.is_some_and(|at| now < at + Self::MIN_GAP) {
+            return;
+        }
+        let Some(batch) = self.take_due(now) else {
+            return;
+        };
+        *last = Some(now);
+        match crate::chat_index::set_host_previews(&batch) {
+            Ok(changed) => {
+                for (id, _) in changed {
+                    announce_index_change(&id, false);
+                }
+            }
+            Err(error) => eprintln!("[chat] could not keep the previews: {error}"),
+        }
+    }
+
     fn write_forever(&self) {
         loop {
-            let batch = {
-                let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-                loop {
-                    let now = Instant::now();
-                    if let Some(batch) = Self::take_due_locked(&mut pending, now) {
-                        break batch;
-                    }
-                    let wait = pending
-                        .values()
-                        .map(|(_, due)| due.saturating_duration_since(now))
-                        .min();
-                    pending = match wait {
-                        Some(wait) => self.wake.wait_timeout(pending, wait),
-                        None => self.wake.wait_timeout(pending, Duration::from_secs(3600)),
-                    }
-                    .unwrap_or_else(|e| e.into_inner())
-                    .0;
-                }
-            };
-            match crate::chat_index::set_host_previews(&batch) {
-                Ok(changed) => {
-                    for (id, _) in changed {
-                        announce_index_change(&id, false);
-                    }
-                }
-                Err(error) => eprintln!("[chat] could not keep the previews: {error}"),
-            }
-            // One rewrite of the index at most this often, however many
-            // chats keep submitting.
-            std::thread::sleep(Duration::from_secs(1));
+            self.write_due();
+            let last = *self.last_write.lock().unwrap_or_else(|e| e.into_inner());
+            let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let now = Instant::now();
+            let wait = Self::next_write(&pending, last, now)
+                .map_or(Duration::from_secs(3600), |at| {
+                    at.saturating_duration_since(now)
+                });
+            // A submit wakes it early; the timeout wakes it when one is due.
+            drop(
+                self.wake
+                    .wait_timeout(pending, wait.max(Duration::from_millis(10)))
+                    .unwrap_or_else(|e| e.into_inner()),
+            );
         }
     }
 }
@@ -14200,6 +14233,30 @@ mod idle_tests {
     }
 
     #[test]
+    fn the_index_is_not_rewritten_more_often_than_the_gap() {
+        let t0 = Instant::now();
+        let mut pending = HashMap::new();
+        assert_eq!(PreviewBatch::next_write(&pending, None, t0), None);
+        pending.insert("a".to_string(), ("x".to_string(), t0));
+        // Nothing written lately: due now.
+        assert_eq!(PreviewBatch::next_write(&pending, None, t0), Some(t0));
+        // Just written: wait out the gap even though the preview is due.
+        assert_eq!(
+            PreviewBatch::next_write(&pending, Some(t0), t0),
+            Some(t0 + PreviewBatch::MIN_GAP)
+        );
+        // A later due time is not brought forward by the gap.
+        pending.insert(
+            "a".to_string(),
+            ("x".to_string(), t0 + Duration::from_secs(4)),
+        );
+        assert_eq!(
+            PreviewBatch::next_write(&pending, Some(t0), t0),
+            Some(t0 + Duration::from_secs(4))
+        );
+    }
+
+    #[test]
     fn a_turn_that_did_not_end_cleanly_leaves_the_previous_preview() {
         let key = "chat:failed-turn-preview-test";
         let mut preview = HostPreview::default();
@@ -14214,14 +14271,13 @@ mod idle_tests {
         assert!(!ours(
             PreviewBatch::global().take_due(later).unwrap_or_default()
         ));
-        // A clean one writes its closing words.
+        // A clean one is due at once and handed to the index write on the
+        // spot (this chat is not listed, so nothing lands): not left waiting.
         preview.heard(key, key, "half an answer".into());
         preview.turn_ended(key, key, Some("the closing words"));
-        let due = PreviewBatch::global().take_due(later).unwrap_or_default();
-        assert!(due.contains(&(
-            "failed-turn-preview-test".to_string(),
-            "the closing words".to_string()
-        )));
+        assert!(!ours(
+            PreviewBatch::global().take_due(later).unwrap_or_default()
+        ));
         // A worker's chat is nobody's row.
         let worker = "chat:orch-abc";
         preview.heard(worker, worker, "x".into());

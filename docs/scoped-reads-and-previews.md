@@ -54,12 +54,14 @@ when 0).
 - **Writes are batched, because every write rewrites the whole index.**
   Nothing writes the index on its own: a submitted preview waits in
   `PreviewBatch` (the newest text per chat replaces an older pending one) and
-  is due 4 s after the first mid-turn message, or 1 s after a turn ends. When
-  anything is due, EVERY pending preview goes out in one read/write of the
-  index, and the writer then pauses 1 s, so the index is rewritten at most
-  about once a second however many chats are busy. Each changed row is
-  announced with `chat-index-changed` after the write, so an event means the
-  text is on disk. Latency: up to 4 s mid-turn, about 1-2 s after a turn.
+  is due 4 s after the first mid-turn message and at once when a turn ends.
+  When anything is due, EVERY pending preview goes out in one read/write of
+  the index, and the index is not rewritten for previews more than once a
+  second: a turn's end writes on its own thread when the index has been quiet
+  for a second, otherwise the writer thread writes it, with whatever else has
+  gathered, as the second runs out. Each changed row is announced with
+  `chat-index-changed` after the write, so an event means the text is on disk.
+  Latency: up to 4 s mid-turn, none to 1 s after a turn.
 - **A failed, refused or interrupted turn leaves the previous preview.** It
   submits nothing and withdraws what it had submitted that was not written
   yet. A message of that turn the batch had already written stays (it was
