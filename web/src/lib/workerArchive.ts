@@ -20,7 +20,7 @@ export function workerArchiveDisabledReason(snapshot: OrchestrationSnapshot, att
   return null;
 }
 
-export function workerArchiveChatList(chats: Conversation[], snapshot: OrchestrationSnapshot, archived = false): Conversation[] {
+export function workerArchiveChatList(chats: Conversation[], snapshot: Pick<OrchestrationSnapshot, "attempts">, archived = false): Conversation[] {
   const ids = new Set(snapshot.attempts.filter((attempt) => attempt.archivedAt != null)
     .map((attempt) => attempt.workerChatKey.replace(/^chat:/, "")));
   return chats.filter((chat) => ids.has(chat.id) === archived);

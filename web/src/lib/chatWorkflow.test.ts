@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { chatRunStatus, chatSnapshot, rowRun, runSummary, workflowChatList } from "./chatWorkflow";
+import { describe, expect, it, vi } from "vitest";
+
+// `withExecution` lives beside the feed, which opens the socket on import.
+vi.mock("./bridge", () => ({ bridge: { state: "open", invoke: () => new Promise(() => {}), on: () => () => {}, onState: () => () => {} } }));
+import { attemptsByTask, chatRunStatus, chatSnapshot, rowRun, runSummary, stableWorkflowFacts, workflowChatList } from "./chatWorkflow";
+import { withExecution } from "./orchestrationFeed";
 import { EMPTY_ORCHESTRATION, type OrchestrationSnapshot, type OrchestrationRun, type OrchestrationAttempt } from "./orchestration";
 import type { Conversation } from "./store";
 const run = (id: string, owner = "main", status: OrchestrationRun["status"] = "running", createdAt = 1): OrchestrationRun => ({ id, coordinatorChatKey: `chat:${owner}`, status, createdAt, updatedAt: createdAt, objective: id, rootPath: "/repo", workspaceId: "project", maxConcurrent: 2 });
@@ -94,4 +98,72 @@ it("scopes background notifications to the main chat's runs", () => {
   const note = { id: "note", runId: "run", fromChatKey: "worker", targetChatKey: "chat:main", source: "message:one", kind: "message", body: "help", state: "pending" as const, attempts: 0, coalesced: 0, createdAt: 1, updatedAt: 1, nextAttemptAt: 1 };
   const data = { ...snapshot, notifications: [note, { ...note, id: "other", runId: "other" }] };
   expect(chatSnapshot(data, "chat:main").notifications?.map(n => n.id)).toEqual(["note"]);
+});
+
+describe("chat list derivation (perf)", () => {
+  // The derivation as it was before the per-task index: the oracle.
+  const reference = (chats: Conversation[], data: OrchestrationSnapshot, selectedId: string | null) => {
+    const chatIds = new Set(chats.map((c) => c.id));
+    const runs = new Map(data.runs.map((r) => [r.id, r]));
+    const hidden = new Set<string>();
+    for (const task of data.tasks) {
+      const attempts = data.attempts.filter((a) => a.taskId === task.id).sort((a, b) => b.number - a.number);
+      const current = attempts.find((a) => a.id === task.activeAttemptId) ?? attempts[0];
+      const parent = runs.get(task.runId)?.coordinatorChatKey.replace(/^chat:/, "");
+      if (!current || !parent || !chatIds.has(parent) || !chatIds.has(current.workerChatKey.replace(/^chat:/, ""))) continue;
+      for (const a of attempts) if (a.id !== current.id) hidden.add(a.workerChatKey.replace(/^chat:/, ""));
+    }
+    const archived = new Set(data.attempts.filter((a) => a.archivedAt != null).map((a) => a.workerChatKey.replace(/^chat:/, "")));
+    return chats.filter((c) => !archived.has(c.id)).filter((c) => c.id === selectedId || !hidden.has(c.id));
+  };
+  const big = () => {
+    let seed = 7;
+    const rand = (n: number) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    const runs = [run("r1", "m1"), run("r2", "m2"), run("r3", "gone")];
+    const tasks: OrchestrationSnapshot["tasks"] = [];
+    const attempts: OrchestrationAttempt[] = [];
+    const chats: Conversation[] = [chat("m1"), chat("m2")];
+    for (let t = 0; t < 60; t++) {
+      const id = `t${t}`;
+      const count = 1 + rand(4);
+      for (let n = 1; n <= count; n++) {
+        const a = { ...attempt(`${id}a${n}`, n), taskId: id, runId: runs[t % 3].id, archivedAt: rand(9) === 0 ? 5 : undefined };
+        attempts.push(a);
+        if (rand(5) !== 0) chats.push(chat(a.id));
+      }
+      tasks.push({ id, runId: runs[t % 3].id, title: id, spec: "", dependsOn: [], status: "running", activeAttemptId: rand(3) === 0 ? "nope" : `${id}a${1 + rand(count)}`, createdAt: 1, updatedAt: 1 });
+    }
+    attempts.reverse();
+    return { chats, data: { ...EMPTY_ORCHESTRATION, runs, tasks, attempts } as OrchestrationSnapshot };
+  };
+  it("matches the unindexed derivation, selected or not", () => {
+    const { chats, data } = big();
+    for (const selected of [null, "m1", chats[5].id, chats[9].id]) {
+      expect(workflowChatList(chats, data, selected).map((c) => c.id)).toEqual(reference(chats, data, selected).map((c) => c.id));
+    }
+  });
+  it("indexes a given attempts array once", () => {
+    const { data } = big();
+    expect(attemptsByTask(data.attempts)).toBe(attemptsByTask(data.attempts));
+    expect(attemptsByTask([...data.attempts])).not.toBe(attemptsByTask(data.attempts));
+  });
+  it("keeps its identity across execution-only patches, as withExecution makes them", () => {
+    const { data } = big();
+    const prev = stableWorkflowFacts(null, data);
+    const patched = withExecution(data, { attemptId: data.attempts[3].id, execution: { phase: "tool" } as never });
+    expect(patched.attempts).not.toBe(data.attempts);
+    expect(stableWorkflowFacts(prev, patched)).toBe(prev);
+    const status = { ...patched, tasks: patched.tasks.map((t) => ({ ...t, status: "completed" as const, updatedAt: 9 })), runs: patched.runs.map((r) => ({ ...r, updatedAt: 9 })) };
+    expect(stableWorkflowFacts(prev, status)).toBe(prev);
+  });
+  it("lets go when membership or archive facts move", () => {
+    const { data } = big();
+    const prev = stableWorkflowFacts(null, data);
+    const archived = { ...data, attempts: data.attempts.map((a, i) => i === 0 ? { ...a, archivedAt: 99 } : a) };
+    const added = { ...data, attempts: [...data.attempts, { ...attempt("fresh", 9), taskId: "t0" }] };
+    const switched = { ...data, tasks: data.tasks.map((t, i) => i === 0 ? { ...t, activeAttemptId: "other" } : t) };
+    const reparented = { ...data, runs: data.runs.map((r, i) => i === 0 ? { ...r, coordinatorChatKey: "chat:elsewhere" } : r) };
+    const renumbered = { ...data, attempts: data.attempts.map((a, i) => i === 1 ? { ...a, number: 42 } : a) };
+    for (const next of [archived, added, switched, reparented, renumbered]) expect(stableWorkflowFacts(prev, next)).toBe(next);
+  });
 });

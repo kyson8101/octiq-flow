@@ -120,17 +120,60 @@ export function workerLine(
   return { text: `${task.title} · ${attempt.status}`, tone: null };
 }
 
+/** What `workflowChatList` reads of a ledger, and nothing else. */
+export type WorkflowFacts = Pick<OrchestrationSnapshot, "runs" | "tasks" | "attempts">;
+
+const attemptsByTaskCache = new WeakMap<OrchestrationAttempt[], Map<string, OrchestrationAttempt[]>>();
+
+/** Attempts grouped by task, newest first, built once per attempts array.
+ *  Filtering every attempt for every task was O(tasks × attempts) on each
+ *  render of the chat list. Order within a task is the old
+ *  `filter(...).sort(number desc)`: a stable sort of the same sequence. */
+export function attemptsByTask(attempts: OrchestrationAttempt[]): Map<string, OrchestrationAttempt[]> {
+  const held = attemptsByTaskCache.get(attempts);
+  if (held) return held;
+  const index = new Map<string, OrchestrationAttempt[]>();
+  for (const attempt of attempts) {
+    const list = index.get(attempt.taskId);
+    if (list) list.push(attempt); else index.set(attempt.taskId, [attempt]);
+  }
+  for (const list of index.values()) list.sort((a, b) => b.number - a.number);
+  attemptsByTaskCache.set(attempts, index);
+  return index;
+}
+
 /** Keep old attempts searchable and selectable, but group the ordinary list by task. */
-export function workflowChatList(chats: Conversation[], snapshot: OrchestrationSnapshot, selectedId: string | null): Conversation[] {
+export function workflowChatList(chats: Conversation[], snapshot: WorkflowFacts, selectedId: string | null): Conversation[] {
   const chatIds = new Set(chats.map((chat) => chat.id));
   const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
+  const byTask = attemptsByTask(snapshot.attempts);
   const hidden = new Set<string>();
   for (const task of snapshot.tasks) {
-    const attempts = snapshot.attempts.filter((a) => a.taskId === task.id).sort((a, b) => b.number - a.number);
+    const attempts = byTask.get(task.id) ?? [];
     const current = attempts.find((a) => a.id === task.activeAttemptId) ?? attempts[0];
     const parent = runs.get(task.runId)?.coordinatorChatKey.replace(/^chat:/, "");
     if (!current || !parent || !chatIds.has(parent) || !chatIds.has(current.workerChatKey.replace(/^chat:/, ""))) continue;
     for (const attempt of attempts) if (attempt.id !== current.id) hidden.add(attempt.workerChatKey.replace(/^chat:/, ""));
   }
   return workerArchiveChatList(chats, snapshot).filter((chat) => chat.id === selectedId || !hidden.has(chat.id));
+}
+
+const sameList = <T,>(a: readonly T[], b: readonly T[], same: (x: T, y: T) => boolean): boolean =>
+  a === b || (a.length === b.length && a.every((item, i) => item === b[i] || same(item, b[i])));
+
+/** The ledger as `workflowChatList` and `workerArchiveChatList` read it:
+ *  membership and archive facts. Returns `prev` itself when `next` differs
+ *  from it only in what those never read (a worker's `execution`, a task's
+ *  status or result, a run's revision), so a memo keyed on the returned
+ *  object is not invalidated by a stream of execution patches. Keep the
+ *  field lists below equal to what the two functions read. */
+export function stableWorkflowFacts(prev: WorkflowFacts | null, next: WorkflowFacts): WorkflowFacts {
+  if (!prev) return next;
+  if (prev === next) return prev;
+  const same = sameList(prev.runs, next.runs, (a, b) => a.id === b.id && a.coordinatorChatKey === b.coordinatorChatKey)
+    && sameList(prev.tasks, next.tasks, (a, b) => a.id === b.id && a.runId === b.runId && a.activeAttemptId === b.activeAttemptId)
+    && sameList(prev.attempts, next.attempts, (a, b) =>
+      a.id === b.id && a.taskId === b.taskId && a.number === b.number
+      && a.workerChatKey === b.workerChatKey && a.archivedAt === b.archivedAt);
+  return same ? prev : next;
 }
