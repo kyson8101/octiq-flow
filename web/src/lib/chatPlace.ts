@@ -42,14 +42,14 @@ export const MAX_CHAT_PLACES = 80;
  *  backend, a font settling, a compaction folding the history away. */
 export type ChatPlace = {
   top: number;
-  /** The `data-map-turn` id of the last user turn at or above the top of the
+  /** The `data-reading-turn` message id of the last turn at or above the top of the
    *  view, or absent when the reader is above the first one. */
   turn?: string;
   /** How far below that turn's top the view begins. */
   delta?: number;
 };
 
-/** A user turn and how far down the content it sits. Measured by the caller —
+/** A message turn and how far down the content it sits. Measured by the caller —
  *  this module never touches the DOM, so it can be reasoned about (and
  *  tested) without one. */
 export type Anchor = { id: string; offset: number };

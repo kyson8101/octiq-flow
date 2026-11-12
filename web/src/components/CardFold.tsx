@@ -21,9 +21,11 @@
 // which the run panel's disclosures share).
 //
 // Folded is the state a card starts in. A card the person opened stays open
-// while it is on screen, by the id of what it asks; nothing is kept past that.
+// across chat switches, by the id/revision of what it asks. Only its open
+// choice is kept in the bounded page cache; no decision state is retained.
+import { ReadingStateContext, useReadingState } from "../lib/useReadingState";
 import { ActionIcon } from "./ActionIcon";
-import { useEffect, useId, useState, type AnimationEvent, type ReactNode } from "react";
+import { useContext, useEffect, useId, useRef, useState, type AnimationEvent, type ReactNode } from "react";
 import {
   foldIsOpen, foldPhase, foldPressed, foldSettled, foldStart,
   type FoldPhase, type FoldState,
@@ -54,7 +56,19 @@ const calm = (): boolean =>
  *  tests, which draw static markup and cannot press the control. */
 export function useFold(id: string, { parts = 1, startOpen = false }: { parts?: number; startOpen?: boolean } = {}): Fold {
   const base = useId();
-  const [state, setState] = useState<FoldState>(() => foldStart(id, startOpen));
+  const [rememberedOpen, rememberOpen] = useReadingState<boolean>(`fold:${id}`, startOpen);
+  const scope = useContext(ReadingStateContext);
+  let [held, setHeld] = useState(() => ({ scope, id, fold: foldStart(id, rememberedOpen) }));
+  if (held.scope !== scope || held.id !== id) {
+    held = { scope, id, fold: foldStart(id, rememberedOpen) };
+    setHeld(held);
+  }
+  const state = held.fold;
+  const current = useRef(state);
+  current.current = state;
+  const setState = (next: FoldState | ((was: FoldState) => FoldState)) => setHeld(was => ({
+    ...was, fold: typeof next === "function" ? next(was.fold) : next,
+  }));
   const phase = foldPhase(state, id);
   const open = foldIsOpen(phase);
   // A close with nothing to animate would never hear its animation end.
@@ -70,7 +84,12 @@ export function useFold(id: string, { parts = 1, startOpen = false }: { parts?: 
     phase,
     controls: Array.from({ length: Math.max(1, parts) }, (_, part) => partId(part)).join(" "),
     partId,
-    toggle: () => setState((was) => foldPressed(was, id, calm())),
+    toggle: () => {
+      const next = foldPressed(current.current, id, calm());
+      current.current = next;
+      rememberOpen(foldIsOpen(next.phase));
+      setState(next);
+    },
     settled: () => setState((was) => foldSettled(was, id)),
   };
 }

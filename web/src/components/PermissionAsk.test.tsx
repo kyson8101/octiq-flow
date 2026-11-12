@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: vi.fn() } }));
+import { ChatReadingState } from "../lib/chatReadingState";
+import { ReadingStateContext, readingStateKey } from "../lib/useReadingState";
 import { WHOLE_MAX } from "../lib/cardFold";
 import { PermissionAsk, permissionAgent, askNote, askNoteParts, askShortParts } from "./PermissionAsk";
 
@@ -1037,5 +1039,41 @@ describe("the line beside the answers", () => {
     expect(askShortParts({ id: "s2", answerWithinSecs: 50 })).toEqual(["No answer within 50 seconds counts as Deny", null, ""]);
     expect(askShortParts({ id: "s3" })).toEqual(["No answer within three minutes counts as Deny", null, ""]);
     expect(askShortParts({ id: "s4", answerWithinSecs: 0 }, null)).toEqual(["No answer counts as Deny", null, ""]);
+  });
+});
+
+
+describe("a command disclosure restored from page memory", () => {
+  const command = Array.from({ length: 13 }, (_, i) => `echo command line ${i + 1}`).join("\n");
+  const renderRestored = (text: string, state: ChatReadingState) => renderToStaticMarkup(
+    <ReadingStateContext.Provider value={{ state, path: "permission" }}>
+      <PermissionAsk ask={{ id: "restored", toolName: "Bash", toolInput: { command: text } }} onAnswered={() => {}} />
+    </ReadingStateContext.Provider>,
+  );
+  const bothHeld = (html: string) => {
+    for (const label of ["Always", "Allow once"]) {
+      const button = html.match(/<button[^>]*>/g)?.find(button => button.includes(`aria-label="${label}"`));
+      expect(button).toContain('aria-disabled="true"');
+    }
+  };
+  it("restores the open choice but keeps both Allows held before this mount's post-draw proof", () => {
+    const state = new ChatReadingState();
+    state.set(readingStateKey("permission", "fold:restored"), true);
+    const html = renderRestored(command, state);
+    expect(html).toContain('aria-label="Fold the command"');
+    expect(html).toContain("echo command line 13");
+    expect(html).toContain("Wait for the full command to be drawn.");
+    bothHeld(html);
+    // A second render is another mount. An earlier card's local drawnWhole
+    // evidence must never have been persisted with the open choice.
+    bothHeld(renderRestored(command, state));
+  });
+  it("holds a replaced command under the same id, even though its restored fold draws it whole", () => {
+    const state = new ChatReadingState();
+    state.set(readingStateKey("permission", "fold:restored"), true);
+    renderRestored(command, state);
+    const html = renderRestored(command + "\necho replacement", state);
+    expect(html).toContain("echo replacement");
+    bothHeld(html);
   });
 });

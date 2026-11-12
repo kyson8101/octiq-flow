@@ -26,13 +26,14 @@
 // inside the card; a text the page cannot draw whole (`lib/cardFold`'s
 // `WHOLE_MAX`) is not opened in part, and the card will not take an Allow
 // for it at all: it says why, and Deny still answers.
+import { useReadingValue } from "../lib/useReadingState";
 import { ActionIcon } from "./ActionIcon";
 import { useEffect, useId, useMemo, useState } from "react";
 import { ASK_WAIT_SECS, askDeadline, askRemaining, askWaitSecs, clockText } from "../lib/askClock";
 import { askDetail, changeFacts, isCommand, type ChangeRow } from "../lib/askDetail";
 import { bridge } from "../lib/bridge";
 import {
-  allowHeld, chars, commandDrawn, commandFold, commandOpens, commandShown, commandTitle, count, diffLabel, drawnWhole,
+  allowHeld, chars, commandDrawn, commandFold, commandOpens, commandShown, commandTitle, count, diffLabel, drawnWhole, sameCommand,
   hiddenIn, hiddenNote, lineFeedAfter, longRowsLabel, marksInText, notShown,
   rowFold, textFold, tooLong, tooLongNote, unseenLines, type CommandAsked, type RowFold,
 } from "../lib/cardFold";
@@ -290,14 +291,18 @@ export function PermissionAsk({ ask, agent, onAnswered, startOpen = false }: {
     // nothing.
     if (asked) setWhole((was) => drawnWhole(was, asked, unshown));
   }, [asked, unshown]);
-  const held = !!asked && allowHeld(unshown, whole, asked);
+  // An open disclosure restored from page memory is only presentation. This
+  // mount must draw the exact command before either Allow can be released;
+  // CommandAsked/whole, sending and consent never enter the reading cache.
+  const rememberedOpen = useReadingValue<boolean>(`fold:${ask.id}`) === true;
+  const held = !!asked && (allowHeld(unshown, whole, asked) || (rememberedOpen && !sameCommand(whole, asked)));
   // Held until it is opened, or unavailable for good: either way the reason
   // is a sentence on the card, and the answers point at it.
   const off = held || over > 0;
   // A command within the bound by its own length and past it as drawn says
   // both sizes: the drawn one is why.
   const why = over > 0 ? tooLongNote(what, over, undefined, undefined, command?.tooLong ? command.drawn : undefined)
-    : held ? `Open the full ${what} to allow it.` : "";
+    : held ? unshown === 0 ? "Wait for the full command to be drawn." : `Open the full ${what} to allow it.` : "";
   const commandId = useId();
   const whyId = useId();
 
