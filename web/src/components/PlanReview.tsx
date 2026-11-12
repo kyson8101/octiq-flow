@@ -178,8 +178,12 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
     return () => window.clearTimeout(timer);
   }, [holding, shown]);
 
+  // One reading of "no decision may be sent now", shared by the keyboard,
+  // the pointer and the senders themselves: a revision still being read, a
+  // plan just updated, or an answer already out.
+  const decisionHeld = busy || holding || refreshing || !detail.ready;
   const approve = async () => {
-    if (!detail.ready) return;
+    if (decisionHeld) return;
     setError("");
     setBusyAction("approve");
     try {
@@ -199,6 +203,7 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
     }
   };
   const reject = async () => {
+    if (decisionHeld) return;
     setError("");
     setBusyAction("reject");
     try {
@@ -368,7 +373,7 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
                 <span>{offerFull ? "Also auto-approve Full access tasks in this chat" : "Auto-approve this chat's future plans"}</span>
               </label>}
               {surface === "chat" && offerFull && <p className="auto-plan-full-note">Full access workers run with no permission checks; plans with them are approved without you. Peer requests still wait for you.</p>}
-              {rejecting && <PlanRejectConfirmation reason={reason} busy={busy} disabled={holding || refreshing}
+              {rejecting && <PlanRejectConfirmation reason={reason} busy={busy} disabled={holding || refreshing || !detail.ready}
                 rejecting={busyAction === "reject"} onReason={setReason} onConfirm={() => void reject()}
                 onCancel={() => { setRejecting(false); setReason(""); }} />}
               <div className="plan-review-approve">
@@ -424,14 +429,18 @@ export function PlanRejectConfirmation({ reason, busy, disabled, rejecting, onRe
       onKeyDown={(event) => {
         if (event.key === "Enter" && !event.nativeEvent.isComposing) {
           event.preventDefault();
-          onConfirm();
+          // The same answer the Confirm button gives: nothing while a
+          // decision is held, and never from a key held down.
+          if (!busy && !disabled && !event.repeat) onConfirm();
         }
         if (event.key === "Escape") onCancel();
       }} />
     <button className="plan-review-quiet" type="button" disabled={busy} onClick={onCancel} data-icon-action title="Cancel" aria-label="Cancel">
       <ActionIcon name="cancel" label="Cancel" />
     </button>
-    <button className="plan-review-reject" type="button" disabled={busy || disabled} onClick={onConfirm} data-icon-action title={rejecting ? "Rejecting…" : "Confirm reject"} aria-label={rejecting ? "Rejecting…" : "Confirm reject"}>
+    <button className="plan-review-reject" type="button" disabled={busy || disabled} aria-disabled={busy || disabled}
+      onKeyDown={dropHeld}
+      onClick={(event) => { if (!busy && !disabled && !repeatsAnother(event)) onConfirm(); }} data-icon-action title={rejecting ? "Rejecting…" : "Confirm reject"} aria-label={rejecting ? "Rejecting…" : "Confirm reject"}>
       <ActionIcon name="deny" label="Reject" />
     </button>
   </div>;
