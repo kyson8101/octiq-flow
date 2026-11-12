@@ -434,6 +434,22 @@ fn git_read_slots() -> &'static tokio::sync::Semaphore {
     SLOTS.get_or_init(|| tokio::sync::Semaphore::new(GIT_READ_SLOTS))
 }
 
+/// Whole-ledger reads the page makes. Each holds the ledger's lock while it
+/// copies the store, and everything else that needs the ledger (a chat
+/// start, the scheduler) waits behind every one queued. A phone that timed
+/// out and reconnected left its reads queued as well, and hundreds piled up.
+const LEDGER_READS: &[&str] = &[
+    "orchestration_summary",
+    "orchestration_run_detail",
+    "orchestration_snapshot",
+];
+const LEDGER_READ_SLOTS: usize = 2;
+
+fn ledger_read_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| tokio::sync::Semaphore::new(LEDGER_READ_SLOTS))
+}
+
 /// Run `work`, first taking one of `slots` when `cmd` is a git read.
 async fn gated<T>(
     slots: &tokio::sync::Semaphore,
@@ -2774,6 +2790,8 @@ async fn client(ctx: Ctx, socket: WebSocket) {
         }
     });
 
+    // Set once this socket has closed, for reads still waiting their turn.
+    let gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
     // Invokes -> the backend.
     while let Some(Ok(msg)) = stream.next().await {
         let Message::Text(text) = msg else {
@@ -2827,7 +2845,20 @@ async fn client(ctx: Ctx, socket: WebSocket) {
         // the keystrokes queued behind it.
         let ctx = ctx.clone();
         let out = sink.clone();
+        let gone = gone.clone();
         tokio::spawn(async move {
+            // A ledger read waits its turn here, not on the ledger's lock, and
+            // one whose page has gone by then is not made at all: nobody is
+            // left to read the answer.
+            let _slot = if LEDGER_READS.contains(&cmd.as_str()) {
+                let slot = ledger_read_slots().acquire().await.ok();
+                if gone.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                slot
+            } else {
+                None
+            };
             let told = match socket_refusal(&cmd) {
                 Some(refused) => crate::dispatch::Told {
                     result: Err(refused),
@@ -2842,6 +2873,7 @@ async fn client(ctx: Ctx, socket: WebSocket) {
         });
     }
 
+    gone.store(true, std::sync::atomic::Ordering::Relaxed);
     pump.abort();
     crate::bus::client_left();
 }

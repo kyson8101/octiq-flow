@@ -191,11 +191,25 @@ fi
 CHATS=0
 CHAT_MB=0
 if [[ -n "${SERVER_PID}" && "${SERVER_PID}" != "0" ]]; then
-  while read -r rss _; do
-    [[ -z "${rss}" ]] && continue
-    CHATS=$(( CHATS + 1 ))
-    CHAT_MB=$(( CHAT_MB + rss / 1024 ))
-  done < <(ps -axo rss=,command= 2>/dev/null | grep -E '(claude|codex)' | grep -vE 'grep|octiq-check' || true)
+  # Only what the server started counts: the ChatGPT and Claude desktop
+  # apps, and a `claude` someone runs in their own terminal, match the same
+  # names and are not ours (they once read as "32 agents"). An agent is a
+  # descendant of the server whose program is an agent CLI; the MB is
+  # everything under the server but the server, MCP servers included.
+  read -r CHATS CHAT_MB < <(ps -axo pid=,ppid=,rss=,command= 2>/dev/null | awk -v root="${SERVER_PID}" '
+    { pid=$1; parent[pid]=$2; rss[pid]=$3; prog=$4; sub(/.*\//, "", prog); name[pid]=prog }
+    END {
+      n = 0; kb = 0
+      for (p in parent) {
+        if (p == root) continue
+        q = parent[p]; hops = 0
+        while (q != "" && q != root && q != 1 && q != 0 && hops < 64) { q = parent[q]; hops++ }
+        if (q != root) continue
+        kb += rss[p]
+        if (name[p] ~ /^(claude|codex|agy|pi)$/) n++
+      }
+      printf "%d %d\n", n, kb / 1024
+    }' || echo "0 0")
 fi
 if [[ ${CHATS} -gt 0 ]]; then
   note ok "agents" "${CHATS} agent process(es), ~${CHAT_MB} MB resident"

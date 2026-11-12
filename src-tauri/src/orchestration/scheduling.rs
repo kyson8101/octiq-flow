@@ -111,7 +111,9 @@ pub(super) fn require_host_slot_for(
 
 pub(super) fn slot_wait(data: &Stored, task: &Task, settings: &Settings) -> Option<SlotWait> {
     let run = data.runs.get(&task.run_id)?;
-    let running = live(data);
+    // Counted only for a task that says it: `live` walks every attempt,
+    // and asked of every task of a snapshot it held the ledger for seconds.
+    let running = || live(data);
     if data.agent_queue.contains_key(&task.id) && batches::eligible(data, task) {
         if let Some(agent) = &task.assignee {
             let queue = batches::queue(data, &agent.id);
@@ -136,7 +138,7 @@ pub(super) fn slot_wait(data: &Stored, task: &Task, settings: &Settings) -> Opti
                         reason: "host".into(),
                         agent_id: Some(agent.id.clone()),
                         ahead,
-                        running: Some(running),
+                        running: Some(running()),
                         limit: settings.host_cap.map(usize::from),
                     });
                 }
@@ -163,9 +165,10 @@ pub(super) fn slot_wait(data: &Stored, task: &Task, settings: &Settings) -> Opti
     {
         return None;
     }
-    settings
-        .host_cap
-        .filter(|cap| running >= usize::from(*cap))
+    let cap = settings.host_cap?;
+    let running = running();
+    (running >= usize::from(cap))
+        .then_some(cap)
         .map(|limit| SlotWait {
             reason: "host".into(),
             agent_id: None,
