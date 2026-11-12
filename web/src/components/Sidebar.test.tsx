@@ -46,6 +46,19 @@ function html(over: Partial<Parameters<typeof Sidebar>[0]> = {}, pendingView: Pe
 }
 
 describe("task-oriented Sidebar", () => {
+  it("paints cached chat titles before scheduling, projects and index answer", () => {
+    const out = html({ conversations: [chat("cached")], projects: [], projectsReady: false,
+      chatsReady: false, navigationReady: false });
+    expect(out).toContain('class="chat-title">Task cached</span>');
+    expect(out).not.toContain('class="lead-placeholder"');
+    expect(out).not.toContain("No chats yet");
+  });
+  it("keeps the cold navigation placeholder when neither cache nor host is known", () => {
+    const out = html({ navigationReady: false, chatsReady: false, projectsReady: false });
+    expect(out).toContain('class="lead-placeholder"');
+    expect(out).not.toContain("No chats yet");
+  });
+
   it("offers Disk without agents mode", () => {
     const out = html({ onDisk: () => {}, activeView: "disk" });
     expect(out).toContain("<span>Disk</span>");

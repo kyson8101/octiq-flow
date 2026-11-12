@@ -3455,6 +3455,8 @@ time limit).
 
 ### A lead's thread
 
+The sidebar paints cached conversations before scheduling or index replies; only project identity waits for workspaces. Navigation orientation and the last host lead identities are remembered through `lib/remember` for refresh continuity, then reconciled with the host; cached orientation never supplies live scheduling lanes or start authority.
+
 In Settings → Orientation → Agents, the person talks to leads: registered
 agents with no `reportsTo`, excluding the front desk. Each has one ongoing,
 lazily created `chat:lead-<agentId>` thread. `leadOf` on its index row is

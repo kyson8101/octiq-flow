@@ -1,6 +1,7 @@
 // One scheduling subscription shared by Settings and every agent lane.
 import { useSyncExternalStore } from "react";
 import { bridge } from "./bridge";
+import { recall, remember } from "./remember";
 
 export type SchedulingSettings = { orientation: "tasks" | "agents"; hostCap: number | null };
 export type AgentLane = {
@@ -10,6 +11,12 @@ export type AgentLane = {
 };
 export type Scheduling = SchedulingSettings & { live: { total: number }; lanes: AgentLane[] };
 export type SchedulingReading = { data: Scheduling | null; error: string | null };
+const ORIENTATION_KEY = "octiq.v2.navigationOrientation";
+/** Display continuity only: never seed live lanes, capacity or start authority. */
+export function recallNavigationOrientation(): SchedulingSettings["orientation"] | undefined {
+  const value = recall(ORIENTATION_KEY);
+  return value === "tasks" || value === "agents" ? value : undefined;
+}
 const EMPTY: SchedulingReading = { data: null, error: null };
 let reading = EMPTY;
 let revision = 0;
@@ -17,6 +24,7 @@ let stop: (() => void) | null = null;
 const listeners = new Set<() => void>();
 export const schedulingReading = () => reading;
 function publish(next: SchedulingReading) {
+  if (next.data) remember(ORIENTATION_KEY, next.data.orientation);
   reading = next;
   for (const fn of listeners) fn();
 }

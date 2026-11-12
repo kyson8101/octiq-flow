@@ -150,7 +150,7 @@ import { SessionSearch } from "./components/SessionSearch";
 import { importSession, isUnder, replaySession, type HistorySession } from "./lib/history";
 import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
 import { Sidebar, type Project } from "./components/Sidebar";
-import { useAgentLanes } from "./lib/agentLanes";
+import { recallNavigationOrientation, useAgentLanes } from "./lib/agentLanes";
 import { leadThreadAgent, leadsOnlyMode, newConversationLead, type LeadThread, type LeadHistoryEntry } from "./lib/leadThreads";
 import { openLeadThread, useLeadThreads } from "./lib/leadThreadFeed";
 import { fromIndex } from "./lib/notificationOpen";
@@ -914,8 +914,10 @@ export default function App() {
   // which plans work and hands approved tasks to registered agents. Off,
   // nothing below changes anything.
   const scheduling = useAgentLanes();
+  const [cachedOrientation] = useState(recallNavigationOrientation);
   const [agentsMode, setAgentsMode] = useState<boolean>(recallAgentsMode);
-  const leadsOnly = leadsOnlyMode(agentsMode, scheduling.data?.orientation);
+  const navigationOrientation = scheduling.data?.orientation ?? cachedOrientation;
+  const leadsOnly = leadsOnlyMode(agentsMode, navigationOrientation);
   const leadReading = useLeadThreads(leadsOnly);
   const [leadHistoryFor, setLeadHistoryFor] = useState<string | null>(null);
   const [openingLead, setOpeningLead] = useState<string | null>(null);
@@ -5546,7 +5548,7 @@ export default function App() {
           screen of its own again — see `.app.projects-screen`. */}
       <Sidebar
         leadsOnly={leadsOnly}
-        navigationReady={!agentsMode || !!scheduling.data || !!scheduling.error}
+        navigationReady={!agentsMode || !!navigationOrientation || !!scheduling.error}
         leadReading={leadReading}
         openingLead={openingLead}
         leadOpenError={leadOpenError}
