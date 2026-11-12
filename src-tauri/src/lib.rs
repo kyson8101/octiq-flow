@@ -26,6 +26,7 @@ mod chat_recover;
 mod chat_search;
 mod chat_task;
 mod claude_allow;
+mod coalesce;
 mod codex_app_server;
 mod codex_git;
 mod conversation_tools;

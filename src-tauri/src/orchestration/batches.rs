@@ -806,6 +806,7 @@ impl OrchestrationStore {
             project_id,
             title: format!("Batch: {}", head.title),
             latest_response: None,
+            latest_response_version: 0,
             custom_title: true,
             agent_title: false,
             session_id: None,

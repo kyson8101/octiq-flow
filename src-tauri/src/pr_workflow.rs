@@ -1069,6 +1069,7 @@ mod tests {
             project_id: format!("project-{id}"),
             title: "Workflow origin".into(),
             latest_response: None,
+            latest_response_version: 0,
             custom_title: false,
             agent_title: false,
             session_id: None,

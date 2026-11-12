@@ -3,9 +3,30 @@
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// What a summary shows, decided from the ledger's rows BEFORE any run is
+/// cloned or serialised (`OrchestrationStore::summary_scope`): the runs, and
+/// the routing facts that cover every run the read was asked about, shown or
+/// not. `select` below says the same of an already built view.
+pub struct Scope {
+    pub wanted: BTreeSet<String>,
+    pub run_coordinators: Vec<String>,
+    pub worker_parents: BTreeMap<String, String>,
+}
+
+/// Put the routing facts on a view that was built from `scope`'s runs only.
+pub fn route(view: &mut Value, scope: &Scope) {
+    view["runCoordinators"] = json!(scope.run_coordinators);
+    view["workerParents"] = json!(scope.worker_parents);
+}
+
 /// Membership only, never a second reading of waits. The page supplies the
 /// chat identities from its one held-card reading. Historical panels opt in
 /// within their visible scope; full run detail remains unchanged.
+///
+/// The server no longer narrows a built snapshot with this (it chooses runs
+/// first: `Scope`); it stays as the reference the scope's test compares
+/// against.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn select(
     view: &mut Value,
     include_ended: bool,
@@ -583,6 +604,102 @@ mod tests {
         assert!(small * 100 < full);
         assert_eq!(view["runs"].as_array().unwrap().len(), 100);
         assert_eq!(view["tasks"].as_array().unwrap().len(), 800);
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use crate::orchestration::tests::{approved_plan, run, start_task};
+    use crate::orchestration::{OrchestrationStore, RunStatus};
+
+    /// What the browser got before: a full snapshot, narrowed afterwards.
+    fn narrowed_after(
+        store: &OrchestrationStore,
+        run_id: Option<&str>,
+        ended: bool,
+        held: &[String],
+        coordinator: Option<&str>,
+        workspace: Option<&str>,
+    ) -> Value {
+        let mut view = serde_json::to_value(store.snapshot(run_id).unwrap()).unwrap();
+        select(&mut view, ended, held, coordinator, workspace);
+        project(&mut view);
+        view
+    }
+
+    /// What it gets now: the runs are chosen before anything is built.
+    fn scoped_first(
+        store: &OrchestrationStore,
+        run_id: Option<&str>,
+        ended: bool,
+        held: &[String],
+        coordinator: Option<&str>,
+        workspace: Option<&str>,
+    ) -> Value {
+        let scope = store
+            .summary_scope(run_id, ended, held, coordinator, workspace)
+            .unwrap();
+        let mut view =
+            serde_json::to_value(store.snapshot_scoped(run_id, &scope).unwrap()).unwrap();
+        route(&mut view, &scope);
+        project(&mut view);
+        view
+    }
+
+    #[test]
+    fn a_scoped_read_answers_what_the_narrowed_full_read_did() {
+        let store = OrchestrationStore::default();
+        let (live, tasks) = approved_plan(&store, 2);
+        let worker = start_task(&store, &tasks[0].id).worker_chat_key;
+        // Three more runs: stopped under another coordinator and workspace,
+        // archived, and closed. One has a worker of its own.
+        let stopped = run(&store);
+        let archived = run(&store);
+        let closed = run(&store);
+        store
+            .mutate(|data| {
+                let r = data.runs.get_mut(&stopped.id).unwrap();
+                r.status = RunStatus::Stopped;
+                r.coordinator_chat_key = "chat:other".into();
+                r.workspace_id = "elsewhere".into();
+                data.runs.get_mut(&archived.id).unwrap().archived_at = Some(5);
+                data.runs.get_mut(&closed.id).unwrap().status = RunStatus::Closed;
+                Ok(())
+            })
+            .unwrap();
+        assert!(store.snapshot(None).unwrap().runs.len() >= 4);
+        let held_by_worker = vec![worker.clone()];
+        let nobody: Vec<String> = Vec::new();
+        for run_id in [
+            None,
+            Some(live.id.as_str()),
+            Some(stopped.id.as_str()),
+            Some(""),
+        ] {
+            for ended in [false, true] {
+                for held in [&nobody, &held_by_worker] {
+                    for coordinator in [None, Some("chat:master"), Some("chat:other")] {
+                        for workspace in [None, Some("workspace"), Some("elsewhere")] {
+                            assert_eq!(
+                                scoped_first(&store, run_id, ended, held, coordinator, workspace),
+                                narrowed_after(&store, run_id, ended, held, coordinator, workspace),
+                                "run {run_id:?} ended {ended} held {held:?} coordinator {coordinator:?} workspace {workspace:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // And it really did leave the history out of the build.
+        let scope = store
+            .summary_scope(None, false, &nobody, None, None)
+            .unwrap();
+        let built = store.snapshot_scoped(None, &scope).unwrap();
+        assert!(built
+            .runs
+            .iter()
+            .all(|r| r.id != closed.id && r.id != stopped.id));
     }
 }
 

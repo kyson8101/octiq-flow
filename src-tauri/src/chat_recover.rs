@@ -1196,6 +1196,7 @@ mod tests {
             project_id: project.into(),
             title: "task".into(),
             latest_response: None,
+            latest_response_version: 0,
             custom_title: false,
             agent_title: false,
             session_id: None,

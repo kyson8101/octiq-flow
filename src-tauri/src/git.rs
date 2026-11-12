@@ -630,21 +630,61 @@ fn parse_branch_lines(text: &str) -> Vec<String> {
 /// A project with four folders in one repo used to cost ~16 git subprocesses;
 /// it now costs 4 (one `rev-parse` each) plus ~3 for the single repo.
 pub fn git_status_summary(paths: Vec<String>) -> Result<Vec<GitStatus>, String> {
-    // 1. Resolve each DISTINCT path to its repo root, once.
-    let mut root_of: HashMap<&str, Option<String>> = HashMap::new();
-    for path in &paths {
-        root_of
-            .entry(path.as_str())
-            .or_insert_with(|| repo_root(path));
-    }
+    // Every open tab asks this on every `git-status-changed`, and a status in
+    // a large repository takes seconds: overlapping asks for the same folders
+    // share one run, and each answer is from a run that began after its ask
+    // (`coalesce`).
+    static READS: std::sync::OnceLock<
+        crate::coalesce::Coalesce<Vec<String>, Result<Vec<GitStatus>, String>>,
+    > = std::sync::OnceLock::new();
+    READS
+        .get_or_init(crate::coalesce::Coalesce::new)
+        .run(&paths, || summarize_paths(&paths))
+}
 
-    // 2. Summarize each DISTINCT repo, once, from its top-level.
-    let mut summary_of: HashMap<&str, RepoSummary> = HashMap::new();
-    for root in root_of.values().flatten() {
-        if !summary_of.contains_key(root.as_str()) {
-            summary_of.insert(root.as_str(), summarize_repo(root));
+/// Run `work` on every item, a few at a time. The git calls here are
+/// independent processes, so waiting for them one after the other made the
+/// answer the sum of every repository's time instead of the slowest's.
+fn in_parallel<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    const AT_ONCE: usize = 6;
+    let mut done = Vec::with_capacity(items.len());
+    for chunk in items.chunks(AT_ONCE) {
+        std::thread::scope(|scope| {
+            let started: Vec<_> = chunk
+                .iter()
+                .map(|item| scope.spawn(|| work(item)))
+                .collect();
+            for handle in started {
+                // A panicking git call takes only its own entry down.
+                done.push(handle.join());
+            }
+        });
+    }
+    done.into_iter()
+        .map(|result| result.unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+        .collect()
+}
+
+fn summarize_paths(paths: &[String]) -> Result<Vec<GitStatus>, String> {
+    // 1. Resolve each DISTINCT path to its repo root, once.
+    let mut distinct: Vec<&str> = Vec::new();
+    for path in paths {
+        if !distinct.contains(&path.as_str()) {
+            distinct.push(path.as_str());
         }
     }
+    let roots = in_parallel(&distinct, |path| repo_root(path));
+    let root_of: HashMap<&str, Option<String>> = distinct.iter().copied().zip(roots).collect();
+
+    // 2. Summarize each DISTINCT repo, once, from its top-level.
+    let mut repos: Vec<&str> = Vec::new();
+    for root in root_of.values().flatten() {
+        if !repos.contains(&root.as_str()) {
+            repos.push(root.as_str());
+        }
+    }
+    let summaries = in_parallel(&repos, |root| summarize_repo(root));
+    let summary_of: HashMap<&str, RepoSummary> = repos.iter().copied().zip(summaries).collect();
 
     // 3. Fan the per-repo numbers back out, in the caller's original order.
     Ok(paths
@@ -691,14 +731,19 @@ impl RepoSummary {
 /// from the shared numstat (the same source the diff panel uses). Any error
 /// yields an empty summary rather than propagating.
 fn summarize_repo(root: &str) -> RepoSummary {
-    let Some(text) = run_git(root, &["status", "--porcelain=v2", "--branch"]) else {
+    // The two reads do not depend on each other.
+    let (text, (insertions, deletions)) = std::thread::scope(|scope| {
+        let counts = scope.spawn(|| diff_line_counts(root));
+        let text = run_git(root, &["status", "--porcelain=v2", "--branch"]);
+        (text, counts.join().unwrap_or((0, 0)))
+    });
+    let Some(text) = text else {
         return RepoSummary {
             status: None,
             insertions: 0,
             deletions: 0,
         };
     };
-    let (insertions, deletions) = diff_line_counts(root);
     RepoSummary {
         // `path` and `repo_root` are placeholders: `to_status` overwrites both
         // with the folder the caller actually asked about.

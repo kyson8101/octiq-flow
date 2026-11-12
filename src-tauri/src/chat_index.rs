@@ -44,6 +44,14 @@ pub struct ChatMeta {
     /// transcript; this keeps list rendering independent of opening the chat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_response: Option<String>,
+    /// Host-owned. The host writes `latest_response` itself at the agent's
+    /// readable-output boundary (`set_host_preview`) and counts each change
+    /// here, so the preview of a chat nobody has open is current. A browser
+    /// save carries the version it last heard; its text is taken only when
+    /// that is still the host's (`upsert`), so a stale tab can never put an
+    /// older response back. Zero: the host has not written one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub latest_response_version: u64,
     /// True when the user named the chat explicitly. This keeps a deliberately
     /// chosen `New chat` distinct from the inferred placeholder.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -536,7 +544,26 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
                 .launch
                 .clone()
                 .or_else(|| meta.launch.take().and_then(LaunchPlan::checked));
+            // The preview is the host's once it has written one: the text a
+            // browser carries is taken only from a browser that has heard the
+            // host's latest version, never over a newer one.
+            let (response, response_version) = if meta.latest_response_version
+                == existing.latest_response_version
+                && (meta.latest_response.is_some() || existing.latest_response_version == 0)
+            {
+                (
+                    meta.latest_response.take(),
+                    existing.latest_response_version,
+                )
+            } else {
+                (
+                    existing.latest_response.clone(),
+                    existing.latest_response_version,
+                )
+            };
             *existing = meta;
+            existing.latest_response = response;
+            existing.latest_response_version = response_version;
             existing.launch = launch;
             existing.created_at = created;
             existing.done_at = done_at;
@@ -556,11 +583,58 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             meta.agent_title = false;
             meta.done_at = None;
             meta.done_held = false;
+            meta.latest_response_version = 0;
             meta.launch = meta.launch.take().and_then(LaunchPlan::checked);
             index.chats.push(meta);
         }
     }
     write(&index)
+}
+
+/// The longest preview the host keeps, in characters: what the page shows
+/// of a response in a list row, with the ellipsis the page adds past it.
+pub const PREVIEW_MAX_CHARS: usize = 420;
+
+/// A response as the bounded preview stored for it: trimmed, and cut at
+/// `PREVIEW_MAX_CHARS` characters with an ellipsis, as the page draws it.
+pub fn bounded_preview(text: &str) -> String {
+    let text = text.trim();
+    if text.chars().count() <= PREVIEW_MAX_CHARS {
+        return text.to_owned();
+    }
+    let cut: String = text.chars().take(PREVIEW_MAX_CHARS).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// What the host last said a chat's response was. Written under the same lock
+/// as browser saves, at the agent's readable-output boundary, and for every
+/// chat whether or not any browser has it open. Answers the new version when
+/// the stored preview changed, `None` when it did not (same words, an empty
+/// response, a chat the index does not list or has trashed): nothing is
+/// written then, and activity (`updated_at`) is never touched.
+pub fn set_host_preview(id: &str, response: &str) -> Result<Option<u64>, String> {
+    let preview = bounded_preview(response);
+    if preview.is_empty() {
+        return Ok(None);
+    }
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(mut index) = read_checked() else {
+        return Ok(None);
+    };
+    let Some(chat) = index
+        .chats
+        .iter_mut()
+        .find(|chat| chat.id == id && chat.deleted_at.is_none())
+    else {
+        return Ok(None);
+    };
+    if chat.latest_response.as_deref() == Some(preview.as_str()) {
+        return Ok(None);
+    }
+    chat.latest_response = Some(preview);
+    chat.latest_response_version += 1;
+    let version = chat.latest_response_version;
+    write(&index).map(|()| Some(version))
 }
 
 /// Move a chat to another folder, and nothing else. Used when the folder it
@@ -1068,6 +1142,7 @@ pub(crate) mod tests {
             project_id: "p1".into(),
             title: format!("chat {id}"),
             latest_response: None,
+            latest_response_version: 0,
             custom_title: false,
             agent_title: false,
             session_id: None,
@@ -1113,6 +1188,82 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(effort().as_deref(), Some("low"));
         cleanup(&[id]);
+    }
+
+    #[test]
+    fn the_host_keeps_the_preview_and_a_stale_browser_cannot_rewind_it() {
+        let _guard = LIFECYCLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let id = "host-preview-contract";
+        cleanup(&[id]);
+        let saved = |text: Option<&str>, version: u64| ChatMeta {
+            latest_response: text.map(str::to_owned),
+            latest_response_version: version,
+            ..meta(id, 1)
+        };
+        let found = || list().into_iter().find(|c| c.id == id).unwrap();
+        // Before the host has written one, the browser's own text stands.
+        upsert(saved(Some("browser words"), 0)).unwrap();
+        assert_eq!(found().latest_response.as_deref(), Some("browser words"));
+        // The host writes: a new version, bounded text, same words once.
+        assert_eq!(set_host_preview(id, "  first answer  ").unwrap(), Some(1));
+        assert_eq!(set_host_preview(id, "first answer").unwrap(), None);
+        assert_eq!(
+            set_host_preview(id, "   ").unwrap(),
+            None,
+            "nothing to keep"
+        );
+        assert_eq!(set_host_preview(id, "newer answer").unwrap(), Some(2));
+        assert_eq!(
+            set_host_preview("no-such-chat", "x").unwrap(),
+            None,
+            "an unlisted chat is not made"
+        );
+        // A tab that last heard version 1 (or none) cannot put its text back.
+        upsert(saved(Some("older answer"), 1)).unwrap();
+        upsert(saved(Some("older still"), 0)).unwrap();
+        upsert(saved(None, 0)).unwrap();
+        let kept = found();
+        assert_eq!(kept.latest_response.as_deref(), Some("newer answer"));
+        assert_eq!(kept.latest_response_version, 2);
+        // A tab that has heard the current version may refine its text; a
+        // save that has none for it does not wipe the host's.
+        upsert(saved(Some("newer answer, as the page reads it"), 2)).unwrap();
+        assert_eq!(
+            found().latest_response.as_deref(),
+            Some("newer answer, as the page reads it")
+        );
+        upsert(saved(None, 2)).unwrap();
+        assert_eq!(
+            found().latest_response.as_deref(),
+            Some("newer answer, as the page reads it")
+        );
+        // A browser cannot claim a version the host never wrote.
+        upsert(saved(Some("forged"), 99)).unwrap();
+        assert_eq!(found().latest_response_version, 2);
+        assert_ne!(found().latest_response.as_deref(), Some("forged"));
+        // Activity is not the preview's to move.
+        assert_eq!(found().updated_at, 1);
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn a_preview_is_bounded_like_the_page_draws_it() {
+        let long = "é".repeat(500);
+        let kept = bounded_preview(&long);
+        assert_eq!(kept.chars().count(), PREVIEW_MAX_CHARS + 1);
+        assert!(kept.ends_with('…'));
+        assert_eq!(bounded_preview(" short "), "short");
+        assert_eq!(
+            bounded_preview(&"a ".repeat(300))
+                .trim_end_matches('…')
+                .trim_end()
+                .chars()
+                .count()
+                <= PREVIEW_MAX_CHARS,
+            true
+        );
     }
 
     #[test]

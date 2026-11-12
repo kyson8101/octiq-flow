@@ -5217,6 +5217,7 @@ fn start_session_with_recovery(
             // cleared the moment it is handed over. One turn's words must never
             // be read as the next one's answer.
             let mut carried = String::new();
+            let mut preview = HostPreview::default();
             // Claude's calls by tool_use id, so an auto-mode refusal naming
             // one can say exactly what was refused (see `note_claude_calls`).
             let mut claude_calls: HashMap<String, (String, Value)> = HashMap::new();
@@ -5555,6 +5556,13 @@ fn start_session_with_recovery(
                             carried.clear();
                             carried.push_str(text);
                         }
+                        // The same words keep this chat's list preview
+                        // current, whoever has it open.
+                        if !observed.turn_finished {
+                            if let Some(words) = HostPreview::words(&event, observed.spoken_text) {
+                                preview.heard(&session_key, &key, words);
+                            }
+                        }
                         // Set only by the full stop of a completion's wrap-up
                         // turn, and acted on once that full stop is recorded.
                         let mut wrap_up = None;
@@ -5610,6 +5618,7 @@ fn start_session_with_recovery(
                             }
                             let said = observed.final_text.unwrap_or(&carried).to_string();
                             carried.clear();
+                            preview.turn_ended(&session_key, &key, clean.then_some(said.as_str()));
                             // A read-only worker cannot call the host; what it
                             // said last is held for its coordinator to confirm.
                             if let Err(error) =
@@ -9662,6 +9671,92 @@ pub(crate) fn visible_chats(
 pub fn chat_index_deleted() -> Vec<crate::chat_index::ChatMeta> {
     let _ = purge_deleted_chats();
     crate::chat_index::deleted()
+}
+
+/// Keeps a chat's list preview current from the agent's own readable output
+/// (`chat_index::set_host_preview`), for every chat, whether or not any
+/// browser has it open.
+///
+/// Two boundaries write it: each readable message the agent finishes
+/// (Claude's `assistant` text, Codex's `agent_message`, Pi's `message_end`),
+/// at most once every `PREVIEW_EVERY` because every write rewrites the chat
+/// index; and the end of a turn that ended cleanly, which always writes, so
+/// the last words are never the throttled ones. A message held back by the
+/// throttle is written at the next boundary. Only a chat's own voice counts
+/// (a worker's, a room seat's and an unlisted chat's writes change nothing).
+#[derive(Default)]
+pub(crate) struct HostPreview {
+    last_write: Option<std::time::Instant>,
+    held: Option<String>,
+}
+
+impl HostPreview {
+    const PREVIEW_EVERY: Duration = Duration::from_secs(4);
+
+    /// The readable words of one stream event, if it carries any.
+    pub(crate) fn words(event: &Value, spoken: Option<&str>) -> Option<String> {
+        if let Some(text) = spoken.map(str::trim).filter(|t| !t.is_empty()) {
+            return Some(text.to_owned());
+        }
+        if event.get("type").and_then(Value::as_str) != Some("assistant")
+            || event
+                .get("parent_tool_use_id")
+                .is_some_and(|parent| !parent.is_null())
+        {
+            return None;
+        }
+        let text = event
+            .get("message")
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_array)?
+            .iter()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_owned())
+    }
+
+    /// A readable message finished mid-turn.
+    pub(crate) fn heard(&mut self, session_key: &str, key: &str, text: String) {
+        self.held = Some(text);
+        if self
+            .last_write
+            .is_some_and(|at| at.elapsed() < Self::PREVIEW_EVERY)
+        {
+            return;
+        }
+        self.flush(session_key, key);
+    }
+
+    /// The turn ended: its closing words (when it ended cleanly) and
+    /// whatever was held back are written now.
+    pub(crate) fn turn_ended(&mut self, session_key: &str, key: &str, closing: Option<&str>) {
+        if let Some(text) = closing.map(str::trim).filter(|t| !t.is_empty()) {
+            self.held = Some(text.to_owned());
+        }
+        self.flush(session_key, key);
+    }
+
+    fn flush(&mut self, session_key: &str, key: &str) {
+        let Some(text) = self.held.take() else {
+            return;
+        };
+        self.last_write = Some(std::time::Instant::now());
+        // The chat's own voice only; a worker's chat is not a row anyone lists.
+        let Some(id) = key
+            .strip_prefix("chat:")
+            .filter(|id| session_key == key && !id.starts_with("orch-"))
+        else {
+            return;
+        };
+        match crate::chat_index::set_host_preview(id, &text) {
+            Ok(Some(_)) => announce_index_change(id, false),
+            Ok(None) => {}
+            Err(error) => eprintln!("[chat] {key}: could not keep the preview: {error}"),
+        }
+    }
 }
 
 /// Say that the list of chats has changed, so every OTHER browser can pick the
@@ -13943,6 +14038,27 @@ mod idle_tests {
                 .observe_event(&json!({ "type": "turn_end" }))
                 .turn_finished
         );
+    }
+
+    #[test]
+    fn the_preview_reads_only_the_main_conversations_readable_words() {
+        let claude = json!({"type":"assistant","message":{"content":[
+            {"type":"text","text":"First "},{"type":"tool_use","name":"Bash"},{"type":"text","text":"second"}]}});
+        assert_eq!(
+            HostPreview::words(&claude, None).as_deref(),
+            Some("First \nsecond")
+        );
+        let sub = json!({"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"text","text":"sub"}]}});
+        assert_eq!(HostPreview::words(&sub, None), None);
+        let only_tool = json!({"type":"assistant","message":{"content":[{"type":"tool_use"}]}});
+        assert_eq!(HostPreview::words(&only_tool, None), None);
+        assert_eq!(HostPreview::words(&json!({"type":"user"}), None), None);
+        // Codex and Pi hand their words over already read.
+        assert_eq!(
+            HostPreview::words(&json!({"type":"item.completed"}), Some(" said ")).as_deref(),
+            Some("said")
+        );
+        assert_eq!(HostPreview::words(&json!({}), Some("  ")), None);
     }
 
     #[test]
