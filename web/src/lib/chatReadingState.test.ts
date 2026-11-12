@@ -17,7 +17,7 @@ it("bounds recent chats, promotes a return, and discards the oldest state", () =
   const cache = new ChatReadingStates();
   const oldest = cache.open("oldest"), recent = cache.open("recent");
   oldest.set("open", true); recent.first = null;
-  for (let i = 0; i < READING_STATE_CHATS - 2; i++) cache.open(String(i));
+  for (let i = 0; i < 6; i++) cache.open(String(i));
   expect(cache.open("recent")).toBe(recent);
   cache.open("overflow");
   expect(cache.open("recent")).toBe(recent);

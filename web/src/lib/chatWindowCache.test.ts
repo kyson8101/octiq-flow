@@ -1,7 +1,10 @@
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { addUserTurn, emptyChat, type ChatState } from "./chat";
-import { ChatWindowCache, RECENT_CHAT_BYTES, RECENT_CHAT_WINDOWS } from "./chatWindowCache";
+import { ChatWindowCache, RECENT_CHAT_BYTES } from "./chatWindowCache";
+
+// A small stand-in so no test allocates hundreds of MiB of text.
+const BUDGET = 4 * 1024 * 1024;
 import { ChatHistory } from "./chatHistory";
 import { CatchUp, type Frame } from "./catchUp";
 import { loadChat } from "./loadChat";
@@ -15,7 +18,7 @@ const frame = (id: string, seq: number): Frame => ({ seq, event: {
 } });
 
 it("switches between partial chats without clearing their words or rereading older pages", async () => {
-  const cache = new ChatWindowCache(), history = new ChatHistory(), catchUp = new CatchUp();
+  const cache = new ChatWindowCache(BUDGET), history = new ChatHistory(), catchUp = new CatchUp();
   const states: Record<string, ChatState> = { a: emptyChat(), b: emptyChat() };
   const request = vi.fn(async (_id: string, _after: number): Promise<Frame[]> => []);
   const pages = vi.fn(async (id: string, before: number | null) => {
@@ -45,69 +48,85 @@ it("switches between partial chats without clearing their words or rereading old
   expect(request.mock.calls).toEqual([["a", 100], ["b", 100], ["a", 100]]);
 });
 
-it("bounds recent windows by count and bytes and keeps covered surfaces", () => {
-  const cache = new ChatWindowCache();
-  const states: Record<string, ChatState> = {};
-  for (let n = 0; n < 20; n++) {
-    const id = `c${n}`;
-    states[id] = { ...emptyChat(), messages: [{ id, role: "assistant", streaming: false,
-      blocks: [{ kind: "text", text: "x".repeat(n % 3 === 0 ? RECENT_CHAT_BYTES : 1000) }] }] };
-    const retained = cache.retain(states, new Set([id]), () => true);
-    expect(retained.size).toBeLessThanOrEqual(RECENT_CHAT_WINDOWS);
-    expect([...retained].reduce((n, id) => n + valueBytes(states[id]), 0)).toBeLessThanOrEqual(RECENT_CHAT_BYTES);
-    if (n > 0 && (n - 1) % 3 !== 0) expect(retained.has(`c${n - 1}`)).toBe(true);
-  }
-  const covered = cache.retain(states, new Set(), () => true);
-  expect(covered.size).toBe(RECENT_CHAT_WINDOWS);
-  expect(covered.has("c19")).toBe(true);
-  expect([...cache.retain(states, new Set(), () => true)]).toEqual([...covered]);
+const big = (id: string, bytes: number): ChatState => ({ ...emptyChat(), messages: [{ id, role: "assistant", streaming: false,
+  blocks: [{ kind: "text", text: "x".repeat(Math.floor((bytes - 200) / 2)) }] }] });
+
+it("defaults to a 512 MiB safety budget and no count cap", () => {
+  expect(RECENT_CHAT_BYTES).toBe(512 * 1024 * 1024);
 });
 
-it("keeps six windows in LRU order, promotes a return, and releases a deleted chat", () => {
-  const cache = new ChatWindowCache();
+it("keeps every opened window; only the byte safety budget evicts, oldest first", () => {
+  const cache = new ChatWindowCache(BUDGET);
+  const states: Record<string, ChatState> = {};
+  // 60 chats is far past the old six-window cap and well under 512 MiB.
+  for (let n = 0; n < 60; n++) {
+    const id = `c${n}`;
+    states[id] = big(id, 64 * 1024);
+    cache.retain(states, new Set([id]), () => true);
+  }
+  expect(cache.retain(states, new Set(), () => true).size).toBe(60);
+  // Past the budget the OLDEST goes, never the most recent.
+  const heavy = (id: string) => big(id, BUDGET / 4 + 1);
+  const huge: Record<string, ChatState> = { a: heavy("a"), b: heavy("b"), c: heavy("c"), d: heavy("d"), now: emptyChat() };
+  const second = new ChatWindowCache(BUDGET);
+  for (const id of ["a", "b", "c", "d"]) second.retain(huge, new Set([id]), () => true);
+  expect([...second.retain(huge, new Set(["now"]), () => true)]).toEqual(["d", "c", "b"]);
+});
+
+it("never evicts a window that holds a prompt only this tab has", () => {
+  const cache = new ChatWindowCache(BUDGET);
+  const states: Record<string, ChatState> = {
+    typed: big("typed", BUDGET / 2 + 1), b: big("b", BUDGET / 2 + 1),
+    c: big("c", BUDGET / 2 + 1), now: emptyChat() };
+  for (const id of ["typed", "b", "c"]) cache.retain(states, new Set([id]), () => true, id => id === "typed");
+  const kept = cache.retain(states, new Set(["now"]), () => true, id => id === "typed");
+  expect(kept.has("typed")).toBe(true);
+  expect(kept.has("c")).toBe(true);
+  expect(kept.has("b")).toBe(false);
+});
+
+it("releases a deleted chat and a window the host no longer holds, and keeps covered surfaces", () => {
+  const cache = new ChatWindowCache(BUDGET);
   const states = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`c${i}`, emptyChat()]));
   const shown = (id: string) => cache.retain(states, new Set([id]), () => true);
-  for (let i = 0; i < 7; i++) shown(`c${i}`);
-  expect([...shown("c0")]).toEqual(["c6", "c5", "c4", "c3", "c2", "c1"]);
-  expect([...shown("c7")]).toEqual(["c0", "c6", "c5", "c4", "c3", "c2"]);
+  for (let i = 0; i < 9; i++) shown(`c${i}`);
+  expect([...shown("c0")]).toEqual(["c8", "c7", "c6", "c5", "c4", "c3", "c2", "c1"]);
+  expect([...cache.retain(states, new Set(), () => true)]).toEqual(["c0", "c8", "c7", "c6", "c5", "c4", "c3", "c2", "c1"]);
   delete states.c4;
-  expect([...cache.retain(states, new Set(), () => true)]).toEqual(["c7", "c0", "c6", "c5", "c3", "c2"]);
+  expect(cache.retain(states, new Set(), () => true).has("c4")).toBe(false);
   // A recreated id does not revive the deleted reducer window's recency.
   states.c4 = emptyChat();
   expect(cache.retain(states, new Set(), () => true).has("c4")).toBe(false);
   expect(cache.retain(states, new Set(), id => id !== "c5").has("c5")).toBe(false);
 });
 
-it("allows an indivisible large window to occupy the budget and skips an oversize window", () => {
-  const cache = new ChatWindowCache();
-  const window = (text: number): ChatState => ({ ...emptyChat(), messages: [{ id: "m", role: "assistant", streaming: false,
-    blocks: [{ kind: "text", text: "x".repeat(text) }] }] });
-  const states = { small: window(2 * 1024 * 1024), large: window(23 * 1024 * 1024),
-    oversize: window(25 * 1024 * 1024), current: emptyChat() };
+it("lets a large window use the budget alone and skips one larger than it", () => {
+  const cache = new ChatWindowCache(BUDGET);
+  const states = { small: big("small", 2 * 1024 * 1024), large: big("large", BUDGET - 1024 * 1024),
+    oversize: big("oversize", BUDGET + 1024 * 1024), current: emptyChat() };
   for (const id of ["small", "large"]) cache.retain(states, new Set([id]), () => true);
   expect([...cache.retain(states, new Set(["current"]), () => true)]).toEqual(["large"]);
   cache.retain(states, new Set(["oversize"]), () => true);
   expect([...cache.retain(states, new Set(["current"]), () => true)]).toEqual(["large"]);
-  expect(valueBytes(states.large)).toBeLessThan(RECENT_CHAT_BYTES);
 });
 
 it("remeasures an updated background window before retaining it again", () => {
-  const cache = new ChatWindowCache();
+  const cache = new ChatWindowCache(BUDGET);
   const states = { a: emptyChat(), b: emptyChat() };
   cache.retain(states, new Set(["a"]), () => true);
   expect(cache.retain(states, new Set(["b"]), () => true).has("a")).toBe(true);
   states.a = { ...states.a, messages: [{ id: "grown", role: "assistant", streaming: false,
-    blocks: [{ kind: "text", text: "x".repeat(RECENT_CHAT_BYTES) }] }] };
+    blocks: [{ kind: "text", text: "x".repeat(BUDGET) }] }] };
   expect(cache.retain(states, new Set(["b"]), () => true).has("a")).toBe(false);
 });
 
 it("evicts the older window when individually fitting windows exceed the combined byte budget", () => {
-  const cache = new ChatWindowCache();
+  const cache = new ChatWindowCache(BUDGET);
   const window = (id: string): ChatState => ({ ...emptyChat(), messages: [{ id, role: "assistant", streaming: false,
-    blocks: [{ kind: "text", text: "x".repeat(RECENT_CHAT_BYTES / 3) }] }] });
+    blocks: [{ kind: "text", text: "x".repeat(BUDGET / 3) }] }] });
   const states = { a: window("a"), b: window("b"), c: emptyChat() };
-  expect(valueBytes(states.a)).toBeLessThan(RECENT_CHAT_BYTES);
-  expect(valueBytes(states.a) + valueBytes(states.b)).toBeGreaterThan(RECENT_CHAT_BYTES);
+  expect(valueBytes(states.a)).toBeLessThan(BUDGET);
+  expect(valueBytes(states.a) + valueBytes(states.b)).toBeGreaterThan(BUDGET);
   cache.retain(states, new Set(["a"]), () => true);
   cache.retain(states, new Set(["b"]), () => true);
   expect([...cache.retain(states, new Set(["c"]), () => true)]).toEqual(["b"]);

@@ -33,7 +33,7 @@ import {
 // Event/subscription callbacks must not chain old App render scopes. Pure
 // render-time readers use isolated factories below, rather than this hook.
 import { useCommittedCallback as useCallback } from "./lib/useCommittedCallback";
-import { chatPreviewState, withLocalPrompts } from "./lib/chatRetention";
+import { chatPreviewState, hasLocalPrompt, withLocalPrompts } from "./lib/chatRetention";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp, type Frame } from "./lib/catchUp";
 import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
@@ -2287,7 +2287,7 @@ export default function App() {
     return () => { active = false; };
   }, [screenMain, screenBeside, conn, catchUpChat, flushChats]);
 
-  // Keep six recent windows under one byte budget, alongside the visible
+  // Keep every opened window under one safety byte budget, alongside the visible
   // panes. Partial windows cannot be complete IndexedDB checkpoints: evicting
   // them on every switch forced a fresh paged replay and an empty transcript.
   // Retention does not widen the socket subscription: offscreen snapshots
@@ -2296,7 +2296,7 @@ export default function App() {
     const released = new Set<string>();
     let next = chatsRef.current;
     const retained = recentChatWindows.current.retain(next, screenChats.current,
-      id => catchUp.current.holds(keyFor(id)));
+      id => catchUp.current.holds(keyFor(id)), id => !!next[id] && hasLocalPrompt(next[id]));
     for (const [id, state] of Object.entries(next)) {
       if (screenChats.current.has(id)) continue;
       // An old selection's download must not replace the retained snapshot.

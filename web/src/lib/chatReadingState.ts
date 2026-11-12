@@ -1,8 +1,6 @@
-import { RECENT_CHAT_WINDOWS } from "./chatWindowCache";
-
 // Only small presentation choices, never transcript text, React nodes, drafts,
 // or decision authority. Transcript windows have their own byte budget.
-export const READING_STATE_CHATS = RECENT_CHAT_WINDOWS + 2;
+export const READING_STATE_CHATS = 8;
 export const READING_STATE_VALUES = 2048;
 export const READING_STATE_BYTES = 256 * 1024;
 export type ReadingValue = boolean | string | null;
