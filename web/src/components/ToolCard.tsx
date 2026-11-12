@@ -13,7 +13,8 @@
 // A subagent's card is the exception. What it ran is another agent, and that
 // agent's whole transcript hangs off this one card, so there is something to
 // watch rather than something to check.
-import { lazy, Suspense, useState } from "react";
+import { ReadingScope, useReadingState } from "../lib/useReadingState";
+import { lazy, Suspense } from "react";
 import type React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -143,7 +144,7 @@ export function ToolCard({
   //
   // An untracked legacy subagent still falls back to the old inline card, so it
   // opens while running. Tracked agents open the dedicated read-only view.
-  const [open, setOpen] = useState(
+  const [open, setOpen] = useReadingState<boolean>(`tool:${tool.id}`,
     () => openFrom ?? (!!diff || (isAgent && !opensAgent && tool.state === "running")),
   );
   // A skill's card is the skill, not the call. The prompt it put in front of
@@ -343,7 +344,7 @@ export function ToolCard({
                     <span className="tool-note">from the arguments</span>
                   )}
                 </div>
-                <DiffView diff={diff} />
+                <ReadingScope id={tool.id}><DiffView diff={diff} /></ReadingScope>
               </>
             )}
             {/* What the skill asked of the agent, as the markdown it was written

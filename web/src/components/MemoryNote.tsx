@@ -1,4 +1,5 @@
-import { useId, useState } from "react";
+import { useId } from "react";
+import { useReadingState } from "../lib/useReadingState";
 import { chatIdOf, earlierState, memoryHeadline, type MemoryActivity } from "../lib/memoryActivity";
 import { chatRouteHash } from "../lib/chatRoute";
 import { useLiveEntry } from "./Arrive";
@@ -14,7 +15,7 @@ import "./MemoryNote.css";
  *  A worker's coordinator gets the same line without the words, and a link to
  *  the worker chat that holds them. */
 export function MemoryNote({ activity }: { activity: MemoryActivity }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useReadingState<boolean>(`memory:${activity.id}`, false);
   const detailsId = useId();
   const { status, source } = activity;
   const when = activity.at ? new Date(activity.at) : undefined;

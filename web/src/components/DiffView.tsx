@@ -8,7 +8,7 @@
 //
 // The gutter is dropped entirely when the numbers are not known yet — before
 // the edit runs, all the agent has said is what it will replace, not where.
-import { useState } from "react";
+import { useReadingState } from "../lib/useReadingState";
 import type { DiffRow, FileDiff } from "../lib/diff";
 import { RollingNumber, RollingText } from "./RollingNumber";
 
@@ -70,7 +70,7 @@ export function DiffView({ diff, first = FIRST }: {
   /** How many rows are drawn before the reader has to ask for the rest. */
   first?: number;
 }) {
-  const [all, setAll] = useState(false);
+  const [all, setAll] = useReadingState<boolean>(`diff:${diff.path}`, false);
   const rows = all ? diff.rows : diff.rows.slice(0, first);
   const hidden = diff.rows.length - rows.length;
 

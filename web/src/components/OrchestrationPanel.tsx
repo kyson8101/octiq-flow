@@ -1,3 +1,4 @@
+import { ReadingStateContext, useReadingState } from "../lib/useReadingState";
 import { useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ActionIcon } from "./ActionIcon";
 import { bridge } from "../lib/bridge";
@@ -725,8 +726,8 @@ function RunDetail({
   readOnly,
   confirmStop,
   runError,
-  tab,
-  onTab,
+  tab: inputTab,
+  onTab: sendTab,
   attentionFocus,
   inAccordion,
   onShowAttention,
@@ -794,6 +795,10 @@ function RunDetail({
   sharedHeading: boolean;
   compactControls: boolean;
 }) {
+  const { state: readingState } = useContext(ReadingStateContext);
+  const [rememberedTab, rememberTab] = useReadingState<RunTab>(`run-tab:${inputRun.id}`, inputTab);
+  const tab = readingState ? rememberedTab : inputTab;
+  const onTab = (next: RunTab) => { rememberTab(next); sendTab(next); };
   const detail = useRunDetail(inputSnapshot, inputRun.id);
   const snapshot = detail.displaySnapshot ?? detail.snapshot;
   const available = detail.available ?? detail.ready;
@@ -1393,12 +1398,11 @@ function RunTask({ run, snapshot, row, attempts, taskGate: gate, taskNames, gate
   open: boolean;
 }) {
   const task = row.task;
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useReadingState<boolean>(`task-open:${task.id}`, false);
   const [reassigning, setReassigning] = useState(false);
   const detailId = useId();
-  // Which of the opened row's two views is shown. The row's own, for as
-  // long as it is on screen (it is keyed by its task): nothing remembers it.
-  const [tab, setTab] = useState<TaskTab>("steps");
+  // Reading choices survive a chat switch; action forms remain local.
+  const [tab, setTab] = useReadingState<TaskTab>(`task-tab:${task.id}`, "steps");
   const tabsId = useId();
   const tabRefs = useRef<Partial<Record<TaskTab, HTMLButtonElement | null>>>({});
   const onTabKey = (event: KeyboardEvent<HTMLDivElement>) => {

@@ -11,9 +11,10 @@
 // are lifted out of the conversation here and kept by that call's id. The
 // alternative is a reply where a subagent's thinking, tool calls and prose all
 // read as the main agent's own.
+import { ChatReadingProvider, ReadingScope, ReadingStateContext, useReadingState } from "../lib/useReadingState";
 import { ActionIcon } from "./ActionIcon";
 import { readDeskRoute, readTaskBrief } from "../lib/taskBrief";
-import { Fragment, createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -202,6 +203,7 @@ function ProgressLog({
   candidate?: string;
   streaming: boolean;
 }) {
+  const [open, setOpen] = useReadingState<boolean>("progress", false);
   const all = [...updates, ...(candidate ? [candidate] : [])];
   if (!all.length) return null;
 
@@ -212,7 +214,7 @@ function ProgressLog({
   return (
     <div className={`agent-progress ${streaming ? "is-live" : "is-settled"}`}>
       {earlier.length > 0 && (
-        <details className="agent-progress-log">
+        <details className="agent-progress-log" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
           <summary>
             <span>{countLabel}</span>
             <span className="agent-progress-order">Oldest first</span>
@@ -446,7 +448,7 @@ function Blocks({
         const heads = !!folder && folder !== folders[i - 1];
         const key = row.kind === "group" ? (row.tools[0]?.id ?? row.newest.id) : blocks.indexOf(row.block);
         return (
-          <Fragment key={key}>
+          <ReadingScope key={key} id={key}>
             {heads && <FolderHead dir={folder} />}
             {row.kind === "group" ? (
               <ToolGroup tools={row.tools} newest={row.newest} folder={folder} note={row.note} danger={danger} />
@@ -462,7 +464,7 @@ function Blocks({
                 folder={folder}
               />
             )}
-          </Fragment>
+          </ReadingScope>
         );
       })}
     </>
@@ -585,7 +587,7 @@ function shortId(id: string): string {
  *  opens onto what they said. See lib/peerMessage for the frame and the
  *  boilerplate that come off on the way in. */
 function PeerNote({ block }: { block: Extract<Block, { kind: "peer" }> }) {
-  const [open, setOpen] = useState(block.text.length <= AT_A_GLANCE);
+  const [open, setOpen] = useReadingState<boolean>("peer", block.text.length <= AT_A_GLANCE);
   const who =
     block.source === "handback"
       ? `subagent ${shortId(block.from)} reported back`
@@ -627,7 +629,7 @@ function PeerNote({ block }: { block: Extract<Block, { kind: "peer" }> }) {
  *  Shut by default. The summary is a page of text nobody wants between two
  *  turns, and it is only ever read when something has gone missing. */
 function Compacted({ block }: { block: Extract<Block, { kind: "compacted" }> }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useReadingState<boolean>("open", false);
   const has = !!block.text.trim();
   const facts = [
     block.trigger === "manual" ? "you asked" : block.trigger ? "context filled up" : "",
@@ -814,7 +816,7 @@ function Chevron({ open }: { open: boolean }) {
  *  rest. Nothing is hidden for good: the button puts the whole thing back, and
  *  a message that already fits is drawn exactly as before, with no button. */
 function UserText({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useReadingState<boolean>("open", false);
   const { head, clipped } = useMemo(() => clipMessage(text), [text]);
 
   if (!clipped) return <Prose text={text} animate={false} />;
@@ -916,7 +918,7 @@ function TurnView({
   /** A person-sent turn is one return point on the conversation map. */
   mapTurnId?: string;
 }) {
-  const [workOpen, setWorkOpen] = useState(false);
+  const [workOpen, setWorkOpen] = useReadingState<boolean>("work", false);
   const wasSettled = useRef(false);
   const role = messages[0].role;
   const nameOf = useContext(ChatPersonaContext);
@@ -1076,6 +1078,7 @@ function TurnView({
       }`}
       data-tint={tint}
       data-map-turn={mapTurnId}
+      data-reading-turn={messages[0].id}
     >
       {/* Above your own words, because it changes how they read: "check this"
           means something different said to the room than said to one agent. */}
@@ -1153,7 +1156,7 @@ function TurnView({
         {wrapUp ? (
           <WrapUpNote label={wrapUp.label} detail={wrapUp.detail} text={answer} mark="complete" />
         ) : role === "user" && blocks.every((b) => b.kind === "text") ? (
-          blocks.map((b, i) => <UserText key={i} text={deskRoute ? readDeskRoute(shown((b as { text: string }).text))?.text ?? shown((b as { text: string }).text) : shown((b as { text: string }).text)} />)
+          blocks.map((b, i) => <ReadingScope key={i} id={`user:${i}`}><UserText text={deskRoute ? readDeskRoute(shown((b as { text: string }).text))?.text ?? shown((b as { text: string }).text) : shown((b as { text: string }).text)} /></ReadingScope>)
         ) : (
           <Blocks
             blocks={blocks}
@@ -1397,16 +1400,16 @@ const PLACE_MS = 400;
  *  back where they asked to be. */
 const SETTLE_MS = 6_000;
 
-/** Where each user turn sits in the content, for `lib/chatPlace` to anchor a
+/** Where each message turn sits in the content, for `lib/chatPlace` to anchor a
  *  place to. Measured off the elements rather than the message data, for the
  *  same reason ConversationMap measures its marks that way: it stays truthful
- *  while an answer streams and cards open. `data-map-turn` is the map's
- *  attribute, and one set of anchors is better than two that can disagree. */
+ *  while an answer streams and cards open. Assistant turns anchor a long
+ *  answer directly; the map still names only the person's user turns. */
 function anchorsIn(el: HTMLElement): Anchor[] {
   const box = el.getBoundingClientRect();
   const out: Anchor[] = [];
-  for (const node of el.querySelectorAll<HTMLElement>("[data-map-turn]")) {
-    const id = node.dataset.mapTurn;
+  for (const node of el.querySelectorAll<HTMLElement>("[data-reading-turn]")) {
+    const id = node.dataset.readingTurn;
     if (id) out.push({ id, offset: el.scrollTop + node.getBoundingClientRect().top - box.top });
   }
   return out;
@@ -1518,6 +1521,7 @@ const MessageListBody = function MessageList({
    *  it has been swapped for a different conversation. */
   conversationId?: string;
 }) {
+  const { state: readingState } = useContext(ReadingStateContext);
   const endRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -1898,7 +1902,7 @@ const MessageListBody = function MessageList({
     // Layout cleanup runs before refs detach, including on unmount. A hold
     // and its timer must never belong to the next conversation or a dead pane.
     return releasePlace;
-  }, [conversationId]);
+  }, [conversationId, readingState]);
 
   const workLayout = useRef<{ id?: string; folds: number; busy: boolean; anchor: HTMLElement | null; bottom: number } | null>(null);
   // A collapse can leave less than one pane of content. scrollTop alone then
@@ -2019,10 +2023,11 @@ const MessageListBody = function MessageList({
   const initialWindow = () => ({
     id: conversationId,
     ready: turns.length > 0,
-    first: initialTurn(turns, conversationId ? chatPlaceOf(conversationId)?.turn : undefined),
+    readingState,
+    first: readingState?.first !== undefined ? readingState.first : initialTurn(turns, conversationId ? chatPlaceOf(conversationId)?.turn : undefined),
   });
   let [visibleWindow, setWindow] = useState(initialWindow);
-  if (visibleWindow.id !== conversationId || (!visibleWindow.ready && turns.length > 0)) {
+  if (visibleWindow.id !== conversationId || visibleWindow.readingState !== readingState || (!visibleWindow.ready && turns.length > 0)) {
     visibleWindow = initialWindow();
     setWindow(visibleWindow);
     prependAnchor.current = null;
@@ -2033,9 +2038,12 @@ const MessageListBody = function MessageList({
   // between those two layouts.
   const incoming = prependAnchor.current;
   if (incoming?.server && incoming.id === conversationId && turns[0]?.[0].id !== incoming.first && visibleWindow.first !== null) {
-    visibleWindow = { id: conversationId, ready: true, first: null };
+    visibleWindow = { id: conversationId, readingState, ready: true, first: null };
     setWindow(visibleWindow);
   }
+  useLayoutEffect(() => {
+    if (readingState && visibleWindow.ready) readingState.first = visibleWindow.first;
+  }, [readingState, visibleWindow]);
   const start = turnWindowStart(turns, visibleWindow.first);
   const visibleTurns = useMemo(() => turns.slice(start), [turns, start]);
   // Marks whose turn is not shown yet: at the head until it is.
@@ -2089,7 +2097,7 @@ const MessageListBody = function MessageList({
     try {
       if (start > 0) {
         await ready();
-        if (conv.current === id) setWindow({ id, ready: true, first: turns[Math.max(0, start - TURN_BATCH)][0].id });
+        if (conv.current === id) setWindow({ id, readingState, ready: true, first: turns[Math.max(0, start - TURN_BATCH)][0].id });
       } else await onLoadEarlier?.(ready);
     } catch (error) {
       if (conv.current === id) {
@@ -2246,7 +2254,7 @@ const MessageListBody = function MessageList({
         {head}
         {earlierMarks}
         {visibleTurns.map((turn, i) => (
-          <Fragment key={turn[0].id}>
+          <ReadingScope key={turn[0].id} id={turn[0].id}>
             <TurnView
               messages={turn}
               stopped={!!stoppedAt && turn.some((m) => m.id === stoppedAt)}
@@ -2279,7 +2287,7 @@ const MessageListBody = function MessageList({
                 they can see the one above it never finished. */}
             {!!stoppedAt && turn.some((m) => m.id === stoppedAt) && <StopMark />}
             {!!marks?.size && turn.map((m) => marks.get(m.id)).filter(Boolean)}
-          </Fragment>
+          </ReadingScope>
         ))}
         {compactingSince !== undefined && <Compacting since={compactingSince} />}
         {/* A pending question whose call these turns do not hold. */}
@@ -2341,7 +2349,9 @@ const MessageListBody = function MessageList({
   );
 };
 
-export const MessageList = memo(MessageListBody);
+export const MessageList = memo(function MessageList(props: React.ComponentProps<typeof MessageListBody>) {
+  return <ChatReadingProvider id={props.conversationId} scope="transcript"><MessageListBody {...props} /></ChatReadingProvider>;
+});
 
 function ChevronDownIcon() {
   return (

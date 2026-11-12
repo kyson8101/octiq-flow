@@ -4,7 +4,8 @@
 // rather than exposing implementation details. While a call is in flight it
 // adds only the latest call's detail and a spinner. Once the agent speaks or
 // finishes, the completed run settles back to its short summary.
-import { Fragment, useMemo, useState } from "react";
+import { useReadingState } from "../lib/useReadingState";
+import { Fragment, useMemo } from "react";
 import { groupLook, groupSummary, type Note, type Tool } from "../lib/toolGroups";
 import { failureCounts, originCounts, type FailureCount } from "../lib/toolOutcome";
 import { toolDetail } from "../lib/toolKind";
@@ -45,7 +46,7 @@ export function ToolGroup({
   /** A fenced note written straight after this one-call group. */
   note?: Note;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useReadingState<boolean>(`group:${tools[0]?.id ?? newest.id}`, false);
   // `tools` is the folded portion of the run and `newest` is the incoming call.
   // Together they are one action group; the latest call only becomes visible
   // inline while it is still working.

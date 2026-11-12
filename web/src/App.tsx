@@ -79,6 +79,8 @@ import { isChatDone } from "./lib/chatFilter";
 import { isUnread } from "./lib/unread";
 import { recall, remember } from "./lib/remember";
 import { forgetChatPlace } from "./lib/chatPlace";
+import { chatReadingStates } from "./lib/chatReadingState";
+import { ChatReadingProvider } from "./lib/useReadingState";
 import {
   dismissFailure,
   failureDismissed,
@@ -1135,6 +1137,7 @@ export default function App() {
     // eventually anyway; this is so a deleted chat is not still taking up one
     // of the places a live chat could have.
     forgetChatPlace(id);
+    chatReadingStates.forget(id);
     // And the banner it was told to stop showing, for the same reason.
     forgetDismissedFailure(id);
     setConversationId((open) => (open === id ? null : open));
@@ -1758,6 +1761,7 @@ export default function App() {
           recentChatWindows.current.forget(id);
           nowPlaying.forget(id);
           forgetChatPlace(id);
+          chatReadingStates.forget(id);
           setConversations(rows => {
             const next = rows.map(row => row.id === id ? clearedConversation(row) : row);
             conversationsRef.current = next;
@@ -1790,6 +1794,7 @@ export default function App() {
       history: chatHistory.current, recent: recentChatWindows.current,
       getState: () => chatsRef.current[id] ?? EMPTY, publish: state => patch(id, () => state) });
     forgetChatPlace(id);
+    chatReadingStates.forget(id);
     setConversations(rows => {
       const next = rows.map(row => row.id === id ? clearedConversation(row) : row);
       conversationsRef.current = next;
@@ -2302,6 +2307,7 @@ export default function App() {
       released.add(id);
       catchUp.current.forget(keyFor(id));
       chatHistory.current.forget(id);
+      chatReadingStates.forget(id);
       const small = chatPreviewState(state);
       next[id] = bridge.scopedChats ? { ...small, messages: small.messages.filter(m => m.role === "user" && !m.echo && !m.takenUp) } : small;
     }
@@ -5845,7 +5851,7 @@ export default function App() {
               aria-label="Resize the run column" onPointerDown={runDock.startDrag} />}
             {/* While its place is only held, the column is empty: the ledger
                 has not said what is in it, and "no missions" would be a guess. */}
-            {!holdsRun && <RunDetailOnScreen value={!showingProjects && !mainPage && (workflowSplit ? !columnShut : workflowView === "run")}><OrchestrationPanel embedded sharedHeading project={project} coordinatorKey={runChatKey}
+            {!holdsRun && <ChatReadingProvider id={conversationId ?? undefined} scope="run"><RunDetailOnScreen value={!showingProjects && !mainPage && (workflowSplit ? !columnShut : workflowView === "run")}><OrchestrationPanel embedded sharedHeading project={project} coordinatorKey={runChatKey}
               allowManualRun={!agentsMode}
               // Cards for the main chat and its workers render in the main
               // chat, so only there does its button carry them.
@@ -5872,7 +5878,7 @@ export default function App() {
                   {MODELS.filter((item) => item.agent !== "pi" && (!installed || installed.includes(item.agent))).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}
                 </select></label>
                 <p>Keep talking in Chat. Worker providers are independent of the main agent.</p>
-              </div>} /></RunDetailOnScreen>}
+              </div>} /></RunDetailOnScreen></ChatReadingProvider>}
           </div>}
           <div className="workflow-chat-surface" hidden={runInPlace} ref={setChatArea}>
           {besideId && besideConversation && !besideFits && <BesideBar showing={besideShows}
