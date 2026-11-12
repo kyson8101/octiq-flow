@@ -114,6 +114,32 @@ pub fn held_checkout(path: &str) -> String {
     checkout_identity(path).unwrap_or_else(|_| path.to_string())
 }
 
+/// [`has_git`], remembered for a minute per root. Whether a folder has Git
+/// history barely ever changes, and the ledger's snapshot asks it of every
+/// task root on every read: two `git` processes per root, which on a busy
+/// host held every reader of the ledger for seconds. A test asks every time.
+pub fn has_git_cached(root: &str) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    const FOR: Duration = Duration::from_secs(if cfg!(test) { 0 } else { 60 });
+    static KEPT: OnceLock<Mutex<HashMap<String, (bool, Instant)>>> = OnceLock::new();
+    let kept = KEPT.get_or_init(Default::default);
+    if let Some(&(git, at)) = kept.lock().unwrap_or_else(|e| e.into_inner()).get(root) {
+        if at.elapsed() < FOR {
+            return git;
+        }
+    }
+    // Asked with the cache let go: two callers may both ask, never wait.
+    let git = has_git(root);
+    let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
+    if kept.len() > 4096 {
+        kept.clear();
+    }
+    kept.insert(root.to_owned(), (git, Instant::now()));
+    git
+}
+
 /// Whether `root` is inside a Git repository, the same test `plan` makes.
 pub fn has_git(root: &str) -> bool {
     checkout_identity(root)

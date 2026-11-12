@@ -1612,6 +1612,28 @@ impl OrchestrationStore {
         Ok(paths)
     }
 
+    /// The roots whose Git history a snapshot of these runs reads, under a
+    /// short hold of the lock that copies the paths and nothing else.
+    fn task_roots(
+        &self,
+        run_id: Option<&str>,
+        wanted: Option<&BTreeSet<String>>,
+    ) -> Result<BTreeSet<String>, String> {
+        let inner = self.inner.lock().map_err(|error| error.to_string())?;
+        Ok(inner
+            .data
+            .tasks
+            .values()
+            .filter_map(|task| {
+                let run = inner.data.runs.get(&task.run_id)?;
+                let shown = run_id.is_none_or(|id| run.id == id)
+                    && wanted.is_none_or(|ids| ids.contains(&run.id))
+                    && run.plan_approval.is_some();
+                shown.then(|| workspaces::task_root(run, task.destination.as_ref()).to_owned())
+            })
+            .collect())
+    }
+
     pub fn snapshot(&self, run_id: Option<&str>) -> Result<Snapshot, String> {
         self.snapshot_in(run_id, None, true)
     }
@@ -1626,6 +1648,18 @@ impl OrchestrationStore {
     ) -> Result<Snapshot, String> {
         self.capture_native_decisions()?;
         let scheduling = crate::scheduling::load().ok();
+        // What costs a process or a file read is asked before the ledger's
+        // lock is taken: every chat start, every tab and the scheduler wait
+        // on that lock, and asked under it they waited for seconds.
+        let mut workspace_git: BTreeMap<String, bool> = self
+            .task_roots(run_id, wanted)?
+            .into_iter()
+            .map(|root| {
+                let git = crate::git_ops::workflow::has_git_cached(&root);
+                (root, git)
+            })
+            .collect();
+        retry::warm(&self.listed_chats);
         let inner = self.inner.lock().map_err(|error| error.to_string())?;
         if let Some(error) = &inner.load_error {
             return Err(error.clone());
@@ -1653,8 +1687,8 @@ impl OrchestrationStore {
             .collect();
         tasks.sort_by_key(|task| (task.created_at, task.id.clone()));
         let (mut reach, now) = (retry::Reach::over(&self.listed_chats), now_ms());
-        // One Git capability read per root, shared by all tasks on this page.
-        let mut workspace_git = BTreeMap::new();
+        // One Git capability read per root, shared by all tasks on this page;
+        // a root that arrived since `task_roots` is asked here.
         // Why a task nobody is working on is not starting, for the page and
         // the coordinator: the plan card, not its dependencies or a slot.
         for task in &mut tasks {
@@ -1681,7 +1715,7 @@ impl OrchestrationStore {
                     let root = workspaces::task_root(run, task.destination.as_ref());
                     let git = *workspace_git
                         .entry(root.to_string())
-                        .or_insert_with(|| crate::git_ops::workflow::has_git(root));
+                        .or_insert_with(|| crate::git_ops::workflow::has_git_cached(root));
                     workspaces::choice_fact(run, task, git)
                 });
             // And the other thing that holds a task whatever asks for it.

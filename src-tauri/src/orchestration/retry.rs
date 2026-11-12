@@ -307,6 +307,23 @@ pub(super) struct Reach<'a> {
     ids: Option<Option<std::sync::Arc<BTreeSet<String>>>>,
 }
 
+fn refresh(kept: &mut Listed) {
+    let now = now_ms();
+    if kept.ids.is_none() || now - kept.at >= LISTED_FOR_MS || now < kept.at {
+        kept.ids = crate::chat_index::listed_ids()
+            .ok()
+            .map(std::sync::Arc::new);
+        kept.at = now;
+    }
+}
+
+/// Read the chat list now if the kept one is stale, so a snapshot taken
+/// next does not read it while it holds the ledger's lock (every start,
+/// every tab and the scheduler wait on that lock).
+pub(super) fn warm(kept: &Mutex<Listed>) {
+    refresh(&mut kept.lock().unwrap_or_else(|e| e.into_inner()));
+}
+
 impl<'a> Reach<'a> {
     pub(super) fn over(kept: &'a Mutex<Listed>) -> Self {
         Self { kept, ids: None }
@@ -316,13 +333,7 @@ impl<'a> Reach<'a> {
         let kept = self.kept;
         let ids = self.ids.get_or_insert_with(|| {
             let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
-            let now = now_ms();
-            if kept.ids.is_none() || now - kept.at >= LISTED_FOR_MS || now < kept.at {
-                kept.ids = crate::chat_index::listed_ids()
-                    .ok()
-                    .map(std::sync::Arc::new);
-                kept.at = now;
-            }
+            refresh(&mut kept);
             kept.ids.clone()
         });
         let id = chat_key.strip_prefix("chat:").unwrap_or(chat_key);
