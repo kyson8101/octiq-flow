@@ -1399,7 +1399,7 @@ narrow Windows window gets the phone's layout.
   words stay in `aria-label`; no visible label is needed.
   An icon-only button keeps its detailed wording in `title`; `aria-description` never substitutes for `title`.
   Desktop targets are 28px; phone and coarse-pointer targets are 44px.
-  Inline prose file actions are an exception: use 20px icon-only boxes with invisible 44px hit areas, hiding their `.action-label` only in touch mode so paragraph line height stays unchanged.
+  Inline prose file actions are an exception: use 20px icon-only boxes, hide their `.action-label` only in touch mode, and keep hit areas within their own line box without covering neighbouring text, links or actions, including wrapped lines.
   `Tasks`, `Git`, `Focus`, `New task`, `Details`, `Agents`, `Pinned`,
   `Full width`, `Run`, `Reload`, `History`, `Back to thread`, `Copy ID`,
   `Complete`, `Delete` keep their order. Results change the icon, colour

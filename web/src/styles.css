@@ -2729,17 +2729,6 @@ body {
     box-shadow: none;
   }
 
-  /* Expand only hit testing, not the paragraph's line box. */
-  .prose-file-action::before {
-    content: "";
-    position: absolute;
-    width: 44px;
-    height: 44px;
-    left: 50%;
-    top: 50%;
-    transform: translate(-50%, -50%);
-  }
-
   :root .prose-file-action-menu button.prose-file-action:is(:hover, :active) {
     background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
