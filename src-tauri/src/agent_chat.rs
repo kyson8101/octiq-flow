@@ -9800,6 +9800,12 @@ pub(crate) struct PreviewBatch {
     last_write: Mutex<Option<Instant>>,
     /// A failed write is said once per run of failures, not every second.
     failing: std::sync::atomic::AtomicBool,
+    /// Ids whose text a FAILED write still has to deliver: put back by
+    /// `requeue`, gone as soon as that text is written, withdrawn, cleared or
+    /// replaced by newer text. This is what `owes` reports, so text that is
+    /// only waiting for its due time is never owed. Always locked after
+    /// `pending` and `in_flight`.
+    failed: Mutex<HashSet<String>>,
 }
 
 impl PreviewBatch {
@@ -9837,6 +9843,12 @@ impl PreviewBatch {
             .get(id)
             .map_or(due, |(_, earlier, _)| due.min(*earlier));
         pending.insert(id.to_owned(), (text, due, epoch));
+        // Newer text supersedes a failed write for the same chat: what is
+        // waiting now is waiting for its due time, not for a retry.
+        self.failed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
         self.wake.notify_all();
     }
 
@@ -9848,6 +9860,10 @@ impl PreviewBatch {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         pending.remove(id);
         self.in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+        self.failed
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(id);
@@ -9887,30 +9903,33 @@ impl PreviewBatch {
     fn requeue(&self, batch: Vec<DuePreview>, now: Instant) {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let mut in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        let mut failed = self.failed.lock().unwrap_or_else(|e| e.into_inner());
         for (id, text, epoch) in batch {
             if in_flight.remove(&id)
                 && !pending.contains_key(&id)
                 && epoch >= crate::chat_index::clear_epoch(&id)
             {
+                failed.insert(id.clone());
                 pending.insert(id, (text, now, epoch));
             }
         }
     }
 
-    /// Whether previews are waiting on a write that FAILED. Text that is only
-    /// waiting for its due time is not owed. Once nothing is left of a failure
-    /// (everything withdrawn, cleared or replaced and written) the failure run
-    /// is over, so the next one is said again.
+    /// Whether a FAILED write still has text to deliver: exactly the chats in
+    /// `failed`. Text that is only waiting for its due time is never owed, and
+    /// neither is text that newer text for the same chat replaced (the newer
+    /// text is a new submission, not the failed write's debt; if it fails in
+    /// turn it is owed again). Once nothing is left of a failure the failure
+    /// run is over, so the next one is said again.
     pub(crate) fn owes(&self) -> bool {
-        use std::sync::atomic::Ordering::Relaxed;
-        if !self.failing.load(Relaxed) {
-            return false;
-        }
-        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        let in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
-        let owed = !pending.is_empty() || !in_flight.is_empty();
+        let owed = !self
+            .failed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty();
         if !owed {
-            self.failing.store(false, Relaxed);
+            self.failing
+                .store(false, std::sync::atomic::Ordering::Relaxed);
         }
         owed
     }
@@ -9932,8 +9951,10 @@ impl PreviewBatch {
 
     fn finished(&self, batch: &[DuePreview]) {
         let mut in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        let mut failed = self.failed.lock().unwrap_or_else(|e| e.into_inner());
         for (id, _, _) in batch {
             in_flight.remove(id);
+            failed.remove(id);
         }
     }
 
@@ -9954,20 +9975,25 @@ impl PreviewBatch {
         match crate::chat_index::set_host_previews_since(&batch) {
             Ok(changed) => {
                 self.finished(&batch);
-                self.failing
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                // Ends the failure run when nothing failed is left.
+                self.owes();
                 for (id, _) in changed {
                     announce_index_change(&id, false);
                 }
             }
             Err(error) => {
+                // A run of failures nothing is left of is over (everything
+                // withdrawn or replaced); this one is a new run and is said.
+                self.owes();
+                // Owed first, then said: `owes` must see the debt before the
+                // flag that says it was announced.
+                self.requeue(batch, Instant::now());
                 if !self
                     .failing
                     .swap(true, std::sync::atomic::Ordering::Relaxed)
                 {
                     crate::unsaved::say("the latest chat previews", error);
                 }
-                self.requeue(batch, Instant::now());
             }
         }
     }
@@ -14573,6 +14599,89 @@ mod idle_tests {
             .find(|chat| chat.id == id)
             .unwrap();
         assert_eq!(row.latest_response.as_deref(), Some("closing words"));
+        let _ = crate::chat_index::remove(id);
+    }
+
+    /// A write that fails for chat A, whose previews are then withdrawn,
+    /// leaves nothing owed: B's first text, only waiting for its due time,
+    /// must not read as the old debt (review of 3010b9fd, M1).
+    #[test]
+    fn a_withdrawn_failure_does_not_make_a_later_not_due_text_owed() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let (a, b) = ("owed-edge-a-test", "owed-edge-b-test");
+        for id in [a, b] {
+            let _ = crate::chat_index::remove(id);
+            crate::chat_index::upsert(
+                serde_json::from_value(json!({"id": id, "projectId": "p", "title": "t"})).unwrap(),
+            )
+            .unwrap();
+        }
+        let batch = PreviewBatch::default();
+        batch.submit(a, "a text".into(), Instant::now(), Duration::ZERO);
+        home.unplug();
+        batch.write_due();
+        assert!(batch.owes(), "A's failed write is owed");
+        // A's turn fails: its previews are withdrawn, nothing is left to owe.
+        batch.withdraw(a);
+        // B's first readable text is five seconds from due and the queue was
+        // never sampled empty in between.
+        batch.submit(b, "b text".into(), Instant::now(), Duration::from_secs(4));
+        assert!(
+            !batch.owes(),
+            "text only waiting for its due time is never owed"
+        );
+        assert!(batch.settle().is_ok(), "settle has nothing to retry");
+        // The next failure is a new run and is said again.
+        let said = crate::bus::tap::Tap::on("the latest chat previews");
+        batch.submit(b, "b again".into(), Instant::now(), Duration::ZERO);
+        *batch.last_write.lock().unwrap() = None;
+        batch.write_due();
+        assert!(batch.owes());
+        assert!(said.heard().iter().any(|(name, _)| name == "unsaved"));
+        home.plug_back();
+        *batch.last_write.lock().unwrap() = None;
+        batch.settle().expect("written");
+        assert!(!batch.owes());
+        for id in [a, b] {
+            let _ = crate::chat_index::remove(id);
+        }
+    }
+
+    /// Newer text for the SAME chat supersedes a failed write: the failed
+    /// text is no longer the debt, and the newer one is owed only if it
+    /// fails in its own turn. (Decision: superseded is not owed.)
+    #[test]
+    fn newer_not_due_text_for_the_same_chat_replaces_a_failed_one() {
+        let home = crate::profile::tests::Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        let id = "owed-supersede-test";
+        let _ = crate::chat_index::remove(id);
+        crate::chat_index::upsert(
+            serde_json::from_value(json!({"id": id, "projectId": "p", "title": "t"})).unwrap(),
+        )
+        .unwrap();
+        let batch = PreviewBatch::default();
+        batch.submit(id, "old".into(), Instant::now(), Duration::ZERO);
+        home.unplug();
+        batch.write_due();
+        assert!(batch.owes());
+        batch.submit(id, "newer".into(), Instant::now(), Duration::from_secs(4));
+        assert!(!batch.owes(), "the newer text supersedes the failed one");
+        // Once it is due and fails, it is owed in its own right.
+        batch.submit(id, "newer".into(), Instant::now(), Duration::ZERO);
+        *batch.last_write.lock().unwrap() = None;
+        batch.write_due();
+        assert!(batch.owes());
+        home.plug_back();
+        *batch.last_write.lock().unwrap() = None;
+        batch.settle().expect("written");
+        assert!(!batch.owes());
+        let row = crate::chat_index::list()
+            .into_iter()
+            .find(|chat| chat.id == id)
+            .unwrap();
+        assert_eq!(row.latest_response.as_deref(), Some("newer"));
         let _ = crate::chat_index::remove(id);
     }
 

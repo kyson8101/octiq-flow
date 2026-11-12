@@ -99,7 +99,11 @@ when 0).
   through `PreviewBatch::settle`, which retries by the writer's own
   `write_due` (one writer, `MIN_GAP` apart), and the entry clears once they
   are written or nothing of them is left (withdrawn, cleared, replaced).
-  Text only waiting for its due time is not owed.
+  Text only waiting for its due time is not owed: `owes` reads a per-chat
+  set (`PreviewBatch::failed`), filled by `requeue` and emptied for a chat when
+  its text is written, withdrawn or replaced by newer text for the same chat
+  (the newer text supersedes the failed write; it is owed only if it fails in
+  its own turn), never a batch-wide flag.
 - **A stop writes what is owed.** SIGTERM and SIGINT (`shutdown.rs`) flush
   the batch, due or not, through the same index door
   (`PreviewBatch::flush`, at most 3 s), then the process dies of the signal
