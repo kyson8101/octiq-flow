@@ -4,8 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("./bridge", () => ({ bridge: { state: "open", invoke: () => new Promise(() => {}), on: () => () => {}, onState: () => () => {} } }));
 import { attemptsByTask, chatRunStatus, chatSnapshot, rowRun, runSummary, stableWorkflowFacts, workflowChatList } from "./chatWorkflow";
 import { withExecution } from "./orchestrationFeed";
-import { EMPTY_ORCHESTRATION, type OrchestrationSnapshot, type OrchestrationRun, type OrchestrationAttempt } from "./orchestration";
+import { EMPTY_ORCHESTRATION, ordinaryChats, stableParents, workerChatParents, type OrchestrationSnapshot, type OrchestrationRun, type OrchestrationAttempt } from "./orchestration";
 import type { Conversation } from "./store";
+import app from "../App.tsx?raw";
+import { lf } from "./sourceText";
 const run = (id: string, owner = "main", status: OrchestrationRun["status"] = "running", createdAt = 1): OrchestrationRun => ({ id, coordinatorChatKey: `chat:${owner}`, status, createdAt, updatedAt: createdAt, objective: id, rootPath: "/repo", workspaceId: "project", maxConcurrent: 2 });
 const attempt = (id: string, number: number): OrchestrationAttempt => ({ id, number, runId: "run", taskId: "task", workerChatKey: `chat:${id}`, agent: "codex", access: "auto", status: "blocked", cwd: "/task", branch: "feature/task", isWorktree: true, filesModified: [], createdAt: number, updatedAt: number });
 const chat = (id: string): Conversation => ({ id, title: id, projectId: "project", messages: [], createdAt: 1, updatedAt: 1 });
@@ -165,5 +167,83 @@ describe("chat list derivation (perf)", () => {
     const reparented = { ...data, runs: data.runs.map((r, i) => i === 0 ? { ...r, coordinatorChatKey: "chat:elsewhere" } : r) };
     const renumbered = { ...data, attempts: data.attempts.map((a, i) => i === 1 ? { ...a, number: 42 } : a) };
     for (const next of [archived, added, switched, reparented, renumbered]) expect(stableWorkflowFacts(prev, next)).toBe(next);
+  });
+  describe("the App's memo chain (parents, conversations, chat list)", () => {
+    // What App and Sidebar do with each ledger object, with the refs they hold.
+    const chain = () => {
+      let parents: ReadonlyMap<string, string> | null = null;
+      let facts: ReturnType<typeof stableWorkflowFacts> | null = null;
+      let conv: { every: Conversation[]; parents: unknown; list: Conversation[] } | null = null;
+      let list: { conv: unknown; facts: unknown; out: Conversation[] } | null = null;
+      let derivations = 0;
+      return (data: OrchestrationSnapshot, every: Conversation[]) => {
+        parents = stableParents(parents, workerChatParents(data));
+        facts = stableWorkflowFacts(facts, data);
+        if (!conv || conv.every !== every || conv.parents !== parents) conv = { every, parents, list: ordinaryChats(every, parents) };
+        if (!list || list.conv !== conv.list || list.facts !== facts) {
+          derivations++;
+          list = { conv: conv.list, facts, out: workflowChatList(conv.list, facts, null) };
+        }
+        return { parents, conv: conv.list, facts, out: list.out, derivations };
+      };
+    };
+    it("does not re-derive on an execution-only patch", () => {
+      const { chats, data } = big();
+      const step = chain();
+      const first = step(data, chats);
+      let current = data;
+      for (let i = 0; i < 5; i++) {
+        current = withExecution(current, { attemptId: current.attempts[i].id, execution: { phase: `p${i}` } as never });
+        const next = step(current, chats);
+        expect(next.parents).toBe(first.parents);
+        expect(next.conv).toBe(first.conv);
+        expect(next.facts).toBe(first.facts);
+        expect(next.out).toBe(first.out);
+        expect(next.derivations).toBe(1);
+      }
+      // Task status and a run's revision do not move it either.
+      const status = { ...current, tasks: current.tasks.map((t) => ({ ...t, status: "completed" as const })), runs: current.runs.map((r) => ({ ...r, updatedAt: 9 })) };
+      expect(step(status, chats).derivations).toBe(1);
+    });
+    it("still updates on a membership, archive or parent change", () => {
+      const { chats, data } = big();
+      const step = chain();
+      const first = step(data, chats);
+      // Archive: same parents, new facts, so one more derivation and a new list.
+      const archived = { ...data, attempts: data.attempts.map((a, i) => i === 0 ? { ...a, archivedAt: 99 } : a) };
+      const afterArchive = step(archived, chats);
+      expect(afterArchive.parents).toBe(first.parents);
+      expect(afterArchive.derivations).toBe(2);
+      expect(afterArchive.out).not.toBe(first.out);
+      // A new worker under a run: the parents move, and so does everything keyed on them.
+      const worker = { ...attempt("newcomer", 9), taskId: "t0", runId: data.runs[0].id, workerChatKey: "chat:newcomer" };
+      const grown = { ...archived, attempts: [...archived.attempts, worker] };
+      const every = [...chats, chat("newcomer")];
+      const afterNew = step(grown, every);
+      expect(afterNew.parents).not.toBe(first.parents);
+      expect(afterNew.parents.get("newcomer")).toBe(data.runs[0].coordinatorChatKey.replace(/^chat:/, ""));
+      expect(afterNew.conv).not.toBe(first.conv);
+      expect(afterNew.derivations).toBe(3);
+      // A run handed to another coordinator re-parents its workers.
+      const moved = { ...grown, runs: grown.runs.map((r, i) => i === 0 ? { ...r, coordinatorChatKey: "chat:elsewhere" } : r) };
+      const afterMove = step(moved, every);
+      expect(afterMove.parents).not.toBe(afterNew.parents);
+      expect(afterMove.derivations).toBe(4);
+    });
+    it("stableParents reads exactly the pairs: an attempt's run and the host's workerParents count", () => {
+      const { data } = big();
+      const prev = workerChatParents(data);
+      expect(stableParents(prev, workerChatParents({ ...data, tasks: data.tasks.map((t) => ({ ...t, status: "completed" as const })) }))).toBe(prev);
+      const first = data.attempts[0];
+      const other = data.runs.find((r) => r.coordinatorChatKey !== data.runs.find((x) => x.id === first.runId)!.coordinatorChatKey)!;
+      const rerun = { ...data, attempts: data.attempts.map((a, i) => i === 0 ? { ...a, runId: other.id } : a) };
+      expect(stableParents(prev, workerChatParents(rerun))).not.toBe(prev);
+      expect(stableParents(prev, workerChatParents({ ...data, workerParents: { ghost: "main" } }))).not.toBe(prev);
+    });
+    it("App hands the Sidebar the held parents, never a fresh Map per ledger object", () => {
+      const source = lf(app);
+      expect(source).toMatch(/const chatParents = useMemo\(\(\) => \{\s+const parents = stableParents\(parentsRef\.current, workerChatParents\(orchestration\)\);/);
+      expect(source).not.toMatch(/const chatParents = useMemo\(\(\) => workerChatParents\(orchestration\)/);
+    });
   });
 });

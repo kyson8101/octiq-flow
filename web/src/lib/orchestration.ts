@@ -769,6 +769,18 @@ export function workerChatParents(snapshot: OrchestrationSnapshot): ReadonlyMap<
   return parents;
 }
 
+/** `next` itself, or `prev` when it holds the same pairs. `workerChatParents`
+ *  builds a new Map on every ledger object, and a worker's execution patches
+ *  arrive many times a second, so everything keyed on the Map (the chat list's
+ *  `ordinaryChats`, the tree, the pending badges) would be redone for a ledger
+ *  whose parents did not move. Compared on the result, so it reads exactly
+ *  what `workerChatParents` reads and cannot go stale when that grows. */
+export function stableParents(prev: ReadonlyMap<string, string> | null, next: ReadonlyMap<string, string>): ReadonlyMap<string, string> {
+  if (!prev || prev === next || prev.size !== next.size) return next;
+  for (const [id, parent] of next) if (prev.get(id) !== parent) return next;
+  return prev;
+}
+
 /** Reserved worker IDs stay read-only while the ledger loads or is unavailable. */
 export function isWorkerChat(id: string | null, parents: ReadonlyMap<string, string>): boolean {
   return !!id && (id.startsWith("orch-") || parents.has(id));

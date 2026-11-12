@@ -195,7 +195,7 @@ import { useThemeId } from "./lib/useThemeId";
 import { Usage, UsageRow } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { OrchestrationPanel } from "./components/OrchestrationPanel";
-import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type OrchestrationRun } from "./lib/orchestration";
+import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, stableParents, workerChatParents, type OrchestrationRun } from "./lib/orchestration";
 import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
 import { ChatWorkflowBar, TasksButton } from "./components/ChatWorkflowBar";
 import { taskColumnCounts } from "./lib/runPanel";
@@ -729,7 +729,14 @@ export default function App() {
   // change: the plans on screen as a message leaves (`seenPlans`).
   const ledgerRef = useRef(orchestrationState.snapshot);
   ledgerRef.current = orchestrationState.snapshot;
-  const chatParents = useMemo(() => workerChatParents(orchestration), [orchestration]);
+  // Held across ledger objects that map the same workers to the same parents
+  // (every execution patch is one), so what is keyed on it is not redone.
+  const parentsRef = useRef<ReadonlyMap<string, string> | null>(null);
+  const chatParents = useMemo(() => {
+    const parents = stableParents(parentsRef.current, workerChatParents(orchestration));
+    parentsRef.current = parents;
+    return parents;
+  }, [orchestration]);
   const workerChat = isWorkerChat(conversationId, chatParents);
   // Until the ledger has been read, the run column's place (and the pane of
   // a task open beside the chat) is held from what the page already knows
