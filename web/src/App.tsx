@@ -214,9 +214,9 @@ import {
 } from "./lib/handover";
 import { useHandovers } from "./lib/handoverStore";
 import { composerLanding, forgetIdentity, landIdentity, routeAfter, routeStands, type PageNow, type RouteTravel } from "./lib/identityTravel";
-import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
+import { watchReading } from "./lib/readingWatch";
+import { makePendingActionsView, PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
 import { pendingByRow, pendingByTask, pendingReading, type PendingAction, type SourcesRead } from "./lib/pendingActions";
-const NO_ACTIONS: readonly PendingAction[] = [];
 import { chatPlans, seenPlans } from "./lib/chatPlans";
 import { RunDetailOnScreen, useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
 import { orchestrationFeed } from "./lib/orchestrationFeed";
@@ -3214,18 +3214,10 @@ export default function App() {
   // Keep the worker told which chat is on screen, so it can stay quiet about
   // that one. It is killed and restarted freely and forgets — hence also on
   // focus and visibility, not only when the chat changes.
-  useEffect(() => {
-    const tell = () => push.setReading(document.hidden ? null : conversationId);
-    tell();
-    window.addEventListener("focus", tell);
-    window.addEventListener("blur", tell);
-    document.addEventListener("visibilitychange", tell);
-    return () => {
-      window.removeEventListener("focus", tell);
-      window.removeEventListener("blur", tell);
-      document.removeEventListener("visibilitychange", tell);
-    };
-  }, [conversationId]);
+  // Built by a module-level function: a listener made inline here sat on
+  // `window` holding the render it was made in, and so every transcript that
+  // render's `chats` held, until the chat changed.
+  useEffect(() => watchReading(conversationId, push.setReading), [conversationId]);
 
   // Go back to the chat you were last in, once the list it lives in arrives.
   //
@@ -5354,15 +5346,11 @@ export default function App() {
     return () => cancelAnimationFrame(frame);
   }, [cardFocus, showRunFor]);
   const pendingTasks = useMemo(() => pendingByTask(pendingList), [pendingList]);
-  const pendingView = useMemo<PendingActionsView>(() => {
-    const rows = pendingByRow(pendingList);
-    return {
-      forRow: (chatId) => rows.get(chatId) ?? NO_ACTIONS,
-      forTask: (taskId) => pendingTasks.get(taskId) ?? NO_ACTIONS,
-      held: pendingHeld,
-      reveal: revealPending,
-    };
-  }, [pendingList, pendingTasks, pendingHeld, revealPending]);
+  // Built by a module-level factory so no closure of the view keeps this render.
+  const pendingView = useMemo<PendingActionsView>(
+    () => makePendingActionsView(pendingByRow(pendingList), pendingTasks, pendingHeld, revealPending),
+    [pendingList, pendingTasks, pendingHeld, revealPending],
+  );
   // What a reopened task's line needs to offer its Stop (`ReopenedNote`):
   // the ledger, and the page's own command. The host announces the stop;
   // the read is asked for anyway, so the line does not wait on an event to

@@ -24,6 +24,25 @@ const NONE: readonly PendingAction[] = [];
 export const NO_PENDING_ACTIONS: PendingActionsView = { forRow: () => NONE, forTask: () => NONE, held: new Map(), reveal: () => {} };
 export const PendingActionsContext = createContext<PendingActionsView>(NO_PENDING_ACTIONS);
 
+/** Build the page's view of what waits on the person. This factory MUST live
+ *  outside App's render scope: V8 shares one scope between every closure made
+ *  in a render, so a `forRow` made inside App's `useMemo` kept that render, and
+ *  with it every transcript `chats` held then, for as long as a React fiber
+ *  kept the old context value. Here the closures hold only these arguments. */
+export function makePendingActionsView(
+  rows: ReadonlyMap<string, readonly PendingAction[]>,
+  tasks: ReadonlyMap<string, readonly PendingAction[]>,
+  held: Waiting,
+  reveal: (action: PendingAction) => void,
+): PendingActionsView {
+  return {
+    forRow: (chatId) => rows.get(chatId) ?? NONE,
+    forTask: (taskId) => tasks.get(taskId) ?? NONE,
+    held,
+    reveal,
+  };
+}
+
 export function usePendingActions(): PendingActionsView {
   return useContext(PendingActionsContext);
 }

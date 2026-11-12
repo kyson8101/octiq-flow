@@ -12,6 +12,7 @@
 // Detected from the POINTER, not the screen width: a narrow window on a desktop
 // still has a real keyboard and should still send on Enter.
 import { ActionIcon } from "./ActionIcon";
+import { useCommittedCallback } from "../lib/useCommittedCallback";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { transitionZen } from "../lib/zenMotion";
 import { bridge } from "../lib/bridge";
@@ -1027,22 +1028,27 @@ export function Composer({
     // precisely so that typing does not re-run it.
   }, [session, forget]);
 
+  // The paste store outlives this mount and keeps `receive`, so it must not be
+  // a closure of this render: V8 shares one scope between every closure made in
+  // a render, and one stored there kept this render's `insertText`, `moveRecall`
+  // and `onPutBack` (an App render) alive, with every transcript App held then.
+  // A committed callback keeps only its cell and always runs the latest body.
+  const receive = useCommittedCallback((pending: number, result?: PasteSaveResult) => {
+    setSavingPastes(pending);
+    if (!result) return;
+    if ("attachment" in result) setAttached((prev) => [...prev, result.attachment]);
+    else {
+      if ("text" in result) insertText(result.text);
+      if ("error" in result) setAttachError(result.error ?? null);
+    }
+  }, []);
   useLayoutEffect(() => {
     const save = pasteSaveFor(drafts.current, session);
-    const receive = (pending: number, result?: PasteSaveResult) => {
-      setSavingPastes(pending);
-      if (!result) return;
-      if ("attachment" in result) setAttached((prev) => [...prev, result.attachment]);
-      else {
-        if ("text" in result) insertText(result.text);
-        if ("error" in result) setAttachError(result.error ?? null);
-      }
-    };
     save.receive = receive;
     receive(save.pending);
     if (save.error) { setAttachError(save.error); save.error = undefined; }
     return () => { if (save.receive === receive) save.receive = undefined; };
-  }, [session, draftStore, insertText]);
+  }, [session, draftStore, receive]);
 
   /** Words that were queued and never sent, put back where they were typed.
    *
