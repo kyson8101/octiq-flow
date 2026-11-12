@@ -547,9 +547,17 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             // The preview is the host's once it has written one: the text a
             // browser carries is taken only from a browser that has heard the
             // host's latest version, never over a newer one.
+            //
+            // After a `/clear` the host holds "no preview" at a version above
+            // zero (`clear_host_preview`; the host's own writes always carry
+            // text). A browser that heard that very version, or one whose
+            // pending save still carries the old text at it, must not bring
+            // text back: only version zero (the host has said nothing yet)
+            // lets a browser's text in.
             let (response, response_version) = if meta.latest_response_version
                 == existing.latest_response_version
                 && (meta.latest_response.is_some() || existing.latest_response_version == 0)
+                && (existing.latest_response.is_some() || existing.latest_response_version == 0)
             {
                 (
                     meta.latest_response.take(),
@@ -624,15 +632,62 @@ pub fn set_host_preview(id: &str, response: &str) -> Result<Option<u64>, String>
 /// written together (`agent_chat::PreviewBatch`). Answers `(id, new version)`
 /// for each chat whose stored preview changed, in the order given.
 pub fn set_host_previews(previews: &[(String, String)]) -> Result<Vec<(String, u64)>, String> {
-    if previews.iter().all(|(_, text)| text.trim().is_empty()) {
+    let items: Vec<(String, String, Option<u64>)> = previews
+        .iter()
+        .map(|(id, text)| (id.clone(), text.clone(), None))
+        .collect();
+    write_previews(&items)
+}
+
+/// Bumped by every successful `/clear` of a chat's preview (`clear_host_preview`,
+/// under the index lock). A preview carries the epoch its text was heard in
+/// (`clear_epoch`), and `set_host_previews_since` drops one that is older than
+/// the chat's now, under the same lock as the write: a text that was already
+/// taken out of the writer's queue when `/clear` ran can never land after it.
+static CLEAR_EPOCHS: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
+
+/// How many times this chat's preview has been cleared since the server
+/// started. Read when a text is heard, before it is queued.
+pub fn clear_epoch(id: &str) -> u64 {
+    CLEAR_EPOCHS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// `set_host_previews` for text heard at a known `clear_epoch`: an item whose
+/// epoch is older than the chat's current one is dropped, not written.
+pub fn set_host_previews_since(
+    previews: &[(String, String, u64)],
+) -> Result<Vec<(String, u64)>, String> {
+    let items: Vec<(String, String, Option<u64>)> = previews
+        .iter()
+        .map(|(id, text, epoch)| (id.clone(), text.clone(), Some(*epoch)))
+        .collect();
+    write_previews(&items)
+}
+
+fn write_previews(
+    previews: &[(String, String, Option<u64>)],
+) -> Result<Vec<(String, u64)>, String> {
+    if previews.iter().all(|(_, text, _)| text.trim().is_empty()) {
         return Ok(Vec::new());
     }
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(mut index) = read_checked() else {
-        return Ok(Vec::new());
-    };
+    // An index that cannot be read is an error, never "nothing to write": the
+    // caller still owes these previews (`agent_chat::PreviewBatch`).
+    let mut index = read_checked().map_err(|_| {
+        crate::profile::available()
+            .err()
+            .unwrap_or_else(|| "the chat index could not be read".to_string())
+    })?;
     let mut changed = Vec::new();
-    for (id, response) in previews {
+    for (id, response, epoch) in previews {
+        if epoch.is_some_and(|heard| heard < clear_epoch(id)) {
+            continue;
+        }
         let preview = bounded_preview(response);
         if preview.is_empty() {
             continue;
@@ -660,8 +715,9 @@ pub fn set_host_previews(previews: &[(String, String)]) -> Result<Vec<(String, u
 /// `/clear`: the chat has no response any more, so neither has its row. The
 /// text goes and the version moves on (always), so a page that heard the old
 /// preview drops it and a save that still carries it (an older version, or
-/// none) is refused by `upsert`. Answers the new version, or `None` for a
-/// chat the index does not list.
+/// none) is refused by `upsert`. The chat's clear epoch moves on in the same
+/// step, so text already taken out of the writer's queue is dropped too.
+/// Answers the new version, or `None` for a chat the index does not list.
 pub fn clear_host_preview(id: &str) -> Result<Option<u64>, String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
@@ -671,7 +727,13 @@ pub fn clear_host_preview(id: &str) -> Result<Option<u64>, String> {
     chat.latest_response = None;
     chat.latest_response_version += 1;
     let version = chat.latest_response_version;
-    write(&index).map(|()| Some(version))
+    write(&index)?;
+    *CLEAR_EPOCHS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(id.to_owned())
+        .or_insert(0) += 1;
+    Ok(Some(version))
 }
 
 /// Move a chat to another folder, and nothing else. Used when the folder it
@@ -1292,9 +1354,26 @@ pub(crate) mod tests {
         upsert(saved(None, 3)).unwrap();
         assert_eq!(found().latest_response, None);
         assert_eq!(found().latest_response_version, 3);
+        // A save that carries the old text at the cleared version itself (a
+        // Pin save made before the page heard the clear) keeps "no preview".
+        upsert(saved(Some("old text at the cleared version"), 3)).unwrap();
+        assert_eq!(found().latest_response, None);
+        assert_eq!(found().latest_response_version, 3);
+        // Text heard before the clear is dropped under the index lock, text
+        // heard after it lands.
+        assert_eq!(clear_epoch(id), 1);
+        assert!(set_host_previews_since(&[(id.to_owned(), "heard before".into(), 0)])
+            .unwrap()
+            .is_empty());
+        assert_eq!(found().latest_response, None);
         assert_eq!(clear_host_preview("no-such-chat").unwrap(), None);
         // The host's next words continue the count.
         assert_eq!(set_host_preview(id, "after clear").unwrap(), Some(4));
+        assert_eq!(
+            set_host_previews_since(&[(id.to_owned(), "heard after".into(), 1)]).unwrap(),
+            vec![(id.to_owned(), 5)]
+        );
+        assert_eq!(set_host_preview(id, "after clear").unwrap(), Some(6));
         // Several chats are one write.
         let other = "host-preview-contract-2";
         cleanup(&[other]);

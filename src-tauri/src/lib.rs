@@ -77,6 +77,7 @@ mod team_tools;
 mod test_dir;
 mod transcript;
 mod unsaved;
+mod shutdown;
 mod usage_limits;
 mod web;
 mod workspaces;
@@ -99,6 +100,8 @@ pub async fn run_headless() {
         std::process::exit(1);
     }
     retired_features::at_startup();
+    // After the profile is ours: a stop writes what is still owed first.
+    shutdown::install();
     // Once, before anything can be running: tidy away transcripts no chat
     // points at any more.
     chat_index::reconcile();

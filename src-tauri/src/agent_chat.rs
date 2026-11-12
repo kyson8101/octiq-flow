@@ -9758,21 +9758,49 @@ impl HostPreview {
     }
 }
 
+/// A pending preview: its text, when it must be written by, and the
+/// `chat_index::clear_epoch` it was heard in.
+type PendingPreview = (String, Instant, u64);
+
+/// One preview taken out of the queue for a write: id, text, clear epoch.
+type DuePreview = (String, String, u64);
+
+/// Writes every preview still waiting (graceful shutdown).
+pub(crate) fn flush_previews() {
+    PreviewBatch::global().flush();
+}
+
 /// Previews waiting to be written, each with the moment it must be written
 /// by. When the earliest comes due, every pending preview goes in the same
 /// index write, so N busy chats cost one rewrite of the index, not N.
+///
+/// What was taken out of the queue is still this batch's until it is written
+/// (`in_flight`): `/clear` drops it by epoch under the index lock
+/// (`chat_index::set_host_previews_since`), a failed turn withdraws it so a
+/// failed write does not bring it back, and a write that failed puts back
+/// what no newer text or withdrawal has replaced (`requeue`), so a profile
+/// that is away for a while does not lose previews. They are kept in memory
+/// only: what a hard kill loses is in `docs/scoped-reads-and-previews.md`.
 #[derive(Default)]
 pub(crate) struct PreviewBatch {
-    pending: Mutex<HashMap<String, (String, Instant)>>,
+    pending: Mutex<HashMap<String, PendingPreview>>,
+    /// Ids whose text was taken for a write that has not finished. Always
+    /// locked after `pending`.
+    in_flight: Mutex<HashSet<String>>,
     wake: Condvar,
     /// When the index was last rewritten for previews; one writer at a time.
     last_write: Mutex<Option<Instant>>,
+    /// A failed write is said once per run of failures, not every second.
+    failing: std::sync::atomic::AtomicBool,
 }
 
 impl PreviewBatch {
     /// The index is rewritten for previews at most this often, however many
     /// chats are busy.
     const MIN_GAP: Duration = Duration::from_secs(1);
+    /// A shutdown flush gives up after this long (a stuck index lock must not
+    /// hold the process open).
+    const FLUSH_LIMIT: Duration = Duration::from_secs(3);
 }
 
 impl PreviewBatch {
@@ -9790,50 +9818,117 @@ impl PreviewBatch {
     }
 
     /// The newest text for a chat replaces any older pending one; the time it
-    /// is due is the earliest anything for this chat asked for.
+    /// is due is the earliest anything for this chat asked for. The clear
+    /// epoch is read first, before the text is queued, so a `/clear` that
+    /// completes after this read always outranks the text.
     pub(crate) fn submit(&self, id: &str, text: String, now: Instant, within: Duration) {
+        let epoch = crate::chat_index::clear_epoch(id);
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let due = now + within;
         let due = pending
             .get(id)
-            .map_or(due, |(_, earlier)| due.min(*earlier));
-        pending.insert(id.to_owned(), (text, due));
+            .map_or(due, |(_, earlier, _)| due.min(*earlier));
+        pending.insert(id.to_owned(), (text, due, epoch));
         self.wake.notify_all();
     }
 
-    /// Drop whatever is pending for a chat (a failed turn, `/clear`).
+    /// Drop whatever is pending for a chat, and cancel what was taken for a
+    /// write that has not finished from coming back after a failure (a failed
+    /// turn, `/clear`). A write that is already past the index lock cannot be
+    /// called back; `/clear` has the epoch for that.
     pub(crate) fn withdraw(&self, id: &str) {
-        self.pending
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        pending.remove(id);
+        self.in_flight
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(id);
     }
 
     /// Everything pending, once anything in it is due; nothing otherwise.
-    pub(crate) fn take_due(&self, now: Instant) -> Option<Vec<(String, String)>> {
+    pub(crate) fn take_due(&self, now: Instant) -> Option<Vec<DuePreview>> {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        Self::take_due_locked(&mut pending, now)
-    }
-
-    fn take_due_locked(
-        pending: &mut HashMap<String, (String, Instant)>,
-        now: Instant,
-    ) -> Option<Vec<(String, String)>> {
-        if !pending.values().any(|(_, due)| *due <= now) {
+        if !pending.values().any(|(_, due, _)| *due <= now) {
             return None;
         }
-        Some(pending.drain().map(|(id, (text, _))| (id, text)).collect())
+        Some(self.drain_locked(&mut pending))
+    }
+
+    /// Everything pending, due or not (shutdown).
+    fn take_all(&self) -> Option<Vec<DuePreview>> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if pending.is_empty() {
+            return None;
+        }
+        Some(self.drain_locked(&mut pending))
+    }
+
+    fn drain_locked(&self, pending: &mut HashMap<String, PendingPreview>) -> Vec<DuePreview> {
+        let mut in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        pending
+            .drain()
+            .map(|(id, (text, _, epoch))| {
+                in_flight.insert(id.clone());
+                (id, text, epoch)
+            })
+            .collect()
+    }
+
+    /// A write failed: what it took goes back, unless newer text arrived or
+    /// the chat's words were withdrawn or cleared meanwhile.
+    fn requeue(&self, batch: Vec<DuePreview>, now: Instant) {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        for (id, text, epoch) in batch {
+            if in_flight.remove(&id)
+                && !pending.contains_key(&id)
+                && epoch >= crate::chat_index::clear_epoch(&id)
+            {
+                pending.insert(id, (text, now, epoch));
+            }
+        }
+    }
+
+    fn finished(&self, batch: &[DuePreview]) {
+        let mut in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        for (id, _, _) in batch {
+            in_flight.remove(id);
+        }
     }
 
     /// When the next write may happen: the earliest due preview, but not
     /// within `MIN_GAP` of the last write. `None` with nothing pending.
     fn next_write(
-        pending: &HashMap<String, (String, Instant)>,
+        pending: &HashMap<String, PendingPreview>,
         last_write: Option<Instant>,
         now: Instant,
     ) -> Option<Instant> {
-        let earliest = pending.values().map(|(_, due)| *due).min()?;
+        let earliest = pending.values().map(|(_, due, _)| *due).min()?;
         Some(earliest.max(last_write.map_or(now, |at| at + Self::MIN_GAP)))
+    }
+
+    /// One index write for what was taken; each changed row is announced. A
+    /// failure puts the previews back to be tried again (said once).
+    fn write_batch(&self, batch: Vec<DuePreview>) {
+        match crate::chat_index::set_host_previews_since(&batch) {
+            Ok(changed) => {
+                self.finished(&batch);
+                self.failing
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                for (id, _) in changed {
+                    announce_index_change(&id, false);
+                }
+            }
+            Err(error) => {
+                if !self
+                    .failing
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    eprintln!("[chat] could not keep the previews, will try again: {error}");
+                }
+                self.requeue(batch, Instant::now());
+            }
+        }
     }
 
     /// Write everything pending if something is due and the gap since the
@@ -9850,13 +9945,28 @@ impl PreviewBatch {
             return;
         };
         *last = Some(now);
-        match crate::chat_index::set_host_previews(&batch) {
-            Ok(changed) => {
-                for (id, _) in changed {
-                    announce_index_change(&id, false);
+        self.write_batch(batch);
+    }
+
+    /// Graceful shutdown: everything still pending is written now, due or
+    /// not and gap or not, through the same index door. Gives up after
+    /// `FLUSH_LIMIT`; what a hard kill (SIGKILL, power loss) or a flush that
+    /// could not finish loses is the previews not yet written, never the
+    /// transcript.
+    pub(crate) fn flush(&'static self) {
+        let (done, wait) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("chat-preview-flush".into())
+            .spawn(move || {
+                let mut last = self.last_write.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(batch) = self.take_all() {
+                    *last = Some(Instant::now());
+                    self.write_batch(batch);
                 }
-            }
-            Err(error) => eprintln!("[chat] could not keep the previews: {error}"),
+                let _ = done.send(());
+            });
+        if spawned.is_ok() {
+            let _ = wait.recv_timeout(Self::FLUSH_LIMIT);
         }
     }
 
@@ -14215,8 +14325,8 @@ mod idle_tests {
         assert_eq!(
             due,
             vec![
-                ("a".to_string(), "two".to_string()),
-                ("b".to_string(), "other".to_string())
+                ("a".to_string(), "two".to_string(), 0),
+                ("b".to_string(), "other".to_string(), 0)
             ]
         );
         assert!(batch.take_due(t0 + Duration::from_secs(60)).is_none());
@@ -14237,7 +14347,7 @@ mod idle_tests {
         let t0 = Instant::now();
         let mut pending = HashMap::new();
         assert_eq!(PreviewBatch::next_write(&pending, None, t0), None);
-        pending.insert("a".to_string(), ("x".to_string(), t0));
+        pending.insert("a".to_string(), ("x".to_string(), t0, 0));
         // Nothing written lately: due now.
         assert_eq!(PreviewBatch::next_write(&pending, None, t0), Some(t0));
         // Just written: wait out the gap even though the preview is due.
@@ -14248,7 +14358,7 @@ mod idle_tests {
         // A later due time is not brought forward by the gap.
         pending.insert(
             "a".to_string(),
-            ("x".to_string(), t0 + Duration::from_secs(4)),
+            ("x".to_string(), t0 + Duration::from_secs(4), 0),
         );
         assert_eq!(
             PreviewBatch::next_write(&pending, Some(t0), t0),
@@ -14260,9 +14370,9 @@ mod idle_tests {
     fn a_turn_that_did_not_end_cleanly_leaves_the_previous_preview() {
         let key = "chat:failed-turn-preview-test";
         let mut preview = HostPreview::default();
-        let ours = |due: Vec<(String, String)>| {
+        let ours = |due: Vec<(String, String, u64)>| {
             due.into_iter()
-                .any(|(id, _)| id == "failed-turn-preview-test")
+                .any(|(id, _, _)| id == "failed-turn-preview-test")
         };
         // A failed turn: the words it had heard are withdrawn, none written.
         preview.heard(key, key, "half an answer".into());
@@ -14286,7 +14396,72 @@ mod idle_tests {
             .take_due(later)
             .unwrap_or_default()
             .iter()
-            .any(|(id, _)| id == "orch-abc"));
+            .any(|(id, _, _)| id == "orch-abc"));
+    }
+
+    #[test]
+    fn a_clear_wins_over_text_already_taken_out_of_the_queue() {
+        // The reviewer's probe: the writer has drained its text and is about
+        // to take the index lock when `/clear` runs. The old text must not
+        // land after the clear.
+        let id = "clear-vs-detached-batch-test";
+        let _ = crate::chat_index::remove(id);
+        crate::chat_index::upsert(
+            serde_json::from_value(json!({"id": id, "projectId": "p", "title": "t"})).unwrap(),
+        )
+        .unwrap();
+        let batch = PreviewBatch::default();
+        batch.submit(id, "old words".into(), Instant::now(), Duration::ZERO);
+        let detached = batch.take_due(Instant::now()).unwrap();
+        // /clear, exactly as `chat_forget_impl` does it.
+        batch.withdraw(id);
+        crate::chat_index::clear_host_preview(id).unwrap();
+        batch.write_batch(detached);
+        let row = || {
+            crate::chat_index::list()
+                .into_iter()
+                .find(|chat| chat.id == id)
+                .unwrap()
+        };
+        assert_eq!(row().latest_response, None, "the old text landed after /clear");
+        assert_eq!(row().latest_response_version, 1);
+        // Words heard after the clear are a new conversation's and land.
+        batch.submit(id, "new words".into(), Instant::now(), Duration::ZERO);
+        let due = batch.take_due(Instant::now()).unwrap();
+        batch.write_batch(due);
+        assert_eq!(row().latest_response.as_deref(), Some("new words"));
+        let _ = crate::chat_index::remove(id);
+    }
+
+    #[test]
+    fn a_write_that_failed_is_owed_until_newer_text_or_a_withdrawal() {
+        let batch = PreviewBatch::default();
+        let now = Instant::now();
+        let take = |batch: &PreviewBatch| batch.take_due(now + Duration::from_secs(60));
+        batch.submit("a", "one".into(), now, Duration::ZERO);
+        batch.submit("b", "two".into(), now, Duration::ZERO);
+        batch.submit("c", "three".into(), now, Duration::ZERO);
+        let taken = take(&batch).unwrap();
+        // While the write is out: b is withdrawn (a failed turn), c is
+        // replaced by newer text.
+        batch.withdraw("b");
+        batch.submit("c", "newer".into(), now, Duration::ZERO);
+        batch.requeue(taken, now);
+        let mut back = take(&batch).unwrap();
+        back.sort();
+        assert_eq!(
+            back,
+            vec![
+                ("a".to_string(), "one".to_string(), 0),
+                ("c".to_string(), "newer".to_string(), 0)
+            ]
+        );
+        // A write that went through owes nothing.
+        batch.submit("a", "x".into(), now, Duration::ZERO);
+        let done = take(&batch).unwrap();
+        batch.finished(&done);
+        batch.requeue(done, now);
+        assert!(take(&batch).is_none());
     }
 
     #[test]
