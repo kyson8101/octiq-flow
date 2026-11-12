@@ -6,12 +6,14 @@
 // render that called them, with real GC, and that the inline form they replaced
 // does (the control), so the test can see the leak at all. The paste store's
 // `receive` is proved in the real App: scripts/test-scope-retention.mjs.
-import v8 from "node:v8";
-import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import { makePendingActionsView } from "../components/PendingActionBadge";
 import { watchReading } from "./readingWatch";
 
+// The web project has no Node typings, and these two built-ins are all the test
+// takes from Node: a way to run a real V8 collection.
+const node = (name: string): Promise<any> => import(/* @vite-ignore */ name);
+const [v8, vm] = await Promise.all([node("node:v8"), node("node:vm")]);
 v8.setFlagsFromString("--expose-gc");
 const gc = vm.runInNewContext("gc") as () => void;
 

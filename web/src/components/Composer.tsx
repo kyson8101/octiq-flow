@@ -278,6 +278,19 @@ function pasteSaveFor(store: Drafts<Attachment>, session?: string): PasteSave {
   return save;
 }
 
+/** Register `receive` on a chat's paste save, hand it what arrived while no
+ *  mount listened, and return the cleanup. A module-level function on purpose:
+ *  the cleanup React keeps for as long as the effect's deps hold would
+ *  otherwise be a closure of the Composer render the effect last ran in, and
+ *  with it that render's props (`onPutBack` is an App render's closure, which
+ *  holds `chats`). Here it holds only `save` and `receive`. */
+function bindPasteSave(save: PasteSave, receive: NonNullable<PasteSave["receive"]>, onError: (error: string | null) => void): () => void {
+  save.receive = receive;
+  receive(save.pending);
+  if (save.error) { onError(save.error); save.error = undefined; }
+  return () => { if (save.receive === receive) save.receive = undefined; };
+}
+
 /** Deliver through the origin's current mount, or keep it in that chat's
  *  draft until it returns. Never consult whichever chat is now on screen. */
 function deliverPaste(owner: PasteOwner, result: PasteSaveResult): void {
@@ -1042,13 +1055,10 @@ export function Composer({
       if ("error" in result) setAttachError(result.error ?? null);
     }
   }, []);
-  useLayoutEffect(() => {
-    const save = pasteSaveFor(drafts.current, session);
-    save.receive = receive;
-    receive(save.pending);
-    if (save.error) { setAttachError(save.error); save.error = undefined; }
-    return () => { if (save.receive === receive) save.receive = undefined; };
-  }, [session, draftStore, receive]);
+  useLayoutEffect(
+    () => bindPasteSave(pasteSaveFor(drafts.current, session), receive, setAttachError),
+    [session, draftStore, receive],
+  );
 
   /** Words that were queued and never sent, put back where they were typed.
    *

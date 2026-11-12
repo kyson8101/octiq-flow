@@ -1,3 +1,8 @@
+type Target = {
+  addEventListener(type: string, listener: () => void): void;
+  removeEventListener(type: string, listener: () => void): void;
+};
+
 /** Tell `setReading` which chat is on screen now and whenever the page gains or
  *  loses focus or visibility; returns the cleanup that removes every listener.
  *
@@ -9,8 +14,8 @@
 export function watchReading(
   conversationId: string | null,
   setReading: (id: string | null) => void,
-  win: Pick<Window, "addEventListener" | "removeEventListener"> = window,
-  doc: Pick<Document, "addEventListener" | "removeEventListener" | "hidden"> = document,
+  win: Target = window,
+  doc: Target & { hidden: boolean } = document,
 ): () => void {
   const tell = () => setReading(doc.hidden ? null : conversationId);
   tell();
