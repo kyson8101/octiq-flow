@@ -27,7 +27,10 @@ export function LeadList({ reading, conversations, current, busy, waiting, openi
       : <ul className="lead-list">{rows.map(({ lead, status }) => <li key={lead.agentId}>
         <button type="button" className="lead-row" aria-current={`chat:${current}` === lead.chatKey ? "page" : undefined}
           aria-label={`Talk to ${lead.name}${status.needsYou ? ", Needs you" : status.working ? ", Working" : status.unread ? `, ${status.unread} unread` : ""}`}
-          disabled={opening === lead.agentId} onClick={() => onOpen(lead)}>
+          aria-disabled={reading.freshness !== "host" || opening === lead.agentId}
+          aria-description={reading.freshness !== "host" ? "Checking with the server" : undefined}
+          title={reading.freshness !== "host" ? "Checking with the server" : undefined}
+          onClick={() => { if (reading.freshness === "host" && opening !== lead.agentId) onOpen(lead); }}>
           <AgentAvatar id={lead.agentId} name={lead.name} avatar={roster.find(a => a.id === lead.agentId)?.avatar} size={32} decorative />
           <span className="lead-name">{lead.name}</span>
           <span className="lead-status" data-state={status.needsYou ? "waiting" : status.working ? "working" : "idle"}>

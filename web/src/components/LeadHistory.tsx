@@ -15,8 +15,8 @@ export function LeadHistoryList({ entries, onOpen }: { entries: readonly LeadHis
   </li>)}</ul>;
 }
 
-export function LeadHistoryButton({ onClick }: { onClick: () => void }) {
-  return <button className="icon-btn" type="button" aria-label="Open lead history" title="Open lead history" aria-haspopup="dialog" onClick={onClick} data-icon-action>
+export function LeadHistoryButton({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
+  return <button className="icon-btn" type="button" aria-label="Open lead history" title={disabled ? "Checking with the server" : "Open lead history"} disabled={disabled} aria-haspopup="dialog" onClick={onClick} data-icon-action>
     <ActionIcon name="history" />
   </button>;
 }

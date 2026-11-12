@@ -7,7 +7,7 @@ export const leadsOnlyMode = (agentsMode: boolean, orientation: "tasks" | "agent
 
 export type LeadThread = { agentId: string; name: string; chatKey: string; cwd: string; project?: string; exists: boolean };
 export type LeadHistoryEntry = { chatKey: string; title: string; updatedAt: number; done: boolean };
-export type LeadThreadsReading = { threads: readonly LeadThread[] | null; error: string | null };
+export type LeadThreadsReading = { threads: readonly LeadThread[] | null; error: string | null; freshness: "cached" | "host" };
 
 export function leadThreadAgent(chat: Pick<Conversation, "id" | "leadOf"> | undefined): string | null {
   return chat?.leadOf ?? (chat?.id.startsWith("lead-") ? chat.id.slice(5) || null : null);

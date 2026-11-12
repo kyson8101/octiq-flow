@@ -150,9 +150,9 @@ import { SessionSearch } from "./components/SessionSearch";
 import { importSession, isUnder, replaySession, type HistorySession } from "./lib/history";
 import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
 import { Sidebar, type Project } from "./components/Sidebar";
-import { recallNavigationOrientation, useAgentLanes } from "./lib/agentLanes";
-import { leadThreadAgent, leadsOnlyMode, newConversationLead, type LeadThread, type LeadHistoryEntry } from "./lib/leadThreads";
-import { openLeadThread, useLeadThreads } from "./lib/leadThreadFeed";
+import { recallNavigationOrientation, schedulingReading, useAgentLanes } from "./lib/agentLanes";
+import { leadThreadAgent, leadsOnlyMode, newConversationLead, type LeadHistoryEntry } from "./lib/leadThreads";
+import { leadActionToken, openConfirmedLeadThread, useLeadThreads } from "./lib/leadThreadFeed";
 import { fromIndex } from "./lib/notificationOpen";
 import { LeadHistoryButton, LeadHistoryPanel } from "./components/LeadHistory";
 import { ChatSearchPage } from "./components/ChatSearchPage";
@@ -919,6 +919,10 @@ export default function App() {
   const navigationOrientation = scheduling.data?.orientation ?? cachedOrientation;
   const leadsOnly = leadsOnlyMode(agentsMode, navigationOrientation);
   const leadReading = useLeadThreads(leadsOnly);
+  const leadActionsEnabled = useRef(false);
+  leadActionsEnabled.current = agentsMode && conn === "open";
+  const leadToken = useCallback((agentId: string) => leadActionToken(agentId, leadReading.current, () => leadActionsEnabled.current), [leadReading.current]);
+  const leadCanAct = useCallback((agentId: string) => !!leadToken(agentId), [leadToken]);
   const [leadHistoryFor, setLeadHistoryFor] = useState<string | null>(null);
   const [openingLead, setOpeningLead] = useState<string | null>(null);
   const leadOpening = useRef(false);
@@ -3832,6 +3836,11 @@ export default function App() {
       { safetyBlock }: { safetyBlock?: string } = {},
     ): Promise<boolean> => {
       if (workerChat) return false;
+      const leadSendCurrent = threadAgentId ? leadToken(threadAgentId) : null;
+      if ((threadAgentId && !leadSendCurrent) || (agentsMode && !conversationId && !schedulingReading().fresh)) {
+        setNewChatError("Checking with the server. Send again in a moment.");
+        return false;
+      }
       // Agents mode: the first message of a new conversation goes to the agent
       // it is with, with the brief behind it. What the person typed still
       // names the chat.
@@ -4117,6 +4126,7 @@ export default function App() {
         // Already running: this is the next turn of a conversation in flight.
         if (!switchingModel && runningRef.current.has(id)) {
           try {
+            if (leadSendCurrent && !leadSendCurrent()) { fail("Checking with the server. Send again in a moment."); return false; }
             await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId, seenPlans: seen, safetyBlock });
             return true;
           } catch (err) {
@@ -4149,6 +4159,7 @@ export default function App() {
           else catchUp.current.own(keyFor(id));
         }
 
+        if (leadSendCurrent && !leadSendCurrent()) { fail("Checking with the server. Send again in a moment."); return false; }
         setRunning((prev) => new Set(prev).add(id));
         try {
           await bridge.invoke("chat_start", {
@@ -4185,6 +4196,7 @@ export default function App() {
           // rather than reporting a collision as a failure.
           if (!switchingModel && String((err as Error).message ?? err).includes("already running")) {
             try {
+              if (leadSendCurrent && !leadSendCurrent()) { fail("Checking with the server. Send again in a moment."); return false; }
               await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId, seenPlans: seen, safetyBlock });
               return true;
             } catch (second) {
@@ -4233,6 +4245,8 @@ export default function App() {
       workerChat,
       executionPlan,
       branches,
+      threadAgentId,
+      leadToken,
     ],
   );
 
@@ -5360,10 +5374,13 @@ export default function App() {
   };
 
   const showLeadThread = async (agentId: string) => {
-    if (leadOpening.current) return;
+    const token = leadToken(agentId);
+    if (leadOpening.current || !token) return;
     leadOpening.current = true; setOpeningLead(agentId); setLeadOpenError(null);
     try {
-      const entry = await openLeadThread(agentId);
+      const entry = await openConfirmedLeadThread(agentId, token);
+      if (!entry || !token()) return;
+      setRecipientId(agentId);
       const cached = conversationsRef.current.find(c => c.id === entry.id);
       const conversation = { ...fromIndex(entry), messages: cached?.messages ?? [], seq: cached?.seq };
       setConversations(current => {
@@ -5377,17 +5394,20 @@ export default function App() {
     finally { leadOpening.current = false; setOpeningLead(null); }
   };
   const openLeadHistoryChat = (entry: LeadHistoryEntry) => {
-    if (!threadAgentId) return;
+    if (!threadAgentId || !leadCanAct(threadAgentId)) return;
     setHistoryReturn({ agentId: threadAgentId, chatId: entry.chatKey.replace(/^chat:/, "") });
     onOpenChat.current({ conversationId: entry.chatKey.replace(/^chat:/, ""), projectId: null });
   };
   const startAgentConversation = async () => {
-    if (leadsOnly) {
+    const confirmedScheduling = schedulingReading();
+    if (!confirmedScheduling.fresh) { setLeadOpenError("Checking with the server"); return; }
+    if (confirmedScheduling.data?.orientation === "agents") {
       setLeadOpenError(null);
+      if (leadReading.freshness !== "host") { setLeadOpenError("Checking with the server"); return; }
       try {
-        const [configured, threads] = await Promise.all([loadHead(), bridge.invoke<LeadThread[]>("lead_threads")]);
+        const configured = await loadHead();
         setHead(configured);
-        const target = newConversationLead(threads, configured?.id);
+        const target = newConversationLead(leadReading.current().threads ?? [], configured?.id);
         if (target) await showLeadThread(target.agentId);
         else openAgentsSettings();
       } catch (error) { setLeadOpenError(String((error as Error).message ?? error)); }
@@ -5495,7 +5515,7 @@ export default function App() {
     </button>),
     // Only drawn for a home-screen app, which has no browser chrome.
     push.installed() && act("reload", 40, <InstalledReload />),
-    onChat && threadAgentId && act("history", 55, <LeadHistoryButton onClick={() => setLeadHistoryFor(threadAgentId)} />),
+    onChat && threadAgentId && act("history", 55, <LeadHistoryButton disabled={!leadCanAct(threadAgentId)} onClick={() => { if (leadCanAct(threadAgentId)) setLeadHistoryFor(threadAgentId); }} />),
     onChat && historyReturn?.chatId === conversationId && act("lead-back", 90, <button className="icon-btn" type="button" onClick={() => void showLeadThread(historyReturn.agentId)} data-icon-action title="Back to thread" aria-label="Back to thread">
       <ActionIcon name="back" />
     </button>),
@@ -5549,10 +5569,10 @@ export default function App() {
       <Sidebar
         leadsOnly={leadsOnly}
         navigationReady={!agentsMode || !!navigationOrientation || !!scheduling.error}
-        leadReading={leadReading}
+        leadReading={scheduling.fresh && scheduling.data?.orientation === "agents" ? leadReading : { ...leadReading, freshness: "cached" }}
         openingLead={openingLead}
         leadOpenError={leadOpenError}
-        onOpenLead={lead => { setRecipientId(lead.agentId); void showLeadThread(lead.agentId); }}
+        onOpenLead={lead => { void showLeadThread(lead.agentId); }}
         projects={workspaces}
         projectsReady={workspacesLoaded}
         chatsReady={indexReady}
@@ -5610,7 +5630,7 @@ export default function App() {
         activeView={searchPage ? "search" : projectsPage ? "projects" : agentsDashboard && agentsMode ? "agents"
           : prDashboardOpen ? "pulls" : appSettings ? "settings" : diskPage ? "disk" : null}
       />
-      {leadHistoryFor && <LeadHistoryPanel key={leadHistoryFor} agentId={leadHistoryFor} onClose={() => setLeadHistoryFor(null)} onOpen={openLeadHistoryChat} />}
+      {leadHistoryFor && leadCanAct(leadHistoryFor) && <LeadHistoryPanel key={leadHistoryFor} agentId={leadHistoryFor} onClose={() => setLeadHistoryFor(null)} onOpen={openLeadHistoryChat} />}
       <div className="shell-main">
       {/* The workspace's ONE top bar. The app's name and logo belong to the
           sidebar's head; this bar names the page — a page's title and way
@@ -6287,6 +6307,7 @@ export default function App() {
           {/* A task chat takes no messages: no composer, and no block in its
               place — the Read-only badge by its title says so. */}
           {!workerChat && (!leadsOnly || !!conversationId) && <Composer
+            disabled={!!threadAgentId && !leadCanAct(threadAgentId)}
             focusMode={focusMode}
             session={conversationId ?? undefined}
             draftStore={composerDrafts.current}

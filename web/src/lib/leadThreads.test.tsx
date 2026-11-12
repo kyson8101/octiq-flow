@@ -18,9 +18,9 @@ const threads: LeadThread[] = [
   { agentId: "star", name: "STAR LEAD", chatKey: "chat:lead-star", cwd: "/star", project: "star", exists: false },
 ];
 const chat = (id = "lead-head", extra: Partial<Conversation> = {}): Conversation => ({ id, projectId: "general", title: "Saved title", messages: [], createdAt: 1, updatedAt: 3, readAt: 1, ...extra });
-const sidebar = (leadsOnly: boolean, leads: readonly LeadThread[] | null = threads) => renderToStaticMarkup(
+const sidebar = (leadsOnly: boolean, leads: readonly LeadThread[] | null = threads, freshness: "host" | "cached" = "host") => renderToStaticMarkup(
   <AgentRosterContext.Provider value={[{ id: "head", name: "OCTIQ HEAD", avatar: "data:image/png;base64,face" }]}>
-    <Sidebar leadsOnly={leadsOnly} leadReading={{ threads: leads, error: null }} projects={[]} shelved={[]}
+    <Sidebar leadsOnly={leadsOnly} leadReading={{ threads: leads, error: null, freshness }} projects={[]} shelved={[]}
       conversations={[chat(), chat("old-request", { title: "Request conversation" }), chat("orch-worker", { title: "Worker conversation" })]}
       currentConversation={null} busy={new Set()} running={new Set()} onNewChat={() => {}} onPickConversation={() => {}}
       onDelete={() => {}} onPin={() => {}} onRename={() => {}} onToggleDone={() => {}} onSearch={() => {}} />
@@ -28,6 +28,15 @@ const sidebar = (leadsOnly: boolean, leads: readonly LeadThread[] | null = threa
 );
 
 describe("lead navigation", () => {
+  it("paints cached rows normally but names why their actions wait", () => {
+    const cached = sidebar(true, threads, "cached");
+    expect(cached).toContain('class="lead-row"');
+    expect(cached).toContain('aria-disabled="true"');
+    expect(cached).toContain('aria-description="Checking with the server"');
+    expect(cached).toContain('title="Checking with the server"');
+    expect(cached).toContain("OCTIQ HEAD");
+    expect(sidebar(true)).not.toContain('aria-disabled="true"');
+  });
   it.each([[false, "tasks", false], [false, "agents", false], [true, "tasks", false], [true, "agents", true]] as const)("Agents mode %s / orientation %s => leads only %s", (enabled, orientation, expected) => {
     expect(leadsOnlyMode(enabled, orientation)).toBe(expected);
     expect(sidebar(leadsOnlyMode(enabled, orientation)).includes('class="lead-row"')).toBe(expected);

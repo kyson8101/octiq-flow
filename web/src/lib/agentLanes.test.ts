@@ -55,7 +55,7 @@ it("remembers only navigation orientation while live scheduling remains unknown 
     vi.resetModules();
     module = await import("./agentLanes");
     expect(module.recallNavigationOrientation()).toBe("agents");
-    expect(module.schedulingReading()).toEqual({ data: null, error: null });
+    expect(module.schedulingReading()).toEqual({ data: null, error: null, fresh: false });
     held.set("octiq.v2.navigationOrientation", "bad");
     expect(module.recallNavigationOrientation()).toBeUndefined();
     held.set("octiq.v2.navigationOrientation", "agents");

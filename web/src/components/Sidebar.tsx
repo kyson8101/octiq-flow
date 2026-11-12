@@ -81,7 +81,7 @@ export function Sidebar({
   branches = {}, chatParents = NO_PARENTS, onResize, onCollapse,
   onSearch, onSettings, onAgents, onProjects, onPullRequests, onDisk, activeView = null,
   projectsReady = true, chatsReady = true,
-  leadsOnly = false, leadReading = { threads: null, error: null }, onOpenLead, openingLead, leadOpenError, navigationReady = true,
+  leadsOnly = false, leadReading = { threads: null, error: null, freshness: "cached" }, onOpenLead, openingLead, leadOpenError, navigationReady = true,
 }: {
   /** Whether the project list has been answered. Until it has, a row's
    *  project is not unknown, only not known yet: its name and logo hold their
