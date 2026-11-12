@@ -47,12 +47,31 @@ showed a placeholder and a reload could not restore it.
   The page carries the version on `Conversation` / `IndexEntry` and on every
   `chat_index_save`, and an index row replaces the sidebar row's text when its
   version is not older than the one the row holds (`chatPreview.hostPreview`).
-  A host that sends no version leaves the row as last known. **This tab never
+  A new or equal version is authoritative **including its text**: `/clear` and
+  `chat_forget` bump the version and omit `latestResponse` (serde skips None),
+  which means "no preview", so the row's text is dropped and a later metadata
+  save (a pin, a rename) carries none. An older version is ignored. A row with
+  no valid version leaves a held versioned preview exactly as it is; only a row
+  with nothing versioned held takes version-less host text. **This tab never
   fetches a page to learn a preview and never writes one it read offscreen**:
   an earlier version did (a `chat_page` per offscreen turn end) and could put an
   old reply over a fresh one after `/clear` or a replacement, and sent 120
   concurrent reads of up to 20 MB with four tabs. Only a visible pane, whose
   words it saw on screen, saves a preview, with the version it heard.
+- **A closure that outlives its render holds no old App render.** V8 shares one
+  scope between every closure made in a render, so a closure kept by a window
+  listener, a context value a fiber keeps, or the paste store held the whole
+  render's `chats` (a 22 MiB transcript each) after the window cache let the
+  chat go. The three that did are built outside the render: `watchReading`
+  (`lib/readingWatch`, the focus/blur `tell`), `makePendingActionsView`
+  (`forRow`), and the Composer's paste `receive`, a committed callback bound
+  through `bindPasteSave` so even its cleanup holds only the save and the
+  callback. Proof: `lib/oldRenderRetention.test.ts` (real GC, with a control
+  that shows the inline form keeps the render) and
+  `scripts/test-scope-retention.mjs` (real App heap snapshot: none of the three
+  closures reaches a forgotten chat's result string). Other holders of one old
+  render remain (a fiber's previous props, a detached node's handlers); they are
+  React's and bounded to one render.
 - **Reload.** IndexedDB checkpoints are **128 MiB total / 32 MiB each**
   (`lib/chatCache`), so a reload restores every open chat, not the last two. A
   full disk (`QuotaExceededError`) aborts the write's transaction, so room is
