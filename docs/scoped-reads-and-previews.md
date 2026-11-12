@@ -70,9 +70,38 @@ when 0).
   removed and `latestResponseVersion` is bumped (always, so a stale save
   cannot match it), pending previews for the chat are withdrawn, and
   `chat-index-changed` announces the row. A browser that still carries the
-  old text with the old (or no) version is refused by `upsert`. For OCTIQ FE:
-  a row that arrives with a higher version and no `latestResponse` means
-  "no preview", not "unknown": drop the local text.
+  old text with the old (or no) version is refused by `upsert`, and so is one
+  that carries it at the cleared version itself (a Pin save made before the
+  page heard the clear): once the host holds "no preview" at a version above
+  zero, a browser's text is never taken, only the host's next write moves it.
+  For OCTIQ FE: a row that arrives with a higher version and no
+  `latestResponse` means "no preview", not "unknown": drop the local text.
+- **A clear beats text the writer already took.** Withdrawing reaches only
+  what is still queued. Each chat has a clear epoch
+  (`chat_index::clear_epoch`), bumped inside `clear_host_preview` under the
+  index lock after its write succeeded. A text carries the epoch it was heard
+  in (read before it is queued), and `set_host_previews_since` drops an item
+  whose epoch is older than the chat's, under the same lock as the write: the
+  check and the write are one step, so text a writer had drained and was
+  about to write when `/clear` ran never lands after it
+  (`a_clear_wins_over_text_already_taken_out_of_the_queue`). Epochs are in
+  memory; after a restart no text from before it exists either.
+- **Previews are owed, in memory.** A write that fails (the profile folder is
+  away, the index cannot be read or written; `set_host_previews` answers an
+  error, never "nothing to write") puts what it took back in the queue,
+  except text a newer one, a withdrawal or a clear replaced meanwhile, and
+  the writer tries again about once a second until it goes through (said once
+  per run of failures). This is the "Owe it" rule with a memory-only debt:
+  a restart before the folder is back loses it, and the transcript and the
+  next turn's words stand.
+- **A stop writes what is owed.** SIGTERM and SIGINT (`shutdown.rs`) flush
+  the batch, due or not, through the same index door
+  (`PreviewBatch::flush`, at most 3 s), then the process dies of the signal
+  as before. Not covered: SIGKILL, a crash, power loss, a flush that could
+  not finish (the folder away, a stuck index lock): previews pending in
+  memory then are lost, up to the last second of a turn's closing words or
+  4 s of a mid-turn message. The transcript always keeps the words; the row's
+  preview is the older one until the chat's next preview.
 - **Bounded and ordered**: trimmed, at most 420 characters plus `…` (what the
   page draws today), the version increments by one on every change and never
   on identical words. `updatedAt` is not touched.
