@@ -41,3 +41,26 @@ it("replaces exactly the settings and propagates the host's refusal", async () =
   await expect(saveScheduling({ orientation: "tasks", hostCap: null })).rejects.toThrow("The profile folder is away.");
   expect(invoke).toHaveBeenCalledWith("scheduling_set", { settings: { orientation: "tasks", hostCap: null } });
 });
+
+it("remembers only navigation orientation while live scheduling remains unknown on refresh", async () => {
+  const held = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => held.get(key) ?? null,
+    setItem: (key: string, value: string) => held.set(key, value),
+  });
+  try {
+    let module = await import("./agentLanes");
+    invoke.mockResolvedValue(data(4));
+    await module.refreshScheduling();
+    vi.resetModules();
+    module = await import("./agentLanes");
+    expect(module.recallNavigationOrientation()).toBe("agents");
+    expect(module.schedulingReading()).toEqual({ data: null, error: null, fresh: false });
+    held.set("octiq.v2.navigationOrientation", "bad");
+    expect(module.recallNavigationOrientation()).toBeUndefined();
+    held.set("octiq.v2.navigationOrientation", "agents");
+    vi.stubGlobal("localStorage", { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("quota"); } });
+    expect(module.recallNavigationOrientation()).toBeUndefined();
+    await expect(module.refreshScheduling()).resolves.toBeUndefined();
+  } finally { vi.unstubAllGlobals(); }
+});

@@ -81,7 +81,7 @@ export function Sidebar({
   branches = {}, chatParents = NO_PARENTS, onResize, onCollapse,
   onSearch, onSettings, onAgents, onProjects, onPullRequests, onDisk, activeView = null,
   projectsReady = true, chatsReady = true,
-  leadsOnly = false, leadReading = { threads: null, error: null }, onOpenLead, openingLead, leadOpenError, navigationReady = true,
+  leadsOnly = false, leadReading = { threads: null, error: null, freshness: "cached" }, onOpenLead, openingLead, leadOpenError, navigationReady = true,
 }: {
   /** Whether the project list has been answered. Until it has, a row's
    *  project is not unknown, only not known yet: its name and logo hold their
@@ -586,7 +586,7 @@ export function Sidebar({
 
         {archiveError && <div className="sidebar-archive-error" role="alert">{archiveError}<StatusDismiss label="Dismiss" visible onClick={() => setArchiveError(null)} /></div>}
         {leadOpenError && <p className="lead-error" role="alert">{leadOpenError}</p>}
-        {!navigationReady ? <div className="lead-placeholder" aria-hidden="true" /> : leadsOnly ? <LeadList reading={leadReading} conversations={everyChat} current={currentConversation} busy={busy} waiting={waiting} opening={openingLead} onOpen={onOpenLead ?? (() => {})} /> : listed === "held" ? null : conversations.length > 0 || showArchived ? (
+        {!navigationReady && !everyChat.length ? <div className="lead-placeholder" aria-hidden="true" /> : leadsOnly ? <LeadList reading={leadReading} conversations={everyChat} current={currentConversation} busy={busy} waiting={waiting} opening={openingLead} onOpen={onOpenLead ?? (() => {})} /> : listed === "held" ? null : conversations.length > 0 || showArchived ? (
           <div ref={chatList} className={`task-chat-content${listed === "entering" ? " enter-fade" : ""}`}>
             {pinnedNodes.length > 0 && <section className="sidebar-chat-section" aria-labelledby="sidebar-pinned-heading">
               <h2 id="sidebar-pinned-heading" className="sidebar-section-heading">Pinned</h2>

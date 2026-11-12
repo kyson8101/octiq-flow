@@ -3455,6 +3455,9 @@ time limit).
 
 ### A lead's thread
 
+The sidebar paints cached conversations before scheduling or index replies; only project identity waits for workspaces. Navigation orientation and the last host lead identities are remembered through `lib/remember` for refresh continuity, then reconciled with the host; cached orientation never supplies live scheduling lanes or start authority.
+A cached lead identity is display-only until the host confirms its identity and orientation on this connection; a pending reply survives same-value refreshes and is dropped with a visible reason only if the latest confirmed roster no longer lists the lead, orientation changes, or the connection/feed resets or is disabled. Overlapping roster reads apply by start order: a success is never dropped because a later read is still in flight, and a failed read neither restores nor keeps a value older than the newest success.
+
 In Settings → Orientation → Agents, the person talks to leads: registered
 agents with no `reportsTo`, excluding the front desk. Each has one ongoing,
 lazily created `chat:lead-<agentId>` thread. `leadOf` on its index row is
