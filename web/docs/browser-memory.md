@@ -225,6 +225,6 @@ IndexedDB). Policy now, with the details in [`docs/chat-window-retention.md`](..
 - Reading state (disclosures, tabs) lives exactly as long as its window; scroll places
   keep 500 chats.
 - Sidebar line and hover preview never use a window that is behind the host; the row takes the host's `latestResponse` by `latestResponseVersion`, and no tab fetches or writes a preview it did not see on screen.
-- IndexedDB checkpoints: 128 MiB / 32 MiB each, quota failure shrinks and retries.
+- IndexedDB checkpoints: 128 MiB / 32 MiB each; a full disk is freed in a separately committed eviction transaction (a quota error rolls back eviction made in the failing one), retried, then skipped without throwing.
 - Heap: 8 chats retained = 38.1 MiB at 1280px (was 33.4 MiB with two), so retention costs about
   the estimated window size once, not more.

@@ -55,8 +55,12 @@ showed a placeholder and a reload could not restore it.
   words it saw on screen, saves a preview, with the version it heard.
 - **Reload.** IndexedDB checkpoints are **128 MiB total / 32 MiB each**
   (`lib/chatCache`), so a reload restores every open chat, not the last two. A
-  full disk (`QuotaExceededError`) halves the budget (oldest rows first) and
-  retries, then falls back to the server read without throwing. Partial windows
+  full disk (`QuotaExceededError`) aborts the write's transaction, so room is
+  made in a transaction of its own that COMMITS first (oldest rows; the budget,
+  then half of it, then everything but this row) and the write is retried; a
+  repeated quota error skips the checkpoint, never throwing, and the server read
+  serves the chat. `web/scripts/test-chat-cache-quota.mjs` proves it against a
+  native 6 MiB Chrome quota. Partial windows
   (`ChatHistory.isPartial`) are never stored as checkpoints; a window above the
   32 MiB row size is not cached.
 - The existing 8 MiB paged-window trim (`CHAT_WINDOW_BYTES`) is unchanged.

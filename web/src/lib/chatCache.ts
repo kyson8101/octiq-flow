@@ -96,14 +96,43 @@ export async function readChatCheckpoint(id: string): Promise<ChatCheckpoint | u
 
 type Outcome = "done" | "quota" | "failed";
 
-/** One write transaction: put the row, then trim the oldest rows past
- * `limit` bytes. The outcome tells a full disk apart from any other failure so
- * the caller can make room and try again. */
-function write(db: IDBDatabase, checkpoint: ChatCheckpoint, bytes: number, limit: number): Promise<Outcome> {
+/** Make room in a transaction of its own: delete the oldest rows until the
+ * newest ones, plus `incoming` bytes for the row about to be written (whose own
+ * old copy does not count), fit in `limit`. It COMMITS before the write that
+ * needs the room is attempted. Evicting inside the write's transaction was the
+ * hole: a QuotaExceededError aborts that whole transaction, which rolls the
+ * eviction back with it, so a full disk stayed full however often it retried. */
+function makeRoom(db: IDBDatabase, id: string, incoming: number, limit: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let tx: IDBTransaction;
+    try { tx = db.transaction([TABLE, SIZES], "readwrite"); } catch { return resolve(false); }
+    try {
+      const table = tx.objectStore(TABLE);
+      const sizes = tx.objectStore(SIZES);
+      let kept = incoming;
+      const cursor = sizes.index("updatedAt").openCursor(null, "prev");
+      cursor.onsuccess = () => {
+        const row = cursor.result;
+        if (!row) return;
+        if (row.value.id !== id) {
+          kept += row.value.bytes;
+          if (kept > limit) { table.delete(row.primaryKey); row.delete(); }
+        }
+        row.continue();
+      };
+    } catch { return resolve(false); }
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => resolve(false);
+    tx.onabort = () => resolve(false);
+  });
+}
+
+/** One write transaction: the row and its size, nothing else. The outcome tells
+ * a full disk apart from any other failure. */
+function write(db: IDBDatabase, checkpoint: ChatCheckpoint, bytes: number): Promise<Outcome> {
   return new Promise<Outcome>((resolve) => {
     let tx: IDBTransaction;
     try { tx = db.transaction([TABLE, SIZES], "readwrite"); } catch { return resolve("failed"); }
-    const table = tx.objectStore(TABLE);
     // Structured cloning avoids serialising large transcripts into the small,
     // synchronous localStorage quota. Keep a bounded set of recent chats.
     //
@@ -111,18 +140,8 @@ function write(db: IDBDatabase, checkpoint: ChatCheckpoint, bytes: number, limit
     // and a stamp any one of them could forget is worse than no stamp at all —
     // it would read as trustworthy.
     try {
-      table.put({ ...checkpoint, ...BUILD_STAMP, bytes });
-      const sizes = tx.objectStore(SIZES);
-      sizes.put({ id: checkpoint.id, updatedAt: checkpoint.updatedAt, bytes });
-      let kept = 0;
-      const cursor = sizes.index("updatedAt").openCursor(null, "prev");
-      cursor.onsuccess = () => {
-        const row = cursor.result;
-        if (!row) return;
-        kept += row.value.bytes;
-        if (kept > limit) { table.delete(row.primaryKey); row.delete(); }
-        row.continue();
-      };
+      tx.objectStore(TABLE).put({ ...checkpoint, ...BUILD_STAMP, bytes });
+      tx.objectStore(SIZES).put({ id: checkpoint.id, updatedAt: checkpoint.updatedAt, bytes });
     } catch (error) { return resolve(isQuota(error) ? "quota" : "failed"); }
     tx.oncomplete = () => resolve("done");
     tx.onerror = () => resolve(isQuota(tx.error) ? "quota" : "failed");
@@ -139,16 +158,18 @@ export async function saveChatCheckpoint(checkpoint: ChatCheckpoint, budget = CH
   if (!db) return;
   if (started !== revision) { db.close(); return; }
   try {
-    // A full disk is the browser's answer, not ours: shrink the budget by half
-    // (oldest rows go first) and try again, down to this one row alone. If it
-    // still does not fit, the cache simply does not hold this chat and the
-    // server read serves it, as before. Never throws into the caller.
-    let limit = budget;
-    for (let attempt = 0; attempt < 4; attempt++) {
+    // Make room in a COMMITTED transaction, then write. A full disk is the
+    // browser's answer, not ours: evict again, harder (half the budget, then
+    // everything but this row) and write again. On a repeated quota error the
+    // checkpoint is skipped and the server read serves the chat, as before.
+    // Never throws into the caller; a clear (revision) cancels every step.
+    const limits = [budget, Math.max(bytes, Math.floor(budget / 2)), bytes];
+    for (const limit of limits) {
       if (started !== revision) break;
-      const outcome = await write(db, checkpoint, bytes, limit);
+      if (!await makeRoom(db, checkpoint.id, bytes, limit)) break;
+      if (started !== revision) break;
+      const outcome = await write(db, checkpoint, bytes);
       if (outcome !== "quota") break;
-      limit = attempt === 2 ? bytes : Math.max(bytes, Math.floor(limit / 2));
     }
   } catch { /* cache/quota failure falls back to the server */ }
   finally { db.close(); }
