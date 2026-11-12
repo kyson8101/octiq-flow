@@ -82,8 +82,14 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
 }) {
   const summary = useOrchestrationSnapshot();
   const detail = useRunDetail(summary, summary.summary ? inputRun.id : null);
-  const run = detail.snapshot.runs.find(r => r.id === inputRun.id) ?? inputRun;
-  const allTasks = summary.summary && detail.ready ? detail.snapshot.tasks : inputTasks;
+  // A detail that no longer matches the summary (a worker moved the run's
+  // token, a revision is being re-read) is still what the person was reading:
+  // draw it and hold only the answers. The card used to give way to a bare
+  // "Reading plan…" for as long as the run kept moving.
+  const refreshing = !!summary.summary && !detail.ready && detail.available;
+  const view = refreshing ? detail.displaySnapshot : detail.snapshot;
+  const run = view.runs.find(r => r.id === inputRun.id) ?? inputRun;
+  const allTasks = summary.summary && (detail.ready || refreshing) ? view.tasks : inputTasks;
   const autoPlan = useAutoPlan(surface === "chat" && !approved ? run.coordinatorChatKey : null);
   const [future, setFuture] = useState(false);
   const [full, setFull] = useState(false);
@@ -231,10 +237,11 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
     wasEmpty.current = empty;
   }
   const waitReason = holding ? `Updated just now to revision ${revision}. Look it over, then decide.`
+    : refreshing ? "Refreshing the plan from the run. You can decide once it matches."
     : drafting ? "The main agent is still active. Approving covers the tasks shown." : "";
   const titleId = `plan-review-title-${run.id}`;
   const errorLine = error && <p className="plan-review-error" role="alert">{error}</p>;
-  if (summary.summary && !detail.ready) return <p role="status">{detail.error ?? "Reading plan…"}</p>;
+  if (summary.summary && !detail.ready && !detail.available) return <PlanReading error={detail.error} />;
   return (
     <section className="plan-review" aria-labelledby={titleId} data-drafting={stillDrafting || undefined}
       data-compact={empty || undefined} data-updated={holding || undefined}
@@ -361,15 +368,15 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
                 <span>{offerFull ? "Also auto-approve Full access tasks in this chat" : "Auto-approve this chat's future plans"}</span>
               </label>}
               {surface === "chat" && offerFull && <p className="auto-plan-full-note">Full access workers run with no permission checks; plans with them are approved without you. Peer requests still wait for you.</p>}
-              {rejecting && <PlanRejectConfirmation reason={reason} busy={busy} disabled={holding}
+              {rejecting && <PlanRejectConfirmation reason={reason} busy={busy} disabled={holding || refreshing}
                 rejecting={busyAction === "reject"} onReason={setReason} onConfirm={() => void reject()}
                 onCancel={() => { setRejecting(false); setReason(""); }} />}
               <div className="plan-review-approve">
                 <span className="plan-review-hint" title={folded ? chatHint : undefined}>{waitReason || (blocked ? "Some tasks wait on each other and will never start." : goesOn ? PLAN_GOES_ON : PLAN_STARTS_NOTHING)}</span>
-                {!rejecting && <button className="plan-review-reject" type="button" disabled={busy || holding} onClick={() => setRejecting(true)} data-icon-action title="Reject" aria-label="Reject">
+                {!rejecting && <button className="plan-review-reject" type="button" disabled={busy || holding || refreshing} onClick={() => setRejecting(true)} data-icon-action title="Reject" aria-label="Reject">
                   <ActionIcon name="deny" label="Reject" />
                 </button>}
-                <button className="orch-primary" type="button" disabled={busy || holding} onClick={() => void approve()} data-icon-action title={busyAction === "approve" ? "Approving…" : busy ? "Deciding…" : "Approve plan"} aria-label={busyAction === "approve" ? "Approving…" : busy ? "Deciding…" : "Approve plan"}>
+                <button className="orch-primary" type="button" disabled={busy || holding || refreshing} onClick={() => void approve()} data-icon-action title={busyAction === "approve" ? "Approving…" : busy ? "Deciding…" : "Approve plan"} aria-label={busyAction === "approve" ? "Approving…" : busy ? "Deciding…" : "Approve plan"}>
                   <ActionIcon name="approve" label="Approve" />
                 </button>
               </div>
@@ -379,6 +386,27 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
       )}
     </section>
   );
+}
+
+/** Nothing of the plan has been read yet. After `SLOW_READ_MS` it says so and
+ *  offers another read, so the line is never an endless placeholder. */
+const SLOW_READ_MS = 8_000;
+function PlanReading({ error }: { error?: string }) {
+  const [slow, setSlow] = useState(false);
+  const [asking, setAsking] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSlow(true), SLOW_READ_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
+  const retry = () => {
+    setAsking(true);
+    orchestrationFeed.refresh().catch(() => {}).finally(() => setAsking(false));
+  };
+  if (!error && !slow) return <p role="status">Reading plan…</p>;
+  return <p role="alert" className="plan-review-error">
+    {error ? `Could not read the plan: ${error}` : "Reading the plan is taking longer than usual."}
+    {" "}<button type="button" className="plan-review-quiet" disabled={asking} onClick={retry}>{asking ? "Reading…" : "Try again"}</button>
+  </p>;
 }
 
 export function PlanRejectConfirmation({ reason, busy, disabled, rejecting, onReason, onConfirm, onCancel }: {
