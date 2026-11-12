@@ -62,3 +62,12 @@ export function chatPreviewState(state: ChatState): ChatState {
   }
   return { ...state, messages: [...messages, ...pending], agents: [], background: [], pendingOutcomes: undefined };
 }
+
+/** Is a retained window older than the host's record? Only a chat no pane
+ * shows can be: a shown chat is caught up on open and then subscribed. The
+ * host's activity frame carries the record's sequence even for an unsubscribed
+ * chat, so a sequence past the window's mark proves the words are behind and
+ * the sidebar must not draw them as the chat's latest. */
+export function windowBehind(activitySeq: number | null, mark: number, shown: boolean, holds: boolean): boolean {
+  return activitySeq !== null && !shown && holds && activitySeq > mark;
+}

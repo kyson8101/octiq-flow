@@ -33,7 +33,7 @@ import {
 // Event/subscription callbacks must not chain old App render scopes. Pure
 // render-time readers use isolated factories below, rather than this hook.
 import { useCommittedCallback as useCallback } from "./lib/useCommittedCallback";
-import { chatPreviewState, hasLocalPrompt, withLocalPrompts } from "./lib/chatRetention";
+import { chatPreviewState, hasLocalPrompt, windowBehind, withLocalPrompts } from "./lib/chatRetention";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp, type Frame } from "./lib/catchUp";
 import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
@@ -1191,7 +1191,39 @@ export default function App() {
       c.messages,
       cancelled,
     ), []);
+  /** The newest agent words of a chat this tab does not subscribe to. The host
+   *  keeps no latest response of its own (the index is written by browsers),
+   *  and an unsubscribed turn delivers no events, so without this the row and
+   *  the index keep the answer from before the turn. One bounded page. */
+  const refreshOffscreenResponse = useCallback((id: string) => {
+    void readChatPreview(() => bridge.invoke<ChatPage>("chat_page", { key: keyFor(id), before: null }), [], () => false)
+      .then(messages => {
+        const text = latestAgentResponse(messages)?.text;
+        if (!text) return;
+        const held = conversationsRef.current.find(row => row.id === id);
+        if (!held || held.latestResponse === text) return;
+        const next = conversationsRef.current.map(row => row.id === id ? { ...row, latestResponse: text } : row);
+        conversationsRef.current = next;
+        saveConversations(next);
+        setConversations(next);
+        if (!screenChats.current.has(id)) saveIndexEntry({
+          id: held.id, projectId: held.projectId, title: held.title, latestResponse: text,
+          customTitle: held.customTitle, sessionId: held.sessionId ?? null, cwd: held.cwd ?? null,
+          modelId: held.modelId ?? null, access: held.permission ?? null, createdAt: held.createdAt,
+          updatedAt: held.updatedAt, pinned: held.pinned ?? false, generation: held.generation,
+        });
+      }).catch(() => { /* the row keeps its last words; the hover preview reads the record */ });
+  }, []);
   const [earlierReads, setEarlierReads] = useState<Record<string, { loading: boolean; error?: string }>>({});
+  // Retained offscreen windows stay still, so a chat that went on without this
+  // tab's subscription has a window that is BEHIND the host. Its sidebar line
+  // and hover preview must come from the host's index / a fresh page, never
+  // from those older words (see `previewWindow`).
+  const [behind, setBehind] = useState<ReadonlySet<string>>(() => new Set());
+  const markBehind = useCallback((id: string, isBehind: boolean) => setBehind(before => {
+    if (before.has(id) === isBehind) return before;
+    const next = new Set(before); if (isBehind) next.add(id); else next.delete(id); return next;
+  }), []);
 
   // Desktop notifications, for the chats you are NOT looking at.
   //
@@ -1896,6 +1928,9 @@ export default function App() {
         if (before.has(id) === activity.running) return before;
         const next = new Set(before); if (activity.running) next.add(id); else next.delete(id); return next;
       });
+      // A host sequence past this window's mark, for a chat no pane shows, means
+      // the retained words are older than the record.
+      if (windowBehind(activity.seq, catchUp.current.mark(keyFor(id)), screenChats.current.has(id), catchUp.current.holds(keyFor(id)))) markBehind(id, true);
       patch(id, state => withStreamActivity(state, activity, Date.now()));
     };
     const off = bridge.on<ChatStreamActivity>("chat-stream-activity", activity => { seen.add(activity.key); apply(activity); });
@@ -1904,7 +1939,7 @@ export default function App() {
       for (const row of list ?? []) if (!seen.has(row.key)) apply({ ...row, running: true, turnId: null, seq: null, lastActivityAt: 0, work: false });
     }).catch(() => {});
     return () => { current = false; off(); };
-  }, [patch, conn]);
+  }, [patch, conn, markBehind]);
 
   useEffect(
     () =>
@@ -2274,6 +2309,7 @@ export default function App() {
   useEffect(() => {
     const ids = [screenMain, screenBeside].filter((id): id is string => !!id);
     let active = true;
+    for (const id of ids) markBehind(id, false);
     void bridge.watchChats(ids.map(keyFor)).then(async () => {
       if (!active || conn !== "open") return;
       for (const id of ids) {
@@ -2285,7 +2321,7 @@ export default function App() {
       }
     }).catch(() => {});
     return () => { active = false; };
-  }, [screenMain, screenBeside, conn, catchUpChat, flushChats]);
+  }, [screenMain, screenBeside, conn, catchUpChat, flushChats, markBehind]);
 
   // Keep every opened window under one safety byte budget, alongside the visible
   // panes. Partial windows cannot be complete IndexedDB checkpoints: evicting
@@ -2865,6 +2901,9 @@ export default function App() {
           saveConversations(next);
           return next;
         });
+        // A turn that ended in a chat no pane shows went unread by this tab:
+        // read its newest words so the row says what the agent just said.
+        if (!screenChats.current.has(id)) void refreshOffscreenResponse(id);
         if (screenChats.current.has(id) && catchUp.current.holds(keyFor(id))) saveIndexEntry({
           id: completed.id,
           projectId: completed.projectId,
@@ -2882,7 +2921,7 @@ export default function App() {
         });
       }
     }
-  }, [chats, announce]);
+  }, [chats, announce, refreshOffscreenResponse]);
 
   /** End ONE conversation's process for good. Only ever on purpose — deleting
    *  the conversation, or asking for the session to end. Switching away does
@@ -5593,7 +5632,7 @@ export default function App() {
         ledgerSnapshot={orchestrationState.snapshot}
         ledgerUnavailable={projectContextUnavailable}
         coordinatorChatKeys={coordinatorChatKeys}
-        getPreviewMessages={(id) => catchUp.current.holds(keyFor(id)) ? chats[id]?.messages : undefined}
+        getPreviewMessages={(id) => !behind.has(id) && catchUp.current.holds(keyFor(id)) ? chats[id]?.messages : undefined}
         loadPreview={loadPreview}
         currentConversation={conversationId}
         running={running}
