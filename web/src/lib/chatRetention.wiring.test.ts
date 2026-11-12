@@ -3,6 +3,7 @@
 // wiring's spelling, not a proof of behaviour).
 import { describe, expect, it } from "vitest";
 import app from "../App.tsx?raw";
+import composerSource from "../components/Composer.tsx?raw";
 import { lf } from "./sourceText";
 
 const source = lf(app);
@@ -37,5 +38,15 @@ describe("retained windows in App", () => {
     const saves = source.match(/saveIndexEntry\(\{[^}]*?latestResponse: [^\n]*\n/gs) ?? [];
     expect(saves.length).toBeGreaterThanOrEqual(5);
     expect(source.match(/latestResponseVersion: \w+\.latestResponseVersion/g)?.length).toBeGreaterThanOrEqual(5);
+  });
+  it("keeps no closure of an App render in a long-lived listener, context value or store", () => {
+    // V8 shares one scope between the closures of a render; see oldRenderRetention.test.ts.
+    expect(source).toMatch(/useEffect\(\(\) => watchReading\(conversationId, push\.setReading\), \[conversationId\]\)/);
+    expect(source).not.toMatch(/const tell = /);
+    expect(source).toMatch(/makePendingActionsView\(pendingByRow\(pendingList\)/);
+    expect(source).not.toMatch(/forRow: \(chatId\)/);
+    const composer = lf(composerSource);
+    expect(composer).toMatch(/const receive = useCommittedCallback\(/);
+    expect(composer).not.toMatch(/const receive = \(pending/);
   });
 });
