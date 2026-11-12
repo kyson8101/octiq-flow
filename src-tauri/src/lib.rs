@@ -71,13 +71,13 @@ mod record_trim;
 mod retired_features;
 mod safety_block;
 mod scheduling;
+mod shutdown;
 mod team;
 mod team_tools;
 #[cfg(test)]
 mod test_dir;
 mod transcript;
 mod unsaved;
-mod shutdown;
 mod usage_limits;
 mod web;
 mod workspaces;

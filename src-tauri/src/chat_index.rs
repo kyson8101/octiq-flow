@@ -1362,9 +1362,11 @@ pub(crate) mod tests {
         // Text heard before the clear is dropped under the index lock, text
         // heard after it lands.
         assert_eq!(clear_epoch(id), 1);
-        assert!(set_host_previews_since(&[(id.to_owned(), "heard before".into(), 0)])
-            .unwrap()
-            .is_empty());
+        assert!(
+            set_host_previews_since(&[(id.to_owned(), "heard before".into(), 0)])
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(found().latest_response, None);
         assert_eq!(clear_host_preview("no-such-chat").unwrap(), None);
         // The host's next words continue the count.

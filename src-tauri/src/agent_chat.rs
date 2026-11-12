@@ -14423,7 +14423,11 @@ mod idle_tests {
                 .find(|chat| chat.id == id)
                 .unwrap()
         };
-        assert_eq!(row().latest_response, None, "the old text landed after /clear");
+        assert_eq!(
+            row().latest_response,
+            None,
+            "the old text landed after /clear"
+        );
         assert_eq!(row().latest_response_version, 1);
         // Words heard after the clear are a new conversation's and land.
         batch.submit(id, "new words".into(), Instant::now(), Duration::ZERO);
