@@ -69,7 +69,7 @@ import { wrapUpBubble } from "../lib/chatComplete";
 import { foldNoticeReplies, isNoticeTurn, noticeReply, noticeText, readNoticeTurn } from "../lib/hostNotice";
 import { ChatPersonaContext } from "../lib/agentRoster";
 import { HostNotice } from "./HostNotice";
-import { initialTurn, lastRequest, orientedFirst, runningTurns, turnWindowStart, TURN_BATCH } from "../lib/messageWindow";
+import { initialTurn, needsEarlierPage, orientedFirst, runningTurns, turnWindowStart, TURN_BATCH } from "../lib/messageWindow";
 import { dropHeld, repeatsAnother } from "../lib/pressGuard";
 import { parseVisualizationReference, VisualizationLink } from "./Visualization";
 import {
@@ -1533,7 +1533,7 @@ const MessageListBody = function MessageList({
   const innerRef = useRef<HTMLDivElement>(null);
   const loadMoreRef = useRef<() => void>(() => {});
   const morePending = useRef(false);
-  const prependAnchor = useRef<{ id?: string; first?: string; at: ChatPlace; server: boolean } | null>(null);
+  const prependAnchor = useRef<{ id?: string; first?: string; at: ChatPlace; server: boolean; orient?: { stuck: boolean } } | null>(null);
   const lastScroll = useRef(0);
   const touching = useRef(false);
   // Only follow the stream while the reader is already at the bottom: yanking
@@ -2066,6 +2066,15 @@ const MessageListBody = function MessageList({
       setWindow(visibleWindow);
     }
   }
+  // The page read to find the last request is here: widen the window to it
+  // in the same commit (the anchor below holds the place), when it is near.
+  if (incoming?.orient && incoming.id === conversationId && turns[0]?.[0].id !== incoming.first && visibleWindow.ready && visibleWindow.first !== null) {
+    const first = orientedFirst(turns, visibleWindow.first);
+    if (first !== visibleWindow.first) {
+      visibleWindow = { ...visibleWindow, first };
+      setWindow(visibleWindow);
+    }
+  }
   useLayoutEffect(() => {
     if (readingState && visibleWindow.ready) readingState.first = visibleWindow.first;
   }, [readingState, visibleWindow]);
@@ -2088,14 +2097,17 @@ const MessageListBody = function MessageList({
   if (historyRow.id !== conversationId || (showHistoryRow && !historyRow.shown)) {
     setHistoryRow({ id: conversationId, shown: showHistoryRow });
   }
-  const loadMore = async (pressed = false) => {
+  /** `orient`: the transcript has no real request in what it holds, so the
+   *  page is read from the server even though the window could still widen
+   *  over turns already loaded (they hold nothing to orient by). */
+  const loadMore = async (pressed = false, orient = false) => {
     if (!hasMore || loadingEarlier || morePending.current) return;
     const el = scrollerRef.current;
     if (!el) return;
     const id = conversationId;
     const requestedAt = performance.now();
     const at = prependPlaceFrom(el.scrollTop, anchorsIn(el));
-    prependAnchor.current = { id, first: visibleTurns[0]?.[0].id, at, server: start === 0 };
+    prependAnchor.current = { id, first: visibleTurns[0]?.[0].id, at, server: !orient && start === 0, orient: orient ? { stuck: stick.current } : undefined };
     stopGlide();
     releasePlace();
     stick.current = false;
@@ -2121,12 +2133,13 @@ const MessageListBody = function MessageList({
       holdPlace(latest);
     };
     try {
-      if (start > 0) {
+      if (start > 0 && !orient) {
         await ready();
         if (conv.current === id) setWindow({ id, readingState, ready: true, first: turns[Math.max(0, start - TURN_BATCH)][0].id, placed: true });
       } else await onLoadEarlier?.(ready);
     } catch (error) {
       if (conv.current === id) {
+        if (prependAnchor.current?.orient) stick.current = prependAnchor.current.orient.stuck;
         prependAnchor.current = null;
         releasePlace();
       }
@@ -2139,16 +2152,20 @@ const MessageListBody = function MessageList({
   // transcript opens with something to reorient by.
   const reoriented = useRef<string | null | undefined>(undefined);
   useEffect(() => {
-    if (!conversationId || !turns.length || reoriented.current === conversationId) return;
-    if (lastRequest(turns) >= 0 || !hasEarlier || loadingEarlier || earlierError) return;
+    if (!conversationId || reoriented.current === conversationId) return;
+    // Only a read that can start spends the chance: one that finds a page
+    // already coming, or no scroller yet, is asked again on the next render.
+    if (!needsEarlierPage(turns, { hasEarlier, loading: loadingEarlier || morePending.current, failed: !!earlierError })) return;
+    if (!scrollerRef.current) return;
     reoriented.current = conversationId;
-    void loadMore();
+    loadMore(false, true).catch(() => {});
   });
   useLayoutEffect(() => {
     const saved = prependAnchor.current;
     const el = scrollerRef.current;
     if (!saved || saved.id !== conversationId || !el || (saved.first === visibleTurns[0]?.[0].id && loadingEarlier)) return;
     prependAnchor.current = null;
+    if (saved.orient) stick.current = saved.orient.stuck;
     holdPlace(saved.at);
     restorePlace(saved.at);
     setAway(el.scrollHeight - el.scrollTop - el.clientHeight >= NEAR_BOTTOM);

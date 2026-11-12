@@ -50,6 +50,15 @@ export function orientedFirst(turns: Message[][], first: string | null): string 
   return at < start ? turns[at][0].id : first;
 }
 
+/** Whether the transcript should read one earlier page from the server to find
+ *  the person's last request: what is loaded holds none, the server has more,
+ *  and no page is coming or has just failed. The caller reads at most once per
+ *  conversation; a window that could merely widen over loaded turns does not
+ *  answer this, because those turns hold nothing to orient by. */
+export function needsEarlierPage(turns: Message[][], state: { hasEarlier: boolean; loading: boolean; failed: boolean }): boolean {
+  return turns.length > 0 && state.hasEarlier && !state.loading && !state.failed && lastRequest(turns) < 0;
+}
+
 /** The assistant turns that are still the running turn, by their first
  *  message's id.
  *
