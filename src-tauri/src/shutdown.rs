@@ -17,7 +17,22 @@ pub fn install() {
 
     static WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 
+    /// The calling thread's `errno`. `__error` / `__errno_location` are
+    /// async-signal-safe: they only return the thread-local's address.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    unsafe fn errno_slot() -> *mut libc::c_int {
+        libc::__error()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    unsafe fn errno_slot() -> *mut libc::c_int {
+        libc::__errno_location()
+    }
+
     extern "C" fn on_signal(signal: libc::c_int) {
+        // The interrupted thread may be between a failed call and reading its
+        // errno; the `write` below can change it, so put it back on exit.
+        // SAFETY: the slot is this thread's own.
+        let saved = unsafe { *errno_slot() };
         let fd = WRITE_FD.load(Ordering::Relaxed);
         if fd >= 0 {
             let byte = signal as u8;
@@ -25,6 +40,9 @@ pub fn install() {
             unsafe {
                 libc::write(fd, (&byte as *const u8).cast(), 1);
             }
+        }
+        unsafe {
+            *errno_slot() = saved;
         }
     }
 
@@ -69,7 +87,7 @@ pub fn install() {
         // SAFETY: the handler only calls `write`.
         unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
-            action.sa_sigaction = on_signal as usize;
+            action.sa_sigaction = on_signal as *const () as usize;
             action.sa_flags = libc::SA_RESTART;
             libc::sigemptyset(&mut action.sa_mask);
             libc::sigaction(signal, &action, std::ptr::null_mut());
