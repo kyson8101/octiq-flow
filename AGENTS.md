@@ -739,8 +739,8 @@ transcript, at the call that asked it (`components/InlineQuestions`,
 `lib/questionBlock`), with no card round it: each question a heading line,
 its options radio rows (checkbox rows when `multiple`), an option's
 description under its label, a quiet `Recommended` in words, and one
-right-aligned icon + `Send` answer target in `--decide` (28px on desktop,
-44px on a phone). Every question of one call is one block
+full-width answer button with a centred icon + `Send` label in `--decide`
+(40px on desktop, 44px on a phone or coarse pointer). Every question of one call is one block
 with one button. The host's contract is what it was: `question_pending`,
 the `user-question` events, `question_answer_batch`, `question_cancel`,
 `question_retry`.

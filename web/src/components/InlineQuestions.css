@@ -465,8 +465,22 @@
   transition: background-color 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out;
 }
 
-/* The answer is now one icon target rather than a full-width label. */
-.qa-submit[data-icon-action] { align-self: flex-end; }
+/* Keep this answer full width above the reason/Dismiss row. Outrank the
+   shared ActionIcon geometry without changing other icon actions. */
+:root .qa-block button.qa-submit[data-icon-action] {
+  align-self: stretch;
+  width: 100%;
+  height: 40px;
+  min-height: 40px;
+  padding: 0 16px;
+}
+
+@media (pointer: coarse), (max-width: 859.98px) {
+  :root .qa-block button.qa-submit[data-icon-action] {
+    height: 44px;
+    min-height: 44px;
+  }
+}
 
 @media (hover: hover) {
   .qa-submit:not([aria-disabled="true"]):hover { background: color-mix(in srgb, var(--decide) 28%, var(--bg-1)); }
