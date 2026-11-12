@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { addUserTurn, emptyChat, type Message } from "./chat";
-import { chatPreviewState, hasLocalPrompt, withLocalPrompts } from "./chatRetention";
+import { chatPreviewState, hasLocalPrompt, windowBehind, withLocalPrompts } from "./chatRetention";
 
 it("bounds background transcript content even when a single tool result or answer is huge", () => {
   const state = emptyChat();
@@ -48,4 +48,12 @@ it("does not turn subagent output into the main chat's response preview", () => 
   state.messages = [{ id: "main", role: "assistant", streaming: false, blocks: [{ kind: "text", text: "main" }] },
     { id: "child", role: "assistant", parent: "tool", streaming: false, blocks: [{ kind: "text", text: "child" }] }];
   expect(chatPreviewState(state).messages.map(message => message.id)).toEqual(["main"]);
+});
+
+it("a retained offscreen window is behind only when the host's sequence passed its mark", () => {
+  expect(windowBehind(120, 100, false, true)).toBe(true);
+  expect(windowBehind(100, 100, false, true)).toBe(false);   // the window has everything
+  expect(windowBehind(120, 100, true, true)).toBe(false);    // a pane shows it: caught up on open
+  expect(windowBehind(120, 100, false, false)).toBe(false);  // no window to be behind
+  expect(windowBehind(null, 100, false, true)).toBe(false);  // an activity frame with no record position
 });

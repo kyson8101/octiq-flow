@@ -5,24 +5,89 @@ Measured on 2026-11-10 before changing the policy. This extends the existing
 
 ## Policy
 
-- Keep up to **six offscreen reducer windows**, under **48 MiB total per tab**.
-  Visible panes are outside this budget, as before. Four tabs can therefore
-  retain up to 192 MiB of offscreen windows, plus visible panes and application overhead.
-- Settings, Agents and Projects cover the chat without clearing its recent
-  windows. Count, bytes, host provenance and deletion still evict them.
-- Size accounting remains conservative UTF-16 plus object overhead. An
-  indivisible 23 MiB ASCII turn can occupy roughly 46 MiB by itself and evict
-  smaller, older windows. A window exceeding 48 MiB is skipped, leaving room
-  for other windows. The existing 8 MiB paged-window trim is unchanged.
-- Checkpoints remain 16 MiB total / 8 MiB each in IndexedDB. Partial windows
-  remain memory-only and must not become complete checkpoints.
-- Only visible panes subscribe to transcript deltas. Retained offscreen
-  windows stay still; reopening shows their existing words and catches up
-  from their tail. Retention must not widen `bridge.watchChats`.
+Superseded 2026-11-12 (the person: "keep the cached version rather than clear all
+chat in browser"; "I lose my visual progress every time I switch"). The earlier
+six-window / 48 MiB cap evicted a chat after six others were opened, which blanked
+its reducer window, its sidebar row's transcript and its replay mark, so returning
+showed a placeholder and a reload could not restore it.
 
-The 48 MiB ceiling accommodates six windows near the existing 8 MiB window
-target. The fixture's six ordinary windows cost about 22 MiB under the
-conservative estimator. This cap bounds retained reducer data, not browser RSS.
+- **Every chat opened in this tab keeps its full window.** There is no count cap.
+  Offscreen windows share only a **safety byte budget of 256 MiB per tab**
+  (`RECENT_CHAT_BYTES`; the person chose 256, down from 512, after the independent
+  review). Past it the **oldest** window goes first. A window holding a prompt only
+  this tab has (`hasLocalPrompt`) is never evicted, whatever the budget: that is the
+  one exception. Visible panes are outside the budget, as before.
+  **The budget bounds the retained reducer values by the `valueBytes` estimate
+  (conservative UTF-16 plus object overhead). It does not bound process memory.**
+  The review measured 22 MiB running turns at the 512 MiB estimate: 336-359 MiB GC
+  heap per tab, 1.6-2.1 GiB renderer footprint per tab and 7.25-7.40 GiB across
+  four tabs. Rendering, React, V8 slack and decoded media sit on top of the
+  retained values. Four tabs can therefore use several GiB of physical memory
+  when every window is large; typical chats are far below.
+- **Reading state lives as long as the window.** `chatReadingStates` (disclosures,
+  tabs, first-message) has no chat-count cap any more; App forgets a chat's state
+  exactly when it releases or invalidates the window, or deletes the chat. Only
+  per-chat (16384 choices / 4 MiB) and total (128 MiB) safety limits remain, and
+  the total never evicts the chat being opened. Scroll places (`chatPlace`) keep
+  500 chats (about 100 bytes each).
+- Settings, Agents and Projects cover the chat without clearing its windows.
+- **Offscreen windows stay still.** Only visible panes subscribe to transcript
+  deltas (`bridge.watchChats` is unchanged). On return the retained words draw at
+  once and CatchUp reads the missing tail. Retention must not widen the
+  subscription.
+- **A retained window can be behind the host.** The host's compact
+  `chat-stream-activity` frame carries the record sequence even for unsubscribed
+  chats. When it passes the window's mark (`chatRetention.windowBehind`), the
+  sidebar line and hover preview stop using the window and show the index's
+  `latestResponse` (the hover reads the record only on demand).
+  Selecting the chat clears the mark and catches up.
+- **The preview is the host's.** The host writes `latestResponse` for every chat
+  at the agent's readable-output boundary and bumps `latestResponseVersion`
+  (`docs/scoped-reads-and-previews.md` on OCTIQ BE's branch; commit 444e498f).
+  The page carries the version on `Conversation` / `IndexEntry` and on every
+  `chat_index_save`, and an index row replaces the sidebar row's text when its
+  version is not older than the one the row holds (`chatPreview.hostPreview`).
+  A new or equal version is authoritative **including its text**: `/clear` and
+  `chat_forget` bump the version and omit `latestResponse` (serde skips None),
+  which means "no preview", so the row's text is dropped and a later metadata
+  save (a pin, a rename) carries none. An older version is ignored. A row with
+  no valid version leaves a held versioned preview exactly as it is; only a row
+  with nothing versioned held takes version-less host text. **This tab never
+  fetches a page to learn a preview and never writes one it read offscreen**:
+  an earlier version did (a `chat_page` per offscreen turn end) and could put an
+  old reply over a fresh one after `/clear` or a replacement, and sent 120
+  concurrent reads of up to 20 MB with four tabs. Only a visible pane, whose
+  words it saw on screen, saves a preview, with the version it heard.
+- **A closure that outlives its render holds no old App render.** V8 shares one
+  scope between every closure made in a render, so a closure kept by a window
+  listener, a context value a fiber keeps, or the paste store held the whole
+  render's `chats` (a 22 MiB transcript each) after the window cache let the
+  chat go. The three that did are built outside the render: `watchReading`
+  (`lib/readingWatch`, the focus/blur `tell`), `makePendingActionsView`
+  (`forRow`), and the Composer's paste `receive`, a committed callback bound
+  through `bindPasteSave` so even its cleanup holds only the save and the
+  callback. Proof: `lib/oldRenderRetention.test.ts` (real GC, with a control
+  that shows the inline form keeps the render) and
+  `scripts/test-scope-retention.mjs` (real App heap snapshot: none of the three
+  closures reaches a forgotten chat's result string). Other holders of one old
+  render remain (a fiber's previous props, a detached node's handlers); they are
+  React's and bounded to one render.
+- **Reload.** IndexedDB checkpoints are **128 MiB total / 32 MiB each**
+  (`lib/chatCache`), so a reload restores every open chat, not the last two. A
+  full disk (`QuotaExceededError`) aborts the write's transaction, so room is
+  made in a transaction of its own that COMMITS first (oldest rows; the budget,
+  then half of it, then everything but this row) and the write is retried; a
+  repeated quota error skips the checkpoint, never throwing, and the server read
+  serves the chat. `web/scripts/test-chat-cache-quota.mjs` proves it against a
+  native 6 MiB Chrome quota. Partial windows
+  (`ChatHistory.isPartial`) are never stored as checkpoints; a window above the
+  32 MiB row size is not cached.
+- The existing 8 MiB paged-window trim (`CHAT_WINDOW_BYTES`) is unchanged.
+
+Why chats appeared to vanish or open empty: the eviction above (not the sidebar
+index reconcile, which only forgets a chat the host stopped listing or tombstoned).
+`saveConversations` additionally keeps only 80 done/worker rows in localStorage
+for the first paint; the host index restores the rest.
 
 ## Record invalidation
 
@@ -229,3 +294,21 @@ Evidence from this implementation session:
 - Baseline: `octiq-chat-windows-dBOuly` in the system temporary directory.
 - Full matrix: `octiq-chat-windows-q8WfKm` in the system temporary directory.
 - Supplemental production React profile: `octiq-chat-windows-CM3uBZ` there.
+
+## Retention without a count cap (2026-11-12)
+
+Real App, `scripts/test-chat-window-cache.mjs` (8 fixture chats of ~2.9 MiB each;
+the machine's load average was ~25, so timings are not comparable with the table
+above) and `web/scripts/test-chat-retention.mjs` (30 + 8 chats):
+
+| | Old policy (2 windows / 8 MiB) | Now |
+| --- | ---: | ---: |
+| Estimated held windows after opening all 8 | 11.0 MiB | 22.1 MiB (all 8) |
+| JS heap, GC'd | 33.4 MiB | 38.1 MiB |
+| 4 tabs, 1,000 offscreen delta frames | 0 folds / 0 renders | 0 folds / 0 renders |
+| Return to an opened chat | reloads, placeholder | immediate, scroll anchor restored |
+
+`test-chat-retention.mjs` opens 30 chats at 1280 and 8 at 390 and asserts every
+opened chat is still a full window, Settings covers without clearing, and a
+returned chat probes one bounded tail. The baseline flag now reinstates a
+two-window / 8 MiB cap only in the probe's Vite transform.

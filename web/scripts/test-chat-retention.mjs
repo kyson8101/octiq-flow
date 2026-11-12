@@ -35,10 +35,11 @@ function inspect(){
  const tools=state=>state.messages.reduce((n,message)=>n+message.blocks.filter(block=>block.kind==='tool').length,0);
  return {detailIds:feed?[...feed.details.keys()]:[],full:Object.entries(chats).filter(([,state])=>tools(state)>0).map(([id])=>id),rowCopies:conversations.filter(row=>row.messages.some(message=>message.blocks.some(block=>block.kind==='tool'))).map(row=>row.id),backgroundChars:Object.entries(chats).filter(([id])=>id!==(location.hash.match(/\/c\/([^/]+)/)?.[1]??'')).map(([id,state])=>[id,JSON.stringify(state.messages).length]),windows:history?[...history.windows.values()]:[],weakSaveMarker:values.some(value=>value?.current instanceof WeakMap)};
 }
-function checkWindows(state, shown){
+function checkWindows(state, shown, opened=[]){
  for(const id of shown)assert.ok(state.full.includes(id),`visible window missing: ${id}: ${JSON.stringify(state)}`);
  const recent=state.full.filter(id=>!shown.includes(id));
- assert.ok(recent.length<=2,'only two recent offscreen windows may remain');
+ // Every chat opened in this tab keeps its full window (byte budget only).
+ for(const id of opened)assert.ok(state.full.includes(id),`opened window was evicted: ${id}`);
  assert.ok(state.backgroundChars.filter(([id])=>!shown.includes(id)&&!recent.includes(id)).every(([,bytes])=>bytes<2000),JSON.stringify(state));
 }
 let server,browser,cacheDir;
@@ -75,18 +76,18 @@ try{
    if(i%10===0)console.log('opening',width,i);await page.evaluate(id=>{location.hash='#/c/'+id;},`memory-${i}`);
    await page.locator('.msgs').getByText(`Answer memory-${i}.`,{exact:true}).waitFor();
    await page.waitForTimeout(i%10===5?900:50);
-   const state=await page.evaluate(inspect);checkWindows(state,[`memory-${i}`]);assert.ok(state.rowCopies.length<=1);if(i%10===5)assert.deepEqual(state.rowCopies,[`memory-${i}`],'full checkpoints must exercise sidebar transcript copies');assert.ok(state.windows.every(window=>Object.keys(window).join() ==='before'));assert.ok(state.weakSaveMarker);
+   const state=await page.evaluate(inspect);checkWindows(state,[`memory-${i}`],Array.from({length:i},(_,n)=>`memory-${n}`));assert.ok(state.rowCopies.length<=1);if(i%10===5)assert.deepEqual(state.rowCopies,[`memory-${i}`],'full checkpoints must exercise sidebar transcript copies');assert.ok(state.windows.every(window=>Object.keys(window).join() ==='before'));assert.ok(state.weakSaveMarker);
   }
   console.log('opened all',width);
   // All incoming background transcripts are previews, including their tools.
   for(let i=0;i<20;i++)for(const frame of frames('background-'+i).slice(2))socket.send(JSON.stringify(modern?{t:'event',event:'chat-stream-activity',payload:{key:'chat:background-'+i,seq:frame.seq,running:true,busy:true,turnId:'background-turn',work:true,lastActivityAt:1}}:{t:'event',event:'chat-event',payload:{key:'chat:background-'+i,seq:frame.seq,event:frame.event}}));
   await page.waitForTimeout(500);
-  const state=await page.evaluate(inspect);checkWindows(state,[`memory-${count-1}`]);
+  const state=await page.evaluate(inspect);checkWindows(state,[`memory-${count-1}`],Array.from({length:count-1},(_,n)=>`memory-${n}`));
   if(count>5){
    await page.evaluate(()=>{location.hash='#/c/memory-5';});await page.locator('.msgs').getByText('Answer memory-5.',{exact:true}).waitFor();
    assert.equal(reads.get('memory-5'),2,'a disk checkpoint still probes the bounded recent page before incremental catch-up');
   }
-  await page.evaluate(()=>{location.hash='#/c/memory-0';});await page.locator('.msgs').getByText('Answer memory-0.',{exact:true}).waitFor();assert.equal(reads.get('memory-0'),2,'released chat must replay on return');
+  await page.evaluate(()=>{location.hash='#/c/memory-0';});await page.locator('.msgs').getByText('Answer memory-0.',{exact:true}).waitFor();assert.equal(reads.get('memory-0'),2,'a retained window probes the bounded tail once on return (no full replay)');
   console.log('reopened',width);await page.getByRole('button',{name:/Load earlier messages/}).click();await page.locator('.msgs').getByText('Question memory-0.',{exact:true}).waitFor();
   // Size the actual chat area: the run column can leave only one pane at 1280.
   await page.evaluate(()=>{location.hash='#/c/memory-1/beside/memory-2';});
@@ -105,7 +106,7 @@ try{
     const beforeDetail=detailReads;socket.send(JSON.stringify({t:'event',event:'orchestration-changed',payload:{runId:'fixture-run',revision:'fixture:2'}}));await page.waitForTimeout(1300);assert.ok(detailReads>beforeDetail,'the open run must refetch on its own invalidation');
     await page.getByRole('button',{name:'Settings',exact:true}).click();await page.waitForTimeout(400);
     assert.deepEqual([...selected],[],'Settings covers the chat');
-    assert.deepEqual((await page.evaluate(inspect)).full,[],'covered transcripts must leave RAM');
+    {const covered=(await page.evaluate(inspect)).full;for(const id of expected)assert.ok(covered.includes(id),'Settings covers the chat without clearing its window');}
     assert.deepEqual((await page.evaluate(inspect)).detailIds,[],'covered run/strip details must leave RAM');
     await page.getByRole('button',{name:'Back to chat',exact:true}).click();await page.waitForTimeout(400);
     assert.deepEqual([...selected].sort(),['chat:memory-1','chat:memory-2']);

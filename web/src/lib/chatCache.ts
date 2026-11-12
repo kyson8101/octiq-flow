@@ -8,8 +8,11 @@ import { migrateMessages } from "./cacheMigration";
 export type ChatCheckpoint = { id: string; seq: number; generation?: string; state: ChatState; updatedAt: number };
 const DATABASE = "octiq.chat-cache";
 const TABLE = "checkpoints";
-export const CHAT_CACHE_BYTES = 16 * 1024 * 1024;
-export const CHECKPOINT_BYTES = 8 * 1024 * 1024;
+// IndexedDB has its own, far larger quota than localStorage, and a reload must
+// bring back every chat the person had open, not the last two. Per-chat rows
+// above CHECKPOINT_BYTES are not cached (the paged read serves them).
+export const CHAT_CACHE_BYTES = 128 * 1024 * 1024;
+export const CHECKPOINT_BYTES = 32 * 1024 * 1024;
 const SIZES = "sizes";
 // A clear also cancels optional cache operations already waiting for IDB.
 // One counter avoids retaining an entry for every chat ever invalidated.
@@ -91,7 +94,63 @@ export async function readChatCheckpoint(id: string): Promise<ChatCheckpoint | u
   });
 }
 
-export async function saveChatCheckpoint(checkpoint: ChatCheckpoint): Promise<void> {
+type Outcome = "done" | "quota" | "failed";
+
+/** Make room in a transaction of its own: delete the oldest rows until the
+ * newest ones, plus `incoming` bytes for the row about to be written (whose own
+ * old copy does not count), fit in `limit`. It COMMITS before the write that
+ * needs the room is attempted. Evicting inside the write's transaction was the
+ * hole: a QuotaExceededError aborts that whole transaction, which rolls the
+ * eviction back with it, so a full disk stayed full however often it retried. */
+function makeRoom(db: IDBDatabase, id: string, incoming: number, limit: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let tx: IDBTransaction;
+    try { tx = db.transaction([TABLE, SIZES], "readwrite"); } catch { return resolve(false); }
+    try {
+      const table = tx.objectStore(TABLE);
+      const sizes = tx.objectStore(SIZES);
+      let kept = incoming;
+      const cursor = sizes.index("updatedAt").openCursor(null, "prev");
+      cursor.onsuccess = () => {
+        const row = cursor.result;
+        if (!row) return;
+        if (row.value.id !== id) {
+          kept += row.value.bytes;
+          if (kept > limit) { table.delete(row.primaryKey); row.delete(); }
+        }
+        row.continue();
+      };
+    } catch { return resolve(false); }
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => resolve(false);
+    tx.onabort = () => resolve(false);
+  });
+}
+
+/** One write transaction: the row and its size, nothing else. The outcome tells
+ * a full disk apart from any other failure. */
+function write(db: IDBDatabase, checkpoint: ChatCheckpoint, bytes: number): Promise<Outcome> {
+  return new Promise<Outcome>((resolve) => {
+    let tx: IDBTransaction;
+    try { tx = db.transaction([TABLE, SIZES], "readwrite"); } catch { return resolve("failed"); }
+    // Structured cloning avoids serialising large transcripts into the small,
+    // synchronous localStorage quota. Keep a bounded set of recent chats.
+    //
+    // Stamped HERE rather than by the caller: three places write checkpoints,
+    // and a stamp any one of them could forget is worse than no stamp at all —
+    // it would read as trustworthy.
+    try {
+      tx.objectStore(TABLE).put({ ...checkpoint, ...BUILD_STAMP, bytes });
+      tx.objectStore(SIZES).put({ id: checkpoint.id, updatedAt: checkpoint.updatedAt, bytes });
+    } catch (error) { return resolve(isQuota(error) ? "quota" : "failed"); }
+    tx.oncomplete = () => resolve("done");
+    tx.onerror = () => resolve(isQuota(tx.error) ? "quota" : "failed");
+    tx.onabort = () => resolve(isQuota(tx.error) ? "quota" : "failed");
+  });
+}
+const isQuota = (error: unknown) => (error as { name?: string } | null)?.name === "QuotaExceededError";
+
+export async function saveChatCheckpoint(checkpoint: ChatCheckpoint, budget = CHAT_CACHE_BYTES): Promise<void> {
   const started = revision;
   const bytes = valueBytes(checkpoint, CHECKPOINT_BYTES);
   if (bytes > CHECKPOINT_BYTES) { await forgetChatCheckpoint(checkpoint.id); return; }
@@ -99,31 +158,19 @@ export async function saveChatCheckpoint(checkpoint: ChatCheckpoint): Promise<vo
   if (!db) return;
   if (started !== revision) { db.close(); return; }
   try {
-    const tx = db.transaction([TABLE, SIZES], "readwrite");
-    const table = tx.objectStore(TABLE);
-    // Structured cloning avoids serialising large transcripts into the small,
-    // synchronous localStorage quota. Keep a bounded set of recent chats.
-    //
-    // Stamped HERE rather than by the caller: three places write checkpoints,
-    // and a stamp any one of them could forget is worse than no stamp at all —
-    // it would read as trustworthy.
-    table.put({ ...checkpoint, ...BUILD_STAMP, bytes });
-    const sizes = tx.objectStore(SIZES);
-    sizes.put({ id: checkpoint.id, updatedAt: checkpoint.updatedAt, bytes });
-    let kept = 0;
-    const cursor = sizes.index("updatedAt").openCursor(null, "prev");
-    cursor.onsuccess = () => {
-      const row = cursor.result;
-      if (!row) return;
-      kept += row.value.bytes;
-      if (kept > CHAT_CACHE_BYTES) { table.delete(row.primaryKey); row.delete(); }
-      row.continue();
-    };
-    await new Promise<void>((resolve) => {
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
-      tx.onabort = () => resolve();
-    });
+    // Make room in a COMMITTED transaction, then write. A full disk is the
+    // browser's answer, not ours: evict again, harder (half the budget, then
+    // everything but this row) and write again. On a repeated quota error the
+    // checkpoint is skipped and the server read serves the chat, as before.
+    // Never throws into the caller; a clear (revision) cancels every step.
+    const limits = [budget, Math.max(bytes, Math.floor(budget / 2)), bytes];
+    for (const limit of limits) {
+      if (started !== revision) break;
+      if (!await makeRoom(db, checkpoint.id, bytes, limit)) break;
+      if (started !== revision) break;
+      const outcome = await write(db, checkpoint, bytes);
+      if (outcome !== "quota") break;
+    }
   } catch { /* cache/quota failure falls back to the server */ }
   finally { db.close(); }
 }

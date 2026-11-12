@@ -1,4 +1,4 @@
-import { IDBFactory } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { emptyChat } from "./chat";
 import { forgetChatCheckpoint, readChatCheckpoint, saveChatCheckpoint } from "./chatCache";
@@ -17,23 +17,110 @@ it("retains a full checkpoint larger than the entire localStorage budget", async
   expect(await readChatCheckpoint("large")).toBeUndefined();
 });
 
-it("evicts by bytes even below twelve rows, and keeps many tiny chats", async () => {
+it("keeps far more than the old 16 MiB across chats, and evicts oldest by bytes past the budget", async () => {
   const large = emptyChat();
   large.messages = [{ id: "m", role: "assistant", streaming: false, blocks: [{ kind: "text", text: "x".repeat(3 * 1024 * 1024) }] }];
-  for (let n = 0; n < 4; n++) await saveChatCheckpoint({ id: `large${n}`, seq: n, state: large, updatedAt: n });
+  // Ten ~6 MiB rows are 60 MiB: all kept now (the old cap kept two).
+  for (let n = 0; n < 10; n++) await saveChatCheckpoint({ id: `large${n}`, seq: n, state: large, updatedAt: n });
+  expect((await readChatCheckpoint("large0"))?.seq).toBe(0);
+  expect((await readChatCheckpoint("large9"))?.seq).toBe(9);
+  // A smaller budget evicts the oldest first.
+  const small = 20 * 1024 * 1024;
+  await saveChatCheckpoint({ id: "late", seq: 99, state: large, updatedAt: 100 }, small);
   expect(await readChatCheckpoint("large0")).toBeUndefined();
-  expect(await readChatCheckpoint("large1")).toBeUndefined();
-  expect((await readChatCheckpoint("large3"))?.seq).toBe(3);
-  for (let n = 0; n < 20; n++) await saveChatCheckpoint({ id: `tiny${n}`, seq: n, state: emptyChat(), updatedAt: n + 10 });
+  expect(await readChatCheckpoint("large5")).toBeUndefined();
+  expect((await readChatCheckpoint("late"))?.seq).toBe(99);
+  expect((await readChatCheckpoint("large9"))?.seq).toBe(9);
+  for (let n = 0; n < 20; n++) await saveChatCheckpoint({ id: `tiny${n}`, seq: n, state: emptyChat(), updatedAt: n + 200 });
   expect((await readChatCheckpoint("tiny0"))?.seq).toBe(0);
   expect((await readChatCheckpoint("tiny19"))?.seq).toBe(19);
 });
 
 it("never clones an oversized checkpoint into IndexedDB", async () => {
   const state = emptyChat();
-  state.messages = [{ id: "m", role: "assistant", streaming: false, blocks: [{ kind: "text", text: "x".repeat(5 * 1024 * 1024) }] }];
+  state.messages = [{ id: "m", role: "assistant", streaming: false, blocks: [{ kind: "text", text: "x".repeat(17 * 1024 * 1024) }] }];
   await saveChatCheckpoint({ id: "huge", seq: 1, state, updatedAt: 1 });
   expect(await readChatCheckpoint("huge")).toBeUndefined();
+});
+
+it("makes room and retries when the browser reports a full disk, and never throws", async () => {
+  const put = IDBObjectStore.prototype.put as (...a: unknown[]) => unknown;
+  let calls = 0;
+  const spy = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args: unknown[]) {
+    if (this.name === "checkpoints" && ++calls === 1) throw new DOMException("full", "QuotaExceededError");
+    return put.apply(this, args) as IDBRequest;
+  });
+  await saveChatCheckpoint({ id: "a", seq: 7, state: emptyChat(), updatedAt: 1 });
+  expect(calls).toBe(2);
+  expect((await readChatCheckpoint("a"))?.seq).toBe(7);
+  spy.mockImplementation(() => { throw new DOMException("full", "QuotaExceededError"); });
+  await expect(saveChatCheckpoint({ id: "b", seq: 1, state: emptyChat(), updatedAt: 2 })).resolves.toBeUndefined();
+  spy.mockRestore();
+  expect(await readChatCheckpoint("b")).toBeUndefined();
+});
+
+/** A disk that STAYS full, the way a browser's origin quota does: a put that
+ *  takes the committed rows past `cap` bytes aborts its WHOLE transaction (so
+ *  an eviction made in that same transaction is rolled back with it) and
+ *  fails with QuotaExceededError. A ledger of committed sizes stands in for the
+ *  quota; `fake-indexeddb` does the rollback itself. */
+function fullDisk(cap: number) {
+  const ledger = new Map<string, number>();
+  const total = () => [...ledger.values()].reduce((a, b) => a + b, 0);
+  const put = IDBObjectStore.prototype.put as (...a: unknown[]) => unknown;
+  const del = IDBObjectStore.prototype.delete as (...a: unknown[]) => unknown;
+  const begin = IDBDatabase.prototype.transaction as (...a: unknown[]) => IDBTransaction;
+  const snapshots = new WeakMap<IDBTransaction, Map<string, number>>();
+  const puts = { count: 0, quota: 0 };
+  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args: unknown[]) {
+    const tx = begin.apply(this, args);
+    snapshots.set(tx, new Map(ledger));
+    tx.addEventListener("abort", () => { ledger.clear(); for (const [k, v] of snapshots.get(tx)!) ledger.set(k, v); });
+    return tx;
+  } as never);
+  vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args: unknown[]) {
+    if (this.name === "checkpoints") {
+      const row = args[0] as { id: string; bytes: number };
+      puts.count++;
+      ledger.set(row.id, row.bytes);
+      if (total() > cap) { puts.quota++; this.transaction.abort(); throw new DOMException("full", "QuotaExceededError"); }
+    }
+    return put.apply(this, args) as IDBRequest;
+  });
+  vi.spyOn(IDBObjectStore.prototype, "delete").mockImplementation(function (this: IDBObjectStore, ...args: unknown[]) {
+    if (this.name === "checkpoints") ledger.delete(String(args[0]));
+    return del.apply(this, args) as IDBRequest;
+  });
+  return { puts, ledger, total };
+}
+const sixMiB = () => {
+  const state = emptyChat();
+  state.messages = [{ id: "m", role: "assistant", streaming: false, blocks: [{ kind: "text", text: "x".repeat(3 * 1024 * 1024) }] }];
+  return state;
+};
+
+it("frees space in a committed transaction when the disk stays full, then stores the row", async () => {
+  const disk = fullDisk(20 * 1024 * 1024);
+  for (let n = 0; n < 3; n++) await saveChatCheckpoint({ id: `r${n}`, seq: n, state: sixMiB(), updatedAt: n + 1 });
+  expect(disk.total()).toBeGreaterThan(15 * 1024 * 1024);
+  // The fourth does not fit beside three. Eviction inside the failing
+  // transaction would roll back, so every retry would fail the same way.
+  await expect(saveChatCheckpoint({ id: "r3", seq: 3, state: sixMiB(), updatedAt: 4 })).resolves.toBeUndefined();
+  expect(disk.puts.quota).toBeGreaterThan(0);
+  expect((await readChatCheckpoint("r3"))?.seq).toBe(3);
+  expect(await readChatCheckpoint("r0")).toBeUndefined();
+  expect(disk.total()).toBeLessThanOrEqual(20 * 1024 * 1024);
+  vi.restoreAllMocks();
+});
+
+it("stops after a repeated quota error without throwing, and keeps what it could not free", async () => {
+  const disk = fullDisk(1024);
+  await saveChatCheckpoint({ id: "tiny", seq: 1, state: emptyChat(), updatedAt: 1 }).catch(() => undefined);
+  const before = disk.puts.count;
+  await expect(saveChatCheckpoint({ id: "big", seq: 2, state: sixMiB(), updatedAt: 2 })).resolves.toBeUndefined();
+  expect(disk.puts.count - before).toBeLessThanOrEqual(3);
+  expect(await readChatCheckpoint("big")).toBeUndefined();
+  vi.restoreAllMocks();
 });
 
 /** Rewrite a stored row's stamp, standing in for the checkpoint an EARLIER

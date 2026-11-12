@@ -28,10 +28,10 @@ import { recall, remember } from "./remember";
 
 const KEY = "octiq.v2.chatPlaces";
 
-/** As many chats as the transcript cache itself holds (`MAX_CONVERSATIONS`).
- *  A place is only worth keeping for a chat that is still a click away, and
- *  past that the two would disagree about which chats exist. */
-export const MAX_CHAT_PLACES = 80;
+/** A place is ~100 bytes, so the cap is a safety limit, well above the number
+ *  of chats a person keeps open (windows are retained for every opened chat):
+ *  a cap near the old 80 dropped the place of a chat whose window was held. */
+export const MAX_CHAT_PLACES = 500;
 
 /** Where a chat was left.
  *

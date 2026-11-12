@@ -93,3 +93,38 @@ export async function readChatPreview(
   state = await replayChat(state, page.events, 0, cancelled);
   return state.messages;
 }
+
+/** What a sidebar row says of the agent's newest words, once the host's index
+ *  answers. The host keeps `latestResponse` for every chat and numbers each
+ *  change (`latestResponseVersion`), so a row takes the host's answer when the
+ *  host's version is not older than the one it holds.
+ *
+ *  - A valid version that is new or equal is AUTHORITATIVE, text included: the
+ *    host omits `latestResponse` (serde skips None) when `/clear` or
+ *    `chat_forget` reset the preview, so "no text under a version" means "no
+ *    preview", and the held text is dropped, never carried over.
+ *  - An older version is an out-of-order answer and is ignored.
+ *  - A row with no valid version (a host older than the preview contract)
+ *    leaves a held versioned preview exactly as it is. Only a row with nothing
+ *    versioned held takes its text, else keeps what the row already had.
+ *
+ *  Nothing here reads a transcript page, and nothing here is saved back: a
+ *  preview this tab did not see on screen is never written to the index, and a
+ *  preview the host has cleared is never carried into a later save. */
+export function hostPreview(
+  held: { latestResponse?: string; latestResponseVersion?: number } | undefined,
+  row: { latestResponse?: string; latestResponseVersion?: number },
+): { latestResponse?: string; latestResponseVersion?: number } {
+  const version = row.latestResponseVersion;
+  const heldVersion = held?.latestResponseVersion;
+  if (typeof version !== "number" || !Number.isFinite(version) || version <= 0) {
+    if (heldVersion !== undefined) {
+      return { latestResponse: held?.latestResponse, latestResponseVersion: heldVersion };
+    }
+    return { latestResponse: row.latestResponse ?? held?.latestResponse, latestResponseVersion: undefined };
+  }
+  if (heldVersion !== undefined && heldVersion > version) {
+    return { latestResponse: held?.latestResponse, latestResponseVersion: heldVersion };
+  }
+  return { latestResponse: row.latestResponse, latestResponseVersion: version };
+}

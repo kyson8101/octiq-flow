@@ -83,6 +83,7 @@ function entryFromConversation(chat: Conversation): IndexEntry {
     projectId: chat.projectId,
     title: chat.title,
     latestResponse: chat.latestResponse,
+    latestResponseVersion: chat.latestResponseVersion,
     customTitle: chat.customTitle,
     sessionId: chat.sessionId ?? null,
     cwd: chat.cwd ?? null,

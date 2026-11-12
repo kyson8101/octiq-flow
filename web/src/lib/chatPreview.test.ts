@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Message } from "./chat";
-import { latestResponse, plainSnippet, previewMessages, readChatPreview } from "./chatPreview";
+import { hostPreview, latestResponse, plainSnippet, previewMessages, readChatPreview } from "./chatPreview";
 
 const message = (id: string, text: string, extra: Partial<Message> = {}): Message => ({
   id, role: "user", streaming: false, blocks: [{ kind: "text", text }], ...extra,
@@ -87,5 +87,59 @@ describe("plainSnippet", () => {
     expect(plainSnippet("> Quoted\n\n---\n- [x] Done\n- [ ] Next")).toBe("Quoted Done Next");
     expect(plainSnippet("| Check | Result |\n| --- | :---: |\n| tests | ~~red~~ green |"))
       .toBe("Check · Result tests · red green");
+  });
+});
+
+describe("hostPreview", () => {
+  it("takes the host's text when its version is newer than the row's", () => {
+    expect(hostPreview({ latestResponse: "old", latestResponseVersion: 2 }, { latestResponse: "new", latestResponseVersion: 3 }))
+      .toEqual({ latestResponse: "new", latestResponseVersion: 3 });
+  });
+  it("takes the host's text for a row that never heard a version", () => {
+    expect(hostPreview({ latestResponse: "local" }, { latestResponse: "host", latestResponseVersion: 1 }))
+      .toEqual({ latestResponse: "host", latestResponseVersion: 1 });
+  });
+  it("keeps a newer row over an out-of-order older index answer", () => {
+    expect(hostPreview({ latestResponse: "newer", latestResponseVersion: 5 }, { latestResponse: "older", latestResponseVersion: 4 }))
+      .toEqual({ latestResponse: "newer", latestResponseVersion: 5 });
+  });
+  it("leaves the row as last known for a host that sends no version", () => {
+    expect(hostPreview({ latestResponse: "known", latestResponseVersion: undefined }, { latestResponse: undefined }))
+      .toEqual({ latestResponse: "known", latestResponseVersion: undefined });
+    expect(hostPreview({ latestResponse: "known" }, { latestResponse: "indexed" }))
+      .toEqual({ latestResponse: "indexed", latestResponseVersion: undefined });
+    expect(hostPreview({ latestResponse: "known", latestResponseVersion: 2 }, { latestResponse: "x", latestResponseVersion: 0 }).latestResponseVersion).toBe(2);
+  });
+  it("M3: a versionless host row never overwrites a held versioned preview", () => {
+    expect(hostPreview({ latestResponse: "held", latestResponseVersion: 10 }, { latestResponse: "VERSIONLESS OLD RESPONSE" }))
+      .toEqual({ latestResponse: "held", latestResponseVersion: 10 });
+    expect(hostPreview({ latestResponse: "held", latestResponseVersion: 10 }, { latestResponse: "x", latestResponseVersion: 0 }))
+      .toEqual({ latestResponse: "held", latestResponseVersion: 10 });
+    expect(hostPreview({ latestResponse: "held", latestResponseVersion: 10 }, { latestResponse: "x", latestResponseVersion: Number.NaN }))
+      .toEqual({ latestResponse: "held", latestResponseVersion: 10 });
+  });
+  it("M3: only a row with nothing versioned held takes versionless host text", () => {
+    expect(hostPreview(undefined, { latestResponse: "host" })).toEqual({ latestResponse: "host", latestResponseVersion: undefined });
+    expect(hostPreview({}, { latestResponse: "host" })).toEqual({ latestResponse: "host", latestResponseVersion: undefined });
+  });
+  it("M4: a new or equal version with no text is an authoritative empty preview", () => {
+    expect(hostPreview({ latestResponse: "old", latestResponseVersion: 10 }, { latestResponseVersion: 11 }))
+      .toEqual({ latestResponse: undefined, latestResponseVersion: 11 });
+    expect(hostPreview({ latestResponse: "old", latestResponseVersion: 11 }, { latestResponseVersion: 11 }))
+      .toEqual({ latestResponse: undefined, latestResponseVersion: 11 });
+    expect(hostPreview({ latestResponse: "local" }, { latestResponseVersion: 1 }))
+      .toEqual({ latestResponse: undefined, latestResponseVersion: 1 });
+  });
+  it("M4: an older version with no text is still an out-of-order answer and changes nothing", () => {
+    expect(hostPreview({ latestResponse: "fresh", latestResponseVersion: 12 }, { latestResponseVersion: 11 }))
+      .toEqual({ latestResponse: "fresh", latestResponseVersion: 12 });
+  });
+  it("clear then fresh then late: 10 -> 11 cleared -> 12 -> late 10", () => {
+    let held = hostPreview(undefined, { latestResponse: "ten", latestResponseVersion: 10 });
+    held = hostPreview(held, { latestResponseVersion: 11 });
+    expect(held).toEqual({ latestResponse: undefined, latestResponseVersion: 11 });
+    held = hostPreview(held, { latestResponse: "twelve", latestResponseVersion: 12 });
+    held = hostPreview(held, { latestResponse: "ten", latestResponseVersion: 10 });
+    expect(held).toEqual({ latestResponse: "twelve", latestResponseVersion: 12 });
   });
 });

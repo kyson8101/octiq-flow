@@ -12,6 +12,7 @@
 // Detected from the POINTER, not the screen width: a narrow window on a desktop
 // still has a real keyboard and should still send on Enter.
 import { ActionIcon } from "./ActionIcon";
+import { useCommittedCallback } from "../lib/useCommittedCallback";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { transitionZen } from "../lib/zenMotion";
 import { bridge } from "../lib/bridge";
@@ -275,6 +276,19 @@ function pasteSaveFor(store: Drafts<Attachment>, session?: string): PasteSave {
   let save = chats.get(session);
   if (!save) { save = { pending: 0 }; chats.set(session, save); }
   return save;
+}
+
+/** Register `receive` on a chat's paste save, hand it what arrived while no
+ *  mount listened, and return the cleanup. A module-level function on purpose:
+ *  the cleanup React keeps for as long as the effect's deps hold would
+ *  otherwise be a closure of the Composer render the effect last ran in, and
+ *  with it that render's props (`onPutBack` is an App render's closure, which
+ *  holds `chats`). Here it holds only `save` and `receive`. */
+function bindPasteSave(save: PasteSave, receive: NonNullable<PasteSave["receive"]>, onError: (error: string | null) => void): () => void {
+  save.receive = receive;
+  receive(save.pending);
+  if (save.error) { onError(save.error); save.error = undefined; }
+  return () => { if (save.receive === receive) save.receive = undefined; };
 }
 
 /** Deliver through the origin's current mount, or keep it in that chat's
@@ -1027,22 +1041,24 @@ export function Composer({
     // precisely so that typing does not re-run it.
   }, [session, forget]);
 
-  useLayoutEffect(() => {
-    const save = pasteSaveFor(drafts.current, session);
-    const receive = (pending: number, result?: PasteSaveResult) => {
-      setSavingPastes(pending);
-      if (!result) return;
-      if ("attachment" in result) setAttached((prev) => [...prev, result.attachment]);
-      else {
-        if ("text" in result) insertText(result.text);
-        if ("error" in result) setAttachError(result.error ?? null);
-      }
-    };
-    save.receive = receive;
-    receive(save.pending);
-    if (save.error) { setAttachError(save.error); save.error = undefined; }
-    return () => { if (save.receive === receive) save.receive = undefined; };
-  }, [session, draftStore, insertText]);
+  // The paste store outlives this mount and keeps `receive`, so it must not be
+  // a closure of this render: V8 shares one scope between every closure made in
+  // a render, and one stored there kept this render's `insertText`, `moveRecall`
+  // and `onPutBack` (an App render) alive, with every transcript App held then.
+  // A committed callback keeps only its cell and always runs the latest body.
+  const receive = useCommittedCallback((pending: number, result?: PasteSaveResult) => {
+    setSavingPastes(pending);
+    if (!result) return;
+    if ("attachment" in result) setAttached((prev) => [...prev, result.attachment]);
+    else {
+      if ("text" in result) insertText(result.text);
+      if ("error" in result) setAttachError(result.error ?? null);
+    }
+  }, []);
+  useLayoutEffect(
+    () => bindPasteSave(pasteSaveFor(drafts.current, session), receive, setAttachError),
+    [session, draftStore, receive],
+  );
 
   /** Words that were queued and never sent, put back where they were typed.
    *

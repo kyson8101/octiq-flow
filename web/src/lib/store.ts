@@ -31,6 +31,9 @@ export type Conversation = {
   /** A short copy of the newest agent response for the global task list.
    * The full response remains in the transcript. */
   latestResponse?: string;
+  /** The host's version of `latestResponse` that this row last heard (see
+   *  `IndexEntry.latestResponseVersion`). Absent on an older host. */
+  latestResponseVersion?: number;
   /** A title the user chose explicitly. Unlike an inferred placeholder, it is
    *  never replaced from the transcript — even when it is literally
    *  `New chat`. */
@@ -363,6 +366,7 @@ export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
       held.projectId === c.projectId &&
       held.title === c.title &&
       held.latestResponse === c.latestResponse &&
+      (held.latestResponseVersion ?? 0) === (c.latestResponseVersion ?? 0) &&
       !!held.customTitle === !!c.customTitle &&
       held.sessionId === c.sessionId &&
       held.recordGeneration === c.recordGeneration &&

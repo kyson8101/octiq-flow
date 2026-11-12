@@ -38,8 +38,8 @@ const instrumentation = {
   name: "chat-window-measurement", enforce: "pre",
   transform(code, id) {
     if (baseline && id.endsWith("/src/lib/chatWindowCache.ts")) {
-      code = code.replace("RECENT_CHAT_WINDOWS = 6", "RECENT_CHAT_WINDOWS = 2")
-        .replace("RECENT_CHAT_BYTES = 48", "RECENT_CHAT_BYTES = 8")
+      code = code.replace("RECENT_CHAT_BYTES = 256", "RECENT_CHAT_BYTES = 8")
+        .replace("if (!state || !holds(id)) {", "if (!state || !holds(id) || keep.size >= 2) {")
         .replace("for (const id of shown)", "if (!shown.size) { this.recent.clear(); return new Set(); } for (const id of shown)");
     }
     if (id.endsWith("/src/App.tsx")) {
@@ -77,12 +77,14 @@ const instrumentation = {
     return code;
   },
 };
-const server = await createServer({ root: webRoot, server: { host: "127.0.0.1", port: 0, strictPort: false }, plugins: [instrumentation] });
+const server = await createServer({ root: webRoot, cacheDir: join(output, "vite-cache"), server: { host: "127.0.0.1", port: 0, strictPort: false }, plugins: [instrumentation] });
 let browser;
 try {
   await server.listen();
   browser = await chromium.launch({ headless: true, channel: process.env.OCTIQ_TEST_BROWSER || "chrome" });
   for (const width of process.env.CHAT_CACHE_DESKTOP_ONLY ? [1280] : [1280, 390]) {
+    // The previous width's injected host tail must not be in this width's record.
+    pages.c0.events = pages.c0.events.filter(event => event.seq !== 1153);
     const context = await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
     const sockets = [], calls = [], heldReplies = [];
     let hold = false;
@@ -125,11 +127,11 @@ try {
     });
     const page = await context.newPage(), errors = [];
     page.on("pageerror", e => { errors.push(e.stack); console.error(e.stack); });
-    page.setDefaultTimeout(30_000);
+    page.setDefaultTimeout(30_000); page.setDefaultNavigationTimeout(180_000);
     try {
       await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/#/p/fixture/c/c0`);
-      await page.locator(".msgs").getByText("Retained answer c0 31", { exact: true }).waitFor();
-      const open = async id => {
+      await page.locator(".msgs").getByText("Retained answer c0 31", { exact: true }).waitFor({ timeout: 180_000 });
+      const open = async (id, marker = `Retained answer ${id} 31`) => {
         await page.evaluate(id => {
           const record = {id, start: performance.now()}; window.__switches.push(record);
           const observer = new MutationObserver(() => {
@@ -140,7 +142,13 @@ try {
           observer.observe(document.getElementById('root'), {childList: true, subtree: true});
           window.__probeOpen(id);
         }, id);
-        await page.locator(".msgs").getByText(`Retained answer ${id} 31`, { exact: true }).waitFor();
+        try { await page.locator(".msgs").getByText(marker, { exact: true }).waitFor(); }
+        catch (error) {
+          await page.screenshot({ path: join(output, `open-failed-${width}-${id}.png`) });
+          console.error("open failed", id, JSON.stringify(await page.evaluate(() => ({ state: window.__probeState(), hash: location.hash,
+            text: document.querySelector('.msgs')?.textContent.slice(-300), waiting: !!document.querySelector('.hero.is-waiting') }))));
+          throw error;
+        }
       };
       for (let i = 1; i < 6; i++) await open(`c${i}`);
       const cold = await page.evaluate(() => ({ requests: window.__requests, parses: window.__parses,
@@ -235,14 +243,16 @@ try {
         await page.screenshot({path: join(output, `checkpoint-${width}.png`)});
         hold = false; while (heldReplies.length) heldReplies.shift()();
         await page.waitForTimeout(400);
-        await open("c0");
+        // The caught-up tail is c0's newest reply now; the turn's earlier text folds into its work line.
+        await open("c0", "Caught up from retained tail");
       }
       const tabs = [page];
       if (!baseline && width === 1280) {
         for (let tab = 0; tab < 3; tab++) {
           const extra = await context.newPage(); extra.on("pageerror", error => errors.push(error.stack));
           await extra.goto(`http://127.0.0.1:${server.httpServer.address().port}/#/p/fixture/c/c0`);
-          await extra.locator('.msgs').getByText("Retained answer c0 31", {exact: true}).waitFor();
+          // The host's page for c0 already ends with the caught-up reply (it folds the turn's earlier text).
+          await extra.locator('.msgs').getByText("Caught up from retained tail", {exact: true}).waitFor();
           for (let i = 1; i < 6; i++) {
             await extra.evaluate(id => window.__probeOpen(id), `c${i}`);
             await extra.locator('.msgs').getByText(`Retained answer c${i} 31`, {exact: true}).waitFor();

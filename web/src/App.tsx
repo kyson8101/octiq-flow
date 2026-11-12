@@ -33,7 +33,7 @@ import {
 // Event/subscription callbacks must not chain old App render scopes. Pure
 // render-time readers use isolated factories below, rather than this hook.
 import { useCommittedCallback as useCallback } from "./lib/useCommittedCallback";
-import { chatPreviewState, withLocalPrompts } from "./lib/chatRetention";
+import { chatPreviewState, hasLocalPrompt, windowBehind, withLocalPrompts } from "./lib/chatRetention";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp, type Frame } from "./lib/catchUp";
 import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
@@ -150,7 +150,7 @@ import { Connect } from "./components/Connect";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import { SessionSearch } from "./components/SessionSearch";
 import { importSession, isUnder, replaySession, type HistorySession } from "./lib/history";
-import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
+import { hostPreview, latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
 import { Sidebar, type Project } from "./components/Sidebar";
 import { recallNavigationOrientation, schedulingReading, useAgentLanes } from "./lib/agentLanes";
 import { leadThreadAgent, leadsOnlyMode, newConversationLead, type LeadHistoryEntry } from "./lib/leadThreads";
@@ -214,9 +214,9 @@ import {
 } from "./lib/handover";
 import { useHandovers } from "./lib/handoverStore";
 import { composerLanding, forgetIdentity, landIdentity, routeAfter, routeStands, type PageNow, type RouteTravel } from "./lib/identityTravel";
-import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
+import { watchReading } from "./lib/readingWatch";
+import { makePendingActionsView, PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
 import { pendingByRow, pendingByTask, pendingReading, type PendingAction, type SourcesRead } from "./lib/pendingActions";
-const NO_ACTIONS: readonly PendingAction[] = [];
 import { chatPlans, seenPlans } from "./lib/chatPlans";
 import { RunDetailOnScreen, useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
 import { orchestrationFeed } from "./lib/orchestrationFeed";
@@ -1199,6 +1199,15 @@ export default function App() {
       cancelled,
     ), []);
   const [earlierReads, setEarlierReads] = useState<Record<string, { loading: boolean; error?: string }>>({});
+  // Retained offscreen windows stay still, so a chat that went on without this
+  // tab's subscription has a window that is BEHIND the host. Its sidebar line
+  // and hover preview must come from the host's index / a fresh page, never
+  // from those older words (see `previewWindow`).
+  const [behind, setBehind] = useState<ReadonlySet<string>>(() => new Set());
+  const markBehind = useCallback((id: string, isBehind: boolean) => setBehind(before => {
+    if (before.has(id) === isBehind) return before;
+    const next = new Set(before); if (isBehind) next.add(id); else next.delete(id); return next;
+  }), []);
 
   // Desktop notifications, for the chats you are NOT looking at.
   //
@@ -1565,6 +1574,7 @@ export default function App() {
             const cached = byId.get(r.id);
             return {
               ...r,
+              ...hostPreview(cached, r),
               permission: r.access ?? cached?.permission,
               effort: r.effort ?? cached?.effort,
               cwd: r.cwd ?? cached?.cwd,
@@ -1903,6 +1913,9 @@ export default function App() {
         if (before.has(id) === activity.running) return before;
         const next = new Set(before); if (activity.running) next.add(id); else next.delete(id); return next;
       });
+      // A host sequence past this window's mark, for a chat no pane shows, means
+      // the retained words are older than the record.
+      if (windowBehind(activity.seq, catchUp.current.mark(keyFor(id)), screenChats.current.has(id), catchUp.current.holds(keyFor(id)))) markBehind(id, true);
       patch(id, state => withStreamActivity(state, activity, Date.now()));
     };
     const off = bridge.on<ChatStreamActivity>("chat-stream-activity", activity => { seen.add(activity.key); apply(activity); });
@@ -1911,7 +1924,7 @@ export default function App() {
       for (const row of list ?? []) if (!seen.has(row.key)) apply({ ...row, running: true, turnId: null, seq: null, lastActivityAt: 0, work: false });
     }).catch(() => {});
     return () => { current = false; off(); };
-  }, [patch, conn]);
+  }, [patch, conn, markBehind]);
 
   useEffect(
     () =>
@@ -2141,6 +2154,7 @@ export default function App() {
             projectId: c.projectId,
             title: c.title,
             latestResponse: c.latestResponse,
+            latestResponseVersion: c.latestResponseVersion,
             customTitle: c.customTitle,
             sessionId: c.sessionId ?? null,
             cwd: c.cwd ?? null,
@@ -2281,6 +2295,7 @@ export default function App() {
   useEffect(() => {
     const ids = [screenMain, screenBeside].filter((id): id is string => !!id);
     let active = true;
+    for (const id of ids) markBehind(id, false);
     void bridge.watchChats(ids.map(keyFor)).then(async () => {
       if (!active || conn !== "open") return;
       for (const id of ids) {
@@ -2292,9 +2307,9 @@ export default function App() {
       }
     }).catch(() => {});
     return () => { active = false; };
-  }, [screenMain, screenBeside, conn, catchUpChat, flushChats]);
+  }, [screenMain, screenBeside, conn, catchUpChat, flushChats, markBehind]);
 
-  // Keep six recent windows under one byte budget, alongside the visible
+  // Keep every opened window under one safety byte budget, alongside the visible
   // panes. Partial windows cannot be complete IndexedDB checkpoints: evicting
   // them on every switch forced a fresh paged replay and an empty transcript.
   // Retention does not widen the socket subscription: offscreen snapshots
@@ -2303,7 +2318,7 @@ export default function App() {
     const released = new Set<string>();
     let next = chatsRef.current;
     const retained = recentChatWindows.current.retain(next, screenChats.current,
-      id => catchUp.current.holds(keyFor(id)));
+      id => catchUp.current.holds(keyFor(id)), id => !!next[id] && hasLocalPrompt(next[id]));
     for (const [id, state] of Object.entries(next)) {
       if (screenChats.current.has(id)) continue;
       // An old selection's download must not replace the retained snapshot.
@@ -2872,11 +2887,16 @@ export default function App() {
           saveConversations(next);
           return next;
         });
+        // A turn that ended in a chat no pane shows is not read by this tab:
+        // the host keeps that chat's preview itself (latestResponseVersion) and
+        // announces it with chat-index-changed. This tab never fetches a page
+        // for a preview and never writes one it did not see on screen.
         if (screenChats.current.has(id) && catchUp.current.holds(keyFor(id))) saveIndexEntry({
           id: completed.id,
           projectId: completed.projectId,
           title: completed.title,
           latestResponse: completed.latestResponse,
+          latestResponseVersion: completed.latestResponseVersion,
           customTitle: completed.customTitle,
           sessionId: completed.sessionId ?? null,
           cwd: completed.cwd ?? null,
@@ -3201,18 +3221,10 @@ export default function App() {
   // Keep the worker told which chat is on screen, so it can stay quiet about
   // that one. It is killed and restarted freely and forgets — hence also on
   // focus and visibility, not only when the chat changes.
-  useEffect(() => {
-    const tell = () => push.setReading(document.hidden ? null : conversationId);
-    tell();
-    window.addEventListener("focus", tell);
-    window.addEventListener("blur", tell);
-    document.addEventListener("visibilitychange", tell);
-    return () => {
-      window.removeEventListener("focus", tell);
-      window.removeEventListener("blur", tell);
-      document.removeEventListener("visibilitychange", tell);
-    };
-  }, [conversationId]);
+  // Built by a module-level function: a listener made inline here sat on
+  // `window` holding the render it was made in, and so every transcript that
+  // render's `chats` held, until the chat changed.
+  useEffect(() => watchReading(conversationId, push.setReading), [conversationId]);
 
   // Go back to the chat you were last in, once the list it lives in arrives.
   //
@@ -3704,6 +3716,7 @@ export default function App() {
       projectId: held.projectId,
       title: held.title,
       latestResponse: held.latestResponse,
+      latestResponseVersion: held.latestResponseVersion,
       customTitle: held.customTitle,
       sessionId: held.sessionId ?? null,
       cwd: held.cwd ?? null,
@@ -3758,6 +3771,7 @@ export default function App() {
       projectId: renamed.projectId,
       title: renamed.title,
       latestResponse: renamed.latestResponse,
+      latestResponseVersion: renamed.latestResponseVersion,
       customTitle: true,
       sessionId: renamed.sessionId ?? null,
       cwd: renamed.cwd ?? null,
@@ -4119,6 +4133,7 @@ export default function App() {
           projectId: activity.projectId,
           title: activity.title,
           latestResponse: activity.latestResponse,
+          latestResponseVersion: activity.latestResponseVersion,
           customTitle: activity.customTitle,
           sessionId: activity.sessionId ?? null,
           cwd: activity.cwd ?? null,
@@ -5338,15 +5353,11 @@ export default function App() {
     return () => cancelAnimationFrame(frame);
   }, [cardFocus, showRunFor]);
   const pendingTasks = useMemo(() => pendingByTask(pendingList), [pendingList]);
-  const pendingView = useMemo<PendingActionsView>(() => {
-    const rows = pendingByRow(pendingList);
-    return {
-      forRow: (chatId) => rows.get(chatId) ?? NO_ACTIONS,
-      forTask: (taskId) => pendingTasks.get(taskId) ?? NO_ACTIONS,
-      held: pendingHeld,
-      reveal: revealPending,
-    };
-  }, [pendingList, pendingTasks, pendingHeld, revealPending]);
+  // Built by a module-level factory so no closure of the view keeps this render.
+  const pendingView = useMemo<PendingActionsView>(
+    () => makePendingActionsView(pendingByRow(pendingList), pendingTasks, pendingHeld, revealPending),
+    [pendingList, pendingTasks, pendingHeld, revealPending],
+  );
   // What a reopened task's line needs to offer its Stop (`ReopenedNote`):
   // the ledger, and the page's own command. The host announces the stop;
   // the read is asked for anyway, so the line does not wait on an event to
@@ -5600,7 +5611,7 @@ export default function App() {
         ledgerSnapshot={orchestrationState.snapshot}
         ledgerUnavailable={projectContextUnavailable}
         coordinatorChatKeys={coordinatorChatKeys}
-        getPreviewMessages={(id) => catchUp.current.holds(keyFor(id)) ? chats[id]?.messages : undefined}
+        getPreviewMessages={(id) => !behind.has(id) && catchUp.current.holds(keyFor(id)) ? chats[id]?.messages : undefined}
         loadPreview={loadPreview}
         currentConversation={conversationId}
         running={running}

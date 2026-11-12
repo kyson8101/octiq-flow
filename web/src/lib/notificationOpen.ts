@@ -14,6 +14,7 @@ export function fromIndex(entry: IndexEntry): Conversation {
     projectId: entry.projectId,
     title: entry.title,
     latestResponse: entry.latestResponse,
+    latestResponseVersion: entry.latestResponseVersion,
     customTitle: entry.customTitle,
     sessionId: entry.sessionId ?? undefined,
     cwd: entry.cwd ?? undefined,

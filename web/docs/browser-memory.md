@@ -11,7 +11,7 @@ A controlled real-browser regression alternates two callback dependency lifetime
 ## Changes
 
 - App event/subscription callbacks use an isolated committed cell. Old function handles no longer own old App scopes. Dependency changes still replace the handle and re-run subscribing effects. Pure render-time readers are constructed outside App so they see the current render without retaining its scope.
-- Only the main and beside transcripts stay loaded in RAM. Other durable chats become three text previews of at most 420 characters each, retaining status/session facts. Unacknowledged prompts and local-only/imported words are protected. Returning to a released chat replays the durable record; previews never become full checkpoints.
+- (Superseded 2026-11-12, see the end of this file: every opened chat now keeps its window under a 256 MiB safety budget.) Originally only the main and beside transcripts stayed loaded in RAM. Other durable chats become three text previews of at most 420 characters each, retaining status/session facts. Unacknowledged prompts and local-only/imported words are protected. Returning to a released chat replays the durable record; previews never become full checkpoints.
 - In the initial retention fix, the 12-entry `chatCache` limit applied to IndexedDB storage, not App's live state. The screen-scoped integration below replaces that count cap with a byte budget. The previous-checkpoint marker uses weak keys. Sidebar transcript copies are released with the loaded chat. Short snippets detach their string backing storage.
 - `ChatHistory` holds cursors and page provenance (ids/counts), with no raw transcript or message bodies. **Load earlier messages** reduces the incoming page and shares the already reduced window. See [the phone paging follow-up](load-earlier.md) for bounded work, scroll anchoring and validation.
 - Finished-run detail text is leased by mounted panels. Closing the last panel releases both the text cache and its injected snapshot fields; a closed panel's late response cannot repopulate the cache.
@@ -59,7 +59,7 @@ The client now opts into the server contract in `docs/browser-event-subscription
 - `chat_subscribe` is every socket's first invoke. Pane changes replace the set derived from `chatShown` and `besideShown`; catch-up waits for the latest acknowledgement. Reconnect reuses the current selection. Covered, narrow-layout and closed chats release their transcripts/cursors, retaining small status/clock facts and local unacknowledged input. Reopening reads the window again.
 - Unopened chats use global compact activity for host running/busy facts and the existing restored-park work signal. Activity sequences never advance transcript cursors, and activity timestamps never reorder sidebar rows. Cards, completion and jobs remain global. Background completion preserves the index preview and does not save a fabricated empty transcript/preview.
 - Whole-app readers share `orchestration_summary`. Structural changes replace one run's summary; compact execution/report events patch only summary-sized facts. Changes during a read schedule a follow-up. Full detail is leased separately by the visible run panel, its inline plan review and the strip's own run, then refetched on that run's change. Hidden mounted subtrees release their leases. Detail evidence uses current summary status/wait facts, through `runWaits`; it cannot resurrect a cleared gate.
-- IndexedDB checkpoints use a conservative UTF-16/object-size budget: 16 MiB total and 8 MiB per checkpoint. A small metadata store drives eviction without materialising all transcript rows. The old count-capped v1 cache is invalidated on upgrade without loading its large rows; durable server records are untouched. The optional cache remains separate from drafts and live local/imported input.
+- IndexedDB checkpoints use a conservative UTF-16/object-size budget: 16 MiB total and 8 MiB per checkpoint (raised to 128 MiB / 32 MiB on 2026-11-12). A small metadata store drives eviction without materialising all transcript rows. The old count-capped v1 cache is invalidated on upgrade without loading its large rows; durable server records are untouched. The optional cache remains separate from drafts and live local/imported input.
 - Recent records use `chat_page`. A long gap after a checkpoint resets to a recent page rather than downloading the entire missing `chat_since` tail. Earlier reads prepend reduced pages, targeting 8 MiB and at most 12 pages; on reaching the window limit, they drop whole pages from the newest end and offer **Return to latest messages**. A past window is never saved as a whole checkpoint. Live status/clock facts stay current while its historical messages remain still.
 - The server preserves an indivisible turn. One such turn can exceed the 256 KiB page target. The client keeps the incoming page and its adjacent visible page to preserve the scroll anchor even if those two pages exceed the window target. This is not a strict cap on oversized tool results, a full visible run's detail, or local-only/imported words.
 - Explicit `not available on this backend` replies keep the legacy subscription/brief-snapshot path. Network/profile errors keep the last reading and surface the error; they do not silently switch to an empty ledger or a full transcript download.
@@ -206,3 +206,27 @@ Raw evidence is under `/tmp/octiq-h1d-fix/`. These are disposable desktop Brave 
 ## Installation-sized follow-up (2026-11-08)
 
 [Historical runs, index deltas and reports](browser-memory-install.md) records the 20-minute and 18-switch measurements, compatibility guards, artifact hashes and validation limits for the next memory reduction.
+
+## Keep everything on a chat switch (2026-11-12)
+
+The person reported waiting, missing chat content and lost reading place on every
+switch. The six-window / 48 MiB cap made returning to any chat older than the
+sixth reload from the host (and reload could restore only two chats from a 16 MiB
+IndexedDB). Policy now, with the details in [`docs/chat-window-retention.md`](../../docs/chat-window-retention.md):
+
+- Every opened chat keeps its window; **256 MiB per tab** (the `valueBytes` estimate of
+  retained reducer values, lowered from 512 MiB after the independent review) is only a
+  safety budget, oldest first, never a window with an unechoed local prompt (the one
+  exception). **It does not bound process memory**: the review measured 22 MiB running
+  turns at the 512 MiB estimate at 336-359 MiB GC heap and 1.6-2.1 GiB renderer
+  footprint per tab (7.25-7.40 GiB across four tabs). The leak fixes
+  above (isolated callback cells, no retained App renders) are untouched, and
+  offscreen windows still receive no deltas (zero folds / renders in four tabs).
+- Reading state (disclosures, tabs) lives exactly as long as its window; scroll places
+  keep 500 chats.
+- Sidebar line and hover preview never use a window that is behind the host; the row takes the host's `latestResponse` by `latestResponseVersion`, and no tab fetches or writes a preview it did not see on screen.
+- A version-less host row never overwrites a held versioned preview; a new or equal version with no text clears it (`/clear`), and no later save carries the cleared text.
+- Closures kept past their render (window listener, pending-view context value, paste store) are built by module-level makers, so none keeps an old App render and its transcripts (`lib/oldRenderRetention.test.ts`, `scripts/test-scope-retention.mjs`).
+- IndexedDB checkpoints: 128 MiB / 32 MiB each; a full disk is freed in a separately committed eviction transaction (a quota error rolls back eviction made in the failing one), retried, then skipped without throwing.
+- Heap: 8 chats retained = 38.1 MiB at 1280px (was 33.4 MiB with two), so retention costs about
+  the estimated window size once, not more.
