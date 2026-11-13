@@ -2031,7 +2031,21 @@ nothing (`interrupt_worker_turn` answers `idle`), and the first prompt still
 goes first, then what queued behind it. A Task/Run Stop (`end_process`) ends the
 process; its output closing ends the wait and a session that was ended has no
 stdin, so the first prompt is never written. A prompt that cannot be written to a
-live process ends it, so the attempt fails as it always did. `codex exec` has the
+live process ends it, so the attempt fails as it always did. **Every effect of
+that thread is bound to the launch it was made for**: its failure cleanup is
+`end_process_of_launch`, which compares the session Arc under the session
+table's lock and does nothing when another launch of the same chat is under the
+key (a Stop and a relaunch inside its window), and its diagnostics and error
+status are skipped for a launch that was ended. Only the provider write is
+under the session lock: the delivery line is saved after it is let go, so Stop
+never waits on a slow save (`record_delivery`'s transcript append takes the
+global append lock; the generic `write_user_message_locked` caller still saves
+inside the session lock and is a separate follow-up). A thread that cannot be
+made (`thread::Builder::spawn` fails) ends that launch the same way
+(`give_up_first_turn`), with a `first-turn` diagnostics line, rather than
+leaving it busy and swallowing interrupts. A browser the person configured
+that is left out for an env conflict writes one `browser-skipped` diagnostics
+line with the variable NAMES, never a value. `codex exec` has the
 same race and no clean wait (its stream has no MCP startup state and the prompt
 is a launch argument), so it is not gated. Pi's one-shot/no-MCP path and
 Antigravity's plugin settings remain unchanged.

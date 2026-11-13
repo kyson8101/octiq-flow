@@ -13,6 +13,10 @@
 //   B. chat_stop during the wait returns at once and the first prompt is never
 //      written.
 //   C. An ordinary chat and a worker with no browser definition have no gate.
+//   E. (review round 2 of 53ab881b) A first write that fails ends ITS launch,
+//      and the old launch's thread never touches a newer launch of the same
+//      chat: Stop, relaunch, and the old server's late `ready` changes nothing.
+//   F. A browser left out for an env conflict is logged by variable NAME only.
 //   D. No env VALUE of the browser definition is on any command line, and the
 //      value reaches the process environment; the server is named
 //      octiq_playwright; `~/alt-config` is resolved like the launch does.
@@ -67,6 +71,16 @@ function stub() {
     if (m.method === 'thread/start' || m.method === 'thread/resume') {
       const id = 'thread-' + process.pid;
       out({ id: m.id, result: { thread: { id } } });
+      // A server that stops reading its input but stays alive: the host's
+      // first write to it fails with a broken pipe.
+      if (process.env.PROBE_CLOSE_STDIN) {
+        setInterval(() => {}, 1000);
+        process.stdin.pause();
+        process.stdin.destroy();
+        try {
+          fs.closeSync(0); // really let go of the pipe's read end
+        } catch {}
+      }
       if (readyMs >= 0)
         setTimeout(
           () =>
@@ -231,6 +245,53 @@ try {
   assert(!nodef.argv.some((a) => String(a).includes('octiq_playwright')), 'no definition, no browser');
   await wait('no-definition first turn', () => starts(nodef.pid).length === 1, 3000);
   await invoke('chat_stop', { key: 'chat:nodef' });
+  fs.renameSync(path.join(home, '.claude.json.saved'), path.join(home, '.claude.json'));
+
+  // ---- E. a failed first write ends its own launch; a stale thread never
+  // touches a newer launch of the same chat
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  await worker('broken', 1200, { env: { OCTIQ_ORCHESTRATION_ATTEMPT: 'fixture', PROBE_READY_MS: '1200', PROBE_CLOSE_STDIN: '1' } });
+  const broken = logged().filter((c) => c.argv).at(-1).pid;
+  await wait('the launch whose first write failed is ended', () => !alive(broken), 8000);
+  assert.equal(starts(broken).length, 0, 'the broken launch never took a turn');
+
+  await worker('relaunch', 3000, { env: { OCTIQ_ORCHESTRATION_ATTEMPT: 'fixture', PROBE_READY_MS: '3000', PROBE_CLOSE_STDIN: '1' } });
+  const oldPid = logged().filter((c) => c.argv).at(-1).pid;
+  await sleep(300);
+  await invoke('chat_stop', { key: 'chat:relaunch' });
+  await worker('relaunch', -1);
+  const newPid = logged().filter((c) => c.argv).at(-1).pid;
+  assert.notEqual(newPid, oldPid);
+  await sleep(4000); // past the moment the OLD server would have said ready
+  assert(alive(newPid), 'the newer launch of the same chat is still running');
+  assert(!alive(oldPid), 'the stopped launch is gone');
+  results.relaunchSurvived = true;
+  await invoke('chat_stop', { key: 'chat:relaunch' });
+
+  // ---- F. an env conflict leaves the browser out, and says so by NAME only
+  const conflicting = { mcpServers: { playwright: { command: 'fake-browser', env: { PROBE_CONFLICT: 'definition-value-zzz' } } } };
+  fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify(conflicting));
+  await worker('conflict', -1, {
+    env: { OCTIQ_ORCHESTRATION_ATTEMPT: 'fixture', PROBE_READY_MS: '-1', PROBE_CONFLICT: 'existing-value-yyy' },
+  });
+  const conflict = logged().filter((c) => c.argv).at(-1);
+  assert(!conflict.argv.some((a) => String(a).includes('octiq_playwright')), 'a conflicting env adds no browser');
+  const diagnostics = fs.readFileSync(path.join(home, '.octiqflow', 'logs', 'agent-diagnostics.jsonl'), 'utf8');
+  const skipped = diagnostics
+    .split('\n')
+    .filter((l) => l.includes('browser-skipped') && l.includes('chat:conflict'));
+  assert.equal(skipped.length, 1, 'one diagnostics line for the skipped browser');
+  assert(skipped[0].includes('PROBE_CONFLICT'), 'it names the variable');
+  assert(!skipped[0].includes('definition-value-zzz') && !skipped[0].includes('existing-value-yyy'), 'and never a value');
+  await invoke('chat_stop', { key: 'chat:conflict' });
+  fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify(definition));
 
   // ---- D. a leading ~ in CLAUDE_CONFIG_DIR is resolved like the launch does
   await worker('tilde', -1, { env: { OCTIQ_ORCHESTRATION_ATTEMPT: 'fixture', PROBE_READY_MS: '-1', CLAUDE_CONFIG_DIR: '~/alt-config' } });
@@ -244,6 +305,7 @@ try {
   console.log(JSON.stringify({ ok: true, ...results }, null, 2));
 } catch (error) {
   console.error('FAILED:', error.message);
+  console.error(JSON.stringify(logged().slice(-12).map((c) => [c.pid, c.method ?? 'argv', c.text ?? ''])));
   console.error(serverLog.split('\n').slice(-25).join('\n'));
   process.exitCode = 1;
 } finally {

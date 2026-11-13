@@ -79,7 +79,14 @@ orchestration operations, so workers do not need another copy of those servers.
   says no turn is in flight, so an interrupt sets no `CutOff` and fails nothing,
   and the first prompt still goes before anything queued. A Task/Run Stop ends
   the process and the first prompt is never written. Fresh, resumed and
-  relaunched workers all start through the same function.
+  relaunched workers all start through the same function. The thread acts on
+  its own launch only: a failed first write ends the process through
+  `end_process_of_launch` (session Arc compared under the table lock), so a
+  Stop followed by a relaunch of the same chat keeps the new process, and the
+  delivery line is saved after the session lock is let go (a save blocked on a
+  FIFO kept Stop waiting 1.8 s before). If the thread cannot be created the
+  launch is ended with a `first-turn` diagnostics line. An env-conflicted
+  browser logs `browser-skipped` with variable names only.
 - **`codex exec` has the same race and no clean wait.** Measured (codex-cli
   0.164.0, `playwright` started through `sh -c "sleep 15; exec …"`): the turn
   finished in 13 s, before the server was ready, with no `browser_*` call.

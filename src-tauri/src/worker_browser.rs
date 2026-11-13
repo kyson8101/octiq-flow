@@ -189,33 +189,97 @@ pub fn codex_server_name(taken: &[String]) -> String {
 /// to for the process about to be spawned (the project's environment, then
 /// the server's own): a value that would CHANGE one already there is not
 /// carried, because setting it would change Codex itself, not just the server.
+#[cfg(test)]
 pub fn for_codex_launch(
     cwd: &str,
     env: Option<&BTreeMap<String, String>>,
     taken: &[String],
     current: &dyn Fn(&str) -> Option<String>,
 ) -> Option<CodexBrowser> {
+    for_codex_launch_noted(cwd, env, taken, current).0
+}
+
+/// [`for_codex_launch`], and when a browser the person configured is left out
+/// for its environment, a sentence saying so for the diagnostics log: the
+/// variable NAMES and the reason, never a value.
+pub fn for_codex_launch_noted(
+    cwd: &str,
+    env: Option<&BTreeMap<String, String>>,
+    taken: &[String],
+    current: &dyn Fn(&str) -> Option<String>,
+) -> (Option<CodexBrowser>, Option<String>) {
     let servers = person_servers(cwd, env);
-    codex_browser(servers.get(PLAYWRIGHT)?, taken, current)
+    let Some(definition) = servers.get(PLAYWRIGHT) else {
+        return (None, None);
+    };
+    match codex_browser_checked(definition, taken, current) {
+        Ok(browser) => (Some(browser), None),
+        Err(skip) => (None, skip.note()),
+    }
+}
+
+/// Why a configured browser is not given to a Codex worker.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Skip {
+    /// Not a valid stdio definition: nothing to say, nothing was asked for.
+    NotStdio,
+    /// These variables are already set to something else for the process
+    /// about to be spawned, and setting them would change Codex itself.
+    EnvConflict(Vec<String>),
+    /// An entry in `env` that cannot be an environment variable at all.
+    BadEnv,
+}
+
+impl Skip {
+    fn note(&self) -> Option<String> {
+        match self {
+            Skip::NotStdio => None,
+            Skip::EnvConflict(names) => Some(format!(
+                "the person's playwright browser was not added to this worker: its env sets {} \
+                 to a value different from the one this launch already has, and that would \
+                 change Codex itself",
+                names.join(", ")
+            )),
+            Skip::BadEnv => Some(
+                "the person's playwright browser was not added to this worker: its env holds \
+                 an entry that cannot be an environment variable"
+                    .to_owned(),
+            ),
+        }
+    }
 }
 
 /// The pure half of `for_codex_launch`.
+#[cfg(test)]
 pub fn codex_browser(
     definition: &Value,
     taken: &[String],
     current: &dyn Fn(&str) -> Option<String>,
 ) -> Option<CodexBrowser> {
+    codex_browser_checked(definition, taken, current).ok()
+}
+
+/// [`codex_browser`], saying why when there is none.
+pub fn codex_browser_checked(
+    definition: &Value,
+    taken: &[String],
+    current: &dyn Fn(&str) -> Option<String>,
+) -> Result<CodexBrowser, Skip> {
     use crate::agent_provider::toml_string;
-    let stdio = stdio(definition)?;
+    let stdio = stdio(definition).ok_or(Skip::NotStdio)?;
     let mut env = Vec::new();
+    let mut conflicts = Vec::new();
     for (name, value) in &stdio.env {
         if name.is_empty() || name.contains(['=', '\0']) || value.contains('\0') {
-            return None;
+            return Err(Skip::BadEnv);
         }
         if current(name).is_some_and(|there| there != *value) {
-            return None;
+            conflicts.push((*name).to_owned());
         }
         env.push(((*name).to_owned(), (*value).to_owned()));
+    }
+    if !conflicts.is_empty() {
+        return Err(Skip::EnvConflict(conflicts));
     }
     let mut entry = format!("{{command={}", toml_string(stdio.command));
     if let Some(args) = &stdio.args {
@@ -227,7 +291,7 @@ pub fn codex_browser(
         entry.push_str(&format!(",env_vars=[{}]", names.join(",")));
     }
     entry.push('}');
-    Some(CodexBrowser {
+    Ok(CodexBrowser {
         name: codex_server_name(taken),
         entry,
         env,
@@ -528,6 +592,30 @@ mod tests {
         assert!(
             codex_browser(&json!({"command": "pw", "env": {"": "x"}}), &[], &none_set).is_none()
         );
+    }
+
+    #[test]
+    fn a_skipped_browser_says_which_variables_and_never_their_values() {
+        let def = json!({"command": "pw", "env": {"PATH": "/secret-evil", "TOKEN": "t0k"}});
+        let there = |name: &str| (name == "PATH").then(|| "/usr/bin".to_owned());
+        let skip = codex_browser_checked(&def, &[], &there).unwrap_err();
+        assert_eq!(skip, Skip::EnvConflict(vec!["PATH".to_owned()]));
+        let note = skip.note().expect("a note");
+        assert!(note.contains("PATH"), "{note}");
+        assert!(
+            !note.contains("TOKEN"),
+            "only the conflicting names: {note}"
+        );
+        for value in ["/secret-evil", "/usr/bin", "t0k"] {
+            assert!(!note.contains(value), "no value in the log: {note}");
+        }
+        // Not a stdio definition, or no definition: nothing was asked for.
+        assert_eq!(Skip::NotStdio.note(), None);
+        assert!(Skip::BadEnv.note().is_some());
+        let bad = json!({"command": "pw", "env": {"A=B": "hidden"}});
+        let skip = codex_browser_checked(&bad, &[], &none_set).unwrap_err();
+        assert_eq!(skip, Skip::BadEnv);
+        assert!(!skip.note().unwrap().contains("hidden"));
     }
 
     #[test]
