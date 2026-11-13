@@ -9,6 +9,13 @@
 //! `failed`, `cancelled`), so the host holds the first turn until that
 //! server has settled.
 //!
+//! The wait runs on a thread of its own, after `start_chat` has returned
+//! (`agent_chat::hand_over_first_turn`): the caller holds the orchestration
+//! ledger's workspace lock until then, and a Task or Run Stop takes the same
+//! lock. While it waits, the session reads busy (a message sent meanwhile
+//! queues behind the first prompt) and carries `first_turn_held`, which tells
+//! an interrupt there is no turn in flight to cut short.
+//!
 //! The wait only ever delays: `ready` goes on at once, and a failure, a
 //! closed process or the bound running out also goes on, with one diagnostics
 //! line saying why. It never refuses a launch and never hangs a task.
@@ -131,22 +138,45 @@ impl McpReady {
     }
 }
 
-/// Hold the first turn for the gate. Returns the diagnostics line when the
-/// turn goes on without a settled-ready server; `None` when it was ready.
-pub(crate) fn hold_first_turn(ready: &McpReady, bound: Duration) -> Option<String> {
+/// What the wait decided.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Hold {
+    /// Whether the first turn should still be handed over. False only when
+    /// the process closed: there is nobody to give it to.
+    pub(crate) goes_on: bool,
+    /// The diagnostics line when the turn goes on without a settled-ready
+    /// server (or does not go on); `None` when it was ready.
+    pub(crate) note: Option<String>,
+}
+
+/// Wait for the gate. Meant for a thread of its own: it holds no lock of the
+/// host's and ends at once when the process closes (a Stop kills it).
+pub(crate) fn hold_first_turn(ready: &McpReady, bound: Duration) -> Hold {
     let server = &ready.server;
     match ready.wait(bound) {
-        Outcome::Ready => None,
-        Outcome::Failed(why) => Some(format!(
-            "MCP server `{server}` failed to start ({why}); the first turn goes ahead without it"
-        )),
-        Outcome::Closed => Some(format!(
-            "Codex app-server closed before MCP server `{server}` was ready"
-        )),
-        Outcome::TimedOut => Some(format!(
-            "MCP server `{server}` was not ready after {}s; the first turn goes ahead without it",
-            bound.as_secs()
-        )),
+        Outcome::Ready => Hold {
+            goes_on: true,
+            note: None,
+        },
+        Outcome::Failed(why) => Hold {
+            goes_on: true,
+            note: Some(format!(
+                "MCP server `{server}` failed to start ({why}); the first turn goes ahead without it"
+            )),
+        },
+        Outcome::Closed => Hold {
+            goes_on: false,
+            note: Some(format!(
+                "Codex app-server closed before MCP server `{server}` was ready"
+            )),
+        },
+        Outcome::TimedOut => Hold {
+            goes_on: true,
+            note: Some(format!(
+                "MCP server `{server}` was not ready after {}s; the first turn goes ahead without it",
+                bound.as_secs()
+            )),
+        },
     }
 }
 
@@ -196,7 +226,7 @@ mod tests {
             ready.clone(),
         );
         let started = Instant::now();
-        assert_eq!(hold_first_turn(&ready, Duration::from_secs(10)), None);
+        assert_eq!(hold_first_turn(&ready, Duration::from_secs(10)).note, None);
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
@@ -205,7 +235,7 @@ mod tests {
         let ready = McpReady::new("playwright");
         ready.observe(&status("playwright", "ready", None));
         let started = Instant::now();
-        assert_eq!(hold_first_turn(&ready, Duration::from_secs(10)), None);
+        assert_eq!(hold_first_turn(&ready, Duration::from_secs(10)).note, None);
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 
@@ -216,7 +246,9 @@ mod tests {
         ready.observe(&status("playwright", "starting", None));
         ready.observe(&status("octiq", "ready", None));
         let started = Instant::now();
-        let note = hold_first_turn(&ready, Duration::from_millis(150)).expect("a timeout note");
+        let note = hold_first_turn(&ready, Duration::from_millis(150))
+            .note
+            .expect("a timeout note");
         assert!(started.elapsed() >= Duration::from_millis(150));
         assert!(note.contains("not ready after"), "{note}");
         assert!(note.contains("playwright"), "{note}");
@@ -232,7 +264,9 @@ mod tests {
             ],
             ready.clone(),
         );
-        let note = hold_first_turn(&ready, Duration::from_secs(10)).expect("a failure note");
+        let note = hold_first_turn(&ready, Duration::from_secs(10))
+            .note
+            .expect("a failure note");
         assert!(note.contains("failed to start"), "{note}");
         assert!(note.contains("spawn npx ENOENT"), "{note}");
     }
@@ -253,7 +287,9 @@ mod tests {
         // The stub writes nothing and hangs up.
         let _reader = stub_app_server(Vec::new(), ready.clone());
         let started = Instant::now();
-        let note = hold_first_turn(&ready, Duration::from_secs(10)).expect("a closed note");
+        let held = hold_first_turn(&ready, Duration::from_secs(10));
+        assert!(!held.goes_on, "nobody is left to give the turn to");
+        let note = held.note.expect("a closed note");
         assert!(note.contains("closed"), "{note}");
         assert!(started.elapsed() < Duration::from_secs(5));
     }

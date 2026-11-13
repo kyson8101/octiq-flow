@@ -32,13 +32,22 @@ orchestration operations, so workers do not need another copy of those servers.
 - **The one browser a worker keeps is the person's `playwright`**, from the same
   definition for both providers (`worker_browser`; `.claude.json`, user scope
   then project scope). Claude reads it as a second `--mcp-config` (above). Codex
-  gets it as one whole inline entry, `-c 'mcp_servers.playwright={command=…,
-  args=[…],env={…}}'`: a partial override of an existing server does not merge,
-  and a Codex server already named `playwright` is replaced, not also turned
-  off. Only a stdio definition is taken (no `type`, or `"stdio"`; string
-  `command`, `args`, `env` values), and its `env`, unlike Claude's file, is then
-  on the launch line. Nothing is added, and the launch is never refused, when
-  the person has no definition. Codex's `cua_repl` / `unified-computer-use` /
+  gets it as one inline entry under the host's own name, `-c
+  'mcp_servers.octiq_playwright={command=…,args=[…],env_vars=[NAMES]}'`, and the
+  person's own `playwright` is turned off like every other inherited server:
+  a whole-table `-c` does **not** replace a server of the same name (codex-cli
+  0.164 deep-merges: the person's old `args`, `env`, `env_vars` and `enabled =
+  false` survive, and an old `url` plus the new `command` fails the bootstrap),
+  so the name is never shared. Only a valid stdio definition is taken, for both
+  providers, after the scope precedence picked it (no `type`, or `"stdio"`;
+  string `command`, `args`, `env` values; `http`, `sse` and `{}` add nothing).
+  **No env value is on a command line**: Codex's table lists `env_vars` names, the
+  values are set in the spawned process's environment and Codex forwards listed
+  names to the server (checked on 0.164 with a stub server: a listed name
+  arrived, an unlisted one did not); Claude's file is 0600. `CLAUDE_CONFIG_DIR`
+  is resolved as the launch resolves it (a leading `~` expands). Nothing is
+  added, and the launch is never refused, when the person has no usable
+  definition.   the person has no definition. Codex's `cua_repl` / `unified-computer-use` /
   `browser@openai-bundled` / `node_repl` are not given to workers:
   `cua_repl`'s browser surface needs the Codex desktop app's browser access
   host (`The browser access host is unavailable` from OctiqFlow, also in an
@@ -62,8 +71,14 @@ orchestration operations, so workers do not need another copy of those servers.
   Codex's own default `startup_timeout_sec` for an MCP server: past it Codex has
   already marked the server failed, so waiting longer cannot help. Any
   non-ready end starts the turn anyway and writes one `mcp-startup` line to
-  `agent-diagnostics.jsonl`; nothing is refused and the wait holds no lock (the
-  chat reads busy, so a message sent meanwhile queues). Fresh, resumed and
+  `agent-diagnostics.jsonl`; nothing is refused. **The wait is on its own
+  thread after `start_chat` returned** (`hand_over_first_turn`), because the
+  caller holds the orchestration `workspace_ops` lock that Task/Run Stop also
+  take (measured before: a Run Stop during a 5 s wait took 5073 ms). It holds no
+  lock; the chat reads busy (a message meanwhile queues) and `first_turn_held`
+  says no turn is in flight, so an interrupt sets no `CutOff` and fails nothing,
+  and the first prompt still goes before anything queued. A Task/Run Stop ends
+  the process and the first prompt is never written. Fresh, resumed and
   relaunched workers all start through the same function.
 - **`codex exec` has the same race and no clean wait.** Measured (codex-cli
   0.164.0, `playwright` started through `sh -c "sleep 15; exec …"`): the turn

@@ -473,6 +473,12 @@ struct ChatSession {
     /// one has looked at this process (`LeavingMark::working`). Set under
     /// this session's lock, which every prompt is written under.
     leaving: Option<Arc<Leaving>>,
+    /// The first prompt of this process is waiting for the worker's browser
+    /// server (`hand_over_first_turn`). The session reads `busy` (so a message
+    /// queues and the sweeper leaves it alone), but NO turn is in flight: an
+    /// interrupt has nothing to cut short, so it sets no `CutOff` and fails
+    /// nothing. Cleared under this lock by the write, or by an ended session.
+    first_turn_held: bool,
 }
 
 /// The removal of a registered agent, as its own conversations see it.
@@ -4683,10 +4689,24 @@ fn start_session_with_recovery(
     let (claude_worker_mcp, codex_worker_playwright) = if orchestration_worker && !front_desk {
         match agent {
             ChatAgent::Claude => (crate::worker_browser::for_launch(&cwd, env.as_ref()), None),
-            ChatAgent::Codex => (
-                None,
-                crate::worker_browser::for_codex_launch(&cwd, env.as_ref()),
-            ),
+            ChatAgent::Codex => {
+                let taken: Vec<String> = codex_user_mcp.iter().map(|s| s.name.clone()).collect();
+                let project_env = env
+                    .as_ref()
+                    .map(crate::workspaces::resolved_env)
+                    .unwrap_or_default();
+                let current = |name: &str| {
+                    project_env
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, v)| v.clone())
+                        .or_else(|| std::env::var(name).ok())
+                };
+                (
+                    None,
+                    crate::worker_browser::for_codex_launch(&cwd, env.as_ref(), &taken, &current),
+                )
+            }
             _ => (None, None),
         }
     } else {
@@ -4910,7 +4930,7 @@ fn start_session_with_recovery(
         orchestration_worker,
         front_desk,
         codex_user_mcp: &codex_user_mcp,
-        codex_worker_playwright: codex_worker_playwright.as_deref(),
+        codex_worker_playwright: codex_worker_playwright.as_ref(),
         claude_worker_mcp: claude_worker_mcp.as_deref(),
         preferences: preferences.as_deref(),
     };
@@ -5022,6 +5042,14 @@ fn start_session_with_recovery(
         // `CLAUDE_CONFIG_DIR`). Applied first so every var this backend sets
         // below always wins if a project happened to name the same key.
         .envs(project_env)
+        // The browser server's own variables (a Codex worker's `playwright`
+        // definition): the table on the command line names them and Codex
+        // forwards them by name, so no value is ever on a command line.
+        .envs(
+            codex_worker_playwright
+                .iter()
+                .flat_map(|browser| browser.env.iter().cloned()),
+        )
         .envs(job_env)
         // The selected provider declares whether it owns a persistent stdin
         // protocol. A command-line provider must receive EOF immediately so a
@@ -5157,8 +5185,18 @@ fn start_session_with_recovery(
     // A worker that was given the person's `playwright` holds its first turn
     // until that server settles (`codex_mcp_ready`): Codex fixes a turn's tool
     // list when the turn starts, and a cold `npx` is not ready by then.
-    let mcp_ready = (transport.is_app_server() && codex_worker_playwright.is_some())
-        .then(|| crate::codex_mcp_ready::McpReady::new(crate::worker_browser::PLAYWRIGHT));
+    let mcp_ready = (transport.is_app_server() && codex_worker_playwright.is_some()).then(|| {
+        crate::codex_mcp_ready::McpReady::new(
+            codex_worker_playwright
+                .as_ref()
+                .map_or(crate::worker_browser::CODEX_SERVER, |b| b.name.as_str()),
+        )
+    });
+    // Whether this launch hands a first prompt over on stdin after startup
+    // (command-line providers already have it in their launch command).
+    let writes_first_prompt = transport.accepts_stdin()
+        && has_prompt
+        && (!wire_prompt.trim().is_empty() || !images.is_empty());
 
     let session = Arc::new(Mutex::new(ChatSession {
         launch_id: launch_id.clone(),
@@ -5180,6 +5218,7 @@ fn start_session_with_recovery(
         auto_plan_turn: AutoPlanTurn::default(),
         auto_plan_attribution: AutoPlanAttribution::Ready,
         leaving: None,
+        first_turn_held: mcp_ready.is_some() && writes_first_prompt,
     }));
     sessions.insert(session_key.clone(), session.clone());
     if let Some(request) = native_recovery.as_mut() {
@@ -6014,31 +6053,130 @@ fn start_session_with_recovery(
 
     // Persistent-stream providers receive the first user turn after startup;
     // command-line providers received it in `build_command` already.
-    if transport.accepts_stdin()
-        && has_prompt
-        && (!wire_prompt.trim().is_empty() || !images.is_empty())
-    {
-        // Fresh, resumed and relaunched workers all come through here. No lock
-        // is held, so a Stop meanwhile still acts (the write then reports it).
-        if let Some(ready) = &mcp_ready {
-            if let Some(note) =
-                crate::codex_mcp_ready::hold_first_turn(ready, crate::codex_mcp_ready::BOUND)
-            {
-                crate::diagnostics::record(agent, &key, "mcp-startup", &note);
+    if writes_first_prompt {
+        match mcp_ready {
+            // A worker given the person's `playwright` holds its first turn
+            // for that server (`codex_mcp_ready`), and the wait is NOT here:
+            // this function returns to `start_worker_for`, which holds the
+            // orchestration workspace lock until it does, and a Task or Run
+            // Stop takes that lock. The session already reads busy (a message
+            // meanwhile queues behind the first prompt) and says so with
+            // `first_turn_held`.
+            Some(ready) => {
+                let manager = manager.clone();
+                let session = session.clone();
+                let (wire_prompt, images) = (wire_prompt.to_string(), images.clone());
+                let (key, session_key) = (key.clone(), session_key.clone());
+                let user_turn_id = user_turn_id.clone();
+                thread::spawn(move || {
+                    hand_over_first_turn(
+                        &manager,
+                        &session,
+                        &ready,
+                        agent,
+                        FirstTurn {
+                            text: &wire_prompt,
+                            images: &images,
+                            key: &key,
+                            session_key: &session_key,
+                            turn_id: user_turn_id.as_deref(),
+                        },
+                    );
+                });
             }
+            None => write_user_message(
+                &manager,
+                &session,
+                &wire_prompt,
+                &images,
+                &key,
+                &session_key,
+                user_turn_id.as_deref(),
+            )?,
         }
-        write_user_message(
-            &manager,
-            &session,
-            &wire_prompt,
-            &images,
-            &key,
-            &session_key,
-            user_turn_id.as_deref(),
-        )?;
     }
 
     Ok(())
+}
+
+/// What a held first turn is, and who it is for.
+struct FirstTurn<'a> {
+    text: &'a str,
+    images: &'a [String],
+    key: &'a str,
+    session_key: &'a str,
+    turn_id: Option<&'a str>,
+}
+
+/// Wait for the worker's browser server, then give the process its first
+/// prompt, by the same door every other prompt goes through.
+///
+/// Runs on its own thread and holds no lock of the host's while it waits: not
+/// the orchestration workspace lock, not the ledger, not a chat's. So:
+///
+/// * **Stop wins at once.** Ending the process closes its output, which ends
+///   the wait (`McpReady::close`), and a session that was ended has no stdin
+///   left, so the first prompt is never written.
+/// * **An interrupt has nothing to cut short** (`first_turn_held`): it sets no
+///   `CutOff`, fails nothing, and the first prompt still goes, then whatever
+///   queued behind it, in that order.
+/// * A prompt that cannot be written to a process that is still live ends
+///   that process, so the attempt fails the way it always did when its first
+///   prompt could not be given, instead of waiting for a turn that is never
+///   started.
+fn hand_over_first_turn(
+    manager: &Arc<ChatManager>,
+    session: &Arc<Mutex<ChatSession>>,
+    ready: &crate::codex_mcp_ready::McpReady,
+    agent: ChatAgent,
+    turn: FirstTurn<'_>,
+) {
+    let held = crate::codex_mcp_ready::hold_first_turn(ready, crate::codex_mcp_ready::BOUND);
+    if let Some(note) = &held.note {
+        crate::diagnostics::record(agent, turn.key, "mcp-startup", note);
+    }
+    // Taken and written under one lock: a Stop either ended this session
+    // before the look (no stdin) or comes after the write.
+    let result = {
+        let Ok(mut guard) = session.lock() else {
+            return;
+        };
+        if !held.goes_on || guard.cut_off == CutOff::Ended || guard.stdin.is_none() {
+            guard.first_turn_held = false;
+            return;
+        }
+        guard.first_turn_held = false;
+        let result = write_user_message_locked(
+            manager,
+            &mut guard,
+            turn.session_key,
+            turn.text,
+            turn.images,
+            turn.turn_id,
+        );
+        record_delivery(
+            turn.key,
+            turn.turn_id,
+            if result.is_ok() {
+                "dispatched"
+            } else {
+                "failed"
+            },
+        );
+        result
+    };
+    if let Err(why) = result {
+        emit_status(
+            agent,
+            ChatStatus {
+                key: turn.key.to_string(),
+                kind: "error".into(),
+                text: format!("could not give the worker its first prompt: {why}"),
+                code: None,
+            },
+        );
+        let _ = end_process(manager, turn.session_key);
+    }
 }
 
 /// Store I/O never holds Stop's session lock. /clear waits on a separate
@@ -7627,6 +7765,14 @@ fn interrupt_session_with(
     // until the reader has seen the cut-off turn's full stop and cleared
     // this. A second Stop inside that wait is the same unwind: it asks the
     // agent again, and neither ends the wait nor starts another.
+    // The first prompt is still waiting for the worker's browser server: no
+    // turn is in flight, so there is nothing to stop and nothing to unwind
+    // (`first_turn_held`). The prompt goes when the server settles, then
+    // whatever queued behind it. A Task or Run Stop ends the process instead.
+    if guard.first_turn_held {
+        drop(guard);
+        return Ok(manager.stopped(session_key));
+    }
     let was_busy = guard.busy;
     let owed = guard.cut_off != CutOff::No;
     interrupt_persistent_turn(manager, &session_key, &mut guard)?;
@@ -7707,7 +7853,9 @@ pub(crate) fn interrupt_worker_turn(
         match sessions.get(key) {
             Some(session) => {
                 let session = session.lock().map_err(|e| e.to_string())?;
-                session.busy.then_some(session.agent)
+                // A held first prompt is no turn in flight: the message goes
+                // in between turns, behind it.
+                (session.busy && !session.first_turn_held).then_some(session.agent)
             }
             None => None,
         }
@@ -8880,6 +9028,7 @@ impl ChatManager {
                 auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
+                first_turn_held: false,
             })),
         );
         secret
@@ -8966,6 +9115,7 @@ impl ChatManager {
                 auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
+                first_turn_held: false,
             })),
         );
         self.test_child(key)
@@ -9004,6 +9154,7 @@ impl ChatManager {
                 auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
+                first_turn_held: false,
             })),
         );
         (self.test_child(key), heard)
@@ -12089,6 +12240,7 @@ mod tests {
                 auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
+                first_turn_held: false,
             }))
         };
         // No live process: nothing can be in a turn.
@@ -12157,6 +12309,7 @@ mod tests {
                 auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
+                first_turn_held: false,
             })),
         );
 
@@ -12194,6 +12347,7 @@ mod tests {
                 auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
+                first_turn_held: false,
             })),
         );
 
@@ -12461,6 +12615,7 @@ mod tests {
             auto_plan_turn: AutoPlanTurn::default(),
             auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
+            first_turn_held: false,
         }))
     }
 
@@ -12491,6 +12646,7 @@ mod tests {
                 auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
+                first_turn_held: false,
             })),
             stdout,
         )
@@ -13097,6 +13253,152 @@ mod tests {
         crate::transcript::forget(&key);
     }
 
+    /// A Claude stand-in session whose first prompt is held for the worker's
+    /// browser server, and the gate that holds it.
+    fn held_first_turn() -> (
+        Arc<ChatManager>,
+        String,
+        Arc<Mutex<ChatSession>>,
+        std::io::BufReader<std::process::ChildStdout>,
+        Arc<crate::codex_mcp_ready::McpReady>,
+    ) {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("held-first-turn-{}", uuid::Uuid::new_v4().simple());
+        let (session, heard) = capturing_claude_session();
+        session.lock().unwrap().first_turn_held = true;
+        hold(&manager, &key, session.clone());
+        let ready = crate::codex_mcp_ready::McpReady::new("playwright");
+        (manager, key, session, heard, ready)
+    }
+
+    /// Runs `hand_over_first_turn` on its own thread, as the launch does.
+    fn hand_over_in_background(
+        manager: &Arc<ChatManager>,
+        key: &str,
+        session: &Arc<Mutex<ChatSession>>,
+        ready: &Arc<crate::codex_mcp_ready::McpReady>,
+    ) -> thread::JoinHandle<()> {
+        let (manager, session, ready, key) = (
+            manager.clone(),
+            session.clone(),
+            ready.clone(),
+            key.to_string(),
+        );
+        thread::spawn(move || {
+            hand_over_first_turn(
+                &manager,
+                &session,
+                &ready,
+                ChatAgent::Claude,
+                FirstTurn {
+                    text: "FIRST PROMPT",
+                    images: &[],
+                    key: &key,
+                    session_key: &key,
+                    turn_id: Some("first-turn"),
+                },
+            );
+        })
+    }
+
+    /// Review round 1 of 05202d74 (H3): an interrupt during the first-turn
+    /// wait set `CutOff::Owed`, the write that followed was refused as "still
+    /// stopping", and the attempt failed with no retry. There is no turn in
+    /// flight to cut short: nothing is written, nothing is owed, the attempt
+    /// stays active, and the first prompt still goes, ahead of anything else.
+    #[test]
+    fn an_interrupt_during_the_first_turn_wait_neither_cuts_nor_fails_anything() {
+        let (manager, key, session, mut heard, ready) = held_first_turn();
+        let waiting = hand_over_in_background(&manager, &key, &session, &ready);
+
+        // The coordinator's interrupt, and the Stop button.
+        assert_eq!(
+            interrupt_worker_turn(&manager, &key),
+            Ok(WorkerInterrupt::Idle),
+            "no turn is in flight: the message goes in between turns, behind the first prompt"
+        );
+        let stopped = chat_interrupt_impl(&manager, key.clone()).expect("not an error");
+        assert!(stopped.stopped);
+        {
+            let guard = session.lock().unwrap();
+            assert_eq!(guard.cut_off, CutOff::No, "nothing to unwind");
+            assert!(guard.busy, "still the worker's first turn");
+            assert!(guard.first_turn_held);
+            assert!(guard.stdin.is_some());
+        }
+
+        // The server settles: the first prompt goes, and it is the FIRST
+        // line the agent hears, so no interrupt went before it.
+        ready.observe(&json!({
+            "method": "mcpServer/startupStatus/updated",
+            "params": { "name": "playwright", "status": "ready" }
+        }));
+        waiting.join().expect("the hand-over finished");
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut heard, &mut line).expect("the first line");
+        assert!(line.contains("FIRST PROMPT"), "{line}");
+        assert!(!line.contains("interrupt"), "{line}");
+        let guard = session.lock().unwrap();
+        assert!(!guard.first_turn_held);
+        assert!(guard.busy, "the first turn is now in flight");
+        assert_eq!(guard.cut_off, CutOff::No);
+        drop(guard);
+
+        // From here an interrupt is an ordinary one.
+        assert_eq!(
+            interrupt_worker_turn(&manager, &key),
+            Ok(WorkerInterrupt::Interrupted)
+        );
+        end_process(&manager, &key).expect("end the stand-in");
+    }
+
+    /// (H2) Stop acts at once during the wait, and the first prompt is never
+    /// written: the process is ended, its output closes (the reader calls
+    /// `McpReady::close`) and the waiting thread leaves without writing.
+    #[test]
+    fn a_stop_during_the_first_turn_wait_means_the_first_prompt_is_never_written() {
+        let (manager, key, session, mut heard, ready) = held_first_turn();
+        let waiting = hand_over_in_background(&manager, &key, &session, &ready);
+
+        let started = Instant::now();
+        assert_eq!(end_process(&manager, &key), Ok(true));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "Stop does not wait for the browser server: {:?}",
+            started.elapsed()
+        );
+        // What the reader thread does when the killed process's output ends.
+        ready.close();
+        waiting.join().expect("the hand-over finished");
+
+        let mut line = String::new();
+        let read = std::io::BufRead::read_line(&mut heard, &mut line).expect("end of output");
+        assert_eq!(read, 0, "nothing was written to the stopped agent: {line}");
+        assert!(!session.lock().unwrap().first_turn_held);
+        assert!(!manager.has_process(&key));
+    }
+
+    /// (H2) A process that is already gone when the server settles gets no
+    /// prompt either, and a late `ready` after a Stop writes nothing.
+    #[test]
+    fn a_first_prompt_is_not_written_into_a_session_that_was_ended() {
+        let (manager, key, session, mut heard, ready) = held_first_turn();
+        assert_eq!(end_process(&manager, &key), Ok(true));
+        ready.observe(&json!({
+            "method": "mcpServer/startupStatus/updated",
+            "params": { "name": "playwright", "status": "ready" }
+        }));
+        hand_over_in_background(&manager, &key, &session, &ready)
+            .join()
+            .expect("the hand-over finished");
+        let mut line = String::new();
+        assert_eq!(
+            std::io::BufRead::read_line(&mut heard, &mut line).unwrap(),
+            0,
+            "{line}"
+        );
+    }
+
     /// Feedback 240ea516: the interrupt came back "interrupted" and seconds
     /// later the host failed the attempt on the cut-off turn's own full stop,
     /// which Claude spells as a failed `result`. The attempt stays active and
@@ -13474,6 +13776,7 @@ mod tests {
             auto_plan_turn: AutoPlanTurn::default(),
             auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
+            first_turn_held: false,
         }));
         manager
             .sessions
@@ -13570,6 +13873,7 @@ mod tests {
                 auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
+                first_turn_held: false,
             })),
         );
 
@@ -13694,6 +13998,7 @@ mod tests {
             auto_plan_turn: AutoPlanTurn::default(),
             auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
+            first_turn_held: false,
         }));
         manager
             .sessions
@@ -14109,6 +14414,7 @@ mod idle_tests {
             auto_plan_turn: AutoPlanTurn::default(),
             auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
+            first_turn_held: false,
         }))
     }
 
@@ -14935,6 +15241,7 @@ mod question_delivery_tests {
                 auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
+                first_turn_held: false,
             })),
         );
         let request = serde_json::from_value(json!({ "chatKey": key, "launchId": "launch-1", "questions": [{"question":"Which database?"}] })).unwrap();
@@ -15133,6 +15440,7 @@ mod question_delivery_tests {
                 auto_plan_turn: AutoPlanTurn::default(),
                 auto_plan_attribution: AutoPlanAttribution::Ready,
                 leaving: None,
+                first_turn_held: false,
             })),
         );
         let (id, _rx) = manager
@@ -15714,6 +16022,7 @@ mod completion_tests {
             auto_plan_turn: AutoPlanTurn::default(),
             auto_plan_attribution: AutoPlanAttribution::Ready,
             leaving: None,
+            first_turn_held: false,
         }))
     }
 

@@ -1978,30 +1978,63 @@ nothing else of theirs is passed. Claude uses `--strict-mcp-config` without
 dropping settings or hooks and adds ONE more `--mcp-config` file,
 `~/.octiqflow/mcp/worker-browser-<hash>.json` (0600, content addressed, never
 on the command line). Codex lists inherited servers in the launch
-cwd/environment, turns each off individually and keeps `--disable apps
---disable plugins`, then adds the same server as one whole entry,
-`-c 'mcp_servers.playwright={command=…,args=[…],env={…}}'` (a partial override
-does not merge; a Codex server of that name is replaced, not also turned off).
-Only a stdio definition qualifies, and its `env` is then on the launch line.
-No definition, an unreadable config or a definition Codex cannot take adds
-nothing and never refuses the launch; an unreadable Codex server list still
-does. Native/exec Codex, resume and relaunch all use that policy; front desks
-keep full isolation. Calls take the normal permission cards (no allow rule is
-added). The Codex plugins `browser`, `unified-computer-use` and the `cua_repl`
-and `node_repl` servers are NOT given to workers: `cua_repl`'s browser needs
-the Codex desktop app's browser access host (unavailable from OctiqFlow) and
-its computer surface is desktop control. Claude in Chrome needs `--chrome`,
-which no launch passes. **Codex discovers MCP tools when a turn starts**, so a
-worker launch that carries the `playwright` entry on app-server holds its FIRST
-turn until that server settles (`codex_mcp_ready`: the
-`mcpServer/startupStatus/updated` for `playwright` says `ready`, `failed` or
-`cancelled`; at most 30 s, Codex's own `startup_timeout_sec` default). It only
-delays: failure, timeout or a closed process starts the turn anyway with one
-`mcp-startup` diagnostics line, and ordinary chats, front desks and launches
-with no entry have no gate. Fresh, resumed and relaunched workers share the one
-start path. `codex exec` has the same race and no clean wait (its stream has no
-MCP startup state and the prompt is a launch argument), so it is not gated. Pi's
-one-shot/no-MCP path and Antigravity's plugin settings remain unchanged.
+cwd/environment, turns each off individually (the person's own `playwright`
+too) and keeps `--disable apps --disable plugins`, then adds the browser as one
+entry under **a name of the host's own**, `octiq_playwright`
+(`worker_browser::codex_server_name` steps aside for a taken one),
+`-c 'mcp_servers.octiq_playwright={command=…,args=[…],env_vars=[NAMES]}'`.
+**No env value is ever on a command line** (`ps` shows it): the table names the
+variables and the host sets their values in the spawned process's environment,
+which Codex 0.164 forwards to the server by name (verified: listed names reach
+the child, unlisted ones do not). A value that would CHANGE a variable already
+in the process's environment is not carried, so the browser is simply not added.
+Only a valid stdio definition qualifies for BOTH providers, judged after the
+scope precedence has chosen it: an `http`, `sse` or `{}` entry adds nothing and
+never affects the launch (nor does the other scope's entry step in).
+`CLAUDE_CONFIG_DIR` is resolved exactly as the launch does
+(`workspaces::resolved_env`, a leading `~` is the home folder). No definition,
+an unreadable config or a definition the host cannot take adds nothing and never
+refuses the launch; an unreadable Codex server list still does. Native/exec
+Codex, resume and relaunch all use that policy; front desks keep full
+isolation. Calls take the normal permission cards (no allow rule is added). The
+Codex plugins `browser`, `unified-computer-use` and the `cua_repl` and
+`node_repl` servers are NOT given to workers: `cua_repl`'s browser needs the
+Codex desktop app's browser access host (unavailable from OctiqFlow) and its
+computer surface is desktop control. Claude in Chrome needs `--chrome`, which no
+launch passes.
+
+**Codex MCP isolation is checked against the real CLI's resolved config, never
+against the `-c` text.** A whole-table `-c mcp_servers.<name>={…}` does NOT
+replace an existing server of that name: codex-cli 0.164 deep-merges it (the
+person's old `args`, `env`, `env_vars` and `enabled = false` survive, and an old
+`url` beside a new `command` fails the bootstrap with `url is not supported for
+stdio`). A change to these flags is verified with the real
+`codex … mcp list --json` under the exact worker flags, for a person's config
+with no entry, a stdio entry, a url entry and a disabled entry, and with
+`codex app-server` for what a server really receives.
+
+**Codex discovers MCP tools when a turn starts**, so a worker launch that
+carries the browser on app-server holds its FIRST turn until that server
+settles (`codex_mcp_ready`: the `mcpServer/startupStatus/updated` for the
+server says `ready`, `failed` or `cancelled`; at most 30 s, Codex's own
+`startup_timeout_sec` default). It only delays: failure or timeout starts the
+turn anyway with one `mcp-startup` diagnostics line, and ordinary chats, front
+desks and launches with no entry have no gate. Fresh, resumed and relaunched
+workers share the one start path. **The wait is on a thread of its own, after
+`start_chat` has returned** (`agent_chat::hand_over_first_turn`): the caller of
+a worker launch holds the orchestration `workspace_ops` lock, and Task/Run Stop
+take the same one. The wait holds no lock of the host's. The session reads busy
+(a message sent meanwhile queues; the sweeper leaves it alone) and carries
+`first_turn_held`: no turn is in flight, so an interrupt (the Stop button, a
+coordinator's `interrupt: true`) sets no `CutOff`, writes nothing and fails
+nothing (`interrupt_worker_turn` answers `idle`), and the first prompt still
+goes first, then what queued behind it. A Task/Run Stop (`end_process`) ends the
+process; its output closing ends the wait and a session that was ended has no
+stdin, so the first prompt is never written. A prompt that cannot be written to a
+live process ends it, so the attempt fails as it always did. `codex exec` has the
+same race and no clean wait (its stream has no MCP startup state and the prompt
+is a launch argument), so it is not gated. Pi's one-shot/no-MCP path and
+Antigravity's plugin settings remain unchanged.
 See [measurements and limits](docs/agent-chat-footprint.md).
 
 - **"Idle" is `!busy`, never "no output lately".** A turn is in flight from the
