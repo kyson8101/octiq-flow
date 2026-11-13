@@ -3629,6 +3629,8 @@ fn build_command_with_context(
         orchestration_worker: false,
         front_desk: false,
         codex_user_mcp: &[],
+        codex_worker_playwright: None,
+        claude_worker_mcp: None,
         preferences: None,
     })
 }
@@ -4675,6 +4677,21 @@ fn start_session_with_recovery(
     } else {
         Vec::new()
     };
+    // The one browser a worker keeps: the person's own `playwright`, read from
+    // their Claude settings. Claude takes it as a second config file, Codex as
+    // one whole `-c` entry. Never an error: no definition, no browser.
+    let (claude_worker_mcp, codex_worker_playwright) = if orchestration_worker && !front_desk {
+        match agent {
+            ChatAgent::Claude => (crate::worker_browser::for_launch(&cwd, env.as_ref()), None),
+            ChatAgent::Codex => (
+                None,
+                crate::worker_browser::for_codex_launch(&cwd, env.as_ref()),
+            ),
+            _ => (None, None),
+        }
+    } else {
+        (None, None)
+    };
     manager.admit_beside_writers(
         &session_key,
         &key,
@@ -4893,6 +4910,8 @@ fn start_session_with_recovery(
         orchestration_worker,
         front_desk,
         codex_user_mcp: &codex_user_mcp,
+        codex_worker_playwright: codex_worker_playwright.as_deref(),
+        claude_worker_mcp: claude_worker_mcp.as_deref(),
         preferences: preferences.as_deref(),
     };
     let line = provider.build_command(&launch);
@@ -5135,6 +5154,12 @@ fn start_session_with_recovery(
         None
     };
 
+    // A worker that was given the person's `playwright` holds its first turn
+    // until that server settles (`codex_mcp_ready`): Codex fixes a turn's tool
+    // list when the turn starts, and a cold `npx` is not ready by then.
+    let mcp_ready = (transport.is_app_server() && codex_worker_playwright.is_some())
+        .then(|| crate::codex_mcp_ready::McpReady::new(crate::worker_browser::PLAYWRIGHT));
+
     let session = Arc::new(Mutex::new(ChatSession {
         launch_id: launch_id.clone(),
         user_turn_id: user_turn_id.clone(),
@@ -5213,6 +5238,7 @@ fn start_session_with_recovery(
         let rt = answer_runtime();
         // The reader is where a chat learns its own session id.
         let reading = manager.clone();
+        let reader_mcp_ready = mcp_ready.clone();
         let recovery_observation = recovery_observation.clone();
         let mut native_recovery_turn = recovery_fence.is_some();
         thread::spawn(move || {
@@ -5248,6 +5274,9 @@ fn start_session_with_recovery(
                     Ok(mut event) => {
                         if let Some(observation) = &recovery_observation {
                             observation.event(&event);
+                        }
+                        if let Some(ready) = &reader_mcp_ready {
+                            ready.observe(&event);
                         }
 
                         if transport.is_app_server() {
@@ -5751,6 +5780,9 @@ fn start_session_with_recovery(
                 // was given and never brought to a full stop ended with it.
                 reading.completion_cut_short(&session_key, &session, COMPLETION_ENDED);
             }
+            if let Some(ready) = &reader_mcp_ready {
+                ready.close();
+            }
             let _ = output_closed.send(());
         });
     }
@@ -5986,6 +6018,15 @@ fn start_session_with_recovery(
         && has_prompt
         && (!wire_prompt.trim().is_empty() || !images.is_empty())
     {
+        // Fresh, resumed and relaunched workers all come through here. No lock
+        // is held, so a Stop meanwhile still acts (the write then reports it).
+        if let Some(ready) = &mcp_ready {
+            if let Some(note) =
+                crate::codex_mcp_ready::hold_first_turn(ready, crate::codex_mcp_ready::BOUND)
+            {
+                crate::diagnostics::record(agent, &key, "mcp-startup", &note);
+            }
+        }
         write_user_message(
             &manager,
             &session,

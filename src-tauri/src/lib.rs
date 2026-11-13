@@ -29,6 +29,7 @@ mod claude_allow;
 mod coalesce;
 mod codex_app_server;
 mod codex_git;
+mod codex_mcp_ready;
 mod conversation_tools;
 mod diagnostics;
 mod disk_report;
@@ -80,6 +81,7 @@ mod transcript;
 mod unsaved;
 mod usage_limits;
 mod web;
+mod worker_browser;
 mod workspaces;
 mod worktree_lifespan;
 

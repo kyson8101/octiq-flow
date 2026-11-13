@@ -1970,12 +1970,37 @@ keep their attempts unsettled. Terminal provider errors still stop immediately.
 The record, workspace, resume context and reported outcome survive reclamation;
 this cleanup is independent of `OCTIQ_CHAT_IDLE_MINS=0`.
 
-Claude/Codex workers start only OctiqFlow's MCP; ordinary chats keep the person's
-configured servers. Claude uses `--strict-mcp-config` without dropping settings
-or hooks; Codex lists inherited servers in the launch cwd/environment and turns
-them off individually, plus apps/plugins which may add their own MCPs. A list it
-cannot read/validate refuses the launch. Native/exec Codex, resume and relaunch
-all use that policy. There is no external-server role allowlist yet; Pi's
+Claude/Codex workers start with OctiqFlow's MCP **plus the person's own
+`playwright`**; ordinary chats keep the person's configured servers. The
+definition is read once from the person's `.claude.json` (user scope, then the
+project's local scope, honouring `CLAUDE_CONFIG_DIR`) by `worker_browser`, and
+nothing else of theirs is passed. Claude uses `--strict-mcp-config` without
+dropping settings or hooks and adds ONE more `--mcp-config` file,
+`~/.octiqflow/mcp/worker-browser-<hash>.json` (0600, content addressed, never
+on the command line). Codex lists inherited servers in the launch
+cwd/environment, turns each off individually and keeps `--disable apps
+--disable plugins`, then adds the same server as one whole entry,
+`-c 'mcp_servers.playwright={command=…,args=[…],env={…}}'` (a partial override
+does not merge; a Codex server of that name is replaced, not also turned off).
+Only a stdio definition qualifies, and its `env` is then on the launch line.
+No definition, an unreadable config or a definition Codex cannot take adds
+nothing and never refuses the launch; an unreadable Codex server list still
+does. Native/exec Codex, resume and relaunch all use that policy; front desks
+keep full isolation. Calls take the normal permission cards (no allow rule is
+added). The Codex plugins `browser`, `unified-computer-use` and the `cua_repl`
+and `node_repl` servers are NOT given to workers: `cua_repl`'s browser needs
+the Codex desktop app's browser access host (unavailable from OctiqFlow) and
+its computer surface is desktop control. Claude in Chrome needs `--chrome`,
+which no launch passes. **Codex discovers MCP tools when a turn starts**, so a
+worker launch that carries the `playwright` entry on app-server holds its FIRST
+turn until that server settles (`codex_mcp_ready`: the
+`mcpServer/startupStatus/updated` for `playwright` says `ready`, `failed` or
+`cancelled`; at most 30 s, Codex's own `startup_timeout_sec` default). It only
+delays: failure, timeout or a closed process starts the turn anyway with one
+`mcp-startup` diagnostics line, and ordinary chats, front desks and launches
+with no entry have no gate. Fresh, resumed and relaunched workers share the one
+start path. `codex exec` has the same race and no clean wait (its stream has no
+MCP startup state and the prompt is a launch argument), so it is not gated. Pi's
 one-shot/no-MCP path and Antigravity's plugin settings remain unchanged.
 See [measurements and limits](docs/agent-chat-footprint.md).
 

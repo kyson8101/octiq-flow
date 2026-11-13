@@ -171,6 +171,13 @@ pub struct AgentCommand<'a> {
     /// The person's Codex MCP servers. Workers and front desks turn these
     /// off individually; ordinary chats inherit them unchanged.
     pub codex_user_mcp: &'a [CodexMcpServer],
+    /// A Codex worker's browser: the person's own `playwright` definition
+    /// as one whole inline TOML table (`worker_browser::codex_playwright`).
+    /// Only an orchestration worker reads it.
+    pub codex_worker_playwright: Option<&'a str>,
+    /// A Claude worker's second MCP config: the person's own definitions of
+    /// the servers in `CLAUDE_WORKER_MCP_ON`, nothing else (`worker_browser`).
+    pub claude_worker_mcp: Option<&'a Path>,
     /// The person's personal preferences from Settings, already worded for a
     /// system prompt (`personal_preferences::prompt`). Every provider ends
     /// its system prompt with them, front desk and workers included.
@@ -269,9 +276,29 @@ fn append_codex_front_desk(cmd: &mut String, servers: &[CodexMcpServer]) {
 /// Only the MCP selection changes for a worker: retain execution tools,
 /// sandbox, approvals, hooks and memories. Apps/plugins may start their own
 /// MCPs outside the configured server list, so they must stay off too.
-fn append_codex_worker_mcp(cmd: &mut String, servers: &[CodexMcpServer]) {
+///
+/// The one thing a worker gets back is the person's `playwright` server, the
+/// same browser a Claude worker keeps. It is written whole as one `-c` entry
+/// (a partial override of an existing server does not merge), so a server of
+/// that name in Codex's own list is not also turned off.
+fn append_codex_worker_mcp(cmd: &mut String, servers: &[CodexMcpServer], playwright: Option<&str>) {
     cmd.push_str(" --disable apps --disable plugins");
-    append_codex_inherited_mcp_off(cmd, servers);
+    let own = playwright.is_some();
+    let off: Vec<CodexMcpServer> = servers
+        .iter()
+        .filter(|s| !(own && s.name == crate::worker_browser::PLAYWRIGHT))
+        .cloned()
+        .collect();
+    append_codex_inherited_mcp_off(cmd, &off);
+    if let Some(entry) = playwright {
+        cmd.push_str(&format!(
+            " -c {}",
+            sh_quote(&format!(
+                "mcp_servers.{}={entry}",
+                crate::worker_browser::PLAYWRIGHT
+            ))
+        ));
+    }
 }
 
 fn append_codex_inherited_mcp_off(cmd: &mut String, servers: &[CodexMcpServer]) {
@@ -424,7 +451,7 @@ pub(crate) fn sh_quote(s: &str) -> String {
 }
 
 /// One TOML basic string, quoted and escaped before it reaches Codex's parser.
-fn toml_string(s: &str) -> String {
+pub(crate) fn toml_string(s: &str) -> String {
     format!(
         "\"{}\"",
         s.replace('\\', r"\\")
@@ -629,8 +656,17 @@ impl AgentProvider for ClaudeProvider {
                 .orchestration_worker
                 .then(orchestration_worker_prompt)
                 .unwrap_or_default();
+            // A worker's `--strict-mcp-config` drops the person's servers; the
+            // browser one they chose to keep is a second config, never theirs
+            // all (`worker_browser`).
+            let browser = request
+                .orchestration_worker
+                .then_some(request.claude_worker_mcp)
+                .flatten()
+                .map(|path| format!(" --mcp-config {}", sh_quote(&path.to_string_lossy())))
+                .unwrap_or_default();
             cmd.push_str(&format!(
-                " --mcp-config {} --allowedTools {} --append-system-prompt {}",
+                " --mcp-config {}{browser} --allowedTools {} --append-system-prompt {}",
                 sh_quote(&mcp.to_string_lossy()),
                 sh_quote(&crate::permission::HOST_BOOKKEEPING.iter()
                     .map(|tool| format!("mcp__octiq__{tool}"))
@@ -888,7 +924,11 @@ fn codex_exec_command(request: &AgentCommand<'_>, provider: &CodexProvider) -> S
     if request.front_desk {
         append_codex_front_desk(&mut cmd, request.codex_user_mcp);
     } else if request.orchestration_worker {
-        append_codex_worker_mcp(&mut cmd, request.codex_user_mcp);
+        append_codex_worker_mcp(
+            &mut cmd,
+            request.codex_user_mcp,
+            request.codex_worker_playwright,
+        );
     }
     let extra_dirs: &[String] = if request.front_desk {
         &[]
@@ -989,7 +1029,11 @@ impl AgentProvider for CodexProvider {
             if request.front_desk {
                 append_codex_front_desk(&mut cmd, request.codex_user_mcp);
             } else if request.orchestration_worker {
-                append_codex_worker_mcp(&mut cmd, request.codex_user_mcp);
+                append_codex_worker_mcp(
+                    &mut cmd,
+                    request.codex_user_mcp,
+                    request.codex_worker_playwright,
+                );
             }
             cmd
         }
@@ -2003,6 +2047,8 @@ pub(crate) mod tests {
             orchestration_worker: false,
             front_desk: false,
             codex_user_mcp: &[],
+            codex_worker_playwright: None,
+            claude_worker_mcp: None,
             preferences: None,
         })
     }
@@ -2249,6 +2295,8 @@ pub(crate) mod tests {
             orchestration_worker: true,
             front_desk: false,
             codex_user_mcp: &[],
+            codex_worker_playwright: None,
+            claude_worker_mcp: None,
             preferences: None,
         });
         assert!(claude.contains("orchestration_gate_create"));
@@ -2273,6 +2321,8 @@ pub(crate) mod tests {
             orchestration_worker: false,
             front_desk: true,
             codex_user_mcp: &[],
+            codex_worker_playwright: None,
+            claude_worker_mcp: None,
             preferences: None,
         });
         assert!(line.contains(" --tools ''"), "no built-in tool: {line}");
@@ -2318,6 +2368,8 @@ pub(crate) mod tests {
             orchestration_worker: false,
             front_desk,
             codex_user_mcp: servers,
+            codex_worker_playwright: None,
+            claude_worker_mcp: None,
             preferences: None,
         }
     }
@@ -2476,15 +2528,26 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn workers_keep_host_and_execution_tools_without_inherited_mcp_servers() {
-        let servers = person_servers();
-        let worker = AgentCommand {
+    const PLAYWRIGHT_ENTRY: &str =
+        "{command=\"npx\",args=[\"-y\",\"@playwright/mcp@latest\"],env={}}";
+
+    fn browser_worker<'a>(
+        servers: &'a [CodexMcpServer],
+        playwright: Option<&'a str>,
+    ) -> AgentCommand<'a> {
+        AgentCommand {
             orchestration_worker: true,
             access: Some(Access::Auto),
             lite: false,
-            ..codex_request(false, &servers)
-        };
+            codex_worker_playwright: playwright,
+            ..codex_request(false, servers)
+        }
+    }
+
+    #[test]
+    fn workers_keep_host_and_execution_tools_without_inherited_mcp_servers() {
+        let servers = person_servers();
+        let worker = browser_worker(&servers, None);
         let claude = CLAUDE.build_command(&worker);
         assert!(claude.contains(" --strict-mcp-config"), "{claude}");
         assert!(!claude.contains("--setting-sources"), "settings/hooks stay");
@@ -2492,7 +2555,7 @@ pub(crate) mod tests {
         assert!(claude.contains("mcp__octiq__orchestration_worker_report"));
         let ordinary = AgentCommand {
             orchestration_worker: false,
-            ..worker
+            ..browser_worker(&servers, None)
         };
         assert!(!CLAUDE
             .build_command(&ordinary)
@@ -2516,7 +2579,131 @@ pub(crate) mod tests {
             assert!(line.contains(
                 "mcp_servers.octiq.tools.orchestration_worker_report.approval_mode=\"approve\""
             ));
+            assert!(
+                !line.contains("mcp_servers.playwright="),
+                "no definition, no browser: {line}"
+            );
         }
+    }
+
+    /// A Codex worker gets the person's playwright as one whole entry, on
+    /// every transport and for a fresh start and a resume alike; everything
+    /// else stays off (all plugins, apps, every inherited server).
+    #[test]
+    fn a_codex_worker_gets_the_persons_playwright_as_one_whole_entry() {
+        let servers = person_servers();
+        let fresh = browser_worker(&servers, Some(PLAYWRIGHT_ENTRY));
+        let resumed = AgentCommand {
+            resume: Some("native-session"),
+            ..browser_worker(&servers, Some(PLAYWRIGHT_ENTRY))
+        };
+        let want = format!("-c 'mcp_servers.playwright={PLAYWRIGHT_ENTRY}'");
+        for line in [
+            CODEX.build_command(&fresh),
+            codex_exec_command(&fresh, &CODEX),
+            CODEX.build_command(&resumed),
+            codex_exec_command(&resumed, &CODEX),
+        ] {
+            assert_eq!(line.matches("mcp_servers.playwright=").count(), 1, "{line}");
+            assert!(line.contains(&want), "{line}");
+            assert!(line.contains(" --disable apps --disable plugins"), "{line}");
+            assert!(
+                line.contains("mcp_servers.sentry={url=\"http://127.0.0.1:9/\",enabled=false}"),
+                "{line}"
+            );
+            assert!(!line.contains("cua_repl"), "{line}");
+            assert!(!line.contains("plugins={"), "{line}");
+        }
+    }
+
+    /// Codex's own server of the same name is replaced by the entry, never
+    /// turned off beside it (two overrides of one key).
+    #[test]
+    fn the_playwright_entry_replaces_codexs_own_server_of_that_name() {
+        let mut servers = person_servers();
+        servers.push(CodexMcpServer {
+            name: "playwright".into(),
+            remote: false,
+        });
+        let with = codex_exec_command(&browser_worker(&servers, Some(PLAYWRIGHT_ENTRY)), &CODEX);
+        assert_eq!(with.matches("mcp_servers.playwright=").count(), 1, "{with}");
+        assert!(
+            !with.contains("mcp_servers.playwright={command=\"false\""),
+            "{with}"
+        );
+        // Without a definition of the person's, Codex's own stays off.
+        let without = codex_exec_command(&browser_worker(&servers, None), &CODEX);
+        assert!(
+            without.contains("mcp_servers.playwright={command=\"false\",enabled=false}"),
+            "{without}"
+        );
+    }
+
+    /// A front desk keeps full isolation whatever it is handed, and an
+    /// ordinary chat is untouched.
+    #[test]
+    fn the_browser_reaches_workers_only() {
+        let servers = person_servers();
+        let desk = AgentCommand {
+            codex_worker_playwright: Some(PLAYWRIGHT_ENTRY),
+            ..codex_request(true, &servers)
+        };
+        for line in [
+            CODEX.build_command(&desk),
+            codex_exec_command(&desk, &CODEX),
+        ] {
+            assert!(!line.contains("mcp_servers.playwright="), "{line}");
+            assert!(line.contains(" --disable plugins"), "{line}");
+        }
+        let ordinary = AgentCommand {
+            codex_worker_playwright: Some(PLAYWRIGHT_ENTRY),
+            ..codex_request(false, &servers)
+        };
+        for line in [
+            CODEX.build_command(&ordinary),
+            codex_exec_command(&ordinary, &CODEX),
+        ] {
+            assert!(!line.contains("playwright"), "{line}");
+            assert!(!line.contains("enabled=false"), "{line}");
+        }
+    }
+
+    /// A Claude worker keeps only the browser server the person chose, as a
+    /// second config file; every other launch names none.
+    #[test]
+    fn a_claude_worker_gets_the_browser_config_and_no_other_launch_does() {
+        let browser = Path::new("worker-browser-1.json");
+        let worker = AgentCommand {
+            claude_worker_mcp: Some(browser),
+            ..browser_worker(&[], None)
+        };
+        let line = CLAUDE.build_command(&worker);
+        assert!(
+            line.contains(" --mcp-config 'octiq-ask.json' --mcp-config 'worker-browser-1.json' --allowedTools"),
+            "{line}"
+        );
+        assert!(line.contains(" --strict-mcp-config"), "{line}");
+        assert!(!line.contains("--allowedTools 'mcp__playwright"), "{line}");
+        for other in [
+            AgentCommand {
+                orchestration_worker: false,
+                ..AgentCommand {
+                    claude_worker_mcp: Some(browser),
+                    ..browser_worker(&[], None)
+                }
+            },
+            AgentCommand {
+                front_desk: true,
+                claude_worker_mcp: Some(browser),
+                ..browser_worker(&[], None)
+            },
+        ] {
+            let line = CLAUDE.build_command(&other);
+            assert!(!line.contains("worker-browser"), "{line}");
+        }
+        assert!(!CLAUDE
+            .build_command(&browser_worker(&[], None))
+            .contains("worker-browser"));
     }
 
     /// The host prompt a Codex front desk gets is the front desk's, not the
@@ -2612,6 +2799,8 @@ pub(crate) mod tests {
             orchestration_worker: true,
             front_desk: false,
             codex_user_mcp: &[],
+            codex_worker_playwright: None,
+            claude_worker_mcp: None,
             preferences: None,
         });
         // Quoted for the shell, so look for a stretch without apostrophes.
@@ -2643,6 +2832,8 @@ pub(crate) mod tests {
             orchestration_worker: true,
             front_desk: false,
             codex_user_mcp: &[],
+            codex_worker_playwright: None,
+            claude_worker_mcp: None,
             preferences: None,
         });
         let shell = crate::proc::resolve_agent_shell(
@@ -2739,6 +2930,8 @@ pub(crate) mod tests {
                     orchestration_worker: worker,
                     front_desk: false,
                     codex_user_mcp: &[],
+                    codex_worker_playwright: None,
+                    claude_worker_mcp: None,
                     preferences: None,
                 });
                 assert_eq!(line.matches("--allowedTools").count(), 1, "{line}");
@@ -2802,6 +2995,8 @@ pub(crate) mod tests {
             orchestration_worker: false,
             front_desk: false,
             codex_user_mcp: &[],
+            codex_worker_playwright: None,
+            claude_worker_mcp: None,
             preferences: None,
         });
 
@@ -2990,6 +3185,8 @@ pub(crate) mod tests {
             orchestration_worker: false,
             front_desk: false,
             codex_user_mcp: &[],
+            codex_worker_playwright: None,
+            claude_worker_mcp: None,
             preferences: None,
         }
     }

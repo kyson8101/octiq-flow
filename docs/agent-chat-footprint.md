@@ -8,24 +8,81 @@ pages more than once; it is not unique physical memory or a production forecast.
 ## Launch policy
 
 Ordinary chats keep the person's configured MCP servers. Claude and Codex
-orchestration workers default to **OctiqFlow's MCP only**, as front desks
-already do. OctiqFlow's tools include the native Memory Vault/docspace and
+orchestration workers default to **OctiqFlow's MCP plus the person's own
+`playwright`** (front desks keep OctiqFlow's MCP only). OctiqFlow's tools include the native Memory Vault/docspace and
 orchestration operations, so workers do not need another copy of those servers.
 
 - Claude workers use `--strict-mcp-config` with the generated OctiqFlow config.
   User/project settings, permission hooks, skills and execution tools remain.
-- Codex workers list inherited servers in the actual launch cwd/environment,
-  then disable each with the same transport-aware overrides front desks use.
-  Apps and plugins are disabled too, since they can start additional MCPs.
-  Failure to read/validate the list refuses startup rather than inheriting it.
-  The same policy covers app-server and the exec compatibility transport.
-- Worker launch identity comes from the durable ledger (with the existing
-  launch marker supported), so a sanitized resume context without project
-  environment does not silently revert to ordinary MCP inheritance.
-- This is a default host-only worker policy, not automatic task-text matching.
-  There is no per-role external-server allowlist in this change. A future
-  exception needs an explicit host-owned role/task policy and provider-specific
-  config generation; no shell command or task prose changes the allowlist.
+  With `--strict-mcp-config` alone a worker sees no other MCP server (checked
+  from `system/init`), which also dropped the person's `playwright`. The
+  person's own definition of each server in `CLAUDE_WORKER_MCP_ON`
+  (`playwright`) is written to a private, content-addressed
+  `~/.octiqflow/mcp/worker-browser-<hash>.json` and named by a second
+  `--mcp-config`; no other server is passed and no allow rule is added, so its
+  calls take the normal permission cards. An unreadable `.claude.json` means no
+  browser, not a failed launch. Claude in Chrome only exists with `--chrome`,
+  which no OctiqFlow launch passes.
+- Codex workers list inherited servers in the actual launch cwd/environment
+  and disable each with the same transport-aware overrides front desks use,
+  with `--disable apps --disable plugins` (every plugin, and the connector
+  server, stay off). A failure to read/validate the list refuses startup
+  rather than inheriting it. The same policy covers app-server and the exec
+  compatibility transport, fresh start, resume and relaunch.
+- **The one browser a worker keeps is the person's `playwright`**, from the same
+  definition for both providers (`worker_browser`; `.claude.json`, user scope
+  then project scope). Claude reads it as a second `--mcp-config` (above). Codex
+  gets it as one whole inline entry, `-c 'mcp_servers.playwright={command=…,
+  args=[…],env={…}}'`: a partial override of an existing server does not merge,
+  and a Codex server already named `playwright` is replaced, not also turned
+  off. Only a stdio definition is taken (no `type`, or `"stdio"`; string
+  `command`, `args`, `env` values), and its `env`, unlike Claude's file, is then
+  on the launch line. Nothing is added, and the launch is never refused, when
+  the person has no definition. Codex's `cua_repl` / `unified-computer-use` /
+  `browser@openai-bundled` / `node_repl` are not given to workers:
+  `cua_repl`'s browser surface needs the Codex desktop app's browser access
+  host (`The browser access host is unavailable` from OctiqFlow, also in an
+  unrestricted `codex app-server`) and its computer surface drives the person's
+  desktop.
+- **Codex builds a turn's tool list when the turn starts.** Measured against
+  codex-cli 0.164.0 through `codex app-server` (`mcpServer/startupStatus/updated`
+  then `thread/start` and `turn/start`): the `npx` server reached `ready` a few
+  seconds after the turn began, and that first turn saw no `browser_*` tool (the
+  model said so, and tool search returned nothing). With the turn started after
+  `ready`, the same launch shape called `browser_navigate` and
+  `browser_take_screenshot` on `https://example.com`; the screenshot came back as
+  an MCP `image/png` content block (about 88 KB) and the model described it. A
+  worker's first Codex turn can therefore start without a browser if `npx` is
+  cold; a later turn of the thread has it.
+- **The host waits for the server before the first app-server turn**
+  (`codex_mcp_ready.rs`). Only a worker launch that carries the `playwright`
+  entry has the gate; the reader thread watches `mcpServer/startupStatus/updated`
+  for that name and the start path holds the first `turn/start` until it says
+  `ready` (or `failed` / `cancelled`), the process closes, or 30 s pass. 30 s is
+  Codex's own default `startup_timeout_sec` for an MCP server: past it Codex has
+  already marked the server failed, so waiting longer cannot help. Any
+  non-ready end starts the turn anyway and writes one `mcp-startup` line to
+  `agent-diagnostics.jsonl`; nothing is refused and the wait holds no lock (the
+  chat reads busy, so a message sent meanwhile queues). Fresh, resumed and
+  relaunched workers all start through the same function.
+- **`codex exec` has the same race and no clean wait.** Measured (codex-cli
+  0.164.0, `playwright` started through `sh -c "sleep 15; exec …"`): the turn
+  finished in 13 s, before the server was ready, with no `browser_*` call.
+  `exec --json` carries only thread/turn/item events (no MCP startup state) and
+  takes the prompt as an argument, so the host has nothing to wait on; the only
+  fixes would be a sleep or a separate pre-warm process, which this does not do.
+- Live check of the gate (codex-cli 0.164.0, `gpt-6-luna` at low effort,
+  `app-server` with the worker flag shape, `playwright` delayed 15 s):
+  without the gate the first turn ended with no browser call (`ready` came after
+  the turn began); with the first turn sent after `ready`, turn 1 called
+  `playwright.browser_navigate`. One gated turn is about 58,700 tokens (cached
+  57,900), the ungated one 38,900. A cold `npx` with a fresh npm cache took more
+  than 30 s on this machine (load average ~50) and Codex marked it failed at its
+  own 30 s limit, so a package download that slow loses the browser for that
+  process whatever the host does.
+- Live check, Claude: a worker launch with the second `--mcp-config` opened a
+  public page and screenshotted it through `playwright` (5 turns, 14 s, $0.20 on
+  Sonnet).
 - Pi is already one-shot and has no OctiqFlow MCP integration. Antigravity's
   installed CLI has no per-launch strict MCP flag; its personal settings are
   not rewritten to imitate one. Its existing plugin/access rules are unchanged.
