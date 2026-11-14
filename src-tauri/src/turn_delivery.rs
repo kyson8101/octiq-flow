@@ -942,6 +942,54 @@ mod tests {
         assert_eq!(state_of(&key, "split").state, "accepted");
     }
 
+    /// The same, in the tail read: the record grew by the first half of a
+    /// pickup line (so the guard re-reads the tail), and the writer finishes
+    /// it before that read's next step. The tail read must not take the two
+    /// halves for two lines.
+    #[test]
+    fn a_pickup_line_finished_between_two_reads_of_the_tail_is_not_dismissed_over() {
+        use std::io::Write;
+        let home = TestDir::new("turn-delivery-race-midline-tail");
+        let _profile = crate::profile::started_in(&home);
+        let key = listed_chat("td-race-midline-tail");
+        envelope(&key, "split-tail");
+        delivery(&key, "split-tail", "dispatched");
+        let path = crate::transcript::path_for(&key).unwrap();
+        let whole = format!(
+            "{}\n",
+            json!({"type": "user", "isReplay": true, "octiq_user_turn_id": "split-tail",
+                   "message": {"content": "hello"}})
+        );
+        let (head, rest) = whole.split_at(whole.len() / 2);
+        let (head, rest, target) = (head.to_string(), rest.to_string(), path.clone());
+        crate::transcript::after_walk_hook(move || {
+            // The scan has ended: half a line lands, and the tail read that
+            // follows meets it unfinished and sees it finished.
+            let open = || {
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&target)
+                    .unwrap()
+            };
+            open().write_all(head.as_bytes()).unwrap();
+            let (target, rest) = (target.clone(), rest.clone());
+            crate::transcript::after_partial_line_hook(move || {
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&target)
+                    .unwrap();
+                file.write_all(rest.as_bytes()).unwrap();
+            });
+        });
+        assert_eq!(dismiss(&key, "split-tail"), Ok(false));
+        assert!(
+            !types_in(&key).contains(&"octiq_user_turn_dismissed".to_string()),
+            "{:?}",
+            types_in(&key)
+        );
+        assert_eq!(state_of(&key, "split-tail").state, "accepted");
+    }
+
     /// A last line that is never finished is not a line the guard can stand
     /// behind: it writes nothing and answers false (the page then asks
     /// `chat_turn_delivery`), and the lookup skips the fragment as before.

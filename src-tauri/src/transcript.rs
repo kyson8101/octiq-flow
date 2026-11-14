@@ -804,6 +804,8 @@ pub(crate) fn walk_on(
         // A last line with no line end yet is not read: it is read whole, from
         // its start, by the next call (`walk_marked` stops before it too).
         let Some(body) = line.strip_suffix(b"\n") else {
+            #[cfg(test)]
+            partial_line_read();
             break;
         };
         len += line.len() as u64;
