@@ -7596,12 +7596,13 @@ pub fn chat_dismiss_unsent_impl(
     // A turn the agent has taken up is not unsent, whatever the page heard:
     // dismissing it would write `dismissed` over an answered message. The
     // page keeps its bubble and learns the truth from `chat_turn_delivery`.
-    if crate::turn_delivery::picked_up(&key, &turn_id)? {
-        return Ok(false);
-    }
+    // The check and the append are one step against the record: a pickup that
+    // lands after the read, or a record published during it, writes nothing
+    // (`turn_delivery::append_unless_picked_up`).
     let event = json!({ "type": "octiq_user_turn_dismissed", "uuid": turn_id });
-    let seq = crate::transcript::append(&key, &event)
-        .ok_or_else(|| "could not record the dismissed message".to_string())?;
+    let Some(seq) = crate::turn_delivery::append_unless_picked_up(&key, &turn_id, &event)? else {
+        return Ok(false);
+    };
     crate::bus::emit(
         "chat-event",
         ChatEvent {
@@ -12515,7 +12516,9 @@ mod tests {
     #[test]
     fn a_queued_turn_is_queued_and_a_folded_one_names_its_unit() {
         let manager = Arc::new(ChatManager::default());
-        let key = format!("delivery-queue-{}", uuid::Uuid::new_v4().simple());
+        let bare = format!("delivery-queue-{}", uuid::Uuid::new_v4().simple());
+        // Queues and records are kept under the prefixed key.
+        let key = format!("chat:{bare}");
         manager.handoffs.lock().unwrap().insert(key.clone());
         for (text, turn_id) in [("one", "user-1"), ("two", "user-2")] {
             chat_send_user_impl(
@@ -12531,7 +12534,7 @@ mod tests {
         }
         crate::chat_index::upsert(
             serde_json::from_value(
-                json!({"id": key, "projectId": "p", "title": "T", "updatedAt": 1}),
+                json!({"id": bare, "projectId": "p", "title": "T", "updatedAt": 1}),
             )
             .unwrap(),
         )
@@ -12545,6 +12548,16 @@ mod tests {
             .unwrap()
             .turns
         };
+        // The bare id is the same chat: it must see the same queue.
+        let by_bare = crate::turn_delivery::chat_turn_delivery_impl(
+            &manager,
+            &bare,
+            vec!["user-1".into(), "user-2".into()],
+        )
+        .unwrap()
+        .turns;
+        assert_eq!(by_bare["user-1"].state, "queued");
+        assert_eq!(by_bare["user-2"].into.as_deref(), Some("user-1"));
         let waiting = ask(&["user-1", "user-2", "user-9"]);
         assert_eq!(
             (waiting["user-1"].state, waiting["user-1"].into.as_deref()),

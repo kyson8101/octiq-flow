@@ -17,7 +17,7 @@
 //!   -> { turns: { [turnId]: { state, seq?, into? } } }
 //! ```
 //!
-//! `chatKey` must be a chat the index lists (`chat:<id>` or the bare id).
+//! `chatKey` must be a chat the index lists (`chat:<id>` or the bare id; both read the same queue and record).
 //! `turnIds` is 1 to 32 ids, each 1 to 256 characters; anything else is an
 //! error in words. Duplicates are answered once.
 //!
@@ -37,9 +37,18 @@
 //! `seq` is the logical seq of the line that decided the state, so a page can
 //! tell an old answer from a new one. It is left out for `queued` and `absent`.
 //!
-//! `chat_dismiss_unsent` asks `picked_up` (this module's one definition of a
-//! pickup) and answers `false`, writing no `octiq_user_turn_dismissed` line,
-//! for a turn the agent has taken up.
+//! `chat_dismiss_unsent` goes through `append_unless_picked_up` (this module's
+//! one definition of a pickup) and answers `false`, writing no
+//! `octiq_user_turn_dismissed` line, for a turn the agent has taken up. The
+//! check and the append are one step against the record: the whole record is
+//! read outside every lock, and the append (`transcript::append_after_walk`)
+//! then asks under the append lock that the record is still the same file and
+//! life and that nothing was added after the end that was read. A line that
+//! was (a pickup landing after the read) is read as a tail and the decision
+//! is made again; a record replaced during the read is read again whole.
+//!
+//! `chatKey` is canonicalized once to `chat:<id>`: the queue and the record
+//! are kept under that key, and a bare id names the same chat.
 //!
 //! A turn appended to another before it was sent (`octiq_user_turn_appended`,
 //! the page reads it as `sourceTurnIds`) has no pickup of its own: the agent
@@ -165,17 +174,33 @@ impl Facts {
 
 const NEEDLES: [&[u8]; 2] = [br#""octiq_user_turn_"#, br#""octiq_append_to""#];
 
-/// Every id's facts, in one pass over the record.
-fn scan(key: &str) -> Result<BTreeMap<String, Facts>, String> {
-    let needles = NEEDLES.map(memchr::memmem::Finder::new);
-    let mut facts: BTreeMap<String, Facts> = BTreeMap::new();
-    crate::transcript::walk(key, |seq, line| {
-        if !needles.iter().any(|needle| needle.find(line).is_some()) {
+/// Every id's facts, folded from the record's lines one at a time, so a
+/// whole record and a tail added later are read by the same code.
+struct Scanner {
+    needles: [memchr::memmem::Finder<'static>; 2],
+    facts: BTreeMap<String, Facts>,
+}
+
+impl Scanner {
+    fn new() -> Self {
+        Scanner {
+            needles: NEEDLES.map(memchr::memmem::Finder::new),
+            facts: BTreeMap::new(),
+        }
+    }
+
+    fn observe(&mut self, seq: u64, line: &[u8]) {
+        if !self
+            .needles
+            .iter()
+            .any(|needle| needle.find(line).is_some())
+        {
             return;
         }
         let Ok(event) = serde_json::from_slice::<Value>(line) else {
             return;
         };
+        let facts = &mut self.facts;
         // The agent's own pickup: the provider's acknowledgement, which the
         // chat stamps with the exact prompt it was written for.
         if let Some(id) = event["octiq_user_turn_id"].as_str() {
@@ -216,8 +241,14 @@ fn scan(key: &str) -> Result<BTreeMap<String, Facts>, String> {
             }
             _ => {}
         }
-    })?;
-    Ok(facts)
+    }
+}
+
+/// Every id's facts, in one pass over the record.
+fn scan(key: &str) -> Result<BTreeMap<String, Facts>, String> {
+    let mut scanner = Scanner::new();
+    crate::transcript::walk(key, |seq, line| scanner.observe(seq, line))?;
+    Ok(scanner.facts)
 }
 
 /// `id`'s answer from the record: its own facts, then the facts of every
@@ -246,11 +277,56 @@ fn answer_from(facts: &BTreeMap<String, Facts>, id: &str) -> Delivery {
     }
 }
 
-/// Whether the record holds the agent's pickup of `turn_id` (or of the turn
-/// it was appended to). The one place that defines a pickup for a caller that
-/// must refuse to un-send a turn (`chat_dismiss_unsent`).
-pub(crate) fn picked_up(key: &str, turn_id: &str) -> Result<bool, String> {
-    Ok(answer_from(&scan(key)?, turn_id).state == "accepted")
+/// Whether `facts` hold the agent's pickup of `turn_id` (or of the turn it
+/// was appended to). The one definition of a pickup, for a caller that must
+/// refuse to un-send a turn (`append_unless_picked_up`).
+fn holds_pickup(facts: &BTreeMap<String, Facts>, turn_id: &str) -> bool {
+    answer_from(facts, turn_id).state == "accepted"
+}
+
+/// How many times the record may change under a dismissal before it is
+/// refused: each change is a pickup, a failure or a whole new record, and
+/// each costs a tail read, or a full read when the record itself moved.
+const ATTEMPTS: usize = 6;
+
+/// Append `event` (a dismissal of `turn_id`) unless the agent has taken the
+/// turn up, and answer its seq; `None` when it has and nothing was written.
+///
+/// The decision and the append are one step with respect to the record. The
+/// whole record is read outside every lock; the append then checks, under the
+/// append lock (`transcript::append_after_walk`), that the record is still
+/// the file and the life that was read and that nothing came after the end
+/// that was read. A line that did (a pickup between the end of the read and
+/// the append) is read as a tail and the decision is made again; a record
+/// that was replaced is read again whole. Never a dismissal after a pickup.
+/// Past `ATTEMPTS` changes it writes nothing and answers `None`: the page asks
+/// `chat_turn_delivery`.
+pub(crate) fn append_unless_picked_up(
+    key: &str,
+    turn_id: &str,
+    event: &Value,
+) -> Result<Option<u64>, String> {
+    use crate::transcript::{append_after_walk, walk_marked, walk_on, After};
+    let mut scanner = Scanner::new();
+    let mut walked = walk_marked(key, |seq, line| scanner.observe(seq, line))?;
+    for _ in 0..ATTEMPTS {
+        if holds_pickup(&scanner.facts, turn_id) {
+            return Ok(None);
+        }
+        let mut again = match append_after_walk(key, &walked, event)? {
+            After::Written(seq) => return Ok(Some(seq)),
+            After::Grew => false,
+            After::Moved => true,
+        };
+        if !again {
+            again = !walk_on(key, &mut walked, |seq, line| scanner.observe(seq, line))?;
+        }
+        if again {
+            scanner = Scanner::new();
+            walked = walk_marked(key, |seq, line| scanner.observe(seq, line))?;
+        }
+    }
+    Ok(None)
 }
 
 fn validated(ids: Vec<String>) -> Result<Vec<String>, String> {
@@ -285,7 +361,12 @@ pub fn chat_turn_delivery_impl(
     turn_ids: Vec<String>,
 ) -> Result<Answer, String> {
     let ids = validated(turn_ids)?;
+    // One spelling for the queue and the record, as the index's: a bare id
+    // names the same chat as `chat:<id>`, and the queue and the record are
+    // kept under the prefixed key.
     let chat_id = chat_key.strip_prefix("chat:").unwrap_or(chat_key);
+    let canonical = format!("chat:{chat_id}");
+    let chat_key = canonical.as_str();
     if !crate::chat_index::listed(chat_id)? {
         return Err(crate::outcome::refuse(
             crate::outcome::ReasonClass::Validation,
@@ -703,6 +784,153 @@ mod tests {
                 started.elapsed()
             );
         }
+    }
+
+    fn dismiss(key: &str, id: &str) -> Result<bool, String> {
+        crate::agent_chat::chat_dismiss_unsent_impl(
+            &ChatManager::default(),
+            key.to_string(),
+            id.to_string(),
+        )
+    }
+
+    fn types_in(key: &str) -> Vec<String> {
+        crate::transcript::every_line(key)
+            .unwrap()
+            .into_iter()
+            .map(|line| {
+                let kind = line.event["type"].as_str().unwrap_or("").to_string();
+                if line.event["octiq_user_turn_id"].is_string() {
+                    format!("{kind}:pickup")
+                } else {
+                    kind
+                }
+            })
+            .collect()
+    }
+
+    /// The reviewer's probe (a): the agent's pickup is appended after the
+    /// scan reached the end of the record and before the dismissal is
+    /// written. The guard must see it and write nothing.
+    #[test]
+    fn a_pickup_appended_after_the_scan_ended_is_not_dismissed_over() {
+        let home = TestDir::new("turn-delivery-race-tail");
+        let _profile = crate::profile::started_in(&home);
+        let key = listed_chat("td-race-tail");
+        envelope(&key, "late");
+        delivery(&key, "late", "dispatched");
+        let hooked = key.clone();
+        crate::transcript::after_walk_hook(move || {
+            echo(&hooked, "late");
+        });
+        assert_eq!(dismiss(&key, "late"), Ok(false));
+        assert!(
+            !types_in(&key).contains(&"octiq_user_turn_dismissed".to_string()),
+            "{:?}",
+            types_in(&key)
+        );
+        assert_eq!(state_of(&key, "late").state, "accepted");
+    }
+
+    /// A line that came after the scan and is not this turn's pickup costs a
+    /// tail read, not the dismissal: the turn is still unsent.
+    #[test]
+    fn an_unrelated_line_after_the_scan_does_not_stop_a_true_dismissal() {
+        let home = TestDir::new("turn-delivery-race-other");
+        let _profile = crate::profile::started_in(&home);
+        let key = listed_chat("td-race-other");
+        envelope(&key, "unsent");
+        delivery(&key, "unsent", "failed");
+        let hooked = key.clone();
+        crate::transcript::after_walk_hook(move || {
+            echo(&hooked, "someone-else");
+            line(
+                &hooked,
+                json!({"type": "assistant", "message": {"content": "hi"}}),
+            );
+        });
+        assert_eq!(dismiss(&key, "unsent"), Ok(true));
+        let kinds = types_in(&key);
+        assert_eq!(kinds.last().unwrap(), "octiq_user_turn_dismissed");
+        assert_eq!(state_of(&key, "unsent").state, "dismissed");
+    }
+
+    /// The reviewer's probe (b): the record is published anew (an atomic
+    /// replace) while the scan runs, and the new file holds the pickup. The
+    /// dismissal must not be written into it.
+    #[test]
+    fn a_record_published_during_the_scan_is_read_again_before_dismissing() {
+        let home = TestDir::new("turn-delivery-race-publish");
+        let _profile = crate::profile::started_in(&home);
+        let key = listed_chat("td-race-publish");
+        envelope(&key, "moved");
+        delivery(&key, "moved", "dispatched");
+        let path = crate::transcript::path_for(&key).unwrap();
+        let (hooked, target) = (key.clone(), path.clone());
+        crate::transcript::after_walk_hook(move || {
+            let mut text = std::fs::read_to_string(&target).unwrap();
+            text.push_str(
+                &json!({"type": "user", "isReplay": true, "octiq_user_turn_id": "moved",
+                        "message": {"content": "hello"}})
+                .to_string(),
+            );
+            text.push('\n');
+            let staged = target.with_extension("jsonl.staged");
+            std::fs::write(&staged, text).unwrap();
+            std::fs::rename(&staged, &target).unwrap();
+            let _ = &hooked;
+        });
+        assert_eq!(dismiss(&key, "moved"), Ok(false));
+        assert!(!types_in(&key).contains(&"octiq_user_turn_dismissed".to_string()));
+        assert_eq!(state_of(&key, "moved").state, "accepted");
+    }
+
+    /// A record that did not exist when the scan began and does when the
+    /// dismissal is written is a record that grew from nothing.
+    #[test]
+    fn a_record_made_during_the_scan_is_read_before_dismissing() {
+        let home = TestDir::new("turn-delivery-race-made");
+        let _profile = crate::profile::started_in(&home);
+        let key = listed_chat("td-race-made");
+        let hooked = key.clone();
+        crate::transcript::after_walk_hook(move || {
+            echo(&hooked, "born");
+        });
+        assert_eq!(dismiss(&key, "born"), Ok(false));
+        assert_eq!(types_in(&key), vec!["user:pickup".to_string()]);
+    }
+
+    #[test]
+    fn a_true_dismissal_is_still_written_once_with_nothing_racing() {
+        let home = TestDir::new("turn-delivery-dismiss-plain");
+        let _profile = crate::profile::started_in(&home);
+        let key = listed_chat("td-dismiss-plain");
+        envelope(&key, "plain");
+        delivery(&key, "plain", "failed");
+        assert_eq!(dismiss(&key, "plain"), Ok(true));
+        assert_eq!(
+            types_in(&key).last().map(String::as_str),
+            Some("octiq_user_turn_dismissed")
+        );
+    }
+
+    /// A bare chat id is the chat `chat:<id>`: both read the one record.
+    #[test]
+    fn a_bare_chat_id_reads_the_same_record_as_the_prefixed_key() {
+        let home = TestDir::new("turn-delivery-bare");
+        let _profile = crate::profile::started_in(&home);
+        let key = listed_chat("td-bare");
+        envelope(&key, "sent");
+        let picked = echo(&key, "sent");
+        let want = Delivery {
+            state: "accepted",
+            seq: Some(picked),
+            into: None,
+        };
+        assert_eq!(state_of(&key, "sent"), want);
+        assert_eq!(state_of("td-bare", "sent"), want);
+        // And an id the record does not hold is absent under both.
+        assert_eq!(state_of("td-bare", "nope").state, "absent");
     }
 
     #[test]
