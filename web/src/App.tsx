@@ -38,7 +38,8 @@ import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp, type Frame } from "./lib/catchUp";
 import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
 import { valueBytes } from "./lib/valueBytes";
-import { loadChat, loadEarlierChat, CHAT_WINDOW_BYTES } from "./lib/loadChat";
+import { loadChat, loadEarlierChat, forgetHiddenScans, CHAT_WINDOW_BYTES } from "./lib/loadChat";
+import { dismissUnsentTurn } from "./lib/dismissUnsent";
 import { ChatHistory, type ChatPage } from "./lib/chatHistory";
 import { ChatWindowCache } from "./lib/chatWindowCache";
 import { ChatRecordClears, chatSessionFor, clearedConversation, conversationForRecord, invalidateChatRecord, type ChatRecordHead } from "./lib/chatRecord";
@@ -1136,6 +1137,7 @@ export default function App() {
     chatHistory.current.forget(id);
     void forgetChatCheckpoint(id);
     catchUp.current.forget(keyFor(id));
+    forgetHiddenScans(keyFor(id));
     // Urgent whichever chat this is: a row being deleted has to leave the
     // screen when it is deleted, not a quarter of a second afterwards.
     if (id in chatsRef.current) {
@@ -1793,6 +1795,7 @@ export default function App() {
           });
         },
         requestPage: (before) => bridge.invoke<ChatPage>("chat_page", { key, before }),
+        requestDelivery: (turnIds) => bridge.invoke<unknown>("chat_turn_delivery", { chatKey: key, turnIds }),
         getState: () => chatsRef.current[id] ?? EMPTY,
         publish: (state) => patch(id, () => state),
         request: (after) => bridge.invoke<Frame[]>("chat_since", { key, after }),
@@ -1869,6 +1872,7 @@ export default function App() {
       const previousSeq = catchUp.current.mark(keyFor(id));
       await forgetChatCheckpoint(id);
       catchUp.current.forget(keyFor(id)); chatHistory.current.forget(id);
+      forgetHiddenScans(keyFor(id));
       setEarlierReads(prev => ({ ...prev, [id]: { loading: true } }));
       try { await catchUpChat(id); }
       catch (error) {
@@ -4488,21 +4492,15 @@ export default function App() {
     const id = conversationId;
     const state = chatsRef.current[id];
     if (!state?.messages.some((m) => m.turnId === turnId && m.queueLost && !m.echo && !m.takenUp)) return;
-    bridge
-      .invoke("chat_dismiss_unsent", { key: keyFor(id), turnId })
-      .then((dismissed) => {
-        if (dismissed === false) return;
-        // The backend announcement removes this in every open client. Apply
-        // the same fold locally after its durable write so the click does not
-        // depend on the broadcast winning a race with the command reply.
-        patch(id, (s) => ({
-          ...s,
-          messages: s.messages.filter((m) => m.turnId !== turnId),
-        }));
-      })
-      .catch((err) =>
-        patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] })),
-      );
+    // `false` means the host did not dismiss it (the agent already took it up,
+    // or it is still queued): `dismissUnsentTurn` asks where the turn is.
+    void dismissUnsentTurn({
+      turnId,
+      read: () => chatsRef.current[id],
+      patch: (update) => patch(id, update),
+      dismiss: () => bridge.invoke("chat_dismiss_unsent", { key: keyFor(id), turnId }),
+      lookup: (turnIds) => bridge.invoke<unknown>("chat_turn_delivery", { chatKey: keyFor(id), turnIds }),
+    });
   }, [conversationId, patch]);
 
   /** Tell a running Claude session to change effort, using the same slash

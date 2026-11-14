@@ -312,6 +312,10 @@ export type Message = {
   /** The connected backend confirmed this unacknowledged prompt is no longer
    * queued. Keep the words, but do not present them as work still waiting. */
   queueLost?: boolean;
+  /** `failed` because the host's own line said so, not because a queue read did
+   * not list the prompt. Only the second may be taken back when the record
+   * below the window was not read in full. */
+  hostFailed?: boolean;
   /** Transport delivery is distinct from the provider starting its reply. */
   delivery?: "sending" | "queued" | "starting" | "dispatched" | "failed" | "unknown";
   /** Queue sync found no entry for a sending prompt in a live process.
@@ -1058,6 +1062,7 @@ function reduceEvent(state: ChatState, raw: unknown, now: number, source: "live"
       sourceTurnIds,
       delivery,
       queueLost: source.queueLost || target.queueLost || undefined,
+      hostFailed: delivery === "failed" ? (source.hostFailed || target.hostFailed || undefined) : undefined,
       queueAction: undefined,
       queueError: source.queueError ?? target.queueError,
       ...(asOneLine(text) ? { relay: asOneLine(text) } : { relay: undefined }),
@@ -1072,7 +1077,10 @@ function reduceEvent(state: ChatState, raw: unknown, now: number, source: "live"
   if (type === "octiq_user_turn_cancelled" || type === "octiq_user_turn_dismissed") {
     const cancelled = asStr(e.uuid);
     if (!cancelled) return state;
-    return { ...state, messages: state.messages.filter((m) => !ownsTurnId(m, cancelled)) };
+    // A message the agent echoed or took up is confirmed: it was delivered, so
+    // a late or mistaken cancel/dismiss line cannot take it back. Only words
+    // the agent never confirmed are removed. Live and replay share this rule.
+    return { ...state, messages: state.messages.filter((m) => !ownsTurnId(m, cancelled) || !!m.echo || !!m.takenUp) };
   }
 
   if (type === "octiq_user_turn_delivery") {
@@ -1082,7 +1090,7 @@ function reduceEvent(state: ChatState, raw: unknown, now: number, source: "live"
     return {
       ...state,
       messages: state.messages.map((m) => ownsTurnId(m, turnId) && !m.echo && !m.takenUp
-        ? { ...m, delivery: delivery as Message["delivery"], queueLost: delivery === "failed" || undefined, queueAction: undefined, queueError: undefined }
+        ? { ...m, delivery: delivery as Message["delivery"], queueLost: delivery === "failed" || undefined, hostFailed: delivery === "failed" || undefined, queueAction: undefined, queueError: undefined }
         : m),
     };
   }
@@ -1856,7 +1864,7 @@ function reduceEvent(state: ChatState, raw: unknown, now: number, source: "live"
         return {
           ...state,
           messages: state.messages.map((m) =>
-            m === mine ? { ...m, echo: uuid, delivery: "dispatched", queueUnconfirmedSend: undefined, queueLost: undefined, queueAction: undefined, queueError: undefined, ...(ran ? { ranSkill: ran } : {}) } : m,
+            m === mine ? { ...m, echo: uuid, delivery: "dispatched", queueUnconfirmedSend: undefined, queueLost: undefined, hostFailed: undefined, queueAction: undefined, queueError: undefined, ...(ran ? { ranSkill: ran } : {}) } : m,
           ),
         };
       }
@@ -2822,7 +2830,7 @@ function codexTurnStarted(
     // This also repairs old transcripts whose stopped launches had no receipt.
     if (turnId && m.turnId !== turnId && m.role === "user" && !m.to
       && !m.echo && !m.takenUp && m.delivery === "dispatched") {
-      return { ...m, delivery: "unknown" as const, queueLost: undefined };
+      return { ...m, delivery: "unknown" as const, queueLost: undefined, hostFailed: undefined };
     }
     return m.streaming && !m.parent && !m.speaker
       ? finishCodexMessage(m)
@@ -2830,7 +2838,7 @@ function codexTurnStarted(
   });
   let messages = closed;
   if (at >= 0) {
-    const accepted: Message = { ...closed[at], takenUp: true, delivery: "dispatched", queueLost: undefined, queueAction: undefined, queueError: undefined };
+    const accepted: Message = { ...closed[at], takenUp: true, delivery: "dispatched", queueLost: undefined, hostFailed: undefined, queueAction: undefined, queueError: undefined };
     const remaining = closed.filter((_, i) => i !== at);
     const settled = remaining.filter((m) => !waitingForCodex(m));
     const waiting = remaining.filter(waitingForCodex);

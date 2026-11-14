@@ -1,5 +1,5 @@
 import { valueBytes } from "./valueBytes";
-import { emptyChat, reduceChat, type ChatState, type Message } from "./chat";
+import { emptyChat, ownsTurnId, reduceChat, type ChatState, type Message } from "./chat";
 import { type CatchUp, type Frame } from "./catchUp";
 import { readChatCheckpoint, saveChatCheckpoint } from "./chatCache";
 import { replayChat } from "./replayChat";
@@ -7,19 +7,167 @@ import { type ChatHistory, type ChatPage, type HistorySlice } from "./chatHistor
 import { restoredTurn } from "./turnClock";
 import { withLocalPrompts } from "./chatRetention";
 import { invalidateChatRecord, type ChatRecordHead } from "./chatRecord";
+import { DELIVERY_BATCH, applyResolution, holdDeliveryLookup, readDeliveryAnswer, resolveMessage, type Resolution, type TurnDeliveryFact } from "./turnDelivery";
+
+/** What a scan below the window learned about prompts this tab still holds
+ * only locally. */
+type Hidden = {
+  /** Identified host lines for those prompts, in record order. */
+  frames: Frame[];
+  /** Whether the scan reached the floor (or ran out of record) rather than
+   * stopping at its page budget. */
+  complete: boolean;
+};
+
+/** Pages read below a reopened window to find the fate of a local prompt. */
+export const HIDDEN_PROMPT_PAGES = 40;
+/** Seqs already read, line by line, without a word about one prompt. An absence
+ * holds only for the range actually read: a later gap is new record the host
+ * may have written to after this was checked. */
+type Checked = { lo: number; hi: number };
+const absent = new Map<string, Checked>();
+/** Entries kept at most. Dropping one only means the range is read again. */
+export const ABSENCE_ENTRIES = 128;
+/** Forget what was read for one chat (deleted, cleared, dismissed), or all. */
+export function forgetHiddenScans(key?: string): void {
+  if (key === undefined) { absent.clear(); return; }
+  for (const at of [...absent.keys()]) if (at.startsWith(`${key}\0`)) absent.delete(at);
+}
+/** How many absences are remembered (for tests). */
+export function absenceEntries(): number { return absent.size; }
+/** Entries for prompts this chat no longer holds locally are dead weight. */
+function pruneAbsent(key: string, held: ReadonlySet<string>): void {
+  for (const at of [...absent.keys()]) {
+    if (at.startsWith(`${key}\0`) && !held.has(at.slice(key.length + 1))) absent.delete(at);
+  }
+}
+
+function absenceKey(key: string, turnId: string | undefined): string { return `${key}\0${turnId}`; }
+
+/** Whether every seq in [lo, hi] was already read and held nothing about it. */
+function checkedAbsent(key: string, message: Message, lo: number, hi: number): boolean {
+  const seen = absent.get(absenceKey(key, message.turnId));
+  return !!seen && seen.lo <= lo && seen.hi >= hi;
+}
+
+function noteAbsent(key: string, message: Message, lo: number, hi: number): void {
+  const at = absenceKey(key, message.turnId);
+  const seen = absent.get(at);
+  // Ranges that touch are one read range; a disjoint older one is not proof
+  // of anything between, so the newer replaces it.
+  absent.delete(at); // re-inserted last: the oldest entry is the first to go
+  absent.set(at, seen && seen.lo <= hi + 1 && lo <= seen.hi + 1
+    ? { lo: Math.min(lo, seen.lo), hi: Math.max(hi, seen.hi) } : { lo, hi });
+  while (absent.size > ABSENCE_ENTRIES) absent.delete(absent.keys().next().value as string);
+}
+
+function turnIdsOf(message: Message): string[] {
+  return [message.turnId, ...(message.sourceTurnIds ?? [])].filter((id): id is string => !!id);
+}
+
+/** Words that exist only in this tab: no echo, no pickup. */
+function localOnlyTurns(state: ChatState, key: string, lo: number, hi: number): Message[] {
+  return state.messages.filter(message => message.role === "user" && !message.echo && !message.takenUp
+    && !!message.turnId && !checkedAbsent(key, message, lo, hi));
+}
+
+/** The host's identified word on one prompt, from one raw event. */
+function hiddenFact(event: unknown, wanted: Set<string>): "accepted" | "gone" | "delivery" | undefined {
+  if (!event || typeof event !== "object") return undefined;
+  const e = event as { type?: string; uuid?: string; state?: string; octiq_user_turn_id?: string };
+  if (e.type === "octiq_user_turn_cancelled" || e.type === "octiq_user_turn_dismissed") return e.uuid && wanted.has(e.uuid) ? "gone" : undefined;
+  if (e.type === "octiq_user_turn_delivery") return e.uuid && wanted.has(e.uuid) ? "delivery" : undefined;
+  if ((e.type === "user" || e.type === "turn.started") && e.octiq_user_turn_id && wanted.has(e.octiq_user_turn_id)) return "accepted";
+  return undefined;
+}
+
+/** A pending local prompt that is not in the window may still have been
+ * delivered: the host records its echo where it happened, and a reopened
+ * window starts at the record's tail. Read older pages, newest first, for
+ * identified lines about exactly those prompts; keep only those lines.
+ * Bounded by pages, never a whole-record download. */
+async function scanHidden(options: ChatLoadOptions, prompts: Message[], start: number | null, floor: number): Promise<Hidden> {
+  const { requestPage, cancelled } = options;
+  const wanted = new Set(prompts.flatMap(turnIdsOf));
+  const frames: Frame[] = [];
+  const settled = new Set<string>();
+  const finish = (complete: boolean): Hidden => ({ frames: frames.sort((a, b) => a.seq - b.seq), complete });
+  if (!requestPage) return finish(false);
+  let cursor = start;
+  let pages = 0;
+  while (cursor !== null && cursor > floor && pages < HIDDEN_PROMPT_PAGES && settled.size < wanted.size) {
+    let page: ChatPage;
+    try { page = await requestPage(cursor); } catch { return finish(false); }
+    if (cancelled()) return finish(false);
+    if (page.before !== null && page.before >= cursor) return finish(false);
+    pages++;
+    const found = page.events.filter(frame => frame.seq >= floor && hiddenFact(frame.event, wanted));
+    // Pages come newest first; `finish` puts every line in record order.
+    frames.push(...found);
+    for (const frame of found) {
+      const fact = hiddenFact(frame.event, wanted);
+      const e = frame.event as { uuid?: string; state?: string; octiq_user_turn_id?: string };
+      const id = e.octiq_user_turn_id ?? e.uuid;
+      if (id && (fact !== "delivery" || e.state === "failed")) settled.add(id);
+    }
+    cursor = page.before;
+  }
+  return finish(cursor === null || cursor <= floor || settled.size >= wanted.size);
+}
 
 /** Reconcile only identified host facts against local-only words. Historical
  * replay is identity-only even when a checkpoint seed already contains those
- * words: an unrelated unstamped echo of "continue" cannot acknowledge them. */
-function pendingAfterReplay(next: ChatState, current: ChatState, frames: Frame[]): ChatState {
+ * words: an unrelated unstamped echo of "continue" cannot acknowledge them.
+ *
+ * `hidden` carries what was read BELOW the window about those words. A prompt
+ * the host accepted there is not held in this tab at all: its confirmed words
+ * come back with their history. One the host never mentioned, in a gap that
+ * was read only in part, is unconfirmed, not lost: queue absence alone must
+ * never draw "Not sent" for words that may have been delivered. */
+function pendingAfterReplay(next: ChatState, current: ChatState, frames: Frame[], hidden?: Hidden, facts?: ReadonlyMap<string, TurnDeliveryFact>): ChatState {
+  const inWindow = new Set(next.messages.flatMap(message => [message.id, ...turnIdsOf(message)]));
   next = withLocalPrompts(next, current);
-  for (const { event } of frames) {
+  const outside = (message: Message) => message.role === "user" && !message.echo && !message.takenUp
+    && !!message.turnId && !turnIdsOf(message).some(id => inWindow.has(id)) && current.messages.some(c => c.id === message.id);
+  const wanted = new Set(next.messages.filter(outside).flatMap(turnIdsOf));
+  const confirmed = new Set<string>();
+  for (const { event } of [...(hidden?.frames ?? []), ...frames]) {
     if (!event || typeof event !== "object") continue;
     const e = event as { type?: string; octiq_user_turn_id?: string };
     if (["octiq_user_turn_cancelled", "octiq_user_turn_dismissed", "octiq_user_turn_delivery"].includes(e.type ?? "")) next = reduceChat(next, event);
     if (e.type === "turn.started" && e.octiq_user_turn_id) next = { ...next, messages: next.messages.map(message =>
       message.turnId === e.octiq_user_turn_id && !message.echo
-        ? { ...message, takenUp: true, delivery: "dispatched", queueLost: undefined, queueAction: undefined, queueError: undefined } : message) };
+        ? { ...message, takenUp: true, delivery: "dispatched", queueLost: undefined, hostFailed: undefined, queueAction: undefined, queueError: undefined } : message) };
+  }
+  if (hidden) {
+    for (const { event } of hidden.frames) {
+      if (hiddenFact(event, wanted) === "accepted") confirmed.add((event as { octiq_user_turn_id: string }).octiq_user_turn_id);
+    }
+    next = { ...next, messages: next.messages.filter(message => !(outside(message) || message.takenUp) || !turnIdsOf(message).some(id => confirmed.has(id))) };
+    next = { ...next, messages: next.messages.map(message => {
+      if (!outside(message) || message.delivery === "unknown" || message.delivery === "sending") return message;
+      // A failure the host itself recorded stays failed. One inferred only from
+      // the queue not listing the prompt means nothing about a gap that was not
+      // read to its end.
+      if (hidden.complete || (message.delivery === "failed" && message.hostFailed)) return message;
+      return { ...message, delivery: "unknown" as const, queueLost: undefined, hostFailed: undefined };
+    }) };
+  }
+  if (facts) {
+    // The host's exact answer, asked for exactly the prompts that sit outside
+    // the window. Nothing here reads queue absence.
+    const decided = new Map<string, Resolution>();
+    for (const message of next.messages) {
+      if (!outside(message)) continue;
+      const resolution = resolveMessage(message, turnIdsOf(message), facts);
+      if (resolution) decided.set(message.id, resolution);
+    }
+    if (decided.size) next = { ...next, messages: next.messages.flatMap(message => {
+      const resolution = decided.get(message.id);
+      if (!resolution) return [message];
+      const kept = applyResolution(message, resolution);
+      return kept ? [kept] : [];
+    }) };
   }
   return next;
 }
@@ -50,6 +198,10 @@ export type ChatLoadOptions = {
   cancelled: () => boolean;
   history?: ChatHistory;
   requestPage?: (before: number | null) => Promise<ChatPage>;
+  /** The host's exact word on each turn id (`chat_turn_delivery`). Missing, or
+   * failing for any reason, it reads as "not asked": the page scan runs instead
+   * and a failed lookup is never shown as an unsent prompt. */
+  requestDelivery?: (turnIds: string[]) => Promise<unknown>;
   /** Let native touch/momentum scrolling finish before changing its content. */
   beforePrepend?: () => Promise<void>;
 };
@@ -125,12 +277,15 @@ async function loadChatWindow(options: ChatLoadOptions): Promise<void> {
   let missing: Frame[] | undefined;
   let page: ChatPage | undefined;
   let recent: ChatPage | undefined;
+  // Where a prompt sent after this tab's last look could have been recorded.
+  let floor = 0;
   if (from > 0 && options.requestPage) {
     try {
       recent = await options.requestPage(null);
       if (cancelled()) return;
       if (recent.before !== null && recent.before > from + 1) {
         // A long offline gap is a new window, never an unbounded chat_since.
+        floor = from + 1;
         catchUp.forget(key); from = catchUp.begin(key, 0); page = recent;
       }
     } catch (e) { if (!String(e).includes("not available on this backend")) throw e; }
@@ -204,15 +359,59 @@ async function loadChatWindow(options: ChatLoadOptions): Promise<void> {
   // end includes events held during download AND the yielding replay. Only
   // events beyond the replay's tail still need folding.
   const tail = run?.length ? run[run.length - 1].seq : from;
-  next = pendingAfterReplay(next, getState(), [...context, ...(run ?? [])]);
-  const frames = catchUp.end(key, run ?? []);
-  for (const frame of frames) {
-    if (frame.seq > tail) next = reduceChat(next, frame.event);
-  }
-  if (page) options.history?.set(id, page.before, undefined, [historySlice(next, page.events.at(-1)?.seq ?? 0)]);
-  const live = getState();
-  if (live.busy && next.busy && live.turnStartedAt !== undefined) next = { ...next, turnStartedAt: live.turnStartedAt, turnWaits: live.turnWaits, activityTurnId: live.activityTurnId };
-  publish(next);
+  // Words held only in this tab and absent from the window may have been
+  // delivered below it (the turn ran on for an hour after it was sent).
+  let hidden: Hidden | undefined;
+  const lone = page?.before != null ? localOnlyTurns(getState(), key, floor, page.before - 1)
+    .filter(message => !next.messages.some(known => known.id === message.id || turnIdsOf(message).some(id => ownsTurnId(known, id)))) : [];
+  let facts: Map<string, TurnDeliveryFact> | undefined;
+  pruneAbsent(key, new Set(getState().messages.filter(m => m.role === "user" && !m.echo && !m.takenUp).map(m => m.turnId).filter((t): t is string => !!t)));
+  // The idle queue poll must not call these prompts unsent while the host is
+  // being asked about them, nor between its answer and the publish below.
+  const release = holdDeliveryLookup(lone.flatMap(turnIdsOf));
+  try {
+    if (lone.length) {
+      facts = await lookupDelivery(options, lone);
+      if (cancelled()) return;
+      if (!facts) {
+        hidden = await scanHidden(options, lone, page!.before, floor);
+        if (cancelled()) return;
+        if (hidden.complete) for (const message of lone) {
+          if (!hidden.frames.some(f => hiddenFact(f.event, new Set(turnIdsOf(message))))) noteAbsent(key, message, floor, page!.before! - 1);
+        }
+      }
+    }
+    next = pendingAfterReplay(next, getState(), [...context, ...(run ?? [])], hidden, facts);
+    const frames = catchUp.end(key, run ?? []);
+    for (const frame of frames) {
+      if (frame.seq > tail) next = reduceChat(next, frame.event);
+    }
+    if (page) options.history?.set(id, page.before, undefined, [historySlice(next, page.events.at(-1)?.seq ?? 0)]);
+    const live = getState();
+    if (live.busy && next.busy && live.turnStartedAt !== undefined) next = { ...next, turnStartedAt: live.turnStartedAt, turnWaits: live.turnWaits, activityTurnId: live.activityTurnId };
+    publish(next);
+  } finally { release(); }
+}
+
+/** Ask the host, once for all of them, what became of each prompt held only in
+ * this tab. `undefined` means the host could not say (no such command on an
+ * older backend, any error, an answer that is not one): nothing is inferred
+ * from that, and the caller falls back to reading the record. */
+async function lookupDelivery(options: ChatLoadOptions, prompts: Message[]): Promise<Map<string, TurnDeliveryFact> | undefined> {
+  const { requestDelivery } = options;
+  if (!requestDelivery) return undefined;
+  const ids = [...new Set(prompts.flatMap(turnIdsOf))];
+  const facts = new Map<string, TurnDeliveryFact>();
+  try {
+    for (let at = 0; at < ids.length; at += DELIVERY_BATCH) {
+      const batch = ids.slice(at, at + DELIVERY_BATCH);
+      const answer = readDeliveryAnswer(await requestDelivery(batch));
+      // An id the host left out of its answer is not an answer for it.
+      if (!batch.every(id => answer.has(id))) return undefined;
+      for (const [id, fact] of answer) facts.set(id, fact);
+    }
+  } catch { return undefined; }
+  return facts;
 }
 
 /** Reduced history windows are bounded too. Explicit earlier reads may slide the

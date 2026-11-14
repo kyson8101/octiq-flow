@@ -1,4 +1,5 @@
 import { ownsTurnId, type ChatState } from "./chat";
+import { deliveryLookupHeld } from "./turnDelivery";
 
 /** A live provider event that proves a turn has started on this connection.
  *
@@ -45,6 +46,9 @@ export function reconcileUnsentMessages(chat: ChatState, queue: ChatQueueState):
   let changed = false;
   const messages = chat.messages.map((message) => {
     if (message.role !== "user" || !message.turnId || message.echo || message.takenUp) return message;
+    // The host is being asked about this very prompt: until it answers, the
+    // queue's silence about it proves nothing (`turnDelivery`).
+    if (deliveryLookupHeld(message)) return message;
     if ((message.delivery === "failed" || message.delivery === "unknown") && !isQueued(message)) {
       if (!queue.live && message.queueUnconfirmedSend) {
         changed = true;
@@ -61,7 +65,7 @@ export function reconcileUnsentMessages(chat: ChatState, queue: ChatQueueState):
     const lost = delivery === "failed";
     if (!!message.queueLost === lost && message.delivery === delivery) return message;
     changed = true;
-    return { ...message, delivery, queueLost: lost || undefined,
+    return { ...message, delivery, queueLost: lost || undefined, hostFailed: undefined,
       // App excludes in-flight RPCs from queue snapshots. A successful send
       // on an older host can therefore be absent here before its unstamped
       // echo arrives. Preserve exactly its previous sending eligibility;
