@@ -57,6 +57,16 @@ lost or unconfirmed delivery from queued work. API connection errors, including
 certificate errors, remain provider failures; delivery state does not imply a
 successful reply.
 
+## Asking where a turn is
+
+`chat_turn_delivery { chatKey, turnIds }` (socket only, read-only) tells a page
+which of its messages are still waiting here (`queued`, from
+`ChatManager::queued_turns`, appended ids naming their unit in `into`), which
+the agent has taken up (`accepted`), and which failed, were taken back or were
+never heard of. A page that lost its stream asks it instead of showing `Not
+sent` for a message the host handed over. Contract and rules: the module doc of
+`src-tauri/src/turn_delivery.rs` and [chat record storage](chat-record-storage.md).
+
 ## Verification
 
 Run `pnpm --dir web test` and `cargo test --lib` in `src-tauri/`. The browser

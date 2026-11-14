@@ -44,11 +44,48 @@ row handling and the serial browser regression probes.
 | `replayChat`, `CatchUp`, `loadChat` | Stable logical `seq`; a compacted marker whose `into <= checkpoint` forces a fresh page when merged text crossed the checkpoint |
 | `chat_page` | Whole turns, source-resolved init context, stable exclusive cursors; indexes physical lines with their logical end numbers |
 | `chat_since`, `every_line`, `of_type` | Source-resolved events and original sequence numbers; malformed/torn lines still occupy a position |
+| `chat_turn_delivery`, `transcript::walk` | One forward pass of `for_each_line` bytes; parses only lines naming `"octiq_user_turn_` or `"octiq_append_to"`; seq is the logical seq of the deciding line |
 | Search | User/assistant text and provider final messages, not init lists, hooks or the structured tool-result copy |
 | Provider switch | Bounded transcript evidence; never storage-only references |
 | Question/answered and reopen receipts | Exact host event identities/content, generation, file sync and folder sync |
 | Tool diff | `tool_use_result.filePath`, `structuredPatch`, `type`, and `content` for newly created files |
 | Failure origin | `tool_use_result._meta`, including `octiq/outcome` |
+
+## Delivery state of a user turn
+
+`chat_turn_delivery { chatKey, turnIds: [1..32] }` answers `{ turns: { id: {
+state, seq?, into? } } }` from the queue in memory and one pass over the
+record. It is socket only and read-only (no hook, no MCP tool). The contract,
+the state table and the rules where lines are not simply ordered are in the
+module doc of `src-tauri/src/turn_delivery.rs`; the states are `queued`,
+`accepted` (the agent's own `octiq_user_turn_id` pickup), `dispatched`,
+`failed`, `cancelled`, `dismissed` and `absent`. A turn appended to another
+(`octiq_user_turn_appended`, the page's `sourceTurnIds`) is answered with
+the target's state and `into` set to the target id. A profile folder that is
+away answers with `profile::available`'s sentence; the scan holds no lock and
+a line appended during it may be missed.
+
+`chat_dismiss_unsent` must not dismiss a turn the agent picked up, so its check
+and append are one step (`transcript::walk_marked`, `walk_on`,
+`append_after_walk`): the record is read outside every lock, and under the
+append lock the append is written only if the generation, the file identity and
+the length still match the end that was read; a grown record is read as a tail
+and decided again, a replaced one is read whole, and after 6 changes nothing is
+written (answer `false`, the page asks `chat_turn_delivery`).
+
+**The mark covers whole lines only.** The walk's end is the end of the last
+newline-terminated line. A last line without its line end (a write in progress,
+or one that was cut) is not shown to the guard, not counted, and the walk
+stops there rather than reading on: a writer finishing the line between two
+reads would otherwise make its two halves two bad lines and a mark that covers
+bytes never read as a line. The record is then longer than the mark, so the
+append answers `Grew` and the line is read whole from its start. A last line
+that is never finished leaves the guard answering `false` after its attempts
+(nothing is written; the next ordinary append repairs the line end). The
+shared walk (`try_each_stored_line`, so lookup and every reader) still hands an
+unterminated last line to its reader exactly as before, with the same seq; the
+only change is that it reads no further after it, which only a file that grew
+during the walk could ever have reached.
 
 ## Clearing native sessions
 

@@ -2898,6 +2898,21 @@ impl ChatManager {
             .then(|| chat_key.to_string())
     }
 
+    /// The id of the queued unit that holds `turn_id`, when one does: the id
+    /// itself for a unit's canonical turn, the unit's first id for a turn
+    /// that was appended to it. Read from memory only (`chat_turn_delivery`).
+    pub(crate) fn queued_unit_of(
+        &self,
+        chat_key: &str,
+        turn_id: &str,
+    ) -> Result<Option<String>, String> {
+        let queues = self.queued_turns.lock().map_err(|e| e.to_string())?;
+        Ok(queues
+            .get(chat_key)
+            .and_then(|queue| queue.iter().find(|turn| turn.owns_turn_id(turn_id)))
+            .map(|turn| turn.turn_id.clone().unwrap_or_else(|| turn_id.to_string())))
+    }
+
     /// Ending a process deliberately is also the end of every turn waiting only
     /// for that process. Otherwise a later, unrelated resume could unexpectedly
     /// receive words the person meant to cancel.
@@ -7578,9 +7593,16 @@ pub fn chat_dismiss_unsent_impl(
     if manager.queued_turn_session_key(&key, &turn_id).is_some() {
         return Ok(false);
     }
+    // A turn the agent has taken up is not unsent, whatever the page heard:
+    // dismissing it would write `dismissed` over an answered message. The
+    // page keeps its bubble and learns the truth from `chat_turn_delivery`.
+    // The check and the append are one step against the record: a pickup that
+    // lands after the read, or a record published during it, writes nothing
+    // (`turn_delivery::append_unless_picked_up`).
     let event = json!({ "type": "octiq_user_turn_dismissed", "uuid": turn_id });
-    let seq = crate::transcript::append(&key, &event)
-        .ok_or_else(|| "could not record the dismissed message".to_string())?;
+    let Some(seq) = crate::turn_delivery::append_unless_picked_up(&key, &turn_id, &event)? else {
+        return Ok(false);
+    };
     crate::bus::emit(
         "chat-event",
         ChatEvent {
@@ -12488,6 +12510,78 @@ mod tests {
         crate::transcript::forget(&key);
     }
 
+    /// `chat_turn_delivery` asks the queue first: a turn waiting in it is
+    /// `queued` whatever the record says, and one folded into another unit
+    /// names the unit's first id. Once taken out, the record decides.
+    #[test]
+    fn a_queued_turn_is_queued_and_a_folded_one_names_its_unit() {
+        let manager = Arc::new(ChatManager::default());
+        let bare = format!("delivery-queue-{}", uuid::Uuid::new_v4().simple());
+        // Queues and records are kept under the prefixed key.
+        let key = format!("chat:{bare}");
+        manager.handoffs.lock().unwrap().insert(key.clone());
+        for (text, turn_id) in [("one", "user-1"), ("two", "user-2")] {
+            chat_send_user_impl(
+                manager.clone(),
+                key.clone(),
+                text.into(),
+                None,
+                None,
+                Some(turn_id.into()),
+                None,
+            )
+            .expect("a queued turn");
+        }
+        crate::chat_index::upsert(
+            serde_json::from_value(
+                json!({"id": bare, "projectId": "p", "title": "T", "updatedAt": 1}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let ask = |ids: &[&str]| {
+            crate::turn_delivery::chat_turn_delivery_impl(
+                &manager,
+                &key,
+                ids.iter().map(|id| id.to_string()).collect(),
+            )
+            .unwrap()
+            .turns
+        };
+        // The bare id is the same chat: it must see the same queue.
+        let by_bare = crate::turn_delivery::chat_turn_delivery_impl(
+            &manager,
+            &bare,
+            vec!["user-1".into(), "user-2".into()],
+        )
+        .unwrap()
+        .turns;
+        assert_eq!(by_bare["user-1"].state, "queued");
+        assert_eq!(by_bare["user-2"].into.as_deref(), Some("user-1"));
+        let waiting = ask(&["user-1", "user-2", "user-9"]);
+        assert_eq!(
+            (waiting["user-1"].state, waiting["user-1"].into.as_deref()),
+            ("queued", None)
+        );
+        assert_eq!(waiting["user-1"].seq, None);
+        assert_eq!(
+            (waiting["user-2"].state, waiting["user-2"].into.as_deref()),
+            ("queued", Some("user-1"))
+        );
+        assert_eq!(waiting["user-9"].state, "absent");
+
+        // Taken out and written to the agent: the record says so.
+        manager.take_queued_turn(&key).expect("the unit");
+        record_delivery(&key, Some("user-1"), "dispatched");
+        let after = ask(&["user-1", "user-2"]);
+        assert_eq!(after["user-1"].state, "dispatched");
+        assert_eq!(after["user-2"].state, "dispatched");
+        assert_eq!(after["user-2"].into.as_deref(), Some("user-1"));
+
+        manager.handoffs.lock().unwrap().remove(&key);
+        crate::transcript::forget(&key);
+    }
+
     #[test]
     fn compatible_follow_ups_share_one_durable_queue_unit() {
         let manager = Arc::new(ChatManager::default());
@@ -14259,6 +14353,48 @@ mod tests {
             Some("queued-1".into())
         );
 
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn dismissing_a_turn_the_agent_took_up_is_refused_and_writes_nothing() {
+        let manager = ChatManager::default();
+        let key = format!("dismiss-picked-{}", uuid::Uuid::new_v4().simple());
+        for event in [
+            json!({"type": "user", "uuid": "answered", "octiq_user_turn": true,
+                   "message": {"content": "hi"}}),
+            json!({"type": "octiq_user_turn_delivery", "uuid": "answered", "state": "dispatched"}),
+            json!({"type": "user", "isReplay": true, "octiq_user_turn_id": "answered",
+                   "message": {"content": "hi"}}),
+            json!({"type": "assistant", "message": {"content": "done"}}),
+        ] {
+            crate::transcript::append(&key, &event).unwrap();
+        }
+        assert_eq!(
+            chat_dismiss_unsent_impl(&manager, key.clone(), "answered".into()),
+            Ok(false)
+        );
+        assert_eq!(
+            crate::transcript::since(&key, 0).len(),
+            4,
+            "no line was written"
+        );
+
+        // A turn the host never delivered still dismisses, durably.
+        crate::transcript::append(
+            &key,
+            &json!({"type": "octiq_user_turn_delivery", "uuid": "lost", "state": "failed"}),
+        )
+        .unwrap();
+        assert_eq!(
+            chat_dismiss_unsent_impl(&manager, key.clone(), "lost".into()),
+            Ok(true)
+        );
+        let last = crate::transcript::since(&key, 0).pop().unwrap().event;
+        assert_eq!(
+            (last["type"].as_str(), last["uuid"].as_str()),
+            (Some("octiq_user_turn_dismissed"), Some("lost"))
+        );
         crate::transcript::forget(&key);
     }
 

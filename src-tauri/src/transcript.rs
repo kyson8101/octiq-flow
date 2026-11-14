@@ -609,6 +609,281 @@ pub fn append_in(key: &str, seen: &Generation, event: &Value) -> (Held, Option<u
     (held, Some(seq))
 }
 
+/// A record read to its end by `walk_marked`, with what is needed to put a
+/// line after exactly that end and nowhere else (`append_after_walk`).
+///
+/// `len` and `seq` are the end of what was read: bytes, and the logical seq
+/// of its last line. `stamp` names the file that was read, `generation` the
+/// life of the record it belongs to; both are taken under the append lock
+/// together with the opening of the file, so they describe the very file the
+/// walk read, even if another is published under the name before it ends.
+pub(crate) struct Walked {
+    generation: Generation,
+    stamp: Option<RecordStamp>,
+    len: u64,
+    seq: u64,
+}
+
+/// What `append_after_walk` did.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum After {
+    /// Nothing was added since the walk ended; the line is written, with this seq.
+    Written(u64),
+    /// The record has grown past the end that was read. Nothing was written;
+    /// read the new tail (`walk_on`) and ask again.
+    Grew,
+    /// The record is not the one that was read (removed, replaced, or its
+    /// history moved on) or it is shorter than what was read. Nothing was
+    /// written; read the whole record again.
+    Moved,
+}
+
+impl RecordStamp {
+    /// The same file, whatever has been appended to it since.
+    fn same_file(&self, other: &RecordStamp) -> bool {
+        #[cfg(unix)]
+        if self.inode != other.inode {
+            return false;
+        }
+        self.created == other.created
+    }
+}
+
+fn same_file(seen: &Option<RecordStamp>, now: &Option<RecordStamp>) -> bool {
+    match (seen, now) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.same_file(b),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static WALK_END: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `hook` once, the next time a walk (or tail read) of this thread has read to
+/// its end and nothing has been written yet: the instant a record can still
+/// change before a line is appended after it.
+#[cfg(test)]
+pub(crate) fn after_walk_hook(hook: impl FnMut() + 'static) {
+    WALK_END.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+thread_local! {
+    static PARTIAL_READ: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `hook` once, the next time a walk of this thread has just read a last
+/// line that had no line end yet and has not yet read on: the instant a writer
+/// can finish that line between two reads.
+#[cfg(test)]
+pub(crate) fn after_partial_line_hook(hook: impl FnMut() + 'static) {
+    PARTIAL_READ.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+fn partial_line_read() {
+    if let Some(mut hook) = PARTIAL_READ.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn walk_ended() {
+    // Taken out while it runs: the hook itself appends and may read again.
+    if let Some(mut hook) = WALK_END.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+}
+
+/// `walk`, for a reader that is going to put a line after what it read and
+/// must know nothing came between. Reads the record without any lock; the
+/// file and its identity are fixed under the append lock when it is opened.
+/// A chat with no record is an empty one (`len` 0).
+pub(crate) fn walk_marked(key: &str, mut see: impl FnMut(u64, &[u8])) -> Result<Walked, String> {
+    let unread = |e: std::io::Error| format!("the chat's record could not be read: {e}");
+    let path = path_for(key).ok_or_else(|| {
+        chats_folder()
+            .err()
+            .unwrap_or_else(|| "the chat has no record that can be read".into())
+    })?;
+    let (file, stamp, generation) = {
+        let appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+        let record = identity(&path);
+        if STORAGE_HELD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|held| held.contains(&record))
+        {
+            return Err("the chat's record is being rewritten; try again".into());
+        }
+        let generation = generation_of(&appending, &record);
+        match File::open(&path) {
+            Ok(file) => {
+                let meta = file.metadata().map_err(unread)?;
+                if meta.is_dir() {
+                    (None, None, generation)
+                } else {
+                    (Some(file), stamp_from_metadata(meta).ok(), generation)
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (None, None, generation),
+            Err(e) => return Err(unread(e)),
+        }
+    };
+    let mut walked = Walked {
+        generation,
+        stamp,
+        len: 0,
+        seq: 0,
+    };
+    let Some(file) = file else {
+        #[cfg(test)]
+        walk_ended();
+        return Ok(walked);
+    };
+    // The end that is marked is the end of the last WHOLE line (one with its
+    // line end). A last line without one is a write in progress or a cut one:
+    // a writer may finish it before the next read, and then its two halves
+    // would be read as two lines. It is not counted, not shown to `see`, and
+    // everything from its start on is a tail (`walk_on`).
+    let (mut len, mut last) = (0, 0);
+    try_each_line_at(file, |seq, line, at| {
+        if at.terminated {
+            len = at.end;
+            last = seq;
+            see(seq, line);
+        }
+    })
+    .map_err(unread)?;
+    walked.len = len;
+    walked.seq = last;
+    #[cfg(test)]
+    walk_ended();
+    Ok(walked)
+}
+
+/// Read what was added to the record since `walked` ended, without any lock,
+/// and move `walked` to the new end. Lines reach `see` as stored lines with
+/// their continuing seq. `false` when the record is not the file `walked`
+/// read: nothing was read, and the caller reads the whole record again.
+pub(crate) fn walk_on(
+    key: &str,
+    walked: &mut Walked,
+    mut see: impl FnMut(u64, &[u8]),
+) -> Result<bool, String> {
+    use std::io::{Seek, SeekFrom};
+    let unread = |e: std::io::Error| format!("the chat's record could not be read: {e}");
+    let path =
+        path_for(key).ok_or_else(|| "the chat has no record that can be read".to_string())?;
+    let mut file = match File::open(&path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(unread(e)),
+    };
+    let now = file
+        .metadata()
+        .map_err(unread)
+        .map(|meta| stamp_from_metadata(meta).ok())?;
+    // A record that did not exist when the walk began may exist now: its
+    // whole content is the tail.
+    let adopted = walked.stamp.is_none() && now.is_some();
+    if !adopted && !same_file(&walked.stamp, &now) {
+        return Ok(false);
+    }
+    if now.is_none() {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::Start(walked.len)).map_err(unread)?;
+    let mut reader = BufReader::new(file);
+    let (mut line, mut seq, mut len) = (Vec::new(), walked.seq, walked.len);
+    while reader.read_until(b'\n', &mut line).map_err(unread)? > 0 {
+        // A last line with no line end yet is not read: it is read whole, from
+        // its start, by the next call (`walk_marked` stops before it too).
+        let Some(body) = line.strip_suffix(b"\n") else {
+            #[cfg(test)]
+            partial_line_read();
+            break;
+        };
+        len += line.len() as u64;
+        let body = body.strip_suffix(b"\r").unwrap_or(body);
+        seq = seq
+            .checked_add(crate::record_storage::span(body))
+            .ok_or_else(|| "chat record sequence overflow".to_string())?;
+        see(seq, body);
+        line.clear();
+    }
+    if adopted {
+        walked.stamp = now;
+    }
+    walked.len = len;
+    walked.seq = seq;
+    #[cfg(test)]
+    walk_ended();
+    Ok(true)
+}
+
+/// Put `event` after the end `walked` read, and only if the record is still
+/// that file, in the same life, with nothing added after that end: all asked
+/// and the line appended in ONE step under the append lock, like `append_in`.
+/// A record that moved on, or one that grew, writes nothing (`After`).
+///
+/// **What is marked is the end of the last whole line, never a byte past it.**
+/// A last line with no line end is a write in progress (or one that was cut):
+/// the walk stops before it and does not show it, and the record is then
+/// longer than the mark, so the answer is `Grew` until that line is whole and
+/// read from its start. A cut line that is never finished leaves the answer
+/// `Grew` for good: the caller gives up after its attempts and writes nothing.
+///
+/// For a line whose meaning depends on what the record said when it was
+/// decided (a dismissal is only true of a turn nobody has picked up): the
+/// decision is made from a lock-free read of the whole record, and the
+/// append is refused if even one line came after it. The heavy read stays
+/// outside the lock; what is under it is a stat, a one-byte read and the
+/// append.
+pub(crate) fn append_after_walk(
+    key: &str,
+    walked: &Walked,
+    event: &Value,
+) -> Result<After, String> {
+    let (Some(path), Ok(line)) = (path_for(key), serde_json::to_string(event)) else {
+        return Err("the chat's record could not be written".into());
+    };
+    let record = identity(&path);
+    let mut appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    if generation_of(&appending, &record) != walked.generation {
+        return Ok(After::Moved);
+    }
+    let now = match fs::symlink_metadata(&path) {
+        Ok(meta) => stamp_from_metadata(meta).ok(),
+        Err(_) => None,
+    };
+    if !same_file(&walked.stamp, &now) {
+        return Ok(if walked.stamp.is_none() && now.is_some() {
+            After::Grew
+        } else {
+            After::Moved
+        });
+    }
+    if let Some(now) = &now {
+        if now.len < walked.len {
+            return Ok(After::Moved);
+        }
+        if now.len > walked.len {
+            // `walked.len` is the end of a whole line, so anything after it,
+            // a line still being written included, is a tail to read first.
+            return Ok(After::Grew);
+        }
+    }
+    let Some((seq, _file, _)) = put(&mut appending, &path, record, &line, false) else {
+        return Err("the chat's record could not be written".into());
+    };
+    Ok(After::Written(seq))
+}
+
 /// `confirm_synced`, telling a record that is gone (`Held::Moved`) from
 /// one that could not be confirmed. For a caller that owes the record a
 /// line: the first drops what it owes, the second owes it still.
@@ -720,9 +995,17 @@ pub(crate) fn for_each_line(file: File, see: impl FnMut(u64, &[u8])) {
 /// `for_each_line`, answering a read that failed part way instead of
 /// ending there as if the file did.
 pub(crate) fn try_each_line(file: File, mut see: impl FnMut(u64, &[u8])) -> std::io::Result<()> {
+    try_each_line_at(file, |seq, line, _| see(seq, line))
+}
+
+/// `try_each_line`, saying where each line ended (`LineEnd`).
+pub(crate) fn try_each_line_at(
+    file: File,
+    mut see: impl FnMut(u64, &[u8], LineEnd),
+) -> std::io::Result<()> {
     let mut lists = crate::record_storage::ListReader::default();
     let mut failed = None;
-    try_each_stored_line(file, |seq, line| {
+    try_each_stored_line_at(file, |seq, line, at| {
         if failed.is_some() {
             return;
         }
@@ -735,13 +1018,13 @@ pub(crate) fn try_each_line(file: File, mut see: impl FnMut(u64, &[u8])) -> std:
                 }
                 if referenced {
                     if let Ok(text) = serde_json::to_vec(&event) {
-                        see(seq, &text);
+                        see(seq, &text, at);
                         return;
                     }
                 }
             }
         }
-        see(seq, line);
+        see(seq, line, at);
     })?;
     failed.map_or(Ok(()), Err)
 }
@@ -756,9 +1039,29 @@ pub(crate) fn try_each_stored_line(
     file: File,
     mut see: impl FnMut(u64, &[u8]),
 ) -> std::io::Result<()> {
+    try_each_stored_line_at(file, |seq, line, _| see(seq, line))
+}
+
+/// Where a line ended, and whether it ended in a line end. Only the last line
+/// of a record can be unterminated: a write still in progress, or one that was
+/// cut. The bytes of such a line are not yet a line (a writer may finish it
+/// before the next read), so a reader that must know where a whole line ends
+/// takes `end` of the last terminated line and nothing past it.
+#[derive(Clone, Copy)]
+pub(crate) struct LineEnd {
+    pub end: u64,
+    pub terminated: bool,
+}
+
+pub(crate) fn try_each_stored_line_at(
+    file: File,
+    mut see: impl FnMut(u64, &[u8], LineEnd),
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(file);
-    let (mut line, mut seq) = (Vec::new(), 0u64);
+    let (mut line, mut seq, mut offset) = (Vec::new(), 0u64, 0u64);
     while reader.read_until(b'\n', &mut line)? > 0 {
+        offset += line.len() as u64;
+        let terminated = line.ends_with(b"\n");
         let mut body = line.as_slice();
         if let [rest @ .., b'\n'] = body {
             body = rest;
@@ -769,7 +1072,22 @@ pub(crate) fn try_each_stored_line(
         seq = seq
             .checked_add(crate::record_storage::span(body))
             .ok_or_else(|| std::io::Error::other("chat record sequence overflow"))?;
-        see(seq, body);
+        see(
+            seq,
+            body,
+            LineEnd {
+                end: offset,
+                terminated,
+            },
+        );
+        if !terminated {
+            // Only the end of the file answers without a line end. A line
+            // read from here on would be the rest of this one, if a writer
+            // finished it meanwhile, and no longer the line after it: stop.
+            #[cfg(test)]
+            partial_line_read();
+            break;
+        }
         line.clear();
     }
     Ok(())
@@ -930,31 +1248,39 @@ pub fn since(key: &str, after: u64) -> Vec<Recorded> {
 /// folder that is not there to look in, is an error, never "nothing was
 /// handed over".
 pub(crate) fn every_line(key: &str) -> Result<Vec<Recorded>, String> {
+    let mut out = Vec::new();
+    walk(key, |seq, line| {
+        if let Ok(event) = serde_json::from_slice::<Value>(line) {
+            out.push(Recorded { seq, event });
+        }
+    })?;
+    Ok(out)
+}
+
+/// `every_line` for a reader that wants the bytes: each line of the record
+/// with its logical `seq`, through `for_each_line`'s decoding (ranges,
+/// list references), answering a record that cannot be read as an error and
+/// a chat that never wrote one as no lines. A reader that is after a few
+/// kinds of line filters on the bytes first and parses only those.
+pub(crate) fn walk(key: &str, see: impl FnMut(u64, &[u8])) -> Result<(), String> {
     let unread = |e: std::io::Error| format!("the chat's record could not be read: {e}");
     let Some(path) = path_for(key) else {
         // Not a key a record can be kept under: one never was.
         if !safe_key(key) {
-            return Ok(Vec::new());
+            return Ok(());
         }
         return Err(chats_folder()
             .err()
             .unwrap_or_else(|| "the chat's record could not be found in the chats folder".into()));
     };
     match std::fs::metadata(&path) {
-        Ok(meta) if meta.is_dir() => return Ok(Vec::new()),
+        Ok(meta) if meta.is_dir() => return Ok(()),
         Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(unread(e)),
     }
     let file = File::open(&path).map_err(unread)?;
-    let mut out = Vec::new();
-    try_each_line(file, |seq, line| {
-        if let Ok(event) = serde_json::from_slice::<Value>(line) {
-            out.push(Recorded { seq, event });
-        }
-    })
-    .map_err(unread)?;
-    Ok(out)
+    try_each_line(file, see).map_err(unread)
 }
 
 /// A recent, contiguous window. The exclusive cursor is an event sequence,
