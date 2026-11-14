@@ -1,5 +1,15 @@
 import { ownsTurnId, type ChatState, type Message } from "./chat";
 
+/** The tab's copy of a pending prompt owns the words, attachments and identity;
+ * the checkpoint it replaces may carry a NEWER word from the host (a failure
+ * the host recorded, a dispatch). The older local copy must not overwrite it. */
+function keepHostWord(local: Message, saved: Message): Message {
+  const hostKnew = saved.hostFailed || saved.delivery === "dispatched" || saved.delivery === "starting";
+  if (!hostKnew || local.hostFailed) return local;
+  return { ...local, delivery: saved.delivery, queueLost: saved.queueLost, hostFailed: saved.hostFailed,
+    queueAction: undefined, queueError: saved.queueError };
+}
+
 /** A sidebar/cache seed is not a host acknowledgement. Keep the complete
  * local message until replay supplies its echo, pickup or queue outcome. */
 export function withLocalPrompts(next: ChatState, current: ChatState, seed = false): ChatState {
@@ -23,9 +33,9 @@ export function withLocalPrompts(next: ChatState, current: ChatState, seed = fal
         sourceTurnIds: message.sourceTurnIds ?? messages[at].sourceTurnIds,
         blocks: pending ? message.blocks : messages[at].blocks,
         attachments: message.attachments ?? messages[at].attachments,
-        delivery: "dispatched", queueLost: undefined, queueAction: undefined, queueError: undefined };
+        delivery: "dispatched", queueLost: undefined, hostFailed: undefined, queueAction: undefined, queueError: undefined };
     }
-    else if (pending && seed && !messages[at].echo && !messages[at].takenUp) messages[at] = message;
+    else if (pending && seed && !messages[at].echo && !messages[at].takenUp) messages[at] = keepHostWord(message, messages[at]);
   }
   return { ...next, busy: next.busy || (local.some(message => !message.echo && !message.takenUp) && current.busy), messages };
 }

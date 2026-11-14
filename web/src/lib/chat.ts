@@ -1062,6 +1062,7 @@ function reduceEvent(state: ChatState, raw: unknown, now: number, source: "live"
       sourceTurnIds,
       delivery,
       queueLost: source.queueLost || target.queueLost || undefined,
+      hostFailed: delivery === "failed" ? (source.hostFailed || target.hostFailed || undefined) : undefined,
       queueAction: undefined,
       queueError: source.queueError ?? target.queueError,
       ...(asOneLine(text) ? { relay: asOneLine(text) } : { relay: undefined }),
@@ -1860,7 +1861,7 @@ function reduceEvent(state: ChatState, raw: unknown, now: number, source: "live"
         return {
           ...state,
           messages: state.messages.map((m) =>
-            m === mine ? { ...m, echo: uuid, delivery: "dispatched", queueUnconfirmedSend: undefined, queueLost: undefined, queueAction: undefined, queueError: undefined, ...(ran ? { ranSkill: ran } : {}) } : m,
+            m === mine ? { ...m, echo: uuid, delivery: "dispatched", queueUnconfirmedSend: undefined, queueLost: undefined, hostFailed: undefined, queueAction: undefined, queueError: undefined, ...(ran ? { ranSkill: ran } : {}) } : m,
           ),
         };
       }
@@ -2826,7 +2827,7 @@ function codexTurnStarted(
     // This also repairs old transcripts whose stopped launches had no receipt.
     if (turnId && m.turnId !== turnId && m.role === "user" && !m.to
       && !m.echo && !m.takenUp && m.delivery === "dispatched") {
-      return { ...m, delivery: "unknown" as const, queueLost: undefined };
+      return { ...m, delivery: "unknown" as const, queueLost: undefined, hostFailed: undefined };
     }
     return m.streaming && !m.parent && !m.speaker
       ? finishCodexMessage(m)
@@ -2834,7 +2835,7 @@ function codexTurnStarted(
   });
   let messages = closed;
   if (at >= 0) {
-    const accepted: Message = { ...closed[at], takenUp: true, delivery: "dispatched", queueLost: undefined, queueAction: undefined, queueError: undefined };
+    const accepted: Message = { ...closed[at], takenUp: true, delivery: "dispatched", queueLost: undefined, hostFailed: undefined, queueAction: undefined, queueError: undefined };
     const remaining = closed.filter((_, i) => i !== at);
     const settled = remaining.filter((m) => !waitingForCodex(m));
     const waiting = remaining.filter(waitingForCodex);

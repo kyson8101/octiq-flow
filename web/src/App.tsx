@@ -38,7 +38,7 @@ import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp, type Frame } from "./lib/catchUp";
 import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
 import { valueBytes } from "./lib/valueBytes";
-import { loadChat, loadEarlierChat, CHAT_WINDOW_BYTES } from "./lib/loadChat";
+import { loadChat, loadEarlierChat, forgetHiddenScans, CHAT_WINDOW_BYTES } from "./lib/loadChat";
 import { ChatHistory, type ChatPage } from "./lib/chatHistory";
 import { ChatWindowCache } from "./lib/chatWindowCache";
 import { ChatRecordClears, chatSessionFor, clearedConversation, conversationForRecord, invalidateChatRecord, type ChatRecordHead } from "./lib/chatRecord";
@@ -1136,6 +1136,7 @@ export default function App() {
     chatHistory.current.forget(id);
     void forgetChatCheckpoint(id);
     catchUp.current.forget(keyFor(id));
+    forgetHiddenScans(keyFor(id));
     // Urgent whichever chat this is: a row being deleted has to leave the
     // screen when it is deleted, not a quarter of a second afterwards.
     if (id in chatsRef.current) {
@@ -1793,6 +1794,7 @@ export default function App() {
           });
         },
         requestPage: (before) => bridge.invoke<ChatPage>("chat_page", { key, before }),
+        requestDelivery: (turnIds) => bridge.invoke<unknown>("chat_turn_delivery", { chatKey: key, turnIds }),
         getState: () => chatsRef.current[id] ?? EMPTY,
         publish: (state) => patch(id, () => state),
         request: (after) => bridge.invoke<Frame[]>("chat_since", { key, after }),
@@ -1869,6 +1871,7 @@ export default function App() {
       const previousSeq = catchUp.current.mark(keyFor(id));
       await forgetChatCheckpoint(id);
       catchUp.current.forget(keyFor(id)); chatHistory.current.forget(id);
+      forgetHiddenScans(keyFor(id));
       setEarlierReads(prev => ({ ...prev, [id]: { loading: true } }));
       try { await catchUpChat(id); }
       catch (error) {
