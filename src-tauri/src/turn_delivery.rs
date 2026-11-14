@@ -37,6 +37,10 @@
 //! `seq` is the logical seq of the line that decided the state, so a page can
 //! tell an old answer from a new one. It is left out for `queued` and `absent`.
 //!
+//! `chat_dismiss_unsent` asks `picked_up` (this module's one definition of a
+//! pickup) and answers `false`, writing no `octiq_user_turn_dismissed` line,
+//! for a turn the agent has taken up.
+//!
 //! A turn appended to another before it was sent (`octiq_user_turn_appended`,
 //! the page reads it as `sourceTurnIds`) has no pickup of its own: the agent
 //! echoes the target's id. It is answered with the target's state and `into`
@@ -51,7 +55,7 @@
 //!   agent's echo can land first) and over a `failed`, `cancelled` or
 //!   `dismissed` line written after it. The last is the record of a real
 //!   chat: a page that never heard the pickup dismissed the bubble
-//!   (`chat_dismiss_unsent` checks the queue and not the record) and the
+//!   (`chat_dismiss_unsent` used to check the queue and not the record) and the
 //!   newest line said `dismissed` for a turn the agent had answered. Newest
 //!   wins among everything else: without a pickup, a `failed`, `cancelled` or
 //!   `dismissed` line newer than the `dispatched` one is the state.
@@ -240,6 +244,13 @@ fn answer_from(facts: &BTreeMap<String, Facts>, id: &str) -> Delivery {
         seq,
         into: into.filter(|_| state != "absent"),
     }
+}
+
+/// Whether the record holds the agent's pickup of `turn_id` (or of the turn
+/// it was appended to). The one place that defines a pickup for a caller that
+/// must refuse to un-send a turn (`chat_dismiss_unsent`).
+pub(crate) fn picked_up(key: &str, turn_id: &str) -> Result<bool, String> {
+    Ok(answer_from(&scan(key)?, turn_id).state == "accepted")
 }
 
 fn validated(ids: Vec<String>) -> Result<Vec<String>, String> {

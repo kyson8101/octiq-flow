@@ -7593,6 +7593,12 @@ pub fn chat_dismiss_unsent_impl(
     if manager.queued_turn_session_key(&key, &turn_id).is_some() {
         return Ok(false);
     }
+    // A turn the agent has taken up is not unsent, whatever the page heard:
+    // dismissing it would write `dismissed` over an answered message. The
+    // page keeps its bubble and learns the truth from `chat_turn_delivery`.
+    if crate::turn_delivery::picked_up(&key, &turn_id)? {
+        return Ok(false);
+    }
     let event = json!({ "type": "octiq_user_turn_dismissed", "uuid": turn_id });
     let seq = crate::transcript::append(&key, &event)
         .ok_or_else(|| "could not record the dismissed message".to_string())?;
@@ -14334,6 +14340,48 @@ mod tests {
             Some("queued-1".into())
         );
 
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn dismissing_a_turn_the_agent_took_up_is_refused_and_writes_nothing() {
+        let manager = ChatManager::default();
+        let key = format!("dismiss-picked-{}", uuid::Uuid::new_v4().simple());
+        for event in [
+            json!({"type": "user", "uuid": "answered", "octiq_user_turn": true,
+                   "message": {"content": "hi"}}),
+            json!({"type": "octiq_user_turn_delivery", "uuid": "answered", "state": "dispatched"}),
+            json!({"type": "user", "isReplay": true, "octiq_user_turn_id": "answered",
+                   "message": {"content": "hi"}}),
+            json!({"type": "assistant", "message": {"content": "done"}}),
+        ] {
+            crate::transcript::append(&key, &event).unwrap();
+        }
+        assert_eq!(
+            chat_dismiss_unsent_impl(&manager, key.clone(), "answered".into()),
+            Ok(false)
+        );
+        assert_eq!(
+            crate::transcript::since(&key, 0).len(),
+            4,
+            "no line was written"
+        );
+
+        // A turn the host never delivered still dismisses, durably.
+        crate::transcript::append(
+            &key,
+            &json!({"type": "octiq_user_turn_delivery", "uuid": "lost", "state": "failed"}),
+        )
+        .unwrap();
+        assert_eq!(
+            chat_dismiss_unsent_impl(&manager, key.clone(), "lost".into()),
+            Ok(true)
+        );
+        let last = crate::transcript::since(&key, 0).pop().unwrap().event;
+        assert_eq!(
+            (last["type"].as_str(), last["uuid"].as_str()),
+            (Some("octiq_user_turn_dismissed"), Some("lost"))
+        );
         crate::transcript::forget(&key);
     }
 
