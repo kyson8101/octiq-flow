@@ -32,7 +32,7 @@ import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 import { pendingLabel } from "../lib/pendingActions";
 import { entryClass, useEntry } from "../lib/useArrival";
 import { useRowMotion } from "../lib/rowMotion";
-import { useDonePush, withoutPushed, type PushPhase } from "../lib/donePush";
+import { useDonePush, useKeptRows, type PushPhase } from "../lib/donePush";
 import { DonePushRobot } from "./DonePushRobot";
 import { Arrive } from "./Arrive";
 import "./MobileSidebar.css";
@@ -220,7 +220,7 @@ export function Sidebar({
     filter, showArchived, ready: chatsReady,
     beforeGone: (id) => releaseFocus(chatList.current, id),
   });
-  const { keep: keepOpen, keepMarked: keepTicked } = withoutPushed(currentConversation, keptMarked, donePush.gone);
+  const { keep: keepOpen, keepMarked: keepTicked } = useKeptRows(currentConversation, keptMarked, donePush);
   const listedConversations = showArchived ? archivedConversations
     : chatFilterList(activeConversations, filter, keepOpen, keepTicked);
 

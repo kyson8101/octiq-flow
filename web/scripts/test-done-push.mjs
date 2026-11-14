@@ -53,7 +53,9 @@ try {
       };
     });
     await context.route('**/token', route => route.fulfill({ body: 'fixture-token' }));
+    let sock = null;
     await context.routeWebSocket(/\/ws\?/, ws => {
+      sock = ws;
       ws.onMessage(raw => {
         const call = JSON.parse(String(raw));
         if (call.t !== 'invoke') return;
@@ -90,6 +92,35 @@ try {
     };
     const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     const label = `${theme}-${width}`;
+    // A tick that arrives from elsewhere (another tab or device, as the host's
+    // chat-index-changed with the row's new doneAt) for a row that is NOT open.
+    // It must stay listed about three seconds, get the push, then leave: never
+    // vanish a frame later with no wait and no robot (review round 1, H1).
+    const remoteTick = async id => {
+      await page.evaluate(rowId => {
+        const sel = `li.chat-row[data-row="${rowId}"]`;
+        const seen = window.__remote = { listed: true, detachedAt: null, pushAt: null, robotAt: null };
+        new MutationObserver(() => {
+          const li = document.querySelector(sel), now = performance.now();
+          if (!li && seen.detachedAt === null) seen.detachedAt = now;
+          if (li && li.classList.contains('is-pushing') && seen.pushAt === null) seen.pushAt = now;
+          if (li && li.querySelector('.done-push-robot') && seen.robotAt === null) seen.robotAt = now;
+        }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+      }, id);
+      const entry = { ...rows[Number(id.slice(4))], doneAt: 90_000 };
+      const sentAt = await page.evaluate(() => performance.now());
+      sock.send(JSON.stringify({ t: 'event', event: 'chat-index-changed', payload: { id, gone: false, entry } }));
+      await page.waitForTimeout(1500);
+      assert.equal(await row(id).count(), 1, 'a remotely ticked row stays listed through its wait');
+      await page.waitForFunction(() => window.__remote.detachedAt, null, { timeout: 40000 });
+      const seen = await page.evaluate(() => window.__remote);
+      assert.ok(seen.pushAt !== null, 'the remotely ticked row was pushed');
+      if (!reduced) assert.ok(seen.robotAt !== null, 'the robot came for the remotely ticked row');
+      const pushedAfter = seen.pushAt - sentAt;
+      assert.ok(pushedAfter >= 2900 && pushedAfter < 20000, `remote tick pushed about 3 s after it arrived (was ${Math.round(pushedAfter)} ms)`);
+      assert.ok(seen.detachedAt > seen.pushAt, 'the row left only after the push began');
+      assert.equal(await page.locator('.msgs').getByText('Answer row-2.', { exact: true }).count(), 1, 'open chat stays open');
+    };
 
     // 1. Another chat is ticked. Its row stays three seconds, then the robot
     // comes and the push is frozen part-way for the picture. The page itself
@@ -113,6 +144,7 @@ try {
       await tick('row-2');
       await row('row-2').waitFor({ state: 'detached', timeout: 40000 });
       assert.ok(new URL(page.url()).hash.endsWith('/c/row-2'));
+      await remoteTick('row-5');
       report.push({ label: `${label}-reduced`, ok: true });
       await context.close();
       continue;
@@ -127,6 +159,9 @@ try {
     await page.evaluate(() => { window.__robotAt = 1; document.getAnimations().forEach(a => a.play()); });
     await row('row-4').waitFor({ state: 'detached', timeout: 40000 });
     assert.equal(await page.locator('.msgs').getByText('Answer row-2.', { exact: true }).count(), 1, 'open chat stays open');
+
+    // 1b. Ticked from elsewhere.
+    await remoteTick('row-5');
 
     // 2. The OPEN chat is ticked. Its row leaves, the chat stays on screen.
     await tick('row-2');

@@ -129,6 +129,91 @@ describe("cancelling", () => {
   });
 });
 
+describe("a row stays listed while it waits and while it leaves", () => {
+  it("is held from the tick until it has gone, whoever ticked it", () => {
+    look({ a: false, b: false });
+    expect([...engine.pending({ watching: true, chats: new Map([["a", true], ["b", false]]) })]).toEqual(["a"]);
+    look({ a: true, b: false });
+    expect([...last().held]).toEqual(["a"]);
+    vi.advanceTimersByTime(PUSH_DELAY_MS);
+    expect([...last().held]).toEqual(["a"]);
+    vi.advanceTimersByTime(PUSH_MS);
+    expect([...last().held]).toEqual(["a"]);
+    vi.advanceTimersByTime(COLLAPSE_MS);
+    expect(last().held.size).toBe(0);
+    expect(last().gone.has("a")).toBe(true);
+  });
+
+  it("is released again by an untick or a new message", () => {
+    look({ a: false });
+    look({ a: true });
+    expect(last().held.has("a")).toBe(true);
+    look({ a: false });
+    expect(last().held.size).toBe(0);
+  });
+
+  it("pending is empty once the engine has started the row, and when not watching", () => {
+    look({ a: false });
+    const done = new Map([["a", true]]);
+    expect(engine.pending({ watching: false, chats: done }).size).toBe(0);
+    look({ a: true });
+    expect(engine.pending({ watching: true, chats: done }).size).toBe(0);
+  });
+
+  it("the Active filter keeps a remotely ticked row until it has gone", () => {
+    const list = [chat("a", 100, 100), chat("b", 100)];
+    const held = withoutPushed(null, new Set(), NO_PUSH.gone, new Set(["a"]));
+    expect(chatFilterList(list, "active", held.keep, held.keepMarked).map((c) => c.id)).toEqual(["a", "b"]);
+    const left = withoutPushed(null, new Set(), new Set(["a"]), new Set());
+    expect(chatFilterList(list, "active", left.keep, left.keepMarked).map((c) => c.id)).toEqual(["b"]);
+  });
+});
+
+describe("a row that has gone stays out of Active", () => {
+  const leave = () => {
+    look({ a: false });
+    look({ a: true });
+    vi.advanceTimersByTime(PUSH_DELAY_MS + PUSH_MS + COLLAPSE_MS);
+    expect(last().gone.has("a")).toBe(true);
+  };
+
+  it("through All → Done → Active, not animated again", () => {
+    leave();
+    look({ a: true }, false);
+    expect(last().gone.has("a")).toBe(true);
+    look({ a: true });
+    expect(last().gone.has("a")).toBe(true);
+    vi.advanceTimersByTime(60_000);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(gone).toEqual(["a"]);
+  });
+
+  it("until it is not done any more, even while another view is showing", () => {
+    leave();
+    look({ a: false }, false);
+    expect(last().gone.size).toBe(0);
+  });
+
+  it("leaving the view mid-push still cancels the push", () => {
+    look({ a: false });
+    look({ a: true });
+    vi.advanceTimersByTime(PUSH_DELAY_MS + 100);
+    look({ a: true }, false);
+    expect(last().phases.size).toBe(0);
+    expect(last().held.size).toBe(0);
+    vi.advanceTimersByTime(10_000);
+    expect(gone).toEqual([]);
+  });
+});
+
+describe("the kept set keeps its identity", () => {
+  it("is the caller's own set while held and gone add nothing new", () => {
+    const marked: ReadonlySet<string> = new Set(["c"]);
+    expect(withoutPushed(null, marked, new Set(), new Set(["c"])).keepMarked).toBe(marked);
+    expect(withoutPushed(null, marked, new Set(["x"]), new Set()).keepMarked).toBe(marked);
+  });
+});
+
 describe("only what this page watched becoming done", () => {
   it("a chat already done at load is never animated", () => {
     look({ a: true, b: false });
