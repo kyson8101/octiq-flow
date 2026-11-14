@@ -1008,6 +1008,11 @@ function TurnView({
     blocks.length > 0 &&
     blocks.every((b) => b.kind === "compacted" || b.kind === "notice" || b.kind === "peer" || b.kind === "memory" || b.kind === "planAutoApproved" || b.kind === "reopened" || b.kind === "answered");
 
+  // A turn that is only the host's one-line "plan auto-approved" fold sits close
+  // to the lines around it (`.msg-event`, styles.css): it is bookkeeping between
+  // replies, not a turn of its own that wants a turn's gap.
+  const eventLine = blocks.length > 0 && blocks.every((b) => b.kind === "planAutoApproved");
+
   // What was attached to this turn. Taken across the messages the turn is made
   // of, and de-duplicated by path: the agent echoes a user turn back, so the
   // same file can arrive twice by two routes.
@@ -1079,7 +1084,7 @@ function TurnView({
 
   return (
     <article
-      className={`msg msg-${role} ${deskRoute ? "msg-desk-route" : ""} ${speaker ? "msg-seat" : ""} ${queued ? "is-queued" : ""} ${
+      className={`msg msg-${role} ${eventLine ? "msg-event" : ""} ${deskRoute ? "msg-desk-route" : ""} ${speaker ? "msg-seat" : ""} ${queued ? "is-queued" : ""} ${
         fresh ? "is-new" : ""
       }`}
       data-tint={tint}
