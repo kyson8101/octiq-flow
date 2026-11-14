@@ -1077,7 +1077,10 @@ function reduceEvent(state: ChatState, raw: unknown, now: number, source: "live"
   if (type === "octiq_user_turn_cancelled" || type === "octiq_user_turn_dismissed") {
     const cancelled = asStr(e.uuid);
     if (!cancelled) return state;
-    return { ...state, messages: state.messages.filter((m) => !ownsTurnId(m, cancelled)) };
+    // A message the agent echoed or took up is confirmed: it was delivered, so
+    // a late or mistaken cancel/dismiss line cannot take it back. Only words
+    // the agent never confirmed are removed. Live and replay share this rule.
+    return { ...state, messages: state.messages.filter((m) => !ownsTurnId(m, cancelled) || !!m.echo || !!m.takenUp) };
   }
 
   if (type === "octiq_user_turn_delivery") {
