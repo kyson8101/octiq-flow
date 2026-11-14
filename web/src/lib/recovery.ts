@@ -61,7 +61,7 @@ export function reconcileUnsentMessages(chat: ChatState, queue: ChatQueueState):
     const lost = delivery === "failed";
     if (!!message.queueLost === lost && message.delivery === delivery) return message;
     changed = true;
-    return { ...message, delivery, queueLost: lost || undefined,
+    return { ...message, delivery, queueLost: lost || undefined, hostFailed: undefined,
       // App excludes in-flight RPCs from queue snapshots. A successful send
       // on an older host can therefore be absent here before its unstamped
       // echo arrives. Preserve exactly its previous sending eligibility;

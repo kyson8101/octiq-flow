@@ -312,6 +312,10 @@ export type Message = {
   /** The connected backend confirmed this unacknowledged prompt is no longer
    * queued. Keep the words, but do not present them as work still waiting. */
   queueLost?: boolean;
+  /** `failed` because the host's own line said so, not because a queue read did
+   * not list the prompt. Only the second may be taken back when the record
+   * below the window was not read in full. */
+  hostFailed?: boolean;
   /** Transport delivery is distinct from the provider starting its reply. */
   delivery?: "sending" | "queued" | "starting" | "dispatched" | "failed" | "unknown";
   /** Queue sync found no entry for a sending prompt in a live process.
@@ -1082,7 +1086,7 @@ function reduceEvent(state: ChatState, raw: unknown, now: number, source: "live"
     return {
       ...state,
       messages: state.messages.map((m) => ownsTurnId(m, turnId) && !m.echo && !m.takenUp
-        ? { ...m, delivery: delivery as Message["delivery"], queueLost: delivery === "failed" || undefined, queueAction: undefined, queueError: undefined }
+        ? { ...m, delivery: delivery as Message["delivery"], queueLost: delivery === "failed" || undefined, hostFailed: delivery === "failed" || undefined, queueAction: undefined, queueError: undefined }
         : m),
     };
   }

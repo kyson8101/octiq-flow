@@ -20,19 +20,38 @@ type Hidden = {
 
 /** Pages read below a reopened window to find the fate of a local prompt. */
 export const HIDDEN_PROMPT_PAGES = 40;
-/** Prompts whose whole gap was read without a single line about them: the host
- * never had them, and asking again on every open would only repeat the read. */
-const absent = new Set<string>();
+/** Seqs already read, line by line, without a word about one prompt. An absence
+ * holds only for the range actually read: a later gap is new record the host
+ * may have written to after this was checked. */
+type Checked = { lo: number; hi: number };
+const absent = new Map<string, Checked>();
 export function forgetHiddenScans(): void { absent.clear(); }
+
+function absenceKey(key: string, turnId: string | undefined): string { return `${key}\0${turnId}`; }
+
+/** Whether every seq in [lo, hi] was already read and held nothing about it. */
+function checkedAbsent(key: string, message: Message, lo: number, hi: number): boolean {
+  const seen = absent.get(absenceKey(key, message.turnId));
+  return !!seen && seen.lo <= lo && seen.hi >= hi;
+}
+
+function noteAbsent(key: string, message: Message, lo: number, hi: number): void {
+  const at = absenceKey(key, message.turnId);
+  const seen = absent.get(at);
+  // Ranges that touch are one read range; a disjoint older one is not proof
+  // of anything between, so the newer replaces it.
+  absent.set(at, seen && seen.lo <= hi + 1 && lo <= seen.hi + 1
+    ? { lo: Math.min(lo, seen.lo), hi: Math.max(hi, seen.hi) } : { lo, hi });
+}
 
 function turnIdsOf(message: Message): string[] {
   return [message.turnId, ...(message.sourceTurnIds ?? [])].filter((id): id is string => !!id);
 }
 
 /** Words that exist only in this tab: no echo, no pickup. */
-function localOnlyTurns(state: ChatState, key: string): Message[] {
+function localOnlyTurns(state: ChatState, key: string, lo: number, hi: number): Message[] {
   return state.messages.filter(message => message.role === "user" && !message.echo && !message.takenUp
-    && !!message.turnId && !absent.has(`${key}\0${message.turnId}`));
+    && !!message.turnId && !checkedAbsent(key, message, lo, hi));
 }
 
 /** The host's identified word on one prompt, from one raw event. */
@@ -55,18 +74,19 @@ async function scanHidden(options: ChatLoadOptions, prompts: Message[], start: n
   const wanted = new Set(prompts.flatMap(turnIdsOf));
   const frames: Frame[] = [];
   const settled = new Set<string>();
-  if (!requestPage) return { frames, complete: false };
+  const finish = (complete: boolean): Hidden => ({ frames: frames.sort((a, b) => a.seq - b.seq), complete });
+  if (!requestPage) return finish(false);
   let cursor = start;
   let pages = 0;
   while (cursor !== null && cursor > floor && pages < HIDDEN_PROMPT_PAGES && settled.size < wanted.size) {
     let page: ChatPage;
-    try { page = await requestPage(cursor); } catch { return { frames: frames.reverse(), complete: false }; }
-    if (cancelled()) return { frames: frames.reverse(), complete: false };
-    if (page.before !== null && page.before >= cursor) return { frames: frames.reverse(), complete: false };
+    try { page = await requestPage(cursor); } catch { return finish(false); }
+    if (cancelled()) return finish(false);
+    if (page.before !== null && page.before >= cursor) return finish(false);
     pages++;
-    const found = page.events.filter(frame => frame.seq > floor && hiddenFact(frame.event, wanted));
-    // Newest page first: keep each page's own order, and put pages right.
-    frames.unshift(...found);
+    const found = page.events.filter(frame => frame.seq >= floor && hiddenFact(frame.event, wanted));
+    // Pages come newest first; `finish` puts every line in record order.
+    frames.push(...found);
     for (const frame of found) {
       const fact = hiddenFact(frame.event, wanted);
       const e = frame.event as { uuid?: string; state?: string; octiq_user_turn_id?: string };
@@ -75,8 +95,7 @@ async function scanHidden(options: ChatLoadOptions, prompts: Message[], start: n
     }
     cursor = page.before;
   }
-  frames.sort((a, b) => a.seq - b.seq);
-  return { frames, complete: cursor === null || cursor <= floor || settled.size >= wanted.size };
+  return finish(cursor === null || cursor <= floor || settled.size >= wanted.size);
 }
 
 /** Reconcile only identified host facts against local-only words. Historical
@@ -109,9 +128,12 @@ function pendingAfterReplay(next: ChatState, current: ChatState, frames: Frame[]
     }
     next = { ...next, messages: next.messages.filter(message => !(outside(message) || message.takenUp) || !turnIdsOf(message).some(id => confirmed.has(id))) };
     next = { ...next, messages: next.messages.map(message => {
-      if (!outside(message) || message.queueLost || message.delivery === "unknown" || message.delivery === "failed" || message.delivery === "sending") return message;
-      if (hidden.complete) return message;
-      return { ...message, delivery: "unknown" as const, queueLost: undefined };
+      if (!outside(message) || message.delivery === "unknown" || message.delivery === "sending") return message;
+      // A failure the host itself recorded stays failed. One inferred only from
+      // the queue not listing the prompt means nothing about a gap that was not
+      // read to its end.
+      if (hidden.complete || (message.delivery === "failed" && message.hostFailed)) return message;
+      return { ...message, delivery: "unknown" as const, queueLost: undefined, hostFailed: undefined };
     }) };
   }
   return next;
@@ -303,13 +325,13 @@ async function loadChatWindow(options: ChatLoadOptions): Promise<void> {
   // Words held only in this tab and absent from the window may have been
   // delivered below it (the turn ran on for an hour after it was sent).
   let hidden: Hidden | undefined;
-  const lone = page?.before != null ? localOnlyTurns(getState(), key)
+  const lone = page?.before != null ? localOnlyTurns(getState(), key, floor, page.before - 1)
     .filter(message => !next.messages.some(known => known.id === message.id || turnIdsOf(message).some(id => ownsTurnId(known, id)))) : [];
   if (lone.length) {
     hidden = await scanHidden(options, lone, page!.before, floor);
     if (cancelled()) return;
     if (hidden.complete) for (const message of lone) {
-      if (!hidden.frames.some(f => hiddenFact(f.event, new Set(turnIdsOf(message))))) absent.add(`${key}\0${message.turnId}`);
+      if (!hidden.frames.some(f => hiddenFact(f.event, new Set(turnIdsOf(message))))) noteAbsent(key, message, floor, page!.before! - 1);
     }
   }
   next = pendingAfterReplay(next, getState(), [...context, ...(run ?? [])], hidden);
