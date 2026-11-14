@@ -1187,6 +1187,17 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "after")?,
             )))
         }
+        // What became of the person's turns, by id: the queue in memory, then
+        // the record. Socket only and read-only: no hook or MCP tool maps to
+        // it (`turn_delivery.rs`).
+        "chat_turn_delivery" => {
+            crate::profile::available()?;
+            to_value(crate::turn_delivery::chat_turn_delivery_impl(
+                &svc.chats,
+                &arg::<String>(&args, "chatKey")?,
+                arg(&args, "turnIds")?,
+            ))
+        }
         "chat_record_head" => to_value(crate::transcript::record_head(&arg::<String>(
             &args, "key",
         )?)),
@@ -3468,6 +3479,50 @@ mod tests {
             for at in [0, 1, 2, 3, 9, 15, 16] {
                 assert_eq!(again[at], at_first[at], "{}", reads[at].0);
             }
+        }
+    }
+
+    /// `chat_turn_delivery` is a read the page makes: with the profile gone
+    /// it answers the profile's sentence, never "absent" for every turn, and
+    /// it answers again unchanged once the folder is back.
+    #[test]
+    fn a_turn_delivery_read_is_an_error_while_the_profile_folder_is_gone() {
+        use crate::profile::tests::Home;
+        let home = Home::with_a_configured_base();
+        let _process = crate::profile::started_in(&home.dir);
+        crate::profile_lock::acquire("server").unwrap();
+        let services = editing_in(&home.dir);
+        let row = serde_json::from_value(
+            json!({"id": "td-away", "projectId": "p", "title": "T", "updatedAt": 1}),
+        )
+        .unwrap();
+        crate::chat_index::upsert(row).unwrap();
+        crate::transcript::append(
+            "chat:td-away",
+            &json!({"type": "user", "isReplay": true, "octiq_user_turn_id": "t"}),
+        );
+        let call = || {
+            dispatch(
+                &services,
+                "chat_turn_delivery",
+                json!({"chatKey": "chat:td-away", "turnIds": ["t", "u"]}),
+            )
+        };
+        let there = call().unwrap();
+        assert_eq!(there["turns"]["t"]["state"], "accepted");
+        assert_eq!(there["turns"]["u"]["state"], "absent");
+        type Way = (fn(&Home), fn(&Home));
+        let ways: [Way; 3] = [
+            (Home::unplug, Home::plug_back),
+            (Home::move_away, Home::move_back),
+            (Home::replace, Home::move_back),
+        ];
+        for (goes, comes_back) in ways {
+            goes(&home);
+            let why = crate::profile::available().expect_err("the profile folder is not there");
+            assert_eq!(call().unwrap_err(), why);
+            comes_back(&home);
+            assert_eq!(call().unwrap(), there);
         }
     }
 

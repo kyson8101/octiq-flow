@@ -44,11 +44,26 @@ row handling and the serial browser regression probes.
 | `replayChat`, `CatchUp`, `loadChat` | Stable logical `seq`; a compacted marker whose `into <= checkpoint` forces a fresh page when merged text crossed the checkpoint |
 | `chat_page` | Whole turns, source-resolved init context, stable exclusive cursors; indexes physical lines with their logical end numbers |
 | `chat_since`, `every_line`, `of_type` | Source-resolved events and original sequence numbers; malformed/torn lines still occupy a position |
+| `chat_turn_delivery`, `transcript::walk` | One forward pass of `for_each_line` bytes; parses only lines naming `"octiq_user_turn_` or `"octiq_append_to"`; seq is the logical seq of the deciding line |
 | Search | User/assistant text and provider final messages, not init lists, hooks or the structured tool-result copy |
 | Provider switch | Bounded transcript evidence; never storage-only references |
 | Question/answered and reopen receipts | Exact host event identities/content, generation, file sync and folder sync |
 | Tool diff | `tool_use_result.filePath`, `structuredPatch`, `type`, and `content` for newly created files |
 | Failure origin | `tool_use_result._meta`, including `octiq/outcome` |
+
+## Delivery state of a user turn
+
+`chat_turn_delivery { chatKey, turnIds: [1..32] }` answers `{ turns: { id: {
+state, seq?, into? } } }` from the queue in memory and one pass over the
+record. It is socket only and read-only (no hook, no MCP tool). The contract,
+the state table and the rules where lines are not simply ordered are in the
+module doc of `src-tauri/src/turn_delivery.rs`; the states are `queued`,
+`accepted` (the agent's own `octiq_user_turn_id` pickup), `dispatched`,
+`failed`, `cancelled`, `dismissed` and `absent`. A turn appended to another
+(`octiq_user_turn_appended`, the page's `sourceTurnIds`) is answered with
+the target's state and `into` set to the target id. A profile folder that is
+away answers with `profile::available`'s sentence; the scan holds no lock and
+a line appended during it may be missed.
 
 ## Clearing native sessions
 

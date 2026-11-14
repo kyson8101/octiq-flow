@@ -930,31 +930,39 @@ pub fn since(key: &str, after: u64) -> Vec<Recorded> {
 /// folder that is not there to look in, is an error, never "nothing was
 /// handed over".
 pub(crate) fn every_line(key: &str) -> Result<Vec<Recorded>, String> {
+    let mut out = Vec::new();
+    walk(key, |seq, line| {
+        if let Ok(event) = serde_json::from_slice::<Value>(line) {
+            out.push(Recorded { seq, event });
+        }
+    })?;
+    Ok(out)
+}
+
+/// `every_line` for a reader that wants the bytes: each line of the record
+/// with its logical `seq`, through `for_each_line`'s decoding (ranges,
+/// list references), answering a record that cannot be read as an error and
+/// a chat that never wrote one as no lines. A reader that is after a few
+/// kinds of line filters on the bytes first and parses only those.
+pub(crate) fn walk(key: &str, see: impl FnMut(u64, &[u8])) -> Result<(), String> {
     let unread = |e: std::io::Error| format!("the chat's record could not be read: {e}");
     let Some(path) = path_for(key) else {
         // Not a key a record can be kept under: one never was.
         if !safe_key(key) {
-            return Ok(Vec::new());
+            return Ok(());
         }
         return Err(chats_folder()
             .err()
             .unwrap_or_else(|| "the chat's record could not be found in the chats folder".into()));
     };
     match std::fs::metadata(&path) {
-        Ok(meta) if meta.is_dir() => return Ok(Vec::new()),
+        Ok(meta) if meta.is_dir() => return Ok(()),
         Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(unread(e)),
     }
     let file = File::open(&path).map_err(unread)?;
-    let mut out = Vec::new();
-    try_each_line(file, |seq, line| {
-        if let Ok(event) = serde_json::from_slice::<Value>(line) {
-            out.push(Recorded { seq, event });
-        }
-    })
-    .map_err(unread)?;
-    Ok(out)
+    try_each_line(file, see).map_err(unread)
 }
 
 /// A recent, contiguous window. The exclusive cursor is an event sequence,
