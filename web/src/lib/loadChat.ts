@@ -1,5 +1,5 @@
 import { valueBytes } from "./valueBytes";
-import { emptyChat, reduceChat, type ChatState, type Message } from "./chat";
+import { emptyChat, ownsTurnId, reduceChat, type ChatState, type Message } from "./chat";
 import { type CatchUp, type Frame } from "./catchUp";
 import { readChatCheckpoint, saveChatCheckpoint } from "./chatCache";
 import { replayChat } from "./replayChat";
@@ -8,18 +8,111 @@ import { restoredTurn } from "./turnClock";
 import { withLocalPrompts } from "./chatRetention";
 import { invalidateChatRecord, type ChatRecordHead } from "./chatRecord";
 
+/** What a scan below the window learned about prompts this tab still holds
+ * only locally. */
+type Hidden = {
+  /** Identified host lines for those prompts, in record order. */
+  frames: Frame[];
+  /** Whether the scan reached the floor (or ran out of record) rather than
+   * stopping at its page budget. */
+  complete: boolean;
+};
+
+/** Pages read below a reopened window to find the fate of a local prompt. */
+export const HIDDEN_PROMPT_PAGES = 40;
+/** Prompts whose whole gap was read without a single line about them: the host
+ * never had them, and asking again on every open would only repeat the read. */
+const absent = new Set<string>();
+export function forgetHiddenScans(): void { absent.clear(); }
+
+function turnIdsOf(message: Message): string[] {
+  return [message.turnId, ...(message.sourceTurnIds ?? [])].filter((id): id is string => !!id);
+}
+
+/** Words that exist only in this tab: no echo, no pickup. */
+function localOnlyTurns(state: ChatState, key: string): Message[] {
+  return state.messages.filter(message => message.role === "user" && !message.echo && !message.takenUp
+    && !!message.turnId && !absent.has(`${key}\0${message.turnId}`));
+}
+
+/** The host's identified word on one prompt, from one raw event. */
+function hiddenFact(event: unknown, wanted: Set<string>): "accepted" | "gone" | "delivery" | undefined {
+  if (!event || typeof event !== "object") return undefined;
+  const e = event as { type?: string; uuid?: string; state?: string; octiq_user_turn_id?: string };
+  if (e.type === "octiq_user_turn_cancelled" || e.type === "octiq_user_turn_dismissed") return e.uuid && wanted.has(e.uuid) ? "gone" : undefined;
+  if (e.type === "octiq_user_turn_delivery") return e.uuid && wanted.has(e.uuid) ? "delivery" : undefined;
+  if ((e.type === "user" || e.type === "turn.started") && e.octiq_user_turn_id && wanted.has(e.octiq_user_turn_id)) return "accepted";
+  return undefined;
+}
+
+/** A pending local prompt that is not in the window may still have been
+ * delivered: the host records its echo where it happened, and a reopened
+ * window starts at the record's tail. Read older pages, newest first, for
+ * identified lines about exactly those prompts; keep only those lines.
+ * Bounded by pages, never a whole-record download. */
+async function scanHidden(options: ChatLoadOptions, prompts: Message[], start: number | null, floor: number): Promise<Hidden> {
+  const { requestPage, cancelled } = options;
+  const wanted = new Set(prompts.flatMap(turnIdsOf));
+  const frames: Frame[] = [];
+  const settled = new Set<string>();
+  if (!requestPage) return { frames, complete: false };
+  let cursor = start;
+  let pages = 0;
+  while (cursor !== null && cursor > floor && pages < HIDDEN_PROMPT_PAGES && settled.size < wanted.size) {
+    let page: ChatPage;
+    try { page = await requestPage(cursor); } catch { return { frames: frames.reverse(), complete: false }; }
+    if (cancelled()) return { frames: frames.reverse(), complete: false };
+    if (page.before !== null && page.before >= cursor) return { frames: frames.reverse(), complete: false };
+    pages++;
+    const found = page.events.filter(frame => frame.seq > floor && hiddenFact(frame.event, wanted));
+    // Newest page first: keep each page's own order, and put pages right.
+    frames.unshift(...found);
+    for (const frame of found) {
+      const fact = hiddenFact(frame.event, wanted);
+      const e = frame.event as { uuid?: string; state?: string; octiq_user_turn_id?: string };
+      const id = e.octiq_user_turn_id ?? e.uuid;
+      if (id && (fact !== "delivery" || e.state === "failed")) settled.add(id);
+    }
+    cursor = page.before;
+  }
+  frames.sort((a, b) => a.seq - b.seq);
+  return { frames, complete: cursor === null || cursor <= floor || settled.size >= wanted.size };
+}
+
 /** Reconcile only identified host facts against local-only words. Historical
  * replay is identity-only even when a checkpoint seed already contains those
- * words: an unrelated unstamped echo of "continue" cannot acknowledge them. */
-function pendingAfterReplay(next: ChatState, current: ChatState, frames: Frame[]): ChatState {
+ * words: an unrelated unstamped echo of "continue" cannot acknowledge them.
+ *
+ * `hidden` carries what was read BELOW the window about those words. A prompt
+ * the host accepted there is not held in this tab at all: its confirmed words
+ * come back with their history. One the host never mentioned, in a gap that
+ * was read only in part, is unconfirmed, not lost: queue absence alone must
+ * never draw "Not sent" for words that may have been delivered. */
+function pendingAfterReplay(next: ChatState, current: ChatState, frames: Frame[], hidden?: Hidden): ChatState {
+  const inWindow = new Set(next.messages.flatMap(message => [message.id, ...turnIdsOf(message)]));
   next = withLocalPrompts(next, current);
-  for (const { event } of frames) {
+  const outside = (message: Message) => message.role === "user" && !message.echo && !message.takenUp
+    && !!message.turnId && !turnIdsOf(message).some(id => inWindow.has(id)) && current.messages.some(c => c.id === message.id);
+  const wanted = new Set(next.messages.filter(outside).flatMap(turnIdsOf));
+  const confirmed = new Set<string>();
+  for (const { event } of [...(hidden?.frames ?? []), ...frames]) {
     if (!event || typeof event !== "object") continue;
     const e = event as { type?: string; octiq_user_turn_id?: string };
     if (["octiq_user_turn_cancelled", "octiq_user_turn_dismissed", "octiq_user_turn_delivery"].includes(e.type ?? "")) next = reduceChat(next, event);
     if (e.type === "turn.started" && e.octiq_user_turn_id) next = { ...next, messages: next.messages.map(message =>
       message.turnId === e.octiq_user_turn_id && !message.echo
         ? { ...message, takenUp: true, delivery: "dispatched", queueLost: undefined, queueAction: undefined, queueError: undefined } : message) };
+  }
+  if (hidden) {
+    for (const { event } of hidden.frames) {
+      if (hiddenFact(event, wanted) === "accepted") confirmed.add((event as { octiq_user_turn_id: string }).octiq_user_turn_id);
+    }
+    next = { ...next, messages: next.messages.filter(message => !(outside(message) || message.takenUp) || !turnIdsOf(message).some(id => confirmed.has(id))) };
+    next = { ...next, messages: next.messages.map(message => {
+      if (!outside(message) || message.queueLost || message.delivery === "unknown" || message.delivery === "failed" || message.delivery === "sending") return message;
+      if (hidden.complete) return message;
+      return { ...message, delivery: "unknown" as const, queueLost: undefined };
+    }) };
   }
   return next;
 }
@@ -125,12 +218,15 @@ async function loadChatWindow(options: ChatLoadOptions): Promise<void> {
   let missing: Frame[] | undefined;
   let page: ChatPage | undefined;
   let recent: ChatPage | undefined;
+  // Where a prompt sent after this tab's last look could have been recorded.
+  let floor = 0;
   if (from > 0 && options.requestPage) {
     try {
       recent = await options.requestPage(null);
       if (cancelled()) return;
       if (recent.before !== null && recent.before > from + 1) {
         // A long offline gap is a new window, never an unbounded chat_since.
+        floor = from + 1;
         catchUp.forget(key); from = catchUp.begin(key, 0); page = recent;
       }
     } catch (e) { if (!String(e).includes("not available on this backend")) throw e; }
@@ -204,7 +300,19 @@ async function loadChatWindow(options: ChatLoadOptions): Promise<void> {
   // end includes events held during download AND the yielding replay. Only
   // events beyond the replay's tail still need folding.
   const tail = run?.length ? run[run.length - 1].seq : from;
-  next = pendingAfterReplay(next, getState(), [...context, ...(run ?? [])]);
+  // Words held only in this tab and absent from the window may have been
+  // delivered below it (the turn ran on for an hour after it was sent).
+  let hidden: Hidden | undefined;
+  const lone = page?.before != null ? localOnlyTurns(getState(), key)
+    .filter(message => !next.messages.some(known => known.id === message.id || turnIdsOf(message).some(id => ownsTurnId(known, id)))) : [];
+  if (lone.length) {
+    hidden = await scanHidden(options, lone, page!.before, floor);
+    if (cancelled()) return;
+    if (hidden.complete) for (const message of lone) {
+      if (!hidden.frames.some(f => hiddenFact(f.event, new Set(turnIdsOf(message))))) absent.add(`${key}\0${message.turnId}`);
+    }
+  }
+  next = pendingAfterReplay(next, getState(), [...context, ...(run ?? [])], hidden);
   const frames = catchUp.end(key, run ?? []);
   for (const frame of frames) {
     if (frame.seq > tail) next = reduceChat(next, frame.event);
