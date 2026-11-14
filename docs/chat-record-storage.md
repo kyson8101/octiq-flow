@@ -65,6 +65,28 @@ the target's state and `into` set to the target id. A profile folder that is
 away answers with `profile::available`'s sentence; the scan holds no lock and
 a line appended during it may be missed.
 
+`chat_dismiss_unsent` must not dismiss a turn the agent picked up, so its check
+and append are one step (`transcript::walk_marked`, `walk_on`,
+`append_after_walk`): the record is read outside every lock, and under the
+append lock the append is written only if the generation, the file identity and
+the length still match the end that was read; a grown record is read as a tail
+and decided again, a replaced one is read whole, and after 6 changes nothing is
+written (answer `false`, the page asks `chat_turn_delivery`).
+
+**The mark covers whole lines only.** The walk's end is the end of the last
+newline-terminated line. A last line without its line end (a write in progress,
+or one that was cut) is not shown to the guard, not counted, and the walk
+stops there rather than reading on: a writer finishing the line between two
+reads would otherwise make its two halves two bad lines and a mark that covers
+bytes never read as a line. The record is then longer than the mark, so the
+append answers `Grew` and the line is read whole from its start. A last line
+that is never finished leaves the guard answering `false` after its attempts
+(nothing is written; the next ordinary append repairs the line end). The
+shared walk (`try_each_stored_line`, so lookup and every reader) still hands an
+unterminated last line to its reader exactly as before, with the same seq; the
+only change is that it reads no further after it, which only a file that grew
+during the walk could ever have reached.
+
 ## Clearing native sessions
 
 `chat_forget` (`/clear`) stops the provider first, reserves the chat against

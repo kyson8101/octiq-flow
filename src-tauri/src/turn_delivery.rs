@@ -45,7 +45,9 @@
 //! then asks under the append lock that the record is still the same file and
 //! life and that nothing was added after the end that was read. A line that
 //! was (a pickup landing after the read) is read as a tail and the decision
-//! is made again; a record replaced during the read is read again whole.
+//! is made again; a record replaced during the read is read again whole. The
+//! mark is the end of the last whole (newline-terminated) line, never a byte
+//! of a line a writer is still finishing; see docs/chat-record-storage.md.
 //!
 //! `chatKey` is canonicalized once to `chat:<id>`: the queue and the record
 //! are kept under that key, and a bare id names the same chat.
@@ -898,6 +900,69 @@ mod tests {
         });
         assert_eq!(dismiss(&key, "born"), Ok(false));
         assert_eq!(types_in(&key), vec!["user:pickup".to_string()]);
+    }
+
+    /// Round 4 H1b: the scan reads a pickup line a writer has only half
+    /// written, and the writer finishes it before the scan's next read. The
+    /// two halves are not two lines; the guard must see the pickup.
+    #[test]
+    fn a_pickup_line_finished_between_two_reads_of_the_scan_is_not_dismissed_over() {
+        use std::io::Write;
+        let home = TestDir::new("turn-delivery-race-midline");
+        let _profile = crate::profile::started_in(&home);
+        let key = listed_chat("td-race-midline");
+        envelope(&key, "split");
+        delivery(&key, "split", "dispatched");
+        let path = crate::transcript::path_for(&key).unwrap();
+        let whole = format!(
+            "{}\n",
+            json!({"type": "user", "isReplay": true, "octiq_user_turn_id": "split",
+                   "message": {"content": "hello"}})
+        );
+        let (head, rest) = whole.split_at(whole.len() / 2);
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(head.as_bytes()).unwrap();
+        let (target, rest) = (path.clone(), rest.to_string());
+        crate::transcript::after_partial_line_hook(move || {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&target)
+                .unwrap();
+            file.write_all(rest.as_bytes()).unwrap();
+        });
+        assert_eq!(dismiss(&key, "split"), Ok(false));
+        assert!(
+            !types_in(&key).contains(&"octiq_user_turn_dismissed".to_string()),
+            "{:?}",
+            types_in(&key)
+        );
+        assert_eq!(state_of(&key, "split").state, "accepted");
+    }
+
+    /// A last line that is never finished is not a line the guard can stand
+    /// behind: it writes nothing and answers false (the page then asks
+    /// `chat_turn_delivery`), and the lookup skips the fragment as before.
+    #[test]
+    fn a_cut_last_line_that_stays_cut_gives_no_dismissal() {
+        use std::io::Write;
+        let home = TestDir::new("turn-delivery-cut-tail");
+        let _profile = crate::profile::started_in(&home);
+        let key = listed_chat("td-cut-tail");
+        envelope(&key, "cut");
+        delivery(&key, "cut", "failed");
+        let path = crate::transcript::path_for(&key).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(br#"{"type":"user","octiq_user_t"#).unwrap();
+        assert_eq!(dismiss(&key, "cut"), Ok(false));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("octiq_user_turn_dismissed"), "{text}");
+        assert_eq!(state_of(&key, "cut").state, "failed");
     }
 
     #[test]

@@ -633,8 +633,8 @@ pub(crate) enum After {
     /// read the new tail (`walk_on`) and ask again.
     Grew,
     /// The record is not the one that was read (removed, replaced, or its
-    /// history moved on) or its end cannot be told apart from a line still
-    /// being written. Nothing was written; read the whole record again.
+    /// history moved on) or it is shorter than what was read. Nothing was
+    /// written; read the whole record again.
     Moved,
 }
 
@@ -671,6 +671,26 @@ pub(crate) fn after_walk_hook(hook: impl FnMut() + 'static) {
 }
 
 #[cfg(test)]
+thread_local! {
+    static PARTIAL_READ: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `hook` once, the next time a walk of this thread has just read a last
+/// line that had no line end yet and has not yet read on: the instant a writer
+/// can finish that line between two reads.
+#[cfg(test)]
+pub(crate) fn after_partial_line_hook(hook: impl FnMut() + 'static) {
+    PARTIAL_READ.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+fn partial_line_read() {
+    if let Some(mut hook) = PARTIAL_READ.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+}
+
+#[cfg(test)]
 fn walk_ended() {
     // Taken out while it runs: the hook itself appends and may read again.
     if let Some(mut hook) = WALK_END.with(|slot| slot.borrow_mut().take()) {
@@ -682,7 +702,7 @@ fn walk_ended() {
 /// must know nothing came between. Reads the record without any lock; the
 /// file and its identity are fixed under the append lock when it is opened.
 /// A chat with no record is an empty one (`len` 0).
-pub(crate) fn walk_marked(key: &str, see: impl FnMut(u64, &[u8])) -> Result<Walked, String> {
+pub(crate) fn walk_marked(key: &str, mut see: impl FnMut(u64, &[u8])) -> Result<Walked, String> {
     let unread = |e: std::io::Error| format!("the chat's record could not be read: {e}");
     let path = path_for(key).ok_or_else(|| {
         chats_folder()
@@ -725,18 +745,21 @@ pub(crate) fn walk_marked(key: &str, see: impl FnMut(u64, &[u8])) -> Result<Walk
         walk_ended();
         return Ok(walked);
     };
-    // A clone shares the file's offset: once the walk has read to the end,
-    // the original says how many bytes that was.
-    let reader = file.try_clone().map_err(unread)?;
-    let mut last = 0;
-    let mut see = see;
-    try_each_line(reader, |seq, line| {
-        last = seq;
-        see(seq, line);
+    // The end that is marked is the end of the last WHOLE line (one with its
+    // line end). A last line without one is a write in progress or a cut one:
+    // a writer may finish it before the next read, and then its two halves
+    // would be read as two lines. It is not counted, not shown to `see`, and
+    // everything from its start on is a tail (`walk_on`).
+    let (mut len, mut last) = (0, 0);
+    try_each_line_at(file, |seq, line, at| {
+        if at.terminated {
+            len = at.end;
+            last = seq;
+            see(seq, line);
+        }
     })
     .map_err(unread)?;
-    let mut file = file;
-    walked.len = std::io::Seek::stream_position(&mut file).map_err(unread)?;
+    walked.len = len;
     walked.seq = last;
     #[cfg(test)]
     walk_ended();
@@ -778,14 +801,13 @@ pub(crate) fn walk_on(
     let mut reader = BufReader::new(file);
     let (mut line, mut seq, mut len) = (Vec::new(), walked.seq, walked.len);
     while reader.read_until(b'\n', &mut line).map_err(unread)? > 0 {
+        // A last line with no line end yet is not read: it is read whole, from
+        // its start, by the next call (`walk_marked` stops before it too).
+        let Some(body) = line.strip_suffix(b"\n") else {
+            break;
+        };
         len += line.len() as u64;
-        let mut body = line.as_slice();
-        if let [rest @ .., b'\n'] = body {
-            body = rest;
-            if let [rest @ .., b'\r'] = body {
-                body = rest;
-            }
-        }
+        let body = body.strip_suffix(b"\r").unwrap_or(body);
         seq = seq
             .checked_add(crate::record_storage::span(body))
             .ok_or_else(|| "chat record sequence overflow".to_string())?;
@@ -807,6 +829,13 @@ pub(crate) fn walk_on(
 /// and the line appended in ONE step under the append lock, like `append_in`.
 /// A record that moved on, or one that grew, writes nothing (`After`).
 ///
+/// **What is marked is the end of the last whole line, never a byte past it.**
+/// A last line with no line end is a write in progress (or one that was cut):
+/// the walk stops before it and does not show it, and the record is then
+/// longer than the mark, so the answer is `Grew` until that line is whole and
+/// read from its start. A cut line that is never finished leaves the answer
+/// `Grew` for good: the caller gives up after its attempts and writes nothing.
+///
 /// For a line whose meaning depends on what the record said when it was
 /// decided (a dismissal is only true of a turn nobody has picked up): the
 /// decision is made from a lock-free read of the whole record, and the
@@ -818,7 +847,6 @@ pub(crate) fn append_after_walk(
     walked: &Walked,
     event: &Value,
 ) -> Result<After, String> {
-    use std::io::{Read, Seek, SeekFrom};
     let (Some(path), Ok(line)) = (path_for(key), serde_json::to_string(event)) else {
         return Err("the chat's record could not be written".into());
     };
@@ -843,18 +871,8 @@ pub(crate) fn append_after_walk(
             return Ok(After::Moved);
         }
         if now.len > walked.len {
-            // A walk that ended inside a line a writer had not finished read
-            // half of it; the rest would be taken for a line of its own.
-            let mut file = File::open(&path).map_err(|e| e.to_string())?;
-            if walked.len > 0 {
-                let mut last = [0u8; 1];
-                file.seek(SeekFrom::Start(walked.len - 1))
-                    .and_then(|_| file.read_exact(&mut last))
-                    .map_err(|e| e.to_string())?;
-                if last[0] != b'\n' {
-                    return Ok(After::Moved);
-                }
-            }
+            // `walked.len` is the end of a whole line, so anything after it,
+            // a line still being written included, is a tail to read first.
             return Ok(After::Grew);
         }
     }
@@ -975,9 +993,17 @@ pub(crate) fn for_each_line(file: File, see: impl FnMut(u64, &[u8])) {
 /// `for_each_line`, answering a read that failed part way instead of
 /// ending there as if the file did.
 pub(crate) fn try_each_line(file: File, mut see: impl FnMut(u64, &[u8])) -> std::io::Result<()> {
+    try_each_line_at(file, |seq, line, _| see(seq, line))
+}
+
+/// `try_each_line`, saying where each line ended (`LineEnd`).
+pub(crate) fn try_each_line_at(
+    file: File,
+    mut see: impl FnMut(u64, &[u8], LineEnd),
+) -> std::io::Result<()> {
     let mut lists = crate::record_storage::ListReader::default();
     let mut failed = None;
-    try_each_stored_line(file, |seq, line| {
+    try_each_stored_line_at(file, |seq, line, at| {
         if failed.is_some() {
             return;
         }
@@ -990,13 +1016,13 @@ pub(crate) fn try_each_line(file: File, mut see: impl FnMut(u64, &[u8])) -> std:
                 }
                 if referenced {
                     if let Ok(text) = serde_json::to_vec(&event) {
-                        see(seq, &text);
+                        see(seq, &text, at);
                         return;
                     }
                 }
             }
         }
-        see(seq, line);
+        see(seq, line, at);
     })?;
     failed.map_or(Ok(()), Err)
 }
@@ -1011,9 +1037,29 @@ pub(crate) fn try_each_stored_line(
     file: File,
     mut see: impl FnMut(u64, &[u8]),
 ) -> std::io::Result<()> {
+    try_each_stored_line_at(file, |seq, line, _| see(seq, line))
+}
+
+/// Where a line ended, and whether it ended in a line end. Only the last line
+/// of a record can be unterminated: a write still in progress, or one that was
+/// cut. The bytes of such a line are not yet a line (a writer may finish it
+/// before the next read), so a reader that must know where a whole line ends
+/// takes `end` of the last terminated line and nothing past it.
+#[derive(Clone, Copy)]
+pub(crate) struct LineEnd {
+    pub end: u64,
+    pub terminated: bool,
+}
+
+pub(crate) fn try_each_stored_line_at(
+    file: File,
+    mut see: impl FnMut(u64, &[u8], LineEnd),
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(file);
-    let (mut line, mut seq) = (Vec::new(), 0u64);
+    let (mut line, mut seq, mut offset) = (Vec::new(), 0u64, 0u64);
     while reader.read_until(b'\n', &mut line)? > 0 {
+        offset += line.len() as u64;
+        let terminated = line.ends_with(b"\n");
         let mut body = line.as_slice();
         if let [rest @ .., b'\n'] = body {
             body = rest;
@@ -1024,7 +1070,22 @@ pub(crate) fn try_each_stored_line(
         seq = seq
             .checked_add(crate::record_storage::span(body))
             .ok_or_else(|| std::io::Error::other("chat record sequence overflow"))?;
-        see(seq, body);
+        see(
+            seq,
+            body,
+            LineEnd {
+                end: offset,
+                terminated,
+            },
+        );
+        if !terminated {
+            // Only the end of the file answers without a line end. A line
+            // read from here on would be the rest of this one, if a writer
+            // finished it meanwhile, and no longer the line after it: stop.
+            #[cfg(test)]
+            partial_line_read();
+            break;
+        }
         line.clear();
     }
     Ok(())
