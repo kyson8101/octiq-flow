@@ -78,3 +78,11 @@ export function deliveryLookupHeld(message: Pick<Message, "turnId" | "sourceTurn
   if (!asking.size) return false;
   return (!!message.turnId && asking.has(message.turnId)) || (message.sourceTurnIds ?? []).some(id => asking.has(id));
 }
+
+/** The local message a host resolution leaves behind; `undefined` drops it. */
+export function applyResolution(message: Message, resolution: Resolution): Message | undefined {
+  if (resolution === "drop") return undefined;
+  if (resolution === "failed") return { ...message, delivery: "failed", queueLost: true, hostFailed: true, queueAction: undefined, queueError: undefined };
+  return { ...message, delivery: resolution === "queued" ? "queued" : "dispatched",
+    queueLost: undefined, hostFailed: undefined, queueAction: undefined, queueError: undefined };
+}

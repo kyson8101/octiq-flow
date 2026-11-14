@@ -7,7 +7,7 @@ import { type ChatHistory, type ChatPage, type HistorySlice } from "./chatHistor
 import { restoredTurn } from "./turnClock";
 import { withLocalPrompts } from "./chatRetention";
 import { invalidateChatRecord, type ChatRecordHead } from "./chatRecord";
-import { DELIVERY_BATCH, holdDeliveryLookup, readDeliveryAnswer, resolveMessage, type Resolution, type TurnDeliveryFact } from "./turnDelivery";
+import { DELIVERY_BATCH, applyResolution, holdDeliveryLookup, readDeliveryAnswer, resolveMessage, type Resolution, type TurnDeliveryFact } from "./turnDelivery";
 
 /** What a scan below the window learned about prompts this tab still holds
  * only locally. */
@@ -165,10 +165,8 @@ function pendingAfterReplay(next: ChatState, current: ChatState, frames: Frame[]
     if (decided.size) next = { ...next, messages: next.messages.flatMap(message => {
       const resolution = decided.get(message.id);
       if (!resolution) return [message];
-      if (resolution === "drop") return [];
-      if (resolution === "failed") return [{ ...message, delivery: "failed" as const, queueLost: true, hostFailed: true, queueAction: undefined, queueError: undefined }];
-      return [{ ...message, delivery: resolution === "queued" ? ("queued" as const) : ("dispatched" as const),
-        queueLost: undefined, hostFailed: undefined, queueAction: undefined, queueError: undefined }];
+      const kept = applyResolution(message, resolution);
+      return kept ? [kept] : [];
     }) };
   }
   return next;

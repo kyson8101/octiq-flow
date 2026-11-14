@@ -53,14 +53,6 @@ function host(lines: Record<number, Frame>, total = 1000) {
 const queueGone = { live: false, queuedTurnIds: [] as string[] };
 
 
-const queuedEnvelope: Frame = { seq: 1, event: { type: "user", uuid: TURN, octiq_user_turn: true,
-  message: { content: [{ type: "text", text: "queued on host" }] } } };
-async function hostQueuedTab() {
-  const o=setup();
-  const s=await replayChat(emptyChat(),[queuedEnvelope,{seq:2,event:{type:"octiq_user_turn_delivery",uuid:TURN,state:"queued"}}],0,()=>false);
-  await saveChatCheckpoint({id:o.id,seq:2,state:s,updatedAt:1}); o.publish(s);return o;
-}
-
 import {readChatCheckpoint} from "./chatCache";
 import {withLocalPrompts,chatPreviewState} from "./chatRetention";
 
@@ -70,7 +62,7 @@ const opts=(o:ReturnType<typeof setup>,requestPage:any)=>({...o,history:new Chat
 
 it.each([false,true])("COMBO host failure then later same-id dispatch (echo=%s)",async useEcho=>{
  const o=await retainedTab();
- const pages=host({300:failed(300),810:dispatched(810),...(useEcho?{811:echo(811)}:{})});
+ const pages=host({300:failed(300),810:dispatched(810),...(useEcho?{811:echo(811)}:({} as Record<number,Frame>))});
  await loadChat(opts(o,pages));
  if(useEcho) expect(msg(o)).toBeUndefined();
  else {expect(msg(o)).toMatchObject({delivery:"dispatched",hostFailed:undefined,queueLost:undefined});const s=o.getState();o.publish(reconcileQueueSnapshot(s,s,queueGone));expect(msg(o)).toMatchObject({delivery:"unknown",hostFailed:undefined,queueLost:undefined});}
