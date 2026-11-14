@@ -32,6 +32,8 @@ import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 import { pendingLabel } from "../lib/pendingActions";
 import { entryClass, useEntry } from "../lib/useArrival";
 import { useRowMotion } from "../lib/rowMotion";
+import { useDonePush, withoutPushed, type PushPhase } from "../lib/donePush";
+import { DonePushRobot } from "./DonePushRobot";
 import { Arrive } from "./Arrive";
 import "./MobileSidebar.css";
 import { AppearanceToggle } from "./AppearanceToggle";
@@ -210,8 +212,17 @@ export function Sidebar({
   // find again than one that grows as chats are ticked. The other ways of
   // looking at the chat list — archived workers, deleted chats — sit in the
   // same menu, under the views.
+  // A chat ticked off while this list is Active leaves it three seconds later
+  // (`lib/donePush`). Until its row has gone, the open chat and the hand-ticked
+  // rows stay listed as they always did; after, they stop being held.
+  const chatList = useRef<HTMLDivElement | null>(null);
+  const donePush = useDonePush(conversations, {
+    filter, showArchived, ready: chatsReady,
+    beforeGone: (id) => releaseFocus(chatList.current, id),
+  });
+  const { keep: keepOpen, keepMarked: keepTicked } = withoutPushed(currentConversation, keptMarked, donePush.gone);
   const listedConversations = showArchived ? archivedConversations
-    : chatFilterList(activeConversations, filter, currentConversation, keptMarked);
+    : chatFilterList(activeConversations, filter, keepOpen, keepTicked);
 
   // Filtered on the way OUT of `workflowChatList`, never on the way in: it
   // decides which older attempts to fold away by looking at who is present,
@@ -222,8 +233,8 @@ export function Sidebar({
     [conversations, facts, currentConversation],
   );
   const tree = useMemo(
-    () => buildChatTree(chatFilterList(workflowList, filter, currentConversation, keptMarked), chatParents),
-    [workflowList, chatParents, currentConversation, filter, keptMarked],
+    () => buildChatTree(chatFilterList(workflowList, filter, keepOpen, keepTicked), chatParents),
+    [workflowList, chatParents, keepOpen, filter, keepTicked],
   );
   // Pins are not a view. A pinned chat is listed under Pinned whatever Recent
   // is showing — ticked off or not — so switching Recent to Done never makes a
@@ -237,7 +248,6 @@ export function Sidebar({
   // A chat that answers goes to the top of its list and the rows it passed
   // drop by one: each of them moves there (`lib/rowMotion`). Only the listed
   // rows; a chat's own task chats move with the row that holds them.
-  const chatList = useRef<HTMLDivElement | null>(null);
   useRowMotion(chatList, `${pinnedNodes.map((node) => node.chat.id).join(",")}|${recentNodes.map((node) => node.chat.id).join(",")}`,
     ".task-chat-list > li.chat-row[data-row]");
   const ancestors = new Set<string>();
@@ -348,7 +358,7 @@ export function Sidebar({
       : latest?.text ?? chat.latestResponse ?? (working(chat.id) ? "Working…" : "No response yet");
 
     return (
-      <AnimatedChatRow id={chat.id} entering={listed === "settled" && !seenChatIds.current.has(chat.id)} leaving={isLeaving} key={chat.id}>
+      <AnimatedChatRow id={chat.id} entering={listed === "settled" && !seenChatIds.current.has(chat.id)} leaving={isLeaving} push={donePush.phases.get(chat.id)} key={chat.id}>
         <div className={[
           "chat", chat.id === currentConversation ? "is-on" : "",
           running.has(chat.id) ? "is-live" : "", working(chat.id) ? "is-busy" : "",
@@ -691,7 +701,22 @@ export function chatTime(timestamp: number): string {
   return date.toLocaleDateString([], { month: "short", day: "numeric", ...(date.getFullYear() !== today.getFullYear() ? { year: "numeric" as const } : {}) });
 }
 
-function AnimatedChatRow({ id, entering, leaving, children }: { id: string; entering: boolean; leaving: boolean; children: ReactNode }) {
+/** A row that is about to leave takes the keyboard with it unless the focus
+ *  is moved first: to the next row's chat button, else the previous one's, else
+ *  the list's own view menu. */
+function releaseFocus(root: HTMLElement | null, id: string) {
+  const active = document.activeElement;
+  if (!root || !(active instanceof HTMLElement)) return;
+  const rows = [...root.querySelectorAll<HTMLElement>(".task-chat-list > li.chat-row[data-row]")];
+  const index = rows.findIndex((row) => row.dataset.row === id);
+  if (index < 0 || !rows[index].contains(active)) return;
+  const target = [rows[index + 1], rows[index - 1]]
+    .map((row) => row?.querySelector<HTMLElement>(".chat-btn:not(:disabled)"))
+    .find(Boolean) ?? root.querySelector<HTMLElement>(".sidebar-filter-trigger");
+  target?.focus({ preventScroll: true });
+}
+
+function AnimatedChatRow({ id, entering, leaving, push, children }: { id: string; entering: boolean; leaving: boolean; push?: PushPhase; children: ReactNode }) {
   const [isEntering, setIsEntering] = useState(() => entering && !(typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches));
   useEffect(() => {
     if (!isEntering) return;
@@ -699,7 +724,11 @@ function AnimatedChatRow({ id, entering, leaving, children }: { id: string; ente
     return () => cancelAnimationFrame(frame);
   }, [isEntering]);
   // `data-row` is how a row that changes place is followed (`lib/rowMotion`).
-  return <li data-row={id} className={["chat-row", isEntering ? "is-entering" : "", leaving ? "is-leaving" : ""].filter(Boolean).join(" ")}><div className="chat-row-content">{children}</div></li>;
+  return <li data-row={id} className={["chat-row", isEntering ? "is-entering" : "", leaving ? "is-leaving" : "",
+    push === "pushing" ? "is-pushing" : "", push === "collapsing" ? "is-collapsing" : ""].filter(Boolean).join(" ")}>
+    <div className="chat-row-content">{children}</div>
+    {push === "pushing" && <DonePushRobot />}
+  </li>;
 }
 
 function SearchIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>; }
