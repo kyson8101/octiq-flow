@@ -80,9 +80,14 @@ and never again from inside an agent chat:
 ./scripts/install-restart-agent.sh            # first install of the restart helper
 ```
 
-- **Deploying** is done by the `/release` skill (commit → push → test → build
-  the client AND `octiq-server` → ask, then restart the service → print the
-  URL). It never signs or notarizes.
+- **Releasing** is done by the `/release` skill, in a fixed order: every
+  worktree and open PR merged into `develop` → tests and builds clean on Mac
+  and the Windows box → version bump on `develop` → every platform built green
+  on GitHub, then fast-forward `main` → remove merged worktrees and branches →
+  build the client AND `octiq-server` locally → ask, then restart and verify
+  the live build → push the tag to publish npm, last → close finished
+  missions. A release is never `develop`-only or local-only. It never signs or
+  notarizes.
 - **The client is served at the root** (`http://127.0.0.1:1421/?token=…`) and
   only there; `/v2/` redirects to the root, query intact, so saved links keep
   working.

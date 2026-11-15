@@ -1,22 +1,18 @@
 ---
 name: release
 description: >-
-  Manually invoked as `/release` (or by an explicit "ship it" / "release it" /
-  "deploy this" / "release this build" mention) to run the fixed deploy
-  sequence for OctiqFlow: (1) commit every working-tree change to the current
-  branch, (2) push the current branch to its remote, (3) run the Rust and web
-  test suites, (4) build the web client and the `octiq-server` binary, (5) ASK
-  before restarting the backend service — the restart stops every live agent
-  chat INCLUDING this one — then restart it by touching
-  `~/.octiqflow/restart.request`, never by running `install-service.sh`, which
-  would kill its own shell mid-restart and leave the backend down, and (6)
-  print the URL to open.
-  OctiqFlow is a SERVER plus a browser client; there is no desktop app step and
-  no `.dmg`. Commits with a conventional message and no AI attribution; skips
-  the commit step when the tree is already clean but still pushes. Never
-  branches, never opens a PR. Does NOT auto-trigger — only on the `/release`
-  slash command or an explicit ship/release/deploy mention; a finished task
-  alone is not enough.
+  Manually invoked as `/release`, or by an explicit "prepare for release" /
+  "release it" / "ship it" / "release this build" mention, to run OctiqFlow's
+  full release in a fixed order: (0) pre-checks, (1) every worktree and open PR
+  merged into `develop`, (2) no error on Mac AND the Windows box, (3) version
+  bump committed and pushed on `develop`, (4) every platform built green on
+  GitHub, then fast-forward `main`, (5) remove merged worktrees and branches,
+  (6) build the web client and `octiq-server` locally, (7) ASK before
+  restarting the service, restart by touching `~/.octiqflow/restart.request`
+  (never `install-service.sh`) and verify the live build, (8) publish to npm
+  LAST by pushing the tag and confirming all five packages, (9) close finished
+  missions. A release is never `develop`-only and never local-only. Does NOT
+  auto-trigger: a finished task alone is not enough.
 ---
 
 # Release
@@ -24,213 +20,252 @@ description: >-
 ## Contents
 
 - What OctiqFlow is now
-- Step 1 — Commit
-- Step 2 — Push
-- Step 3 — Test
-- Step 4 — Build both halves
-- Step 5 — Restart the service (ASK FIRST)
-- Step 6 — Verify, then print the URL
+- Step 0 — Pre-checks
+- Step 1 — Everything merged into `develop`
+- Step 2 — No error on Mac and Windows
+- Step 3 — Version bump on `develop`
+- Step 4 — Every platform green, then `main`
+- Step 5 — Remove merged worktrees and branches
+- Step 6 — Build both halves locally
+- Step 7 — Restart the service (ASK FIRST), then verify
+- Step 8 — Publish to npm, last
+- Step 9 — Close finished missions
+- Local-only deploy
 - Rules
 
-Deploy OctiqFlow end to end: **commit → push → test → build → restart the
-service → print the URL**.
+Release OctiqFlow end to end. **The order is the person's (2026-11-15) and is
+not shortened**: all work in `develop` → Mac and Windows clean → `develop` →
+`main` → cleanup → local build → restart → npm → missions. npm is last because
+a published version cannot be taken back: it ships only once the local server
+runs the same build.
+
+Stop at the first failure, report it with its output, and do not go on.
+Report each step's result separately. Every outward action (push, merge, tag,
+delete a remote branch, restart) is part of what the person asked for when they
+said release, except the restart, which is asked again in Step 7.
 
 ## What OctiqFlow is now
 
 A **headless server** (`octiq-server`) plus a **React client** served over
-HTTP. The user reaches it in a browser — on this Mac, on a phone, through the
-cloudflared tunnel. The agents run on the server, with no window anywhere.
-
-**There is no desktop build at all any more.** The Tauri desktop app and every
-Tauri dependency were deleted; `octiq-server` is plain Rust. There is no `.app`,
-no `.dmg` and no `pnpm tauri` command to run, so no request can ask for one.
-
-The two moving parts:
+HTTP. There is no desktop build: no `.app`, no `.dmg`, no `pnpm tauri`.
 
 | Part | Built from | Lands at |
 | --- | --- | --- |
 | the client | `web/` (vite) | `web/dist`, read off disk at runtime |
 | the backend | `src-tauri/` (`--bin octiq-server`) | copied to `~/.octiqflow/bin/octiq-server` |
 
-They are **deployed separately**, and that asymmetry is the trap: `web/dist` is
-read live, so a client build reaches the browser on the next reload with no
-restart at all, while the backend only changes when the service restarts. Ship
-just the client and you get a new page calling a command the old backend does
-not have, which fails as an unknown command. Always do both.
+They deploy separately: a client build reaches the browser on the next reload,
+the backend only on a restart. Always ship both.
 
-Run every command from the repo root: `/Users/kyson/03-projects/octiq-flow`.
-Run the steps in order. Stop and report if any step fails.
+The release runs in the **primary checkout** `/Users/kyson/03-projects/octiq-flow`
+on `develop`. Requires `cargo`, `pnpm`, `node` and `gh` on PATH; anything missing
+-> stop and report, install nothing.
 
-Requires `cargo`, `pnpm` and `node` on PATH (`cargo --version && pnpm --version
-&& node --version`). Anything missing -> stop and report; install nothing here.
-
-## Step 1 — Commit
-
-1. Run `git status --short` to see the working-tree changes.
-2. If there is **nothing to commit**, say so in one line and continue to Step 2.
-   "always commit" means "always run the sequence", not "create an empty commit".
-3. Otherwise:
-   - Stage by explicit path: `git add <path> <path> …` for every path that
-     `git status --short` listed. Never `git add -A` or `git add .`; the
-     git-safety hook rejects both.
-   - Read the staged diff (`git diff --cached --stat` and, for anything
-     non-obvious, the full diff) so the message describes what actually changed.
-   - Commit to the **current branch** with a **conventional-commit** message
-     (`feat:` / `fix:` / `chore:` / `refactor:` …) that summarizes the change.
-     **No AI attribution** in the message or trailer.
-   - Do **not** create or switch branches. Do **not** amend or run any
-     destructive git command.
-
-## Step 2 — Push
-
-Push the current branch to its remote, even when Step 1 had nothing to
-commit — there may already be local commits the remote doesn't have.
+## Step 0 — Pre-checks
 
 ```bash
-git push -u origin HEAD
-```
-
-If it fails (no remote configured, diverged history, a rejected
-non-fast-forward push), **stop** and show the error. Do not force-push, do
-not rebase to force it through — surface the conflict and let the user
-resolve it.
-
-## Step 3 — Test
-
-The restart in Step 5 stops every running agent chat. Finding out afterwards
-that the new binary is broken costs the user real work, so the suites run
-first — they take seconds.
-
-```bash
-cd src-tauri && cargo test --lib
-cd web && pnpm test
-```
-
-If either fails, **stop** and show the failing output. Do not build, do not
-restart. The old server keeps running, which is the right outcome.
-
-## Step 4 — Build both halves
-
-```bash
-pnpm --dir web build                                    # tsc -b && vite build
-cd src-tauri && cargo build --profile release-local --bin octiq-server
-```
-
-The local server uses thin LTO and parallel codegen, producing
-`src-tauri/target/release-local/octiq-server` (with the default target directory).
-Run the long build under `octiq-job --detach --label "Build local server" --`
-and wait for its exit status. npm/CI keeps full LTO via `--release`.
-
-If either fails (non-zero exit, `error[...]`), **stop** and show the relevant
-tail. Nothing has been swapped yet, so the running server is untouched.
-
-## Step 5 — Restart the service (ASK FIRST)
-
-**This is a stop-gate. Do not run it without the user's explicit go-ahead in
-this turn.**
-
-Restarting kills every agent process the server owns — every chat mid-answer,
-including the one the user is talking to you in. Their transcripts survive on
-the server and can be resumed, but the running turns are lost. Say that plainly,
-name how many agents are currently running, and wait for an answer:
-
-```bash
+git fetch origin --prune
+git status --short                       # primary checkout
 ps -ax -o command | grep -cE "claude -p|codex exec" | cat
 ```
 
-Everything is already committed and pushed (Steps 1–2), so no work is lost
-when this chat ends at the trigger — but you still will not get another turn
-in it, so make sure the go-ahead is unambiguous before triggering it. The
-restart kills this chat too: it is a grandchild of the server (`zsh ← claude
--p ← octiq-server`), and nothing can keep it alive.
+Stop and ask the person when:
 
-Once they agree:
+- the primary checkout has changes this release did not make (another chat's
+  in-flight edits would be built and committed into the release);
+- an orchestration worker is still running (`orchestration_snapshot`: any
+  attempt executing).
+
+Confirm `develop` is checked out and equals `origin/develop`.
+
+## Step 1 — Everything merged into `develop`
+
+Unmerged work is found in three places:
+
+```bash
+git worktree list
+git branch -a --no-merged origin/develop
+gh pr list --base develop --state open
+```
+
+- A finished task or feature branch is merged into `develop` first (merge
+  `develop` into it, test, merge it into `develop`). A branch or PR whose work
+  is not finished, or a dirty worktree, is **listed for the person**, never
+  silently left out and never merged half done.
+- An open PR is merged by the lead's PR rules (reviewed, approved), not by this
+  skill skipping review.
+- Push `develop` once everything is in.
+
+## Step 2 — No error on Mac and Windows
+
+On this Mac, at the `develop` commit:
+
+```bash
+cd src-tauri && cargo test --lib
+cd web && pnpm test && pnpm build
+```
+
+On the Windows box, at the **same** commit (ssh alias `windows-build`; recipe:
+detached worktree under `C:\Pandaworks\Developers\octiq-validate-<sha>`,
+`OPENSSL_NO_VENDOR=1` plus the three `OPENSSL_*` variables, `call vcvars64.bat`
+on the same cmd line, long builds started through WMI, `npx -y pnpm@12.6.0`
+because the box's pnpm 9 cannot read `web/pnpm-workspace.yaml`):
+
+- `cargo test --lib` and `cargo build --bin octiq-server`
+- web install + `vitest` + build
+
+`tailscale status` first. If the box is offline, ask the person once whether to
+release without it; never report Windows as "untested" on your own. New
+failures block the release; known, triaged failures are named in the report.
+
+## Step 3 — Version bump on `develop`
+
+Every release is the next patch version. The single source is
+`src-tauri/Cargo.toml`:
+
+```bash
+# edit version in src-tauri/Cargo.toml, then:
+cargo update -p octiq-flow --offline --manifest-path src-tauri/Cargo.toml
+git add src-tauri/Cargo.toml src-tauri/Cargo.lock
+git commit -m "chore: release X.Y.Z"
+git push origin develop
+```
+
+Check the tag `vX.Y.Z` does not exist yet (`git ls-remote --tags origin vX.Y.Z`).
+No AI attribution in the message. Never amend, never force.
+
+## Step 4 — Every platform green, then `main`
+
+There is no CI on push. The npm workflow's manual mode builds every platform
+(macOS arm64 and x64, Linux, Windows) without publishing:
+
+```bash
+gh workflow run npm-release.yml --ref develop -f publish=false
+gh run list --workflow npm-release.yml --branch develop --limit 1
+gh run watch <run-id> --exit-status
+```
+
+Only once that run is green on the release commit:
+
+```bash
+git merge-base --is-ancestor origin/main origin/develop   # must succeed
+git push origin develop:main                              # fast-forward only
+```
+
+If `main` is not an ancestor, stop: a hotfix on `main` was never merged back.
+
+## Step 5 — Remove merged worktrees and branches
+
+Everything already merged into `develop` goes, local and on `origin`.
+
+- Task worktrees of an orchestration run: the coordinator's
+  `orchestration_workspace_cleanup_request` (host-verified, one card).
+- Anything else, by hand, only after all of: `git merge-base --is-ancestor
+  <branch> origin/develop`, a clean `git status`, and no ignored files at stake
+  (`git status --ignored=matching`: anything beyond `target`, `node_modules`,
+  `dist`, `.DS_Store`, `*.log` is listed, not deleted). Then:
+
+  ```bash
+  git worktree remove <path>            # never --force
+  git branch -d <branch>                # never -D
+  git push origin --delete <branch>
+  ```
+
+Never touch `main`, `develop`, the worktree a live chat runs in (OctiqFlow
+rebuilds it at the same path on its next turn), or anything unmerged or dirty:
+those are listed in the report.
+
+## Step 6 — Build both halves locally
+
+```bash
+pnpm --dir web build
+cd src-tauri && cargo build --profile release-local --bin octiq-server
+```
+
+Run the long build under `octiq-job --detach --label "Build local server" --`
+and wait for its exit status. It produces
+`src-tauri/target/release-local/octiq-server`. If either fails, stop: nothing
+has been swapped, the running server is untouched.
+
+A web build replaces lazy chunks: tabs already open may go blank on their next
+lazy load until reloaded. Say so in the report.
+
+## Step 7 — Restart the service (ASK FIRST), then verify
+
+**Stop-gate. Do not restart without the person's typed go-ahead in this turn.**
+Approval from an earlier release does not carry over.
+
+Restarting kills every agent process the server owns, this chat included (it is
+a grandchild of the server). Say that, with the live agent count from Step 0,
+and wait. Everything up to here is already pushed, so nothing is lost.
 
 ```bash
 touch ~/.octiqflow/restart.request
 ```
 
-**Do NOT run `./scripts/install-service.sh` yourself.** Its `launchctl bootout`
-kills the shell running it — your own — halfway through, so the old server stops
-and the new one is never started. The backend ends up **down**, and the line
-that would have said so dies with the shell.
+**Never run `./scripts/install-service.sh` yourself**: its `launchctl bootout`
+kills its own shell halfway, and the backend is left down. The trigger file is
+watched by `com.kyson.octiqflow.restarter`, which runs the install to the end.
 
-The trigger file is watched by a separate launchd job
-(`com.kyson.octiqflow.restarter`) which the dying server cannot touch. It runs
-`install-service.sh` to completion on your behalf: copies the built binary to
-`~/.octiqflow/bin/octiq-server`, signs it, rewrites the plist, restarts the
-service, and waits for the port. It re-reads the current bind address, so a
-server on `0.0.0.0` does not come back on loopback.
-
-Since this chat ends at the trigger, the next session verifies the outcome:
+This chat ends at the trigger; the next session verifies before Step 8:
 
 ```bash
 tail -5 ~/.octiqflow/logs/restart.log      # ends with "Backend is up."
-lsof -nP -iTCP:1421 -sTCP:LISTEN           # something is listening
+./scripts/octiq-check.sh                   # exit 0
+cat ~/.octiqflow/live-build.json           # commit = the release commit
+grep 'OctiqFlow:' ~/.octiqflow/logs/server.log | tail -1   # the URL to open
 ```
 
-If the log says the restart FAILED, the backend is **down**, not merely
-un-updated. Recover before reporting anything else:
+If the restart FAILED, the backend is **down**. Recover first:
 
 ```bash
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kyson.octiqflow.server.plist
 lsof -nP -iTCP:1421 -sTCP:LISTEN
 ```
 
-## Step 6 — Verify, then print the URL
+## Step 8 — Publish to npm, last
 
-Do not report a deploy on the strength of a build succeeding. Check the thing
-actually answers:
+Only after Step 7 verified the live build:
 
-1. It is listening:
+```bash
+git tag -a vX.Y.Z -m "OctiqFlow X.Y.Z" <release-commit>
+git push origin vX.Y.Z
+```
 
-   ```bash
-   lsof -nP -iTCP:1421 -sTCP:LISTEN
-   ```
+**One release tag at a time**: parallel npm workflows race and the last to
+finish sets `latest`. The tag triggers `npm-release.yml`; watch the run to the
+end. Then confirm all five packages, allowing a few minutes of registry lag
+after the run (npm processes publishes asynchronously; lag is not failure):
 
-2. It is the NEW binary — ask it something only the new code can answer. The
-   honest general check is a command the browser uses, over the real socket:
+```bash
+for p in octiqflow octiqflow-darwin-arm64 octiqflow-darwin-x64 \
+         octiqflow-linux-x64 @kyson8101/octiqflow-win32-x64; do
+  curl -s "https://registry.npmjs.org/$p?cb=$(date +%s)" \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(process.argv[1],JSON.parse(s)["dist-tags"].latest))' "$p"
+done
+```
 
-   ```bash
-   # /token no longer hands the token to a local request; take it from the
-   # URL the new server printed at startup (the one step 3 shows the user).
-   T=$(grep 'OctiqFlow:' ~/.octiqflow/logs/server.log | tail -1 | sed 's/.*token=//')
-   node -e '
-   const ws=new WebSocket("ws://127.0.0.1:1421/ws?token="+encodeURIComponent(process.argv[1]));
-   ws.onopen=()=>ws.send(JSON.stringify({t:"invoke",id:1,cmd:"list_workspaces",args:{}}));
-   ws.onmessage=(e)=>{const f=JSON.parse(e.data);
-     if(f.t==="reply"&&f.id===1){console.log("ok:",f.ok,f.error??"");process.exit(f.ok?0:1);}};
-   setTimeout(()=>{console.log("timeout");process.exit(1)},10000);
-   ' "$T"
-   ```
+Every line must say `X.Y.Z`.
 
-   When the deploy added a backend command, ask for **that** command by name
-   instead — an old binary rejects it as an unknown command, which is exactly
-   the failure this step exists to catch.
+## Step 9 — Close finished missions
 
-3. Print the URL from the log, token and all — it is what the user opens:
+Orchestration runs and missions whose work is now merged are closed through the
+host's `closeEligible` path (the coordinator's cleanup card or the run panel's
+Close), never left open. A mission the host does not call eligible is listed.
 
-   ```bash
-   grep 'OctiqFlow:' ~/.octiqflow/logs/server.log | tail -1
-   ```
+## Local-only deploy
 
-   The client is served at the **root** (`http://127.0.0.1:1421/?token=…`) and
-   only there. The older `/v2/` path redirects to the root with its query
-   intact, so links and home-screen shortcuts people already saved still land
-   on the app. Mention the tunnel URL too if the user reaches it that way;
-   the token does not change across restarts, so their saved link keeps working.
+Only when the person explicitly asks for a local deploy and NOT a release: run
+Steps 0, 2 (Mac only), 6 and 7, from the branch they name. Say plainly that
+`main`, npm and Windows were not touched.
 
 ## Rules
 
-- This skill is **commit + push + test + build + restart**. It never opens a
-  PR, signs, or notarizes. If the user wants any of those, they ask
-  separately.
-- **Always pushes** the current branch after committing (Step 2), not just as
-  a last-minute save right before the restart. Never force-pushes, never
-  branches, never rebases to force a push through a conflict.
-- **Never restart without asking in the same turn.** Approval on a previous
-  deploy does not carry over.
-- Ship **both halves or neither**. A client-only deploy leaves a new page on an
-  old backend and looks like a broken feature rather than a stale server.
-- Report faithfully: if a step failed, say so with the output; never claim the
-  server is running without seeing it listen and answer.
+- The order is fixed. Never tag before the restart is verified, never push
+  `main` before every platform built green, never release from a task branch.
+- Never force-push, rebase to get a push through, `--force` a worktree removal
+  or `-D` a branch.
+- Never restart without asking in the same turn.
+- Ship both halves or neither.
+- Report faithfully, step by step: what passed, what failed with its output,
+  what was listed instead of done.
