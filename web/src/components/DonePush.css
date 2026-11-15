@@ -1,0 +1,109 @@
+/* A done chat's row leaves the Active list (`lib/donePush`): a small robot
+   pushes it out to the right, then the height closes up.
+
+   One timeline drives both the row and the robot, so the robot's hands are
+   always on the row's left edge. The row's content slides inside the row's own
+   clip (`overflow: hidden`), so nothing reaches past the list and the page
+   never gains a horizontal scroll. Ease-out, no overshoot: the move is
+   transform-only and the collapse is the same grid-rows close a deleted row
+   uses (`.chat-row.is-leaving` in styles.css). Durations are kept in step with
+   PUSH_MS / COLLAPSE_MS in lib/donePush.ts. */
+
+.chat-row.is-pushing,
+.chat-row.is-collapsing {
+  position: relative;
+  overflow: hidden;
+}
+
+.chat-row.is-pushing > .chat-row-content {
+  animation: done-push-row 560ms cubic-bezier(0.33, 1, 0.68, 1) forwards;
+}
+
+/* The row has already left by the time it collapses; hold it there. */
+.chat-row.is-collapsing > .chat-row-content {
+  transform: translateX(100%);
+  opacity: 0;
+}
+
+.chat-row.is-collapsing {
+  grid-template-rows: 0fr;
+  pointer-events: none;
+}
+
+@keyframes done-push-row {
+  0% { transform: translateX(0); }
+  22% { transform: translateX(36px); animation-timing-function: cubic-bezier(0.45, 0, 0.3, 1); }
+  100% { transform: translateX(100%); }
+}
+
+/* The lane is the row's own box; the robot rides its left edge. */
+.done-push-lane {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.done-push-robot {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  margin-top: -16px;
+  transform: translateX(-100%);
+  animation: done-push-robot 560ms cubic-bezier(0.33, 1, 0.68, 1) forwards;
+  color: var(--fg-2);
+  pointer-events: none;
+}
+
+@keyframes done-push-robot {
+  0% { left: 0; opacity: 1; }
+  22% { left: 36px; opacity: 1; animation-timing-function: cubic-bezier(0.45, 0, 0.3, 1); }
+  85% { opacity: 1; }
+  100% { left: 100%; opacity: 0; }
+}
+
+.done-push-robot .done-push-body {
+  fill: var(--bg-2);
+  stroke: var(--fg-2);
+  stroke-width: 1.6;
+}
+.done-push-robot .done-push-antenna,
+.done-push-robot .done-push-arm,
+.done-push-robot .done-push-leg path {
+  stroke: var(--fg-2);
+  stroke-width: 1.6;
+}
+.done-push-robot .done-push-bulb { fill: var(--fg-2); }
+.done-push-robot .done-push-eye { fill: var(--fg-1); }
+
+/* Two quick steps while it pushes. */
+.done-push-robot .done-push-leg { transform-box: fill-box; transform-origin: top center; }
+.done-push-robot .done-push-leg-a { animation: done-push-step 280ms ease-in-out infinite alternate; }
+.done-push-robot .done-push-leg-b { animation: done-push-step 280ms ease-in-out infinite alternate-reverse; }
+.done-push-robot .done-push-arm { animation: done-push-lean 560ms ease-out forwards; }
+
+@keyframes done-push-step {
+  from { transform: translateX(-1.2px) rotate(-8deg); }
+  to { transform: translateX(1.2px) rotate(8deg); }
+}
+@keyframes done-push-lean {
+  from { transform: translateX(-2px); }
+  to { transform: translateX(0); }
+}
+
+/* Reduced motion: no robot, no slide. A short fade, then the same collapse. */
+@media (prefers-reduced-motion: reduce) {
+  .done-push-lane { display: none; }
+  .chat-row.is-pushing > .chat-row-content {
+    animation: done-push-fade 160ms ease-out forwards;
+  }
+  .chat-row.is-collapsing > .chat-row-content { transform: none; }
+  .chat-row.is-collapsing {
+    transition: grid-template-rows 120ms ease-out;
+  }
+}
+
+@keyframes done-push-fade {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}

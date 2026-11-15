@@ -1507,6 +1507,24 @@ It used to come back over the rows on every upward scroll
 (`lib/mobileMenuScroll`, removed). On a desktop the menu stays put above
 the list and only the list scrolls, as before.
 
+**A chat ticked done while Active lists it is pushed out by a robot**
+(`lib/donePush`, `components/DonePushRobot`, `DonePush.css`). Done is recorded
+exactly as before (`doneAt`); this only decides when the row stops being held
+in the Active list. `chatFilterList` keeps the open chat and the hand-ticked
+rows listed, which is why a done chat never left. Three seconds after a chat
+that this page saw NOT done is seen done, its row slides out to the right
+with a small robot (about 560 ms, transform only), then collapses (200 ms);
+after that `withoutPushed` drops it from `keep`/`keepMarked`, so the row
+leaves while the open chat stays open (still in the Done view). Cancelled by a
+new message, an untick, pinning or leaving the Active view; one timer per row,
+cleared on unmount. A chat already done at load, or new in the list, is never
+animated, and neither is one first seen while the list was unanswered. The
+robot uses the ink tokens, never the accent, takes no pointer events, and
+reduced motion gets a 160 ms fade and the same collapse with no robot.
+Keyboard focus on the row moves to the next row (else the previous, else the
+view menu) just before it goes. `scripts/test-done-push.mjs` drives the real
+App at 1280 and 390 and can screenshot the push part-way (`SHOTS`, `THEMES`).
+
 ### The rows above the composer are one group
 
 Four things report above the composer and ask nothing: the chat's folder is
