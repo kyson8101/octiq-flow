@@ -1806,13 +1806,36 @@ body {
   overscroll-behavior: contain;
 }
 
+/* The space between two things in the transcript is the lower one's own top
+   margin. `.msgs-inner` doubled so it also beats a child's own `margin`
+   shorthand (a safety line is `margin: 0 auto 4px`), which used to stack on the
+   column's gap and now would replace it. */
+.msgs-inner.msgs-inner > * + * { margin-top: 18px; }
+
+/* The host's one-line rows (plan auto-approved, host notifications) are one
+   line each and read as part of the turn around them: a short step in, one
+   straight under the other, and a short step out. Their own height (28/32px,
+   44px on a touch screen) already carries the space inside the line. */
+.msgs-inner.msgs-inner > * + :is(.msg-event, .msg-host) { margin-top: var(--space-1); }
+.msgs-inner.msgs-inner > :is(.msg-event, .msg-host) + * { margin-top: var(--space-2); }
+.msgs-inner.msgs-inner > :is(.msg-event, .msg-host) + :is(.msg-event, .msg-host) { margin-top: 0; }
+
+/* Two lines that used to sit inside the old 18px gap with a margin of their
+   own: the stop mark (-6px, so 12px in all) and the compaction rule (6px, so 24px). */
+.msgs-inner.msgs-inner > .stopmark { margin-top: 12px; }
+.msgs-inner.msgs-inner > .stopmark + * { margin-top: 18px; }
+.msgs-inner.msgs-inner > * + .compacted { margin-top: 24px; }
+
 .msgs-inner {
   max-width: var(--chat-column);
   margin: 0 auto;
   padding: 18px 16px 4px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  /* The space between turns is each turn's own top margin (above), not the
+     column's gap: a gap is one value for every pair, and the host's one-line
+     rows sit closer to what is around them than a turn does to a turn. */
+  gap: 0;
   /* A flex item's floor is its CONTENT width unless told otherwise, so one
      long line inside a message would widen this whole column rather than
      scroll within its own block. */
@@ -9684,7 +9707,7 @@ body.is-ultra .eff {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin-top: 7px;
+  margin-top: 0;
 }
 
 /* Under your own bubble it is one button on its own, so it sits closer than a
