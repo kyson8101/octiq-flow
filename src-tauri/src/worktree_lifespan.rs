@@ -59,7 +59,23 @@ pub(crate) struct RemovalProof {
     stamps: raw::Stamps,
     head: String,
 }
+#[cfg(test)]
+thread_local! {
+    /// Runs once on the calling thread when a removal proof ends, which is
+    /// where the callers have let go of workspace lifecycle. A test uses it
+    /// to change the ledger inside that window.
+    pub(crate) static AFTER_REMOVAL_PROOF: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
 pub(crate) fn validation_removal_proof(path: &str) -> Result<Option<RemovalProof>, String> {
+    let proof = removal_proof(path);
+    #[cfg(test)]
+    if let Some(hook) = AFTER_REMOVAL_PROOF.with(|h| h.borrow_mut().take()) {
+        hook();
+    }
+    proof
+}
+fn removal_proof(path: &str) -> Result<Option<RemovalProof>, String> {
     match fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.to_string()),

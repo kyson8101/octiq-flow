@@ -285,13 +285,52 @@ MCP tool discovery and the local orchestration hook's action allowlist.
 
 ## Coordinator batch cleanup card
 
-MCP `orchestration_workspace_cleanup_request { runId? }` maps only to the
-`workspace_cleanup_request` hook action. The capability's own chat must be the
-`coordinatorChatKey` of every concerned run. No `runId` means all runs that chat
-coordinates, including finished runs with retained task worktrees. Workers are
-refused by durable identity (`require_user_chat` / `is_worker_chat`, including
-after settlement), as are front desks, room seats and unrelated chats. Keeping
-the `HookCaller` through the room-seat check is mandatory.
+MCP `orchestration_workspace_cleanup_request { runId? | runIds? }` maps only to
+the `workspace_cleanup_request` hook action. By default the capability's own chat
+must be the `coordinatorChatKey` of every concerned run; no `runId` means all runs
+that chat coordinates, including finished runs with retained task worktrees.
+Workers are refused by durable identity (`require_user_chat` / `is_worker_chat`,
+including after settlement), as are front desks and room seats. Keeping the
+`HookCaller` through the room-seat check is mandatory.
+
+`runIds` (1–50 distinct ids, never with `runId`, never implicit) lets any of the
+person's own chats propose runs it does not coordinate. Only who proposes
+changes. Each named run must be finished (completed, failed or stopped) with no
+unsettled attempt, open gate or claiming/working batch; the rest come back in
+`keptRuns: [{runId, reason}]`, and the call is refused only when every run is.
+The same checks repeat on the answer, and again inside each Cleanup / Close:
+the finished-run check is made under the ledger in the same step that marks the
+checkout(s) `Cleaning` (after the off-lock Restore proof, so a run-level gate or a
+worker started in another task during the proof keeps the folder with the host's
+reason), and once more as one ledger read immediately before the removal door
+(`cleanup_verified`). A close or cleanup that removes no folder (a mission whose
+folder is gone or that never had one, a swept task workspace) repeats the check
+too: before the branch is deleted and in the very write that records Closed /
+Cleaned, after all Git and network work, so a run that became active again is kept
+with nothing written and no branch deleted. The unchanged Cleanup / Close doors then run against the
+run's recorded coordinator. **Remaining window:** a gate or worker that begins
+between that last ledger read and the removal is not stopped. The window runs from
+that read, through the `cleanup_verified` / `remove_proven` final checks, into the
+separate `git worktree remove` time budget; it is the same physical-removal door the
+coordinator's own path uses. Gate creation and worker start do not take the workspace
+lifecycle lock, and the checkout is already marked and held against starts in
+that folder. The coordinator's own request (no `runIds`) is unchanged and does not
+carry this recheck. `Asked.named` is true and each
+item carries `runObjective`. The result goes to the proposing chat as a host
+notification (or the waiting call); delivering it to a chat that is not a
+coordinator needs that chat to be live or resumable.
+A mission whose folder is gone (swept or removed by hand), or that never had one,
+is closeable when nothing is at stake: Close then only records the end and deletes
+the branch if merged. "Gone" means CONFIRMED missing (`mission::confirmed_missing`):
+every ancestor is a real directory read without following links and the parent's
+listing has no such entry. An absent, unreadable or moved ancestor, an unmounted
+volume, or a link or mount point on the path (a dangling one included; only a link
+directly under the filesystem root, such as macOS `/tmp`, is allowed) is unknown, so
+the mission is kept with the host's reason and nothing is recorded as swept.
+Known limit (recorded follow-up, code unchanged): an unmounted volume is NOT always
+kept. When an unmount leaves its empty mountpoint directory behind, that directory
+reads as confirmed missing, so the mission can be recorded as swept or closed; nothing
+on the offline volume is deleted.
 
 The host refreshes task delivery through `refresh_workspace` (for an already
 swept folder, the exact kept HEAD is reverified against the current local base,
@@ -330,12 +369,12 @@ never stops workers or removes folders. The authenticated browser uses:
 
 ```ts
 type Asked = {
-  id: string; chatKey: string; runIds: string[]; processing: boolean;
+  id: string; chatKey: string; named?: true; runIds: string[]; processing: boolean;
   approved?: boolean; // Present only while processing; true for Approve, false for Deny.
   results: ItemResult[]; // Initially empty; completed items in processing order.
   items: {
     id: string; kind: "task-worktree" | "mission"; runId: string;
-    taskId?: string; title: string;
+    taskId?: string; title: string; runObjective: string;
     worktrees: {
       branch: string; path: string; headCommit: string; baseBranch: string;
       ignoredFileCount: number | null;

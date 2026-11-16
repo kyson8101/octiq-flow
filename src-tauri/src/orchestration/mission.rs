@@ -145,20 +145,111 @@ pub struct CoordinatedRun {
     pub close_blocker: Option<String>,
 }
 
-/// A swept folder has no working tree to inspect. Its kept branch and the
-/// saved delivery still answer for it, without recreating it to draw the page.
-fn swept_delivery(run: &Run, plan: &WorkspacePlan) -> Result<Option<MissionDelivery>, String> {
-    let Some(known) = run
-        .mission_delivery
-        .iter()
-        .find(|d| d.checkout_root == plan.checkout_root && d.swept_at.is_some())
-    else {
-        return Ok(None);
-    };
-    if !matches!(std::fs::symlink_metadata(&plan.checkout_root), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+/// A symlink, or on Windows any reparse point (a junction, a mount point).
+fn is_redirect(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
     {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes() & 0x400 != 0 {
+            return true;
+        }
+    }
+    meta.file_type().is_symlink()
+}
+
+/// `Ok(true)` only when the checkout is CONFIRMED missing: every ancestor is a
+/// real directory read without following a link, and the parent, read as a
+/// directory, has no entry of that name. `Ok(false)` when the path exists (a
+/// folder that exists is never taken for gone). Anything else (an ancestor
+/// that is absent, unreadable, a file, or a link, a dangling one included, or
+/// an unmounted volume) is `Err`: not found there proves nothing about the
+/// files, which may be offline and dirty, so the mission is kept. The one
+/// redirect allowed is a link directly under the filesystem root, which is how
+/// macOS spells `/tmp` and `/var`.
+fn confirmed_missing(path: &str) -> Result<bool, String> {
+    let kept = |why: String| {
+        format!("{path} is not found, but that is not confirmed: {why} The mission is kept.")
+    };
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(kept(format!("it could not be read ({e})."))),
+    }
+    let target = Path::new(path);
+    let parent = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| kept("it has no parent folder.".into()))?;
+    for ancestor in parent.ancestors().filter(|a| !a.as_os_str().is_empty()) {
+        let meta = std::fs::symlink_metadata(ancestor).map_err(|e| {
+            kept(format!(
+                "its folder {} is unavailable ({e}); the volume may be offline or the folder moved.",
+                ancestor.display()
+            ))
+        })?;
+        if is_redirect(&meta) {
+            let under_root = ancestor
+                .parent()
+                .is_some_and(|p| p.parent().is_none() || p.as_os_str().is_empty());
+            let resolves_to_dir = std::fs::metadata(ancestor).is_ok_and(|m| m.is_dir());
+            if !(under_root && resolves_to_dir) {
+                return Err(kept(format!(
+                    "{} is a link or mount point, so the path may lead somewhere else.",
+                    ancestor.display()
+                )));
+            }
+        } else if !meta.is_dir() {
+            return Err(kept(format!("{} is not a folder.", ancestor.display())));
+        }
+    }
+    let name = target
+        .file_name()
+        .ok_or_else(|| kept("it has no folder name.".into()))?;
+    let entries = std::fs::read_dir(parent)
+        .map_err(|e| kept(format!("{} could not be listed ({e}).", parent.display())))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|e| kept(format!("{} could not be listed ({e}).", parent.display())))?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&name.to_string_lossy())
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Runs once on the calling thread right after a mission's delivery has
+    /// been read in `close_mission_expected` (the step that may ask a remote),
+    /// with the ledger and lifecycle let go. A test uses it to change the
+    /// ledger inside that window.
+    pub(super) static AFTER_DELIVERY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+fn after_delivery() {
+    if let Some(hook) = AFTER_DELIVERY.with(|h| h.borrow_mut().take()) {
+        hook();
+    }
+}
+
+/// A folder that is gone has no working tree to inspect, so nothing in it can
+/// be at stake: whether the sweep removed it or it vanished some other way, its
+/// kept branch and the last saved delivery still answer for it, and it is
+/// never recreated to draw the page. With no saved delivery at all the branch
+/// alone says where it stands. A folder that exists is never taken for swept.
+fn swept_delivery(run: &Run, plan: &WorkspacePlan) -> Result<Option<MissionDelivery>, String> {
+    if !confirmed_missing(&plan.checkout_root)? {
         return Ok(None);
     }
+    let known = run
+        .mission_delivery
+        .iter()
+        .find(|d| d.checkout_root == plan.checkout_root);
     let head = crate::git_ops::lifespan::text(
         &plan.repository_root,
         &[
@@ -167,13 +258,26 @@ fn swept_delivery(run: &Run, plan: &WorkspacePlan) -> Result<Option<MissionDeliv
             &format!("refs/heads/{}^{{commit}}", plan.branch),
         ],
     )?;
-    let same = known.evidence.head_sha == head;
-    let mut delivery = known.clone();
+    let same = known.is_some_and(|k| k.evidence.head_sha == head);
+    let mut delivery = known.cloned().unwrap_or_else(|| MissionDelivery {
+        repository_root: plan.repository_root.clone(),
+        checkout_root: plan.checkout_root.clone(),
+        branch: plan.branch.clone(),
+        base_branch: plan.base_branch.clone(),
+        evidence: DeliveryEvidence::default(),
+        merged: false,
+        released: None,
+        release_note: String::new(),
+        removed: false,
+        swept_at: None,
+        branch_deleted: false,
+    });
+    delivery.swept_at = delivery.swept_at.or(Some(now_ms()));
     delivery.evidence.head_sha = head.clone();
     delivery.evidence.dirty = false;
     delivery.evidence.has_commits = head != plan.base_sha;
     delivery.evidence.checked_at = now_ms();
-    delivery.merged = !delivery.evidence.has_commits || same && known.merged;
+    delivery.merged = !delivery.evidence.has_commits || same && known.is_some_and(|k| k.merged);
     delivery.evidence.merged = delivery.merged;
     if !same {
         delivery.evidence.pushed = false;
@@ -373,7 +477,7 @@ impl OrchestrationStore {
         run_id: &str,
         abandon: bool,
     ) -> Result<Run, String> {
-        self.close_mission_expected(chats, actor, run_id, abandon, None)
+        self.close_mission_expected(chats, actor, run_id, abandon, None, false)
     }
 
     pub(super) fn close_mission_expected(
@@ -383,6 +487,7 @@ impl OrchestrationStore {
         run_id: &str,
         abandon: bool,
         expected: Option<&[super::cleanup_request::Worktree]>,
+        require_finished: bool,
     ) -> Result<Run, String> {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
         let (plans_before, workers_before) = {
@@ -429,6 +534,11 @@ impl OrchestrationStore {
             if let Some(expected) = expected {
                 super::cleanup_request::same_plans(expected, &plans)?;
             }
+            if require_finished {
+                // Decided in the step that marks every checkout Cleaning:
+                // the proofs ran without the ledger.
+                super::cleanup_request::require_run_finished(data, run_id)?;
+            }
             for plan in &plans {
                 chats.require_lifespan_idle(&plan.checkout_root)?;
             }
@@ -459,6 +569,8 @@ impl OrchestrationStore {
             for (plan, proof) in plans.iter().zip(&proofs) {
                 chats.require_checkout_idle(&plan.checkout_root, plan.is_managed_worktree())?;
                 let mut delivery = delivery_of(&run, plan)?;
+                #[cfg(test)]
+                after_delivery();
                 if let Some(expected) = expected {
                     let approved = expected
                         .iter()
@@ -495,23 +607,46 @@ impl OrchestrationStore {
                 // The automatic sweep already removed this physical folder.
                 // Close/Abandon still verify its kept head and remain the
                 // person's decision; neither needs to resurrect a clean tree.
+                // Whether or not a folder is removed here, a named close is
+                // decided against the ledger as it is now, after all Git and
+                // network work above and before every step that cannot be
+                // undone (the folder, then the branch).
+                if require_finished {
+                    self.require_named_run_finished(run_id)?;
+                }
                 if delivery.swept_at.is_none() || Path::new(&plan.checkout_root).exists() {
                     chats.require_lifespan_idle(&plan.checkout_root)?;
                     workflow::cleanup_verified(plan, &delivery.evidence.head_sha, proof.as_ref())?;
                 }
                 delivery.removed = true;
                 if delivery.merged {
+                    if require_finished {
+                        self.require_named_run_finished(run_id)?;
+                    }
                     delivery.branch_deleted = workflow::delete_merged_branch(plan)?;
                 }
                 done.push(delivery);
             }
+            // A mission with no checkout reads no delivery: the window is
+            // here, after every Git call and before the closing write.
+            #[cfg(test)]
+            after_delivery();
             Ok(done)
         })();
 
         let result = self.mutate(|data| {
+            // The write that closes the mission decides again, under the
+            // ledger: a run that became active again is never marked Closed.
+            let activated = match (&outcome, require_finished) {
+                (Ok(_), true) => super::cleanup_request::require_run_finished(data, run_id).err(),
+                _ => None,
+            };
+            let outcome_ok = outcome.is_ok() && activated.is_none();
             let removed: BTreeSet<String> = match &outcome {
-                Ok(done) => done.iter().map(|d| d.checkout_root.clone()).collect(),
-                Err(_) => plans
+                Ok(done) if activated.is_none() => {
+                    done.iter().map(|d| d.checkout_root.clone()).collect()
+                }
+                _ => plans
                     .iter()
                     .filter(|p| !Path::new(&p.checkout_root).exists())
                     .map(|p| p.checkout_root.clone())
@@ -531,7 +666,7 @@ impl OrchestrationStore {
                         }
                     }
                 }
-                if outcome.is_ok()
+                if outcome_ok
                     && abandon
                     && !matches!(task.status, TaskStatus::Completed | TaskStatus::Cancelled)
                 {
@@ -544,16 +679,75 @@ impl OrchestrationStore {
                 }
             }
             let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
-            if let Ok(done) = &outcome {
+            if let (Ok(done), true) = (&outcome, outcome_ok) {
                 run.status = RunStatus::Closed;
                 run.closed_at = Some(now_ms());
                 run.abandoned = abandon;
                 run.mission_delivery = done.clone();
             }
             run.updated_at = now_ms();
-            Ok(run.clone())
+            Ok((run.clone(), activated))
         })?;
+        let (result, activated) = result;
+        if let Some(reason) = activated {
+            return Err(reason);
+        }
         announce(run_id, "mission_closed");
         outcome.map(|_| result)
+    }
+}
+
+#[cfg(test)]
+mod confirmed_missing_tests {
+    use super::confirmed_missing;
+    use crate::test_dir::TestDir;
+
+    fn p(path: &std::path::Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_folder_that_is_listed_as_absent_in_a_real_parent_is_confirmed_missing() {
+        let dir = TestDir::new("confirmed-missing");
+        assert_eq!(confirmed_missing(&p(&dir.join("gone"))), Ok(true));
+        std::fs::create_dir(dir.join("here")).unwrap();
+        assert_eq!(confirmed_missing(&p(&dir.join("here"))), Ok(false));
+    }
+
+    #[test]
+    fn an_ancestor_that_moved_away_is_not_confirmed() {
+        let dir = TestDir::new("confirmed-missing");
+        let path = dir.join("container").join("checkout");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::rename(dir.join("container"), dir.join("moved")).unwrap();
+        let error = confirmed_missing(&p(&path)).unwrap_err();
+        assert!(error.contains("not confirmed"), "{error}");
+        assert!(error.contains("unavailable"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_ancestor_link_is_not_confirmed() {
+        let dir = TestDir::new("confirmed-missing");
+        std::os::unix::fs::symlink(dir.join("offline-volume"), dir.join("container")).unwrap();
+        let error = confirmed_missing(&p(&dir.join("container").join("checkout"))).unwrap_err();
+        assert!(error.contains("not confirmed"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_live_ancestor_link_is_a_redirect_and_is_not_confirmed() {
+        let dir = TestDir::new("confirmed-missing");
+        std::fs::create_dir(dir.join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink(dir.join("elsewhere"), dir.join("container")).unwrap();
+        let error = confirmed_missing(&p(&dir.join("container").join("checkout"))).unwrap_err();
+        assert!(error.contains("link or mount point"), "{error}");
+    }
+
+    #[test]
+    fn a_file_in_place_of_the_parent_is_not_confirmed() {
+        let dir = TestDir::new("confirmed-missing");
+        std::fs::write(dir.join("container"), b"x").unwrap();
+        assert!(confirmed_missing(&p(&dir.join("container").join("checkout"))).is_err());
     }
 }
