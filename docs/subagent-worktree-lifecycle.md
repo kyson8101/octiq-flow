@@ -285,13 +285,27 @@ MCP tool discovery and the local orchestration hook's action allowlist.
 
 ## Coordinator batch cleanup card
 
-MCP `orchestration_workspace_cleanup_request { runId? }` maps only to the
-`workspace_cleanup_request` hook action. The capability's own chat must be the
-`coordinatorChatKey` of every concerned run. No `runId` means all runs that chat
-coordinates, including finished runs with retained task worktrees. Workers are
-refused by durable identity (`require_user_chat` / `is_worker_chat`, including
-after settlement), as are front desks, room seats and unrelated chats. Keeping
-the `HookCaller` through the room-seat check is mandatory.
+MCP `orchestration_workspace_cleanup_request { runId? | runIds? }` maps only to
+the `workspace_cleanup_request` hook action. By default the capability's own chat
+must be the `coordinatorChatKey` of every concerned run; no `runId` means all runs
+that chat coordinates, including finished runs with retained task worktrees.
+Workers are refused by durable identity (`require_user_chat` / `is_worker_chat`,
+including after settlement), as are front desks and room seats. Keeping the
+`HookCaller` through the room-seat check is mandatory.
+
+`runIds` (1–50 distinct ids, never with `runId`, never implicit) lets any of the
+person's own chats propose runs it does not coordinate. Only who proposes
+changes. Each named run must be finished (completed, failed or stopped) with no
+unsettled attempt, open gate or claiming/working batch; the rest come back in
+`keptRuns: [{runId, reason}]`, and the call is refused only when every run is.
+The same checks repeat on the answer, and the unchanged Cleanup / Close doors
+then run against the run's recorded coordinator. `Asked.named` is true and each
+item carries `runObjective`. The result goes to the proposing chat as a host
+notification (or the waiting call); delivering it to a chat that is not a
+coordinator needs that chat to be live or resumable.
+A mission whose folder is gone (swept or removed by hand), or that never had one,
+is closeable when nothing is at stake: Close then only records the end and deletes
+the branch if merged.
 
 The host refreshes task delivery through `refresh_workspace` (for an already
 swept folder, the exact kept HEAD is reverified against the current local base,
@@ -330,12 +344,12 @@ never stops workers or removes folders. The authenticated browser uses:
 
 ```ts
 type Asked = {
-  id: string; chatKey: string; runIds: string[]; processing: boolean;
+  id: string; chatKey: string; named?: true; runIds: string[]; processing: boolean;
   approved?: boolean; // Present only while processing; true for Approve, false for Deny.
   results: ItemResult[]; // Initially empty; completed items in processing order.
   items: {
     id: string; kind: "task-worktree" | "mission"; runId: string;
-    taskId?: string; title: string;
+    taskId?: string; title: string; runObjective: string;
     worktrees: {
       branch: string; path: string; headCommit: string; baseBranch: string;
       ignoredFileCount: number | null;

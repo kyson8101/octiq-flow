@@ -250,10 +250,11 @@ fn valid(data: &Stored, n: &Notification) -> bool {
     };
     // These are receipts of the person's decisions, not permission to
     // restart stopped work. Cleanup can concern finished worktrees of a
-    // stopped run too; its result must still reach that coordinator.
+    // stopped run too; its result must still reach whoever asked: the
+    // coordinator, or another chat of the person's that named this finished
+    // run on its own cleanup card (host-written, so only that chat is target).
     let cleanup_receipt = n.kind == "workspace_cleanup"
         && n.from_chat_key == "host"
-        && n.target_chat_key == run.coordinator_chat_key
         && (n.source.starts_with("cleanup-result:") || n.source.starts_with("cleanup-prepared:"));
     let lane_notice = n.kind == "status"
         && n.from_chat_key == "host"
@@ -286,6 +287,9 @@ fn valid(data: &Stored, n: &Notification) -> bool {
         {
             return false;
         }
+    }
+    if cleanup_receipt {
+        return true;
     }
     if n.target_chat_key != run.coordinator_chat_key {
         return data.attempts.values().any(|a| {

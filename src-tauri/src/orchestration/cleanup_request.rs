@@ -1,4 +1,7 @@
 //! A coordinator may propose one exact batch; only the person's socket answers.
+//! Any person's chat may propose the same batch for FINISHED runs it names
+//! (`runIds`). Who proposes never changes what is removed: every item still
+//! goes through the run's own Cleanup / Close guards on the person's answer.
 //! Pending consent is host memory, never tool-supplied removal authority.
 use super::workspaces::WorkspaceState;
 use super::*;
@@ -35,6 +38,8 @@ pub struct Item {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     pub title: String,
+    /// The run the item belongs to, so a card for several runs says which.
+    pub run_objective: String,
     /// A mission owns all these roots together. An empty mission can close
     /// its record without removing any folder.
     pub worktrees: Vec<Worktree>,
@@ -45,6 +50,10 @@ pub struct Item {
 pub struct Asked {
     pub id: String,
     pub chat_key: String,
+    /// The chat proposed runs it may not coordinate (`runIds`). Each item is
+    /// then re-checked as finished on the answer.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub named: bool,
     pub run_ids: Vec<String>,
     pub items: Vec<Item>,
     pub processing: bool,
@@ -123,7 +132,169 @@ fn worktree(plan: &WorkspacePlan, head: &str) -> Worktree {
     }
 }
 
+#[cfg(test)]
 impl OrchestrationStore {
+    pub(crate) fn test_set_run_status(&self, run_id: &str, status: RunStatus) {
+        self.mutate(|data| {
+            data.runs.get_mut(run_id).unwrap().status = status;
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
+/// Which runs a proposal covers.
+#[derive(Clone, Copy)]
+pub(crate) enum Which<'a> {
+    /// The runs the chat coordinates: all of them, or exactly one of them.
+    Coordinated(Option<&'a str>),
+    /// Finished runs the chat names, whoever coordinates them.
+    Named(&'a [String]),
+}
+
+/// A named run left out of the proposal, and why.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeptRun {
+    pub run_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct Scope {
+    pub runs: Vec<Run>,
+    pub named: bool,
+    pub kept: Vec<KeptRun>,
+}
+
+pub const MAX_NAMED_RUNS: usize = 50;
+
+/// Why a run that somebody else coordinates may not be proposed by a chat
+/// that does not: it is not finished. Nothing here changes anything, and the
+/// per-item guards still run on the person's answer.
+fn named_blocker(data: &Stored, run: &Run) -> Option<String> {
+    if !matches!(
+        run.status,
+        RunStatus::Completed | RunStatus::Failed | RunStatus::Stopped
+    ) {
+        return Some(if run.status == RunStatus::Closed {
+            "This run is already closed; there is nothing to clean up.".into()
+        } else {
+            format!(
+                "This run is {}; only a finished run (completed, failed or stopped) can be proposed from a chat that does not coordinate it.",
+                format!("{:?}", run.status).to_lowercase()
+            )
+        });
+    }
+    if data
+        .attempts
+        .values()
+        .any(|a| a.run_id == run.id && attempt_is_unsettled(data, a))
+    {
+        return Some("A worker is still running or waiting on this run.".into());
+    }
+    if data
+        .gates
+        .values()
+        .any(|g| g.run_id == run.id && g.status == GateStatus::Open)
+    {
+        return Some("This run has an open decision.".into());
+    }
+    if data.batches.iter().any(|b| {
+        b.run_id == run.id
+            && matches!(
+                b.status,
+                super::batches::BatchStatus::Claiming | super::batches::BatchStatus::Working
+            )
+    }) {
+        return Some("An agent batch is still claiming or working on this run.".into());
+    }
+    None
+}
+
+impl OrchestrationStore {
+    /// Which runs a proposal covers. The caller must be a person's chat in
+    /// both cases; named runs add the finished-run checks, and a run that
+    /// fails them is reported, not an error, unless every run does.
+    pub(crate) fn cleanup_scope(&self, actor: &str, which: Which<'_>) -> Result<Scope, String> {
+        match which {
+            Which::Coordinated(run_id) => Ok(Scope {
+                runs: self.cleanup_request_runs(actor, run_id)?,
+                named: false,
+                kept: Vec::new(),
+            }),
+            Which::Named(ids) => {
+                self.require_user_chat(actor)?;
+                if ids.is_empty() || ids.len() > MAX_NAMED_RUNS {
+                    return Err(format!("runIds takes 1 to {MAX_NAMED_RUNS} run ids."));
+                }
+                if ids.iter().collect::<BTreeSet<_>>().len() != ids.len() {
+                    return Err("runIds must be distinct.".into());
+                }
+                let inner = self.inner.lock().map_err(|e| e.to_string())?;
+                if let Some(error) = &inner.load_error {
+                    return Err(error.clone());
+                }
+                let mut runs = Vec::new();
+                let mut kept = Vec::new();
+                for id in ids {
+                    match inner.data.runs.get(id) {
+                        None => kept.push(KeptRun {
+                            run_id: id.clone(),
+                            reason: "No such run.".into(),
+                        }),
+                        Some(run) => match named_blocker(&inner.data, run) {
+                            Some(reason) => kept.push(KeptRun {
+                                run_id: id.clone(),
+                                reason,
+                            }),
+                            None => runs.push(run.clone()),
+                        },
+                    }
+                }
+                if runs.is_empty() {
+                    return Err(format!(
+                        "None of the named runs can be proposed: {}",
+                        kept.iter()
+                            .map(|k| format!("{}: {}", k.run_id, k.reason))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ));
+                }
+                Ok(Scope {
+                    runs,
+                    named: true,
+                    kept,
+                })
+            }
+        }
+    }
+
+    /// The chat whose standing the existing guards check for one item of a
+    /// card: the proposer for its own run, the run's coordinator for a named
+    /// one. The person's answer is the authority; this only picks which
+    /// recorded owner the unchanged Cleanup / Close doors compare with.
+    fn cleanup_item_owner(&self, asked: &Asked, run_id: &str) -> Result<String, String> {
+        if !asked.named {
+            self.cleanup_request_runs(&asked.chat_key, Some(run_id))?;
+            return Ok(asked.chat_key.clone());
+        }
+        self.require_user_chat(&asked.chat_key)?;
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        let run = inner
+            .data
+            .runs
+            .get(run_id)
+            .ok_or("The run does not exist.")?;
+        if let Some(reason) = named_blocker(&inner.data, run) {
+            return Err(format!("{reason} Nothing was removed."));
+        }
+        Ok(run.coordinator_chat_key.clone())
+    }
+
     /// Durable worker identity outlives a settled attempt. The hook separately
     /// refuses front desks and room seats before it drops its HookCaller.
     pub(crate) fn cleanup_request_runs(
@@ -171,8 +342,18 @@ impl OrchestrationStore {
         run_id: Option<&str>,
         waiter: Option<oneshot::Sender<Settled>>,
     ) -> Result<Option<Asked>, String> {
+        self.request_cleanup(chats, actor, Which::Coordinated(run_id), waiter)
+    }
+
+    pub(crate) fn request_cleanup(
+        &self,
+        chats: &ChatManager,
+        actor: &str,
+        which: Which<'_>,
+        waiter: Option<oneshot::Sender<Settled>>,
+    ) -> Result<Option<Asked>, String> {
         crate::profile::available()?;
-        let runs = self.cleanup_request_runs(actor, run_id)?;
+        let Scope { runs, named, .. } = self.cleanup_scope(actor, which)?;
         // One outstanding batch per coordinator. Repeated calls cannot silently
         // replace a card whose contents the person may already be reading.
         if let Some(existing) = self
@@ -187,6 +368,13 @@ impl OrchestrationStore {
             if run.abandoned || run.status == RunStatus::Closed {
                 continue;
             }
+            // The unchanged guards compare with the run's recorded owner.
+            let owner = if named {
+                run.coordinator_chat_key.clone()
+            } else {
+                actor.to_string()
+            };
+            let owner = owner.as_str();
             let snapshot = self.snapshot(Some(&run.id))?;
             for task in snapshot.tasks {
                 let Some(_ws) = task.workspace.as_ref().filter(|ws| {
@@ -197,13 +385,13 @@ impl OrchestrationStore {
                 }) else {
                     continue;
                 };
-                if self.refresh_workspace(actor, &task.id).is_err()
-                    && self.refresh_swept_cleanup_task(actor, &task.id).is_err()
+                if self.refresh_workspace(owner, &task.id).is_err()
+                    && self.refresh_swept_cleanup_task(owner, &task.id).is_err()
                 {
                     continue;
                 }
                 let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
-                let (_, task) = self.owned_task(actor, &task.id)?;
+                let (_, task) = self.owned_task(owner, &task.id)?;
                 let ws = task.workspace.as_ref().ok_or("Workspace disappeared.")?;
                 {
                     let inner = self.inner.lock().map_err(|e| e.to_string())?;
@@ -235,16 +423,17 @@ impl OrchestrationStore {
                     run_id: run.id.clone(),
                     task_id: Some(task.id.clone()),
                     title: task.title,
+                    run_objective: run.objective.clone(),
                     worktrees: vec![tree],
                 });
             }
             if run.workspace_mode != WorkspaceMode::Mission
-                || self.refresh_mission(actor, &run.id).is_err()
+                || self.refresh_mission(owner, &run.id).is_err()
             {
                 continue;
             }
             if !self
-                .coordinated_runs(actor)?
+                .coordinated_runs(owner)?
                 .iter()
                 .any(|r| r.run_id == run.id && r.close_eligible)
             {
@@ -252,7 +441,7 @@ impl OrchestrationStore {
             }
             let (run, plans) = {
                 let inner = self.inner.lock().map_err(|e| e.to_string())?;
-                let run = coordinator(&inner.data, &run.id, actor)?.clone();
+                let run = coordinator(&inner.data, &run.id, owner)?.clone();
                 let plans = super::mission::mission_plans(&inner.data, &run.id);
                 (run, plans)
             };
@@ -276,7 +465,8 @@ impl OrchestrationStore {
                     kind: Kind::Mission,
                     run_id: run.id,
                     task_id: None,
-                    title: run.objective,
+                    title: run.objective.clone(),
+                    run_objective: run.objective,
                     worktrees,
                 });
             }
@@ -288,6 +478,7 @@ impl OrchestrationStore {
         let asked = Asked {
             id: format!("cleanup_{}", compact_id()),
             chat_key: actor.into(),
+            named,
             run_ids: runs.into_iter().map(|r| r.id).collect(),
             items,
             processing: false,
@@ -434,7 +625,7 @@ impl OrchestrationStore {
             } else {
                 (|| {
                     crate::profile::available()?;
-                    self.cleanup_request_runs(&asked.chat_key, Some(&item.run_id))?;
+                    let owner = self.cleanup_item_owner(&asked, &item.run_id)?;
                     match item.kind {
                         Kind::TaskWorktree => {
                             let tree = item
@@ -443,7 +634,7 @@ impl OrchestrationStore {
                                 .ok_or("The card has no task workspace.")?;
                             self.cleanup_workspace_expected(
                                 chats,
-                                &asked.chat_key,
+                                &owner,
                                 item.task_id.as_deref().ok_or("The card has no task id.")?,
                                 false,
                                 &tree.head_commit,
@@ -454,7 +645,7 @@ impl OrchestrationStore {
                         Kind::Mission => self
                             .close_mission_expected(
                                 chats,
-                                &asked.chat_key,
+                                &owner,
                                 &item.run_id,
                                 false,
                                 Some(&item.worktrees),
@@ -1058,5 +1249,216 @@ mod tests {
             .claim_notification(&notice.id, now_ms() + 100)
             .unwrap()
             .is_some());
+    }
+
+    // --- runIds: any of the person's chats may propose FINISHED runs ---
+
+    fn set_status(store: &OrchestrationStore, run: &Run, status: RunStatus) {
+        store
+            .mutate(|data| {
+                data.runs.get_mut(&run.id).unwrap().status = status;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn ask_named(
+        store: &OrchestrationStore,
+        actor: &str,
+        ids: &[&Run],
+    ) -> Result<Option<Asked>, String> {
+        let ids: Vec<String> = ids.iter().map(|r| r.id.clone()).collect();
+        store.request_cleanup(&ChatManager::default(), actor, Which::Named(&ids), None)
+    }
+
+    #[test]
+    fn a_non_coordinator_person_chat_proposes_a_finished_run_and_nothing_is_removed() {
+        let (repo, store, run) = setup(WorkspaceMode::Worktree);
+        let (_, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        set_status(&store, &run, RunStatus::Completed);
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        assert!(card.named);
+        assert_eq!(card.chat_key, "chat:person");
+        assert_eq!(card.items.len(), 1);
+        assert_eq!(card.items[0].run_id, run.id);
+        assert_eq!(card.items[0].run_objective, "Cleanup fixture");
+        assert!(Path::new(&first.cwd).exists(), "a proposal removes nothing");
+        // The coordinator's own request is a different chat's card.
+        assert_eq!(ask(&store, &run).unwrap().chat_key, "chat:master");
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
+        assert!(!Path::new(&first.cwd).exists());
+        // The result goes to the chat that asked, and is deliverable there.
+        let notice = store
+            .snapshot(None)
+            .unwrap()
+            .notifications
+            .into_iter()
+            .find(|n| n.source == format!("cleanup-result:{}", card.id))
+            .unwrap();
+        assert_eq!(notice.target_chat_key, "chat:person");
+        assert!(store
+            .claim_notification(&notice.id, now_ms() + 100)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn named_runs_refuse_workers_even_settled_and_keep_unfinished_runs_with_a_reason() {
+        let (repo, store, run) = setup(WorkspaceMode::Worktree);
+        let (_, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        set_status(&store, &run, RunStatus::Completed);
+        let ids = [run.id.clone()];
+        assert!(store
+            .cleanup_scope(&first.worker_chat_key, Which::Named(&ids))
+            .is_err());
+        // A running run is kept with the host's reason beside a finished one.
+        let busy = store
+            .create_run_with_mode(
+                "chat:other".into(),
+                "Busy".into(),
+                "project".into(),
+                repo.root.clone(),
+                None,
+                WorkspaceMode::Worktree,
+            )
+            .unwrap();
+        set_status(&store, &busy, RunStatus::Running);
+        let ids = [busy.id.clone(), run.id.clone(), "run_missing".to_string()];
+        let scope = store
+            .cleanup_scope("chat:person", Which::Named(&ids))
+            .unwrap();
+        assert_eq!(scope.runs.len(), 1);
+        assert_eq!(scope.runs[0].id, run.id);
+        assert_eq!(scope.kept.len(), 2);
+        assert!(scope.kept[0].reason.contains("running"), "{:?}", scope.kept);
+        assert_eq!(scope.kept[1].reason, "No such run.");
+        // A live worker, an open gate and a planning run all keep a run.
+        set_status(&store, &busy, RunStatus::Planning);
+        assert!(store
+            .cleanup_scope("chat:person", Which::Named(&[busy.id.clone()]))
+            .unwrap_err()
+            .contains("planning"));
+        set_status(&store, &busy, RunStatus::Completed);
+        let gate = store
+            .create_gate("chat:other", busy.id.clone(), None, "Keep?".into(), vec![])
+            .unwrap();
+        // Opening a gate moves the run to waiting; a finished status with a
+        // gate still open (a recovered record) must be kept by the gate alone.
+        set_status(&store, &busy, RunStatus::Completed);
+        assert!(store
+            .cleanup_scope("chat:person", Which::Named(&[busy.id.clone()]))
+            .unwrap_err()
+            .contains("open decision"));
+        store
+            .mutate(|data| {
+                data.gates.get_mut(&gate.id).unwrap().status = GateStatus::Resolved;
+                Ok(())
+            })
+            .unwrap();
+        // Starting a worker makes the run live; with the status forced back
+        // to finished (a recovered record) the live attempt alone keeps it.
+        let (_, live) = prepare(&store, &run);
+        assert!(store
+            .cleanup_scope("chat:person", Which::Named(&[run.id.clone()]))
+            .unwrap_err()
+            .contains("running"));
+        set_status(&store, &run, RunStatus::Completed);
+        assert!(store
+            .cleanup_scope("chat:person", Which::Named(&[run.id.clone()]))
+            .unwrap_err()
+            .contains("worker"));
+        let _ = live;
+        // Bad lists never reach the ledger.
+        for bad in [
+            vec![],
+            vec![run.id.clone(), run.id.clone()],
+            vec!["x".to_string(); 51],
+        ] {
+            assert!(store
+                .cleanup_scope("chat:person", Which::Named(&bad))
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn a_named_run_that_stopped_being_finished_is_kept_on_the_answer() {
+        let (repo, store, run) = setup(WorkspaceMode::Worktree);
+        let (_, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        set_status(&store, &run, RunStatus::Completed);
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        set_status(&store, &run, RunStatus::Running);
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "kept");
+        assert!(
+            result.items[0].reason.contains("running"),
+            "{:?}",
+            result.items
+        );
+        assert!(Path::new(&first.cwd).exists());
+    }
+
+    #[test]
+    fn a_mission_with_no_checkout_closes_on_approval_when_nothing_is_at_stake() {
+        let (_repo, store, run) = setup(WorkspaceMode::Mission);
+        set_status(&store, &run, RunStatus::Stopped);
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        assert!(matches!(card.items[0].kind, Kind::Mission));
+        assert!(card.items[0].worktrees.is_empty());
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
+        assert_eq!(
+            store.snapshot(Some(&run.id)).unwrap().runs[0].status,
+            RunStatus::Closed
+        );
+    }
+
+    #[test]
+    fn a_mission_whose_folder_is_gone_closes_even_with_no_saved_delivery() {
+        let (repo, store, run) = setup(WorkspaceMode::Mission);
+        let (_, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        set_status(&store, &run, RunStatus::Completed);
+        let root = first.cwd.trim_end_matches(['/', '\\']).to_string();
+        crate::git_ops::lifespan::remove(&repo.root, &root, false).unwrap();
+        assert!(store.snapshot(Some(&run.id)).unwrap().runs[0]
+            .mission_delivery
+            .is_empty());
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        assert!(matches!(card.items[0].kind, Kind::Mission));
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
+        assert_eq!(
+            store.snapshot(Some(&run.id)).unwrap().runs[0].status,
+            RunStatus::Closed
+        );
+    }
+
+    #[test]
+    fn a_folder_that_exists_is_never_treated_as_gone() {
+        let (repo, store, run) = setup(WorkspaceMode::Mission);
+        let (_, first) = prepare(&store, &run);
+        finish(&store, &first);
+        set_status(&store, &run, RunStatus::Completed);
+        // The branch has an unmerged commit: still at stake, still kept.
+        repo.commit(&first.cwd, "later.txt", "unmerged mission work");
+        let cards = ask_named(&store, "chat:person", &[&run]).unwrap();
+        assert!(cards.is_none(), "an unmerged mission is not proposed");
+        assert!(Path::new(&first.cwd).exists());
     }
 }

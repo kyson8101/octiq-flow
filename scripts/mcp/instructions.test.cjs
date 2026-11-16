@@ -145,7 +145,9 @@ test("batch cleanup is a coordinator proposal, never a socket answer tool", asyn
     assert.equal(Boolean(offered), !kind.includes("worker") && !kind.includes("front desk"), kind);
     assert.ok(!tools.some(tool => tool.name === name + "_answer"));
     if (offered) {
-      assert.deepEqual(Object.keys(offered.inputSchema.properties), ["runId"]);
+      assert.deepEqual(Object.keys(offered.inputSchema.properties), ["runId", "runIds"]);
+      assert.equal(offered.inputSchema.properties.runIds.maxItems, 50);
+      assert.ok(offered.description.length < 4096);
       assert.match(offered.description, /removes nothing/);
       assert.match(offered.description, /host notification/);
     }

@@ -1954,20 +1954,46 @@ async fn workspace_cleanup_request(ctx: &Ctx, caller: HookCaller, args: Value) -
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct Ask {
         run_id: Option<String>,
+        run_ids: Option<Vec<String>>,
     }
     let ask: Ask = match serde_json::from_value(args) {
         Ok(ask) => ask,
         Err(error) => return hook_failed(StatusCode::BAD_REQUEST, error.to_string()),
     };
+    if ask.run_id.is_some() && ask.run_ids.is_some() {
+        return hook_failed(
+            StatusCode::BAD_REQUEST,
+            "Pass runId or runIds, not both.".to_string(),
+        );
+    }
     // Do the cheap durable authorization before detaching a slow refresh.
-    let runs = match ctx
-        .services
-        .orchestrations
-        .cleanup_request_runs(&caller.chat_key, ask.run_id.as_deref())
-    {
-        Ok(runs) => runs,
-        Err(error) => return hook_failed(StatusCode::BAD_REQUEST, error),
+    let scope = {
+        use crate::orchestration::cleanup_request::Which;
+        let which = match (&ask.run_ids, ask.run_id.as_deref()) {
+            (Some(ids), _) => Which::Named(ids),
+            (None, run_id) => Which::Coordinated(run_id),
+        };
+        match ctx
+            .services
+            .orchestrations
+            .cleanup_scope(&caller.chat_key, which)
+        {
+            Ok(scope) => scope,
+            Err(error) => return hook_failed(StatusCode::BAD_REQUEST, error),
+        }
     };
+    // Named runs that were left out, with the host's reason, ride every answer.
+    let kept_runs = json!(scope.kept);
+    let respond = {
+        let kept_runs = kept_runs.clone();
+        move |mut body: Value| {
+            if kept_runs.as_array().is_some_and(|k| !k.is_empty()) {
+                body["result"]["keptRuns"] = kept_runs.clone();
+            }
+            axum::Json(body).into_response()
+        }
+    };
+    let runs = scope.runs;
     let services = ctx.services.clone();
     let within = services
         .chats
@@ -1984,12 +2010,14 @@ async fn workspace_cleanup_request(ctx: &Ctx, caller: HookCaller, args: Value) -
     let background_services = services.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
     let mut preparing = tokio::task::spawn_blocking(move || {
-        services.orchestrations.request_workspace_cleanup(
-            &services.chats,
-            &actor,
-            ask.run_id.as_deref(),
-            within.map(|_| tx),
-        )
+        use crate::orchestration::cleanup_request::Which;
+        let which = match (&ask.run_ids, ask.run_id.as_deref()) {
+            (Some(ids), _) => Which::Named(ids),
+            (None, run_id) => Which::Coordinated(run_id),
+        };
+        services
+            .orchestrations
+            .request_cleanup(&services.chats, &actor, which, within.map(|_| tx))
     });
     // Refresh and Restore comparisons themselves can exceed one MCP minute
     // for a large batch. Finish them in the host and tell the coordinator
@@ -2019,28 +2047,29 @@ async fn workspace_cleanup_request(ctx: &Ctx, caller: HookCaller, args: Value) -
                 })
                 .await;
             });
-            return axum::Json(json!({"result": {"status":"preparing",
+            return respond(json!({"result": {"status":"preparing",
                 "text":"The host is still refreshing delivery and checking the batch. Nothing has been removed and no approval was granted. End this turn; a host notification will say when the card is ready, or why there is no card. Do not repeat this request."
-            }})).into_response();
+            }}));
         }
     };
     let asked = match prepared {
         Ok(Ok(Some(asked))) => asked,
-        Ok(Ok(None)) => return axum::Json(json!({"result": {
-            "status": "empty", "text": "No finished workspaces are eligible for Cleanup or mission Close. No card was created."
-        }})).into_response(),
+        Ok(Ok(None)) => {
+            return respond(json!({"result": {
+                "status": "empty", "text": "No finished workspaces are eligible for Cleanup or mission Close. No card was created."
+            }}))
+        }
         Ok(Err(error)) => return hook_failed(StatusCode::BAD_REQUEST, error),
         Err(error) => return hook_failed(StatusCode::BAD_REQUEST, error.to_string()),
     };
     if let Some(within) = within {
         if let Ok(Ok(result)) = tokio::time::timeout(within, rx).await {
-            return axum::Json(json!({"result": {"status": "settled", "result": result}}))
-                .into_response();
+            return respond(json!({"result": {"status": "settled", "result": result}}));
         }
     }
-    axum::Json(json!({"result": {"status": "pending", "request": asked,
+    respond(json!({"result": {"status": "pending", "request": asked,
         "text": "The batch cleanup card is up. Nothing has been removed. End this turn; the person's decision and each item's removed/kept result arrive as a host notification turn. Do not request another batch while this card is pending."
-    }})).into_response()
+    }}))
 }
 
 /// The peer tools speak for the chat's registered agent (its lead, or the
@@ -3812,6 +3841,69 @@ mod tests {
                 "{answer}"
             );
         }
+        // runIds: another chat of the person's may name a FINISHED run, and
+        // nobody gets past the worker / seat refusals or an unfinished run.
+        let named = |chat: &str, session: &str, args: Value| json!({"chatKey":chat, "sessionKey":session, "action":"workspace_cleanup_request", "args":args});
+        for (chat, session, capability, args, reason) in [
+            (
+                &other,
+                &other,
+                &other_cap,
+                json!({"runIds":[run.id]}),
+                "none of the named runs",
+            ),
+            (
+                &other,
+                &other,
+                &other_cap,
+                json!({"runId":run.id,"runIds":[run.id]}),
+                "not both",
+            ),
+            (&other, &other, &other_cap, json!({"runIds":[]}), "1 to 50"),
+            (
+                &worker,
+                &worker,
+                &worker_cap,
+                json!({"runIds":[run.id]}),
+                "read-only",
+            ),
+            (
+                &lead,
+                &seat_key,
+                &seat_cap,
+                json!({"runIds":[run.id]}),
+                "room",
+            ),
+        ] {
+            let (status, answer) = post_hook(
+                &base,
+                "orchestration",
+                None,
+                Some(capability),
+                named(chat, session, args),
+            )
+            .await;
+            assert_eq!(status, 400, "{answer}");
+            assert!(
+                answer["error"]
+                    .as_str()
+                    .unwrap()
+                    .to_lowercase()
+                    .contains(reason),
+                "{reason}: {answer}"
+            );
+        }
+        store.test_set_run_status(&run.id, crate::orchestration::RunStatus::Stopped);
+        let (status, answer) = post_hook(
+            &base,
+            "orchestration",
+            None,
+            Some(&other_cap),
+            named(&other, &other, json!({"runIds":[run.id]})),
+        )
+        .await;
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(answer["result"]["status"], "empty");
         for action in [
             "workspace_cleanup_request_answer",
             "orchestration_workspace_cleanup_request_answer",

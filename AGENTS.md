@@ -3160,14 +3160,19 @@ already queued retain their provenance; an already fixed Agent allocation
 still uses a single-task batch after switching to Tasks. Newly proposed Tasks
 allocations keep ordinary task-per-worker dispatch.
 
-**Coordinator batch cleanup is a proposal, never removal permission.**
-`orchestration_workspace_cleanup_request { runId? }` (MCP / hook action
+**Batch cleanup is a proposal, never removal permission.**
+`orchestration_workspace_cleanup_request { runId? | runIds? }` (MCP / hook action
 `workspace_cleanup_request`) refreshes delivery and proposes one card containing
 eligible retained, completed, merged task worktrees and missions the host calls
-`closeEligible`. Without `runId` it covers every run this chat coordinates.
-Only that coordinator's own capability may ask: `require_user_chat` refuses
-workers by durable identity even after settlement; front desks, room seats
-(`HookCaller.session_key != chat_key`) and unrelated chats are refused.
+`closeEligible`. Without `runIds` it covers every run this chat coordinates and
+only that coordinator's capability may ask. `runIds` (1–50 distinct, never
+implicit, not with `runId`) lets any of the person's chats name FINISHED runs it
+does not coordinate (completed/failed/stopped, no unsettled attempt, open gate or
+claiming/working batch; others come back in `keptRuns`), re-checked on the
+answer; only who proposes changes, the per-item guards still run. Either way
+`require_user_chat` refuses workers by durable identity even after settlement;
+front desks and room seats (`HookCaller.session_key != chat_key`) are refused.
+A mission whose folder is gone or never existed closes when nothing is at stake.
 Empty batches create no card. Pending records are host memory and are lost on
 server restart, never automatically approved. Codex returns pending immediately
 and receives results as a durable host notification turn; other providers wait

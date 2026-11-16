@@ -145,20 +145,20 @@ pub struct CoordinatedRun {
     pub close_blocker: Option<String>,
 }
 
-/// A swept folder has no working tree to inspect. Its kept branch and the
-/// saved delivery still answer for it, without recreating it to draw the page.
+/// A folder that is gone has no working tree to inspect, so nothing in it can
+/// be at stake: whether the sweep removed it or it vanished some other way, its
+/// kept branch and the last saved delivery still answer for it, and it is
+/// never recreated to draw the page. With no saved delivery at all the branch
+/// alone says where it stands. A folder that exists is never taken for swept.
 fn swept_delivery(run: &Run, plan: &WorkspacePlan) -> Result<Option<MissionDelivery>, String> {
-    let Some(known) = run
-        .mission_delivery
-        .iter()
-        .find(|d| d.checkout_root == plan.checkout_root && d.swept_at.is_some())
-    else {
-        return Ok(None);
-    };
     if !matches!(std::fs::symlink_metadata(&plan.checkout_root), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
     {
         return Ok(None);
     }
+    let known = run
+        .mission_delivery
+        .iter()
+        .find(|d| d.checkout_root == plan.checkout_root);
     let head = crate::git_ops::lifespan::text(
         &plan.repository_root,
         &[
@@ -167,13 +167,26 @@ fn swept_delivery(run: &Run, plan: &WorkspacePlan) -> Result<Option<MissionDeliv
             &format!("refs/heads/{}^{{commit}}", plan.branch),
         ],
     )?;
-    let same = known.evidence.head_sha == head;
-    let mut delivery = known.clone();
+    let same = known.is_some_and(|k| k.evidence.head_sha == head);
+    let mut delivery = known.cloned().unwrap_or_else(|| MissionDelivery {
+        repository_root: plan.repository_root.clone(),
+        checkout_root: plan.checkout_root.clone(),
+        branch: plan.branch.clone(),
+        base_branch: plan.base_branch.clone(),
+        evidence: DeliveryEvidence::default(),
+        merged: false,
+        released: None,
+        release_note: String::new(),
+        removed: false,
+        swept_at: None,
+        branch_deleted: false,
+    });
+    delivery.swept_at = delivery.swept_at.or(Some(now_ms()));
     delivery.evidence.head_sha = head.clone();
     delivery.evidence.dirty = false;
     delivery.evidence.has_commits = head != plan.base_sha;
     delivery.evidence.checked_at = now_ms();
-    delivery.merged = !delivery.evidence.has_commits || same && known.merged;
+    delivery.merged = !delivery.evidence.has_commits || same && known.is_some_and(|k| k.merged);
     delivery.evidence.merged = delivery.merged;
     if !same {
         delivery.evidence.pushed = false;
