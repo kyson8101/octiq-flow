@@ -714,8 +714,21 @@ pending key and what the buttons send are the card's.
   chat, prefixed by the worker/task name in muted text, with no separate
   "Approval for Worker" heading. The record carries no time and no tool-use id, so "the
   agent went on and finished anyway" cannot be told from "it stopped on this".
-- **An outage card and a Codex block never fold.** Both offer something only
-  the person can choose (a retry, an approval).
+- **A Codex block never folds, and an outage never loses its Retry.** Both
+  offer something only the person can choose (an approval, a retry). The
+  outage of Claude's classifier is no verdict and no warning, so it is one
+  quiet row, not a card: a neutral grey info icon and rule, `Safety check
+  unavailable · 2 commands not run`, the leading `Retry once` kept visible on
+  the folded row (`--decide`, like every leading answer), one chevron and the
+  shared Dismiss × last. No eyebrow, no "OctiqFlow is okay" badge, no count
+  pill: the count is in the words. Opened, the refused commands (drawn through
+  `cardFold.commandDrawn`, with `×N` when repeated), "These refused calls did
+  not run. Nothing was approved.", the technical details, the Always allow
+  rule and file (when the host named them) and "What the agent was told"
+  appear. The pending key, badge tone (`warn`), press guards and the messages
+  sent are unchanged; it keeps `role="status"` and `.is-outage` on the row's
+  `.safety-refusal` shell (`decideColour.test.ts` checks it is never amber or
+  red).
 - **Only a live `safety-blocked` event raises the notice.** The list read on
   connect or on reopening a chat (`safety_block_pending`) never does, and
   leaving the chat drops it.

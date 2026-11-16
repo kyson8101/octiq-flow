@@ -11224,30 +11224,6 @@ body.is-ultra .eff {
   max-height: 180px;
 }
 
-/* An outage of Claude's check, not a verdict on the command: no amber, no
-   alarm, the same quiet shape. */
-.safety-card.is-outage {
-  border-color: var(--border);
-  background: var(--bg-1);
-}
-
-.safety-card.is-outage .safety-card-icon {
-  border-color: var(--border);
-  color: var(--fg-2);
-}
-
-.safety-card-count {
-  margin-left: auto;
-  flex: 0 0 auto;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--bg-2);
-  color: var(--fg-2);
-  font-size: 11px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
 .safety-card-commands {
   margin: 3px 0 0;
   padding: 0;
@@ -13909,8 +13885,9 @@ body.is-ultra .eff {
    adds no height below the words the reader is following. */
 .msg-foot.is-placeholder { visibility: hidden; }
 
-/* A judged auto-mode refusal asks in a line. Outage and Codex cards keep
-   their existing surface; only the warning's icon/rule carries amber here. */
+/* A judged auto-mode refusal asks in a line, and so does an outage of
+   Claude's check (neutral). Codex cards keep their surface; only the
+   warning's icon/rule carries amber here. */
 .safety-refusal {
   container-type: inline-size;
   flex: 0 0 auto; width: 100%; max-width: var(--chat-column);
@@ -13919,6 +13896,10 @@ body.is-ultra .eff {
 }
 .safety-refusal-row { display: flex; align-items: center; gap: 6px; min-height: 28px; min-width: 0; }
 .safety-refusal-icon { flex: 0 0 14px; color: var(--warn); font-size: 12px; text-align: center; }
+/* An outage of Claude's check is no verdict and no warning: the judged row's
+   shape with a neutral rule and info icon, and Retry once kept on the row. */
+.safety-refusal.is-outage { border-left-color: var(--border); }
+.safety-refusal.is-outage .safety-refusal-icon { color: var(--fg-3); }
 .safety-refusal-copy { display: flex; align-items: baseline; gap: 0; flex: 1 1 auto; min-width: 0; font-size: 12px; }
 .safety-refusal-context { display: inline-flex; flex: 0 1 auto; min-width: 0; max-width: 35%; gap: 0; color: var(--fg-3); overflow: hidden; white-space: nowrap; }
 .safety-refusal-context-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
