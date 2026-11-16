@@ -303,10 +303,16 @@ the finished-run check is made under the ledger in the same step that marks the
 checkout(s) `Cleaning` (after the off-lock Restore proof, so a run-level gate or a
 worker started in another task during the proof keeps the folder with the host's
 reason), and once more as one ledger read immediately before the removal door
-(`cleanup_verified`). The unchanged Cleanup / Close doors then run against the
+(`cleanup_verified`). A close or cleanup that removes no folder (a mission whose
+folder is gone or that never had one, a swept task workspace) repeats the check
+too: before the branch is deleted and in the very write that records Closed /
+Cleaned, after all Git and network work, so a run that became active again is kept
+with nothing written and no branch deleted. The unchanged Cleanup / Close doors then run against the
 run's recorded coordinator. **Remaining window:** a gate or worker that begins
-between that last read and Git's own removal (the duration of one `git worktree
-remove`) is not stopped; gate creation and worker start do not take the workspace
+between that last ledger read and the removal is not stopped. The window runs from
+that read, through the `cleanup_verified` / `remove_proven` final checks, into the
+separate `git worktree remove` time budget; it is the same physical-removal door the
+coordinator's own path uses. Gate creation and worker start do not take the workspace
 lifecycle lock, and the checkout is already marked and held against starts in
 that folder. The coordinator's own request (no `runIds`) is unchanged and does not
 carry this recheck. `Asked.named` is true and each
@@ -321,6 +327,10 @@ listing has no such entry. An absent, unreadable or moved ancestor, an unmounted
 volume, or a link or mount point on the path (a dangling one included; only a link
 directly under the filesystem root, such as macOS `/tmp`, is allowed) is unknown, so
 the mission is kept with the host's reason and nothing is recorded as swept.
+Known limit (recorded follow-up, code unchanged): an unmounted volume is NOT always
+kept. When an unmount leaves its empty mountpoint directory behind, that directory
+reads as confirmed missing, so the mission can be recorded as swept or closed; nothing
+on the offline volume is deleted.
 
 The host refreshes task delivery through `refresh_workspace` (for an already
 swept folder, the exact kept HEAD is reverified against the current local base,

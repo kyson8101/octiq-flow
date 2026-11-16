@@ -1866,27 +1866,46 @@ impl OrchestrationStore {
                 workspace.cleanup_intent = Some(abandon);
                 Ok(())
             })?;
+            // A swept workspace removes nothing here, but Cleanup still ends
+            // by recording it Cleaned: a named cleanup is decided against the
+            // ledger as it is now, after the Git work above, either way.
+            if require_finished {
+                self.require_named_run_finished(&run.id)?;
+            }
             if !swept {
                 chats.require_lifespan_idle(&ws.plan.checkout_root)?;
-                if require_finished {
-                    self.require_named_run_finished(&run.id)?;
-                }
                 workflow::cleanup_verified(&ws.plan, &evidence.head_sha, proof.as_ref())?;
             }
             Ok(evidence)
         })();
         let result = self.mutate(|data| {
+            // The write that records Cleaned decides again, under the ledger.
+            let activated = match (&cleaned, require_finished) {
+                (Ok(_), true) => super::cleanup_request::require_run_finished(data, &run.id).err(),
+                _ => None,
+            };
+            let cleaned_ok = cleaned.is_ok() && activated.is_none();
             let task = data.tasks.get_mut(task_id).ok_or("Task disappeared.")?;
             let ws = task.workspace.as_mut().unwrap();
             ws.cleanup_intent = None;
             match &cleaned {
-                Ok(evidence) => {
+                Ok(evidence) if activated.is_none() => {
                     ws.state = WorkspaceState::Cleaned;
                     ws.lease_attempt_id = None;
                     ws.delivery = Some(evidence.clone());
                     ws.abandoned = abandon;
                     if abandon {
                         task.status = TaskStatus::Cancelled;
+                    }
+                }
+                Ok(_) => {
+                    // The run became active again at the last look: nothing
+                    // is recorded, unless a folder this call removed is gone.
+                    if ws.swept_at.is_none() && !Path::new(&ws.plan.checkout_root).exists() {
+                        ws.state = WorkspaceState::Cleaned;
+                        ws.lease_attempt_id = None;
+                    } else {
+                        ws.state = WorkspaceState::Retained;
                     }
                 }
                 Err(error) => {
@@ -1906,7 +1925,7 @@ impl OrchestrationStore {
             }
             task.updated_at = now_ms();
             let result = task.clone();
-            if cleaned.is_ok() && abandon {
+            if cleaned_ok && abandon {
                 let mut cancelled = BTreeSet::from([task_id.to_string()]);
                 loop {
                     let mut added = false;
@@ -1928,9 +1947,13 @@ impl OrchestrationStore {
                 }
             }
             recompute_run(data, &run.id);
-            Ok(result)
+            Ok((result, activated))
         })?;
+        let (result, activated) = result;
         announce(&run.id, "workspace_cleanup");
+        if let Some(reason) = activated {
+            return Err(reason);
+        }
         cleaned.map(|_| result)
     }
 }

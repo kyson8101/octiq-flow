@@ -1577,6 +1577,89 @@ mod tests {
         );
     }
 
+    fn after_delivery(hook: impl FnOnce() + 'static) {
+        super::super::mission::AFTER_DELIVERY
+            .with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    fn branch_exists(repo: &Repo, branch: &str) -> bool {
+        crate::git_ops::lifespan::text(
+            &repo.root,
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("refs/heads/{branch}^{{commit}}"),
+            ],
+        )
+        .is_ok()
+    }
+
+    #[test]
+    fn a_run_level_gate_opened_after_the_delivery_read_keeps_a_gone_mission_open() {
+        let (repo, store, run) = setup(WorkspaceMode::Mission);
+        let store = std::sync::Arc::new(store);
+        let (_, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        set_status(&store, &run, RunStatus::Completed);
+        let root = first.cwd.trim_end_matches(['/', '\\']).to_string();
+        crate::git_ops::lifespan::remove(&repo.root, &root, false).unwrap();
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        assert!(matches!(card.items[0].kind, Kind::Mission));
+        let (s, r) = (store.clone(), run.clone());
+        // The window is the delivery read of a gone mission (it may ask a
+        // remote): no folder is removed on this path at all.
+        after_delivery(move || {
+            s.create_gate("chat:master", r.id.clone(), None, "Keep?".into(), vec![])
+                .unwrap();
+            set_status(&s, &r, RunStatus::Completed);
+        });
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
+        assert!(
+            result.items[0].reason.contains("open decision"),
+            "{:?}",
+            result.items
+        );
+        assert_ne!(
+            store.snapshot(Some(&run.id)).unwrap().runs[0].status,
+            RunStatus::Closed
+        );
+        assert!(branch_exists(&repo, &first.branch), "the branch is kept");
+    }
+
+    #[test]
+    fn a_run_level_gate_opened_after_the_delivery_read_keeps_a_mission_with_no_checkout_open() {
+        let (_repo, store, run) = setup(WorkspaceMode::Mission);
+        let store = std::sync::Arc::new(store);
+        set_status(&store, &run, RunStatus::Stopped);
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        assert!(card.items[0].worktrees.is_empty());
+        let (s, r) = (store.clone(), run.clone());
+        // With no checkout there is no delivery read: the window is the end
+        // of the close's Git work, before the write that marks it Closed.
+        after_delivery(move || {
+            s.create_gate("chat:master", r.id.clone(), None, "Keep?".into(), vec![])
+                .unwrap();
+            set_status(&s, &r, RunStatus::Stopped);
+        });
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
+        assert!(
+            result.items[0].reason.contains("open decision"),
+            "{:?}",
+            result.items
+        );
+        assert_ne!(
+            store.snapshot(Some(&run.id)).unwrap().runs[0].status,
+            RunStatus::Closed
+        );
+    }
+
     #[test]
     fn a_mission_whose_container_moved_away_is_kept_not_closed() {
         let (repo, store, run) = setup(WorkspaceMode::Mission);

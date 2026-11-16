@@ -221,6 +221,22 @@ fn confirmed_missing(path: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Runs once on the calling thread right after a mission's delivery has
+    /// been read in `close_mission_expected` (the step that may ask a remote),
+    /// with the ledger and lifecycle let go. A test uses it to change the
+    /// ledger inside that window.
+    pub(super) static AFTER_DELIVERY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+fn after_delivery() {
+    if let Some(hook) = AFTER_DELIVERY.with(|h| h.borrow_mut().take()) {
+        hook();
+    }
+}
+
 /// A folder that is gone has no working tree to inspect, so nothing in it can
 /// be at stake: whether the sweep removed it or it vanished some other way, its
 /// kept branch and the last saved delivery still answer for it, and it is
@@ -553,6 +569,8 @@ impl OrchestrationStore {
             for (plan, proof) in plans.iter().zip(&proofs) {
                 chats.require_checkout_idle(&plan.checkout_root, plan.is_managed_worktree())?;
                 let mut delivery = delivery_of(&run, plan)?;
+                #[cfg(test)]
+                after_delivery();
                 if let Some(expected) = expected {
                     let approved = expected
                         .iter()
@@ -589,26 +607,46 @@ impl OrchestrationStore {
                 // The automatic sweep already removed this physical folder.
                 // Close/Abandon still verify its kept head and remain the
                 // person's decision; neither needs to resurrect a clean tree.
+                // Whether or not a folder is removed here, a named close is
+                // decided against the ledger as it is now, after all Git and
+                // network work above and before every step that cannot be
+                // undone (the folder, then the branch).
+                if require_finished {
+                    self.require_named_run_finished(run_id)?;
+                }
                 if delivery.swept_at.is_none() || Path::new(&plan.checkout_root).exists() {
                     chats.require_lifespan_idle(&plan.checkout_root)?;
-                    if require_finished {
-                        self.require_named_run_finished(run_id)?;
-                    }
                     workflow::cleanup_verified(plan, &delivery.evidence.head_sha, proof.as_ref())?;
                 }
                 delivery.removed = true;
                 if delivery.merged {
+                    if require_finished {
+                        self.require_named_run_finished(run_id)?;
+                    }
                     delivery.branch_deleted = workflow::delete_merged_branch(plan)?;
                 }
                 done.push(delivery);
             }
+            // A mission with no checkout reads no delivery: the window is
+            // here, after every Git call and before the closing write.
+            #[cfg(test)]
+            after_delivery();
             Ok(done)
         })();
 
         let result = self.mutate(|data| {
+            // The write that closes the mission decides again, under the
+            // ledger: a run that became active again is never marked Closed.
+            let activated = match (&outcome, require_finished) {
+                (Ok(_), true) => super::cleanup_request::require_run_finished(data, run_id).err(),
+                _ => None,
+            };
+            let outcome_ok = outcome.is_ok() && activated.is_none();
             let removed: BTreeSet<String> = match &outcome {
-                Ok(done) => done.iter().map(|d| d.checkout_root.clone()).collect(),
-                Err(_) => plans
+                Ok(done) if activated.is_none() => {
+                    done.iter().map(|d| d.checkout_root.clone()).collect()
+                }
+                _ => plans
                     .iter()
                     .filter(|p| !Path::new(&p.checkout_root).exists())
                     .map(|p| p.checkout_root.clone())
@@ -628,7 +666,7 @@ impl OrchestrationStore {
                         }
                     }
                 }
-                if outcome.is_ok()
+                if outcome_ok
                     && abandon
                     && !matches!(task.status, TaskStatus::Completed | TaskStatus::Cancelled)
                 {
@@ -641,15 +679,19 @@ impl OrchestrationStore {
                 }
             }
             let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
-            if let Ok(done) = &outcome {
+            if let (Ok(done), true) = (&outcome, outcome_ok) {
                 run.status = RunStatus::Closed;
                 run.closed_at = Some(now_ms());
                 run.abandoned = abandon;
                 run.mission_delivery = done.clone();
             }
             run.updated_at = now_ms();
-            Ok(run.clone())
+            Ok((run.clone(), activated))
         })?;
+        let (result, activated) = result;
+        if let Some(reason) = activated {
+            return Err(reason);
+        }
         announce(run_id, "mission_closed");
         outcome.map(|_| result)
     }
