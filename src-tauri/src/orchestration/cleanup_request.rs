@@ -212,7 +212,29 @@ fn named_blocker(data: &Stored, run: &Run) -> Option<String> {
     None
 }
 
+/// The final form of the named-run check: the ledger as it is now, with the
+/// host's reason. Callers hold the ledger already (the step that marks a
+/// checkout Cleaning) or take it for one read right before a removal.
+pub(super) fn require_run_finished(data: &Stored, run_id: &str) -> Result<(), String> {
+    let run = data.runs.get(run_id).ok_or("The run does not exist.")?;
+    match named_blocker(data, run) {
+        Some(reason) => Err(format!("{reason} Nothing was removed; folder kept.")),
+        None => Ok(()),
+    }
+}
+
 impl OrchestrationStore {
+    /// One read of the ledger, released before the caller goes on to Git. It is
+    /// the last look before a removal; see the remaining window in
+    /// docs/subagent-worktree-lifecycle.md.
+    pub(super) fn require_named_run_finished(&self, run_id: &str) -> Result<(), String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        require_run_finished(&inner.data, run_id)
+    }
+
     /// Which runs a proposal covers. The caller must be a person's chat in
     /// both cases; named runs add the finished-run checks, and a run that
     /// fails them is reported, not an error, unless every run does.
@@ -639,6 +661,7 @@ impl OrchestrationStore {
                                 false,
                                 &tree.head_commit,
                                 Some(&tree.plan),
+                                asked.named,
                             )
                             .map(|_| ())
                         }
@@ -649,6 +672,7 @@ impl OrchestrationStore {
                                 &item.run_id,
                                 false,
                                 Some(&item.worktrees),
+                                asked.named,
                             )
                             .map(|_| ()),
                     }
@@ -1460,5 +1484,96 @@ mod tests {
         let cards = ask_named(&store, "chat:person", &[&run]).unwrap();
         assert!(cards.is_none(), "an unmerged mission is not proposed");
         assert!(Path::new(&first.cwd).exists());
+    }
+
+    fn during_the_proof(hook: impl FnOnce() + 'static) {
+        crate::worktree_lifespan::AFTER_REMOVAL_PROOF
+            .with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    #[test]
+    fn a_run_level_gate_opened_during_the_proof_keeps_the_task_folder() {
+        let (repo, store, run) = setup(WorkspaceMode::Worktree);
+        let store = std::sync::Arc::new(store);
+        let (_, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        set_status(&store, &run, RunStatus::Completed);
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        let (s, r) = (store.clone(), run.clone());
+        during_the_proof(move || {
+            s.create_gate("chat:master", r.id.clone(), None, "Keep?".into(), vec![])
+                .unwrap();
+            // Isolate the gate: the status alone must not be what keeps it.
+            set_status(&s, &r, RunStatus::Completed);
+        });
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
+        assert!(
+            result.items[0].reason.contains("open decision"),
+            "{:?}",
+            result.items
+        );
+        assert!(Path::new(&first.cwd).exists());
+    }
+
+    #[test]
+    fn a_worker_started_in_another_task_during_the_proof_keeps_the_task_folder() {
+        let (repo, store, run) = setup(WorkspaceMode::Worktree);
+        let store = std::sync::Arc::new(store);
+        let (_, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        set_status(&store, &run, RunStatus::Completed);
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        let (s, r) = (store.clone(), run.clone());
+        during_the_proof(move || {
+            let _ = prepare(&s, &r);
+            set_status(&s, &r, RunStatus::Completed);
+        });
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
+        assert!(
+            result.items[0].reason.contains("worker"),
+            "{:?}",
+            result.items
+        );
+        assert!(Path::new(&first.cwd).exists());
+    }
+
+    #[test]
+    fn a_run_level_gate_opened_during_the_proof_keeps_the_mission_open() {
+        let (repo, store, run) = setup(WorkspaceMode::Mission);
+        let store = std::sync::Arc::new(store);
+        let (_, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        set_status(&store, &run, RunStatus::Completed);
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        assert!(matches!(card.items[0].kind, Kind::Mission));
+        let (s, r) = (store.clone(), run.clone());
+        during_the_proof(move || {
+            s.create_gate("chat:master", r.id.clone(), None, "Keep?".into(), vec![])
+                .unwrap();
+            set_status(&s, &r, RunStatus::Completed);
+        });
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
+        assert!(
+            result.items[0].reason.contains("open decision"),
+            "{:?}",
+            result.items
+        );
+        assert!(Path::new(&first.cwd).exists());
+        assert_ne!(
+            store.snapshot(Some(&run.id)).unwrap().runs[0].status,
+            RunStatus::Closed
+        );
     }
 }

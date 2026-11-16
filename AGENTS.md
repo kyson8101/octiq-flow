@@ -3169,7 +3169,10 @@ only that coordinator's capability may ask. `runIds` (1–50 distinct, never
 implicit, not with `runId`) lets any of the person's chats name FINISHED runs it
 does not coordinate (completed/failed/stopped, no unsettled attempt, open gate or
 claiming/working batch; others come back in `keptRuns`), re-checked on the
-answer; only who proposes changes, the per-item guards still run. Either way
+answer, under the ledger in the step that marks the checkout Cleaning (after the
+off-lock proof) and once more right before removal; a gate or worker that begins
+after that last read, during Git's own removal, is not stopped. Only who proposes
+changes; the per-item guards still run, and the coordinator's own path is unchanged. Either way
 `require_user_chat` refuses workers by durable identity even after settlement;
 front desks and room seats (`HookCaller.session_key != chat_key`) are refused.
 A mission whose folder is gone or never existed closes when nothing is at stake.

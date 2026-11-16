@@ -298,8 +298,18 @@ person's own chats propose runs it does not coordinate. Only who proposes
 changes. Each named run must be finished (completed, failed or stopped) with no
 unsettled attempt, open gate or claiming/working batch; the rest come back in
 `keptRuns: [{runId, reason}]`, and the call is refused only when every run is.
-The same checks repeat on the answer, and the unchanged Cleanup / Close doors
-then run against the run's recorded coordinator. `Asked.named` is true and each
+The same checks repeat on the answer, and again inside each Cleanup / Close:
+the finished-run check is made under the ledger in the same step that marks the
+checkout(s) `Cleaning` (after the off-lock Restore proof, so a run-level gate or a
+worker started in another task during the proof keeps the folder with the host's
+reason), and once more as one ledger read immediately before the removal door
+(`cleanup_verified`). The unchanged Cleanup / Close doors then run against the
+run's recorded coordinator. **Remaining window:** a gate or worker that begins
+between that last read and Git's own removal (the duration of one `git worktree
+remove`) is not stopped; gate creation and worker start do not take the workspace
+lifecycle lock, and the checkout is already marked and held against starts in
+that folder. The coordinator's own request (no `runIds`) is unchanged and does not
+carry this recheck. `Asked.named` is true and each
 item carries `runObjective`. The result goes to the proposing chat as a host
 notification (or the waiting call); delivering it to a chat that is not a
 coordinator needs that chat to be live or resumable.

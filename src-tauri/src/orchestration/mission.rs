@@ -386,7 +386,7 @@ impl OrchestrationStore {
         run_id: &str,
         abandon: bool,
     ) -> Result<Run, String> {
-        self.close_mission_expected(chats, actor, run_id, abandon, None)
+        self.close_mission_expected(chats, actor, run_id, abandon, None, false)
     }
 
     pub(super) fn close_mission_expected(
@@ -396,6 +396,7 @@ impl OrchestrationStore {
         run_id: &str,
         abandon: bool,
         expected: Option<&[super::cleanup_request::Worktree]>,
+        require_finished: bool,
     ) -> Result<Run, String> {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
         let (plans_before, workers_before) = {
@@ -441,6 +442,11 @@ impl OrchestrationStore {
             }
             if let Some(expected) = expected {
                 super::cleanup_request::same_plans(expected, &plans)?;
+            }
+            if require_finished {
+                // Decided in the step that marks every checkout Cleaning:
+                // the proofs ran without the ledger.
+                super::cleanup_request::require_run_finished(data, run_id)?;
             }
             for plan in &plans {
                 chats.require_lifespan_idle(&plan.checkout_root)?;
@@ -510,6 +516,9 @@ impl OrchestrationStore {
                 // person's decision; neither needs to resurrect a clean tree.
                 if delivery.swept_at.is_none() || Path::new(&plan.checkout_root).exists() {
                     chats.require_lifespan_idle(&plan.checkout_root)?;
+                    if require_finished {
+                        self.require_named_run_finished(run_id)?;
+                    }
                     workflow::cleanup_verified(plan, &delivery.evidence.head_sha, proof.as_ref())?;
                 }
                 delivery.removed = true;

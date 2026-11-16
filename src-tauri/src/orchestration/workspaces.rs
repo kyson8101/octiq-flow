@@ -1693,7 +1693,7 @@ impl OrchestrationStore {
         abandon: bool,
         expected_head: &str,
     ) -> Result<Task, String> {
-        self.cleanup_workspace_expected(chats, actor, task_id, abandon, expected_head, None)
+        self.cleanup_workspace_expected(chats, actor, task_id, abandon, expected_head, None, false)
     }
 
     pub(super) fn cleanup_workspace_expected(
@@ -1704,6 +1704,7 @@ impl OrchestrationStore {
         abandon: bool,
         expected_head: &str,
         expected_plan: Option<&WorkspacePlan>,
+        require_finished: bool,
     ) -> Result<Task, String> {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
         let (_, task) = self.owned_task(actor, task_id)?;
@@ -1776,6 +1777,13 @@ impl OrchestrationStore {
         chats.require_lifespan_idle(&ws.plan.checkout_root)?;
         self.mutate(|data| {
             cleanup_ready(data, &task, ws, abandon)?;
+            if require_finished {
+                // The run was finished when it was proposed and again before
+                // the proof; the proof ran without the ledger, so a gate or a
+                // worker may have come since. Decided in the same step that
+                // marks the checkout Cleaning.
+                super::cleanup_request::require_run_finished(data, &run.id)?;
+            }
             data.tasks
                 .get_mut(task_id)
                 .unwrap()
@@ -1860,6 +1868,9 @@ impl OrchestrationStore {
             })?;
             if !swept {
                 chats.require_lifespan_idle(&ws.plan.checkout_root)?;
+                if require_finished {
+                    self.require_named_run_finished(&run.id)?;
+                }
                 workflow::cleanup_verified(&ws.plan, &evidence.head_sha, proof.as_ref())?;
             }
             Ok(evidence)
