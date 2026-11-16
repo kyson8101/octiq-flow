@@ -533,12 +533,21 @@ describe("SafetyBlock", () => {
 
     it("says the check was unavailable and the commands did not run, never that they were unsafe", () => {
       const html = drawOutage(outage);
-      expect(html).toContain("Claude&#x27;s safety check was unavailable");
-      expect(html).toContain("did not run these commands");
-      expect(html).toContain("Nothing was judged unsafe");
-      // The refused calls did not run; the same line may still run on the
-      // one as-is retry, so the card never says the command never ran.
-      expect(html).toContain("These refused calls did not run. Nothing was approved.");
+      // One quiet row: neutral, with the count in the words and no pill.
+      expect(html).toContain("Safety check unavailable");
+      expect(html).toContain("3 commands not run");
+      expect(html).toContain('aria-label="Claude&#x27;s safety check was unavailable"');
+      expect(html).not.toContain("Claude safety check</span>");
+      expect(html).not.toContain("OctiqFlow is okay");
+      expect(html).not.toContain("3 refused");
+      expect(html).not.toContain("safety-card-icon");
+      expect(html).toContain("safety-refusal is-outage");
+      // Folded: the detail waits behind the chevron; opened, the refused
+      // calls did not run, and the same line may still run on the one as-is
+      // retry, so it never says the command never ran.
+      expect(html).not.toContain("These refused calls did not run");
+      const open = drawOutage(outage, true);
+      expect(open).toContain("These refused calls did not run. Nothing was approved.");
       expect(html).not.toContain("None of these commands ran");
       expect(html).not.toContain("blocked an action");
       expect(html).not.toContain("Why it was blocked");
@@ -547,17 +556,37 @@ describe("SafetyBlock", () => {
 
     it("lists each refused line once with its count, and the group's total", () => {
       const html = drawOutage(outage);
-      expect(html).toContain("What it tried");
-      expect(html).toContain("3 refused");
-      expect(html.match(/git fetch/g)?.length).toBe(1);
-      expect(html).toContain("×2");
-      expect(html).toContain("cat POLICY.md");
+      // Folded, the commands are not drawn at all; the count is in the words.
+      expect(html).not.toContain("git fetch");
+      const open = drawOutage(outage, true);
+      expect(open.match(/git fetch/g)?.length).toBe(1);
+      expect(open).toContain("×2");
+      expect(open).toContain("cat POLICY.md");
+    });
+
+    it("keeps Retry once on the folded row, before the chevron and the shared Dismiss last", () => {
+      const html = drawOutage(outage);
+      const retry = html.indexOf('aria-label="Retry once"');
+      const chevron = html.indexOf('aria-label="Technical details"');
+      const dismiss = html.indexOf('aria-label="Dismiss"');
+      expect(retry).toBeGreaterThan(-1);
+      expect(chevron).toBeGreaterThan(retry);
+      expect(dismiss).toBeGreaterThan(chevron);
+      expect(html).toContain("ask-btn is-primary");
+      expect(html).toContain("status-row-dismiss");
+    });
+
+    it("draws a refused command through commandDrawn when opened", () => {
+      const sneaky = { ...outage, count: 1, commands: [{ action: "echo \u202Ehidden", count: 1 }] };
+      const open = drawOutage(sneaky, true);
+      expect(open).toContain('class="ask-command-mark">\\u{202E}</span>');
+      expect(open).not.toContain("\u202E");
     });
 
     it("offers Retry once, technical details and dismiss; no allow without a rule and a settings file", () => {
       const html = drawOutage(outage);
       expect(html).toContain("Retry once");
-      expect(html).toContain("Technical details");
+      expect(html).toContain('aria-label="Technical details"');
       expect(html).toContain('aria-label="Dismiss"');
       expect(html).not.toContain("Use safer approach");
       expect(html).not.toContain("Manual command approval");
@@ -587,8 +616,9 @@ describe("SafetyBlock", () => {
         },
       };
 
-      it("shows all three choices, each naming the exact rule and file it writes", () => {
-        const html = drawOutage(allowable);
+      it("shows all three choices, each naming the exact rule and file it writes; Always allow waits behind the chevron", () => {
+        expect(drawOutage(allowable)).not.toContain("Always allow");
+        const html = drawOutage(allowable, true);
         expect(html).toContain("Retry once");
         expect(html).toContain("Always allow in this project");
         expect(html).toContain("Always allow everywhere");
@@ -613,13 +643,13 @@ describe("SafetyBlock", () => {
       });
 
       it("offers only the scopes the server named, and only Retry when no call has a rule", () => {
-        const userOnly = drawOutage({ ...allowable, allow: { user: "/Users/me/.claude/settings.json" } });
+        const userOnly = drawOutage({ ...allowable, allow: { user: "/Users/me/.claude/settings.json" } }, true);
         expect(userOnly).not.toContain("Always allow in this project");
         expect(userOnly).toContain("Always allow everywhere");
-        const noRule = drawOutage({ ...allowable, commands: [{ action: "ls | wc -l", count: 1, tool: "Bash" }] });
+        const noRule = drawOutage({ ...allowable, commands: [{ action: "ls | wc -l", count: 1, tool: "Bash" }] }, true);
         expect(noRule).toContain("Retry once");
         expect(noRule).not.toContain("Always allow");
-        const lite = drawOutage({ ...allowable, allow: undefined });
+        const lite = drawOutage({ ...allowable, allow: undefined }, true);
         expect(lite).toContain("Retry once");
         expect(lite).not.toContain("Always allow");
       });
@@ -741,20 +771,21 @@ describe("SafetyBlock", () => {
     });
 
     it("shows the host's guidance word for word, as the worker and snapshot get it", () => {
-      const html = renderToStaticMarkup(<SafetyBlock block={{ ...outage, guidance: "Exactly this text." }} onContinue={() => {}} onAnswered={() => {}} />);
+      const html = renderToStaticMarkup(<SafetyBlock block={{ ...outage, guidance: "Exactly this text." }} startOpen onContinue={() => {}} onAnswered={() => {}} />);
       expect(html).toContain("What the agent was told");
       expect(html).toContain("Exactly this text.");
-      expect(drawOutage(outage)).toContain("do not try it a third time");
+      expect(drawOutage(outage, true)).toContain("do not try it a third time");
     });
 
     it("reads a single refusal in the singular and survives a server without the group fields", () => {
       const single = { ...outage, count: undefined, commands: undefined, guidance: undefined };
-      const html = drawOutage(single);
-      expect(html).toContain("did not run this command");
+      const html = drawOutage(single, true);
+      expect(html).toContain("1 command not run");
       expect(html).toContain("This refused call did not run. Nothing was approved.");
       expect(html).not.toContain("The command did not run.");
       expect(html).toContain("git fetch");
       expect(html).not.toContain("refused</span>");
+      expect(drawOutage(single)).toContain("1 command not run");
       expect(html).toContain("OctiqFlow will not re-run it");
     });
   });

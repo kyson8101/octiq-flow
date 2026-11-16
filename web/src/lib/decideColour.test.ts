@@ -358,6 +358,20 @@ describe("the cards that wait on a decision", () => {
     expect(named(".ask-btn.is-primary.is-danger").some((rule) => /--danger/.test(rule.body))).toBe(true);
   });
 
+  it("draws a safety-check outage as a neutral row: grey rule and icon, never amber or red", () => {
+    // An outage gave no verdict: it shares the judged refusal's one-line
+    // shape, but its rule and info icon are neutral, and Retry once leads in
+    // the decision colour like every answer a card leads with.
+    const rule = named(".safety-refusal.is-outage");
+    const icon = named(".safety-refusal.is-outage .safety-refusal-icon");
+    expect(rule).toHaveLength(1);
+    expect(icon).toHaveLength(1);
+    expect(rule[0].body).toMatch(/border-left-color:\s*var\(--border\)/);
+    expect(icon[0].body).toMatch(/color:\s*var\(--fg-3\)/);
+    for (const part of [...rule, ...icon]) expect(part.body, part.selector).not.toMatch(NOT_A_DECISION);
+    expect(RULES.some((item) => item.selector.includes("is-outage") && /--(warn|danger)\b/.test(item.body))).toBe(false);
+  });
+
   it("draws the safety card's leading answer in the decision colour, whatever the model's colour is", () => {
     // "Keep it local" and "Use safer approach" used to take `.ask-btn.is-primary`
     // as it stands: the accent, which the composer rebinds to the model's

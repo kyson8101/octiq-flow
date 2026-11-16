@@ -11,7 +11,7 @@
 // classifier gave no verdict) offers the one as-is retry Claude itself allows,
 // and an allow rule the person adds to their own settings.
 import { ActionIcon } from "./ActionIcon";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { bridge } from "../lib/bridge";
 import { AUTO_MODE_BLOCKED } from "../lib/safetyToast";
 import { StatusDismiss } from "./ChatStatus";
@@ -191,6 +191,7 @@ function OutageBlock({
   startOpen: boolean;
 }) {
   const [open, setOpen] = useState(startOpen);
+  const bodyId = useId();
   const [sending, setSending] = useState<"retry" | AllowScope | "dismiss" | null>(null);
   const [error, setError] = useState("");
   const commands: OutageCommand[] = block.commands?.length
@@ -213,102 +214,118 @@ function OutageBlock({
       setSending(null);
     }
   };
+  const press = (choice: OutageChoice) => (event: ReactMouseEvent<HTMLElement>) => {
+    if (!repeatsAnother(event)) void answer(choice);
+  };
 
+  const written = block.written
+    ? (
+      <p className="ask-card-note safety-card-written" role="status">
+        The allow rule is already in {block.written === "project" ? "this project's" : "your own"} settings,
+        but the retry was not sent yet.
+      </p>
+    )
+    : null;
+  const failed = error ? <p className="ask-card-note safety-card-error">Could not answer the card: {error}</p> : null;
+
+  // One quiet row, the judged refusal's shape. An outage is not a verdict and
+  // not a warning, so the icon is neutral grey; the count is in the words.
+  // Retry once stays on the folded row: only the person can choose it.
   return (
-    <div className="ask-card safety-card is-outage" role="status" aria-label={block.title}>
-      <div className="safety-card-context">
-        <span>Claude safety check</span>
-        <span className="safety-card-ok">OctiqFlow is okay</span>
+    <div className={`safety-card safety-refusal is-outage${open ? " is-open" : ""}`} role="status" aria-label={block.title}>
+      <div className="safety-refusal-row">
+        <svg className="safety-refusal-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9.5" /><path d="M12 11v5.5" /><path d="M12 7.6h.01" />
+        </svg>
+        <span className="safety-refusal-copy">
+          <span className="safety-refusal-subject">
+            <span className="safety-refusal-what">Safety check unavailable</span>
+            <span className="safety-refusal-reason" title={`${count} ${count === 1 ? "command" : "commands"} not run`}>
+              {count} {count === 1 ? "command" : "commands"} not run
+            </span>
+          </span>
+        </span>
+        <div className="safety-refusal-answers">
+          <button className="ask-btn is-primary" type="button" disabled={!!sending || !actions.length}
+            title="Ask the agent to make the same call once more. Claude checks it again."
+            onKeyDown={dropHeld} onClick={press("retry")} data-icon-action
+            aria-label={sending === "retry" ? "Retrying…" : "Retry once"}
+            aria-description="Ask the agent to make the same call once more. Claude checks it again.">
+            <ActionIcon name="retry" label="Retry once" />
+          </button>
+        </div>
+        <button className="safety-refusal-toggle" type="button" aria-expanded={open} disabled={!!sending}
+          aria-controls={open ? bodyId : undefined} onKeyDown={dropHeld}
+          title={open ? "Hide technical details" : "Technical details"} aria-label={open ? "Hide technical details" : "Technical details"}
+          onClick={(event) => { notePress(event); setOpen((was) => !was); }}>
+          <svg className="safety-card-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+        </button>
+        <StatusDismiss label="Dismiss" visible disabled={!!sending} onKeyDown={dropHeld} onClick={press("dismiss")} />
       </div>
-      <div className="ask-card-head">
-        <span className="safety-card-icon" aria-hidden="true">i</span>
-        <span className="ask-card-title"><strong>{block.title}</strong></span>
-        {count > 1 && <span className="safety-card-count">{count} refused</span>}
-      </div>
-
-      <p className="safety-card-summary">
-        Claude could not reach its safety check, so it did not run {count === 1 ? "this command" : "these commands"}.
-        Nothing was judged unsafe.
-      </p>
-      {commands.length > 0 && <>
-        <div className="safety-card-label">What it tried</div>
-        <ul className="safety-card-commands">
-          {commands.map((command) => (
-            <li key={command.action}>
-              <pre className="safety-card-action">{command.action}</pre>
-              {command.count > 1 && <span className="safety-card-times" aria-label={`${command.count} times`}>×{command.count}</span>}
-            </li>
-          ))}
-        </ul>
-      </>}
-      <p className="safety-card-status">
-        {/* The refused calls, not the command text: one as-is retry is allowed,
-            so the same line may still run later. */}
-        {count === 1 ? "This refused call did not run." : "These refused calls did not run."} Nothing was approved.
-      </p>
-      {block.written && (
-        <p className="ask-card-note safety-card-written">
-          The allow rule is already in {block.written === "project" ? "this project's" : "your own"} settings,
-          but the retry was not sent yet.
-        </p>
-      )}
+      {!open && written}
+      {!open && failed}
 
       {open && (
-        <div className="ask-card-detail safety-card-detail">
-          <div className="ask-card-label">Technical details</div>
+        <div className="safety-refusal-body" id={bodyId}>
+          {commands.length > 0 && (
+            <ul className="safety-card-commands">
+              {commands.map((command) => (
+                <li key={command.action}>
+                  <pre className="safety-card-action"><RefusalCommand text={command.action} /></pre>
+                  {command.count > 1 && <span className="safety-card-times" aria-label={`${command.count} times`}>×{command.count}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="safety-card-calm">
+            {/* The refused calls, not the command text: one as-is retry is allowed,
+                so the same line may still run later. */}
+            {count === 1 ? "This refused call did not run." : "These refused calls did not run."} Nothing was approved.
+          </p>
+          {written}
+          {failed}
+
+          <div className="safety-card-label">Technical details</div>
           <pre className="ask-card-body">{block.summary}{"\n\n"}{block.detail}</pre>
+
           {(projectPath || userPath) && <>
-            <div className="ask-card-label">Where Always allow writes</div>
+            <div className="safety-card-label">Where Always allow writes</div>
             <pre className="ask-card-body">
               {projectPath && `This project: ${projectPath}`}
               {projectPath && userPath && "\n"}
               {userPath && `Everywhere: ${userPath}`}
             </pre>
+            <div className="ask-card-buttons safety-card-buttons">
+              {projectPath && (
+                <button className="ask-btn safety-allow" type="button" disabled={!!sending}
+                  title={`Adds ${ruleText} to ${projectPath}, then retries. In a task worktree the rule goes when the worktree does.`}
+                  onKeyDown={dropHeld} onClick={press("project")} data-icon-action aria-label={sending === "project" ? "Saving…" : "Always allow in this project"} aria-description={`Adds ${ruleText} to ${projectPath}, then retries. In a task worktree the rule goes when the worktree does.`}>
+                  <ActionIcon name="alwaysProject" label="Allow project" />
+                </button>
+              )}
+              {userPath && (
+                <button className="ask-btn safety-allow" type="button" disabled={!!sending}
+                  title={`Adds ${ruleText} to ${userPath}, then retries`}
+                  onKeyDown={dropHeld} onClick={press("user")} data-icon-action aria-label={sending === "user" ? "Saving…" : "Always allow everywhere"} aria-description={`Adds ${ruleText} to ${userPath}, then retries`}>
+                  <ActionIcon name="alwaysEverywhere" label="Allow everywhere" />
+                </button>
+              )}
+            </div>
+            <p className="ask-card-note safety-card-rule">
+              Always allow adds <code>{ruleText}</code> to Claude's settings, so Claude runs matching calls without its safety check.
+            </p>
           </>}
+
+          {block.guidance
+            ? <>
+              <div className="safety-card-label">What the agent was told</div>
+              <p className="ask-card-note safety-card-guidance">{block.guidance}</p>
+            </>
+            : <p className="ask-card-note">{OUTAGE_FALLBACK_NOTE}</p>}
         </div>
       )}
-
-      <div className="ask-card-buttons safety-card-buttons">
-        <button className="ask-btn is-primary" type="button" disabled={!!sending || !actions.length}
-          title="Ask the agent to make the same call once more. Claude checks it again."
-          onClick={() => void answer("retry")} data-icon-action aria-label={sending === "retry" ? "Retrying…" : "Retry once"} aria-description="Ask the agent to make the same call once more. Claude checks it again.">
-          <ActionIcon name="retry" label="Retry once" />
-        </button>
-        {projectPath && (
-          <button className="ask-btn safety-allow" type="button" disabled={!!sending}
-            title={`Adds ${ruleText} to ${projectPath}, then retries. In a task worktree the rule goes when the worktree does.`}
-            onClick={() => void answer("project")} data-icon-action aria-label={sending === "project" ? "Saving…" : "Always allow in this project"} aria-description={`Adds ${ruleText} to ${projectPath}, then retries. In a task worktree the rule goes when the worktree does.`}>
-            <ActionIcon name="alwaysProject" label="Allow project" />
-          </button>
-        )}
-        {userPath && (
-          <button className="ask-btn safety-allow" type="button" disabled={!!sending}
-            title={`Adds ${ruleText} to ${userPath}, then retries`}
-            onClick={() => void answer("user")} data-icon-action aria-label={sending === "user" ? "Saving…" : "Always allow everywhere"} aria-description={`Adds ${ruleText} to ${userPath}, then retries`}>
-            <ActionIcon name="alwaysEverywhere" label="Allow everywhere" />
-          </button>
-        )}
-        <button className="ask-btn" type="button" disabled={!!sending} aria-expanded={open}
-          onClick={() => setOpen((shown) => !shown)} data-icon-action title={open ? "Hide technical details" : "Technical details"} aria-label={open ? "Hide technical details" : "Technical details"}>
-          <ActionIcon name={open ? "collapse" : "expand"} />
-        </button>
-        <StatusDismiss label="Dismiss" visible disabled={!!sending} onClick={() => void answer("dismiss")} />
-      </div>
-
-      {(projectPath || userPath) && (
-        <p className="ask-card-note safety-card-rule">
-          Always allow adds <code>{ruleText}</code> to Claude's settings, so Claude runs matching calls without its safety check.
-        </p>
-      )}
-
-      {error && <p className="ask-card-note safety-card-error">Could not answer the card: {error}</p>}
-
-      {block.guidance
-        ? <>
-          <div className="safety-card-label">What the agent was told</div>
-          <p className="ask-card-note safety-card-guidance">{block.guidance}</p>
-        </>
-        : <p className="ask-card-note">{OUTAGE_FALLBACK_NOTE}</p>}
     </div>
   );
 }
