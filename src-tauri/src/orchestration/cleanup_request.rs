@@ -1582,6 +1582,11 @@ mod tests {
             .with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
     }
 
+    fn after_branch_delete(hook: impl FnOnce() + 'static) {
+        super::super::mission::AFTER_BRANCH_DELETE
+            .with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
     fn branch_exists(repo: &Repo, branch: &str) -> bool {
         crate::git_ops::lifespan::text(
             &repo.root,
@@ -1628,6 +1633,52 @@ mod tests {
             RunStatus::Closed
         );
         assert!(branch_exists(&repo, &first.branch), "the branch is kept");
+    }
+
+    #[test]
+    fn a_gate_opened_after_the_branch_delete_keeps_the_mission_open_but_records_what_happened() {
+        let (repo, store, run) = setup(WorkspaceMode::Mission);
+        let store = std::sync::Arc::new(store);
+        let (_, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        set_status(&store, &run, RunStatus::Completed);
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        assert!(matches!(card.items[0].kind, Kind::Mission));
+        let (s, r) = (store.clone(), run.clone());
+        // The folder and the merged branch are already gone here; only the
+        // closing write is left.
+        after_branch_delete(move || {
+            s.create_gate("chat:master", r.id.clone(), None, "Keep?".into(), vec![])
+                .unwrap();
+            set_status(&s, &r, RunStatus::Completed);
+        });
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        // The folder did go, so the host says so, with the refusal as the reason.
+        assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
+        assert!(
+            result.items[0].reason.contains("open decision"),
+            "{:?}",
+            result.items
+        );
+        let saved = store.snapshot(Some(&run.id)).unwrap().runs[0].clone();
+        assert_ne!(saved.status, RunStatus::Closed);
+        assert!(saved.closed_at.is_none());
+        assert!(!Path::new(&first.cwd).exists(), "the folder went");
+        assert!(!branch_exists(&repo, &first.branch), "the branch went");
+        assert_eq!(
+            saved.mission_delivery.len(),
+            1,
+            "{:?}",
+            saved.mission_delivery
+        );
+        assert!(saved.mission_delivery[0].removed);
+        assert!(
+            saved.mission_delivery[0].branch_deleted,
+            "the saved delivery says the branch is deleted"
+        );
     }
 
     #[test]

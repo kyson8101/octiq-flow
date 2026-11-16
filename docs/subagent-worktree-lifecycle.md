@@ -307,7 +307,11 @@ reason), and once more as one ledger read immediately before the removal door
 folder is gone or that never had one, a swept task workspace) repeats the check
 too: before the branch is deleted and in the very write that records Closed /
 Cleaned, after all Git and network work, so a run that became active again is kept
-with nothing written and no branch deleted. The unchanged Cleanup / Close doors then run against the
+with no Closed/Cleaned write and no further branch deleted. What
+already happened is still recorded: a mission whose folder and merged branch were
+removed before a gate opened stays open, but its saved delivery says per root
+`removed` and `branchDeleted` (a refusal at the closing write never discards those
+facts; roots not reached keep their older entry). The unchanged Cleanup / Close doors then run against the
 run's recorded coordinator. **Remaining window:** a gate or worker that begins
 between that last ledger read and the removal is not stopped. The window runs from
 that read, through the `cleanup_verified` / `remove_proven` final checks, into the
