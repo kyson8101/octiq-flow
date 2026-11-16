@@ -231,6 +231,19 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 #[cfg(test)]
+thread_local! {
+    /// Like `AFTER_DELIVERY`, but runs right after a root's folder and merged
+    /// branch have been removed: the window before the closing write.
+    pub(super) static AFTER_BRANCH_DELETE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+fn after_branch_delete() {
+    if let Some(hook) = AFTER_BRANCH_DELETE.with(|h| h.borrow_mut().take()) {
+        hook();
+    }
+}
+#[cfg(test)]
 fn after_delivery() {
     if let Some(hook) = AFTER_DELIVERY.with(|h| h.borrow_mut().take()) {
         hook();
@@ -561,11 +574,14 @@ impl OrchestrationStore {
             Ok((run, plans, workers))
         })?;
 
-        let outcome = (|| -> Result<Vec<MissionDelivery>, String> {
+        // What happened to each root is kept here as it happens, so a later
+        // refusal (a gate that opened after the branch was deleted) still
+        // leaves its facts to be recorded: they are about Git, not the run.
+        let mut done: Vec<MissionDelivery> = Vec::new();
+        let outcome = (|| -> Result<(), String> {
             for key in &workers {
                 crate::agent_chat::chat_stop_impl(chats, key.clone())?;
             }
-            let mut done = Vec::new();
             for (plan, proof) in plans.iter().zip(&proofs) {
                 chats.require_checkout_idle(&plan.checkout_root, plan.is_managed_worktree())?;
                 let mut delivery = delivery_of(&run, plan)?;
@@ -619,19 +635,26 @@ impl OrchestrationStore {
                     workflow::cleanup_verified(plan, &delivery.evidence.head_sha, proof.as_ref())?;
                 }
                 delivery.removed = true;
-                if delivery.merged {
+                let merged = delivery.merged;
+                // Recorded before the branch step: the folder is already gone.
+                done.push(delivery);
+                if merged {
                     if require_finished {
                         self.require_named_run_finished(run_id)?;
                     }
-                    delivery.branch_deleted = workflow::delete_merged_branch(plan)?;
+                    let deleted = workflow::delete_merged_branch(plan)?;
+                    if let Some(last) = done.last_mut() {
+                        last.branch_deleted = deleted;
+                    }
                 }
-                done.push(delivery);
+                #[cfg(test)]
+                after_branch_delete();
             }
             // A mission with no checkout reads no delivery: the window is
             // here, after every Git call and before the closing write.
             #[cfg(test)]
             after_delivery();
-            Ok(done)
+            Ok(())
         })();
 
         let result = self.mutate(|data| {
@@ -643,7 +666,7 @@ impl OrchestrationStore {
             };
             let outcome_ok = outcome.is_ok() && activated.is_none();
             let removed: BTreeSet<String> = match &outcome {
-                Ok(done) if activated.is_none() => {
+                Ok(()) if activated.is_none() => {
                     done.iter().map(|d| d.checkout_root.clone()).collect()
                 }
                 _ => plans
@@ -679,11 +702,25 @@ impl OrchestrationStore {
                 }
             }
             let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
-            if let (Ok(done), true) = (&outcome, outcome_ok) {
+            if outcome_ok {
                 run.status = RunStatus::Closed;
                 run.closed_at = Some(now_ms());
                 run.abandoned = abandon;
                 run.mission_delivery = done.clone();
+            } else {
+                // Not Closed, but the folders and branches that went are
+                // facts: record them per root over the older delivery, and
+                // leave every root that was not reached as it was.
+                for fact in &done {
+                    match run
+                        .mission_delivery
+                        .iter_mut()
+                        .find(|known| known.checkout_root == fact.checkout_root)
+                    {
+                        Some(known) => *known = fact.clone(),
+                        None => run.mission_delivery.push(fact.clone()),
+                    }
+                }
             }
             run.updated_at = now_ms();
             Ok((run.clone(), activated))
