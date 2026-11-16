@@ -1576,4 +1576,33 @@ mod tests {
             RunStatus::Closed
         );
     }
+
+    #[test]
+    fn a_mission_whose_container_moved_away_is_kept_not_closed() {
+        let (repo, store, run) = setup(WorkspaceMode::Mission);
+        let (_, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        set_status(&store, &run, RunStatus::Completed);
+        let root = first.cwd.trim_end_matches(['/', '\\']).to_string();
+        let container = Path::new(&root).parent().unwrap().to_path_buf();
+        let moved = container.with_file_name(format!(
+            "{}-offline",
+            container.file_name().unwrap().to_string_lossy()
+        ));
+        fs::rename(&container, &moved).unwrap();
+        // The checkout is not found, but its folder is gone too: unknown, not swept.
+        assert!(ask_named(&store, "chat:person", &[&run])
+            .map(|card| card.is_none())
+            .unwrap_or(true));
+        let error = store
+            .close_mission(&ChatManager::default(), "chat:master", &run.id, false)
+            .unwrap_err();
+        assert!(error.contains("not confirmed"), "{error}");
+        assert_ne!(
+            store.snapshot(Some(&run.id)).unwrap().runs[0].status,
+            RunStatus::Closed
+        );
+        assert!(moved.exists(), "nothing was touched");
+    }
 }

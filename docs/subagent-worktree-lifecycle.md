@@ -315,7 +315,12 @@ notification (or the waiting call); delivering it to a chat that is not a
 coordinator needs that chat to be live or resumable.
 A mission whose folder is gone (swept or removed by hand), or that never had one,
 is closeable when nothing is at stake: Close then only records the end and deletes
-the branch if merged.
+the branch if merged. "Gone" means CONFIRMED missing (`mission::confirmed_missing`):
+every ancestor is a real directory read without following links and the parent's
+listing has no such entry. An absent, unreadable or moved ancestor, an unmounted
+volume, or a link or mount point on the path (a dangling one included; only a link
+directly under the filesystem root, such as macOS `/tmp`, is allowed) is unknown, so
+the mission is kept with the host's reason and nothing is recorded as swept.
 
 The host refreshes task delivery through `refresh_workspace` (for an already
 swept folder, the exact kept HEAD is reverified against the current local base,

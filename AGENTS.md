@@ -3175,7 +3175,7 @@ after that last read, during Git's own removal, is not stopped. Only who propose
 changes; the per-item guards still run, and the coordinator's own path is unchanged. Either way
 `require_user_chat` refuses workers by durable identity even after settlement;
 front desks and room seats (`HookCaller.session_key != chat_key`) are refused.
-A mission whose folder is gone or never existed closes when nothing is at stake.
+A mission whose folder is gone (confirmed missing: real ancestors, listed parent without the entry; an offline volume, moved ancestor or link on the path keeps it) or never existed closes when nothing is at stake.
 Empty batches create no card. Pending records are host memory and are lost on
 server restart, never automatically approved. Codex returns pending immediately
 and receives results as a durable host notification turn; other providers wait

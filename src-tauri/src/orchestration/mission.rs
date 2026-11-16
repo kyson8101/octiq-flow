@@ -145,14 +145,89 @@ pub struct CoordinatedRun {
     pub close_blocker: Option<String>,
 }
 
+/// A symlink, or on Windows any reparse point (a junction, a mount point).
+fn is_redirect(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes() & 0x400 != 0 {
+            return true;
+        }
+    }
+    meta.file_type().is_symlink()
+}
+
+/// `Ok(true)` only when the checkout is CONFIRMED missing: every ancestor is a
+/// real directory read without following a link, and the parent, read as a
+/// directory, has no entry of that name. `Ok(false)` when the path exists (a
+/// folder that exists is never taken for gone). Anything else (an ancestor
+/// that is absent, unreadable, a file, or a link, a dangling one included, or
+/// an unmounted volume) is `Err`: not found there proves nothing about the
+/// files, which may be offline and dirty, so the mission is kept. The one
+/// redirect allowed is a link directly under the filesystem root, which is how
+/// macOS spells `/tmp` and `/var`.
+fn confirmed_missing(path: &str) -> Result<bool, String> {
+    let kept = |why: String| {
+        format!("{path} is not found, but that is not confirmed: {why} The mission is kept.")
+    };
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(kept(format!("it could not be read ({e})."))),
+    }
+    let target = Path::new(path);
+    let parent = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| kept("it has no parent folder.".into()))?;
+    for ancestor in parent.ancestors().filter(|a| !a.as_os_str().is_empty()) {
+        let meta = std::fs::symlink_metadata(ancestor).map_err(|e| {
+            kept(format!(
+                "its folder {} is unavailable ({e}); the volume may be offline or the folder moved.",
+                ancestor.display()
+            ))
+        })?;
+        if is_redirect(&meta) {
+            let under_root = ancestor
+                .parent()
+                .is_some_and(|p| p.parent().is_none() || p.as_os_str().is_empty());
+            let resolves_to_dir = std::fs::metadata(ancestor).is_ok_and(|m| m.is_dir());
+            if !(under_root && resolves_to_dir) {
+                return Err(kept(format!(
+                    "{} is a link or mount point, so the path may lead somewhere else.",
+                    ancestor.display()
+                )));
+            }
+        } else if !meta.is_dir() {
+            return Err(kept(format!("{} is not a folder.", ancestor.display())));
+        }
+    }
+    let name = target
+        .file_name()
+        .ok_or_else(|| kept("it has no folder name.".into()))?;
+    let entries = std::fs::read_dir(parent)
+        .map_err(|e| kept(format!("{} could not be listed ({e}).", parent.display())))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|e| kept(format!("{} could not be listed ({e}).", parent.display())))?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&name.to_string_lossy())
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// A folder that is gone has no working tree to inspect, so nothing in it can
 /// be at stake: whether the sweep removed it or it vanished some other way, its
 /// kept branch and the last saved delivery still answer for it, and it is
 /// never recreated to draw the page. With no saved delivery at all the branch
 /// alone says where it stands. A folder that exists is never taken for swept.
 fn swept_delivery(run: &Run, plan: &WorkspacePlan) -> Result<Option<MissionDelivery>, String> {
-    if !matches!(std::fs::symlink_metadata(&plan.checkout_root), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
-    {
+    if !confirmed_missing(&plan.checkout_root)? {
         return Ok(None);
     }
     let known = run
@@ -577,5 +652,60 @@ impl OrchestrationStore {
         })?;
         announce(run_id, "mission_closed");
         outcome.map(|_| result)
+    }
+}
+
+#[cfg(test)]
+mod confirmed_missing_tests {
+    use super::confirmed_missing;
+    use crate::test_dir::TestDir;
+
+    fn p(path: &std::path::Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_folder_that_is_listed_as_absent_in_a_real_parent_is_confirmed_missing() {
+        let dir = TestDir::new("confirmed-missing");
+        assert_eq!(confirmed_missing(&p(&dir.join("gone"))), Ok(true));
+        std::fs::create_dir(dir.join("here")).unwrap();
+        assert_eq!(confirmed_missing(&p(&dir.join("here"))), Ok(false));
+    }
+
+    #[test]
+    fn an_ancestor_that_moved_away_is_not_confirmed() {
+        let dir = TestDir::new("confirmed-missing");
+        let path = dir.join("container").join("checkout");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::rename(dir.join("container"), dir.join("moved")).unwrap();
+        let error = confirmed_missing(&p(&path)).unwrap_err();
+        assert!(error.contains("not confirmed"), "{error}");
+        assert!(error.contains("unavailable"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_ancestor_link_is_not_confirmed() {
+        let dir = TestDir::new("confirmed-missing");
+        std::os::unix::fs::symlink(dir.join("offline-volume"), dir.join("container")).unwrap();
+        let error = confirmed_missing(&p(&dir.join("container").join("checkout"))).unwrap_err();
+        assert!(error.contains("not confirmed"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_live_ancestor_link_is_a_redirect_and_is_not_confirmed() {
+        let dir = TestDir::new("confirmed-missing");
+        std::fs::create_dir(dir.join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink(dir.join("elsewhere"), dir.join("container")).unwrap();
+        let error = confirmed_missing(&p(&dir.join("container").join("checkout"))).unwrap_err();
+        assert!(error.contains("link or mount point"), "{error}");
+    }
+
+    #[test]
+    fn a_file_in_place_of_the_parent_is_not_confirmed() {
+        let dir = TestDir::new("confirmed-missing");
+        std::fs::write(dir.join("container"), b"x").unwrap();
+        assert!(confirmed_missing(&p(&dir.join("container").join("checkout"))).is_err());
     }
 }
