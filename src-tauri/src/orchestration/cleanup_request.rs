@@ -104,6 +104,12 @@ pub(super) fn same_plans(expected: &[Worktree], actual: &[WorkspacePlan]) -> Res
         same_plan(&approved.plan, plan)?;
         let head = if Path::new(&plan.checkout_root).exists() {
             crate::git_ops::lifespan::text(&plan.checkout_root, &["rev-parse", "HEAD"])?
+        } else if !super::mission::branch_exists(plan)? {
+            // Folder and branch are both gone: there is no ref to read. The
+            // head the card showed is the recorded merged delivery's, and
+            // `close_mission_expected` compares it with that delivery again
+            // right before anything is recorded.
+            continue;
         } else {
             crate::git_ops::lifespan::text(
                 &plan.repository_root,
@@ -1471,6 +1477,78 @@ mod tests {
             store.snapshot(Some(&run.id)).unwrap().runs[0].status,
             RunStatus::Closed
         );
+    }
+
+    fn gone_branch_fixture(refresh_first: bool) -> (Repo, OrchestrationStore, Run, Attempt) {
+        let (repo, store, run) = setup(WorkspaceMode::Mission);
+        let (_, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        set_status(&store, &run, RunStatus::Completed);
+        if refresh_first {
+            store.refresh_mission("chat:master", &run.id).unwrap();
+        }
+        let root = first.cwd.trim_end_matches(['/', '\\']).to_string();
+        crate::git_ops::lifespan::remove(&repo.root, &root, false).unwrap();
+        repo.git(&["branch", "-D", &first.branch]);
+        assert!(!branch_exists(&repo, &first.branch));
+        (repo, store, run, first)
+    }
+
+    #[test]
+    fn a_merged_mission_whose_folder_and_branch_are_both_gone_closes() {
+        let (_repo, store, run, first) = gone_branch_fixture(true);
+        let listed = store.coordinated_runs("chat:master").unwrap();
+        assert!(listed[0].close_eligible, "{:?}", listed[0].close_blocker);
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        assert!(matches!(card.items[0].kind, Kind::Mission));
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
+        let saved = store.snapshot(Some(&run.id)).unwrap().runs[0].clone();
+        assert_eq!(saved.status, RunStatus::Closed);
+        assert_eq!(saved.mission_delivery.len(), 1);
+        let delivery = &saved.mission_delivery[0];
+        assert!(delivery.merged && delivery.removed && delivery.branch_deleted);
+        assert_eq!(delivery.branch, first.branch);
+    }
+
+    #[test]
+    fn a_mission_whose_folder_and_branch_are_gone_but_never_recorded_merged_is_kept() {
+        let (_repo, store, run, _first) = gone_branch_fixture(false);
+        let listed = store.coordinated_runs("chat:master").unwrap();
+        assert!(!listed[0].close_eligible);
+        let why = listed[0].close_blocker.clone().unwrap();
+        assert!(why.contains("both gone"), "{why}");
+        assert!(why.contains("no merge"), "{why}");
+        assert!(ask_named(&store, "chat:person", &[&run])
+            .map(|card| card.is_none())
+            .unwrap_or(true));
+        let error = store
+            .close_mission(&ChatManager::default(), "chat:master", &run.id, false)
+            .unwrap_err();
+        assert!(error.contains("both gone"), "{error}");
+        assert_ne!(
+            store.snapshot(Some(&run.id)).unwrap().runs[0].status,
+            RunStatus::Closed
+        );
+    }
+
+    #[test]
+    fn a_git_failure_that_is_not_an_absent_branch_keeps_the_mission() {
+        let (_repo, store, run, _first) = gone_branch_fixture(true);
+        let (saved, mut plans) = {
+            let inner = store.inner.lock().unwrap();
+            let saved = inner.data.runs[&run.id].clone();
+            (
+                saved,
+                super::super::mission::mission_plans(&inner.data, &run.id),
+            )
+        };
+        plans[0].repository_root = format!("{}-does-not-exist", plans[0].repository_root);
+        let error = super::super::mission::swept_delivery(&saved, &plans[0]).unwrap_err();
+        assert!(!error.contains("both gone"), "{error}");
     }
 
     #[test]

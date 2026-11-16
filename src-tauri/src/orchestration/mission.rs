@@ -250,12 +250,56 @@ fn after_delivery() {
     }
 }
 
+/// `Ok(false)` only when git, asked in the repository, answers that no local
+/// branch of that name exists. Any other failure (the repository is missing, a
+/// timeout, git itself) is `Err`: not being able to ask proves nothing.
+/// `for-each-ref` is used because it answers an absent ref with success and
+/// empty output, so absence is told apart from a failed git call by its exit
+/// status and not by reading an error message.
+pub(super) fn branch_exists(plan: &WorkspacePlan) -> Result<bool, String> {
+    let wanted = format!("refs/heads/{}", plan.branch);
+    let found = crate::git_ops::lifespan::text(
+        &plan.repository_root,
+        &["for-each-ref", "--format=%(refname)", &wanted],
+    )?;
+    Ok(found.lines().any(|line| line == wanted))
+}
+
+/// The folder and the local branch are both gone (the sweep removed the folder,
+/// a release's merged-branch cleanup removed the branch). Nothing physical is
+/// left to remove, so the recorded delivery answers for it, but only a delivery
+/// that was recorded as merged: a merge is never guessed from a missing ref.
+fn gone_branch_delivery(
+    known: Option<&MissionDelivery>,
+    plan: &WorkspacePlan,
+) -> Result<MissionDelivery, String> {
+    match known.filter(|k| k.merged && !k.evidence.head_sha.is_empty()) {
+        Some(known) => {
+            let mut delivery = known.clone();
+            delivery.removed = true;
+            delivery.branch_deleted = true;
+            delivery.swept_at = delivery.swept_at.or(Some(now_ms()));
+            delivery.evidence.checked_at = now_ms();
+            Ok(delivery)
+        }
+        None => Err(format!(
+            "The folder {} and the branch {} are both gone, and no merge into {} was ever recorded for it, so it is not known to be merged. The mission is kept.",
+            plan.checkout_root, plan.branch, plan.base_branch
+        )),
+    }
+}
+
 /// A folder that is gone has no working tree to inspect, so nothing in it can
 /// be at stake: whether the sweep removed it or it vanished some other way, its
 /// kept branch and the last saved delivery still answer for it, and it is
 /// never recreated to draw the page. With no saved delivery at all the branch
-/// alone says where it stands. A folder that exists is never taken for swept.
-fn swept_delivery(run: &Run, plan: &WorkspacePlan) -> Result<Option<MissionDelivery>, String> {
+/// alone says where it stands. A branch that is gone as well answers from the
+/// saved delivery only when that was recorded merged (`gone_branch_delivery`).
+/// A folder that exists is never taken for swept.
+pub(super) fn swept_delivery(
+    run: &Run,
+    plan: &WorkspacePlan,
+) -> Result<Option<MissionDelivery>, String> {
     if !confirmed_missing(&plan.checkout_root)? {
         return Ok(None);
     }
@@ -263,6 +307,9 @@ fn swept_delivery(run: &Run, plan: &WorkspacePlan) -> Result<Option<MissionDeliv
         .mission_delivery
         .iter()
         .find(|d| d.checkout_root == plan.checkout_root);
+    if !branch_exists(plan)? {
+        return gone_branch_delivery(known, plan).map(Some);
+    }
     let head = crate::git_ops::lifespan::text(
         &plan.repository_root,
         &[
@@ -643,6 +690,10 @@ impl OrchestrationStore {
                         self.require_named_run_finished(run_id)?;
                     }
                     let deleted = workflow::delete_merged_branch(plan)?;
+                    // A branch that was already gone (deleted by a release's
+                    // cleanup) is deleted all the same; git refusing `-d` is
+                    // told apart from it by asking whether the ref is there.
+                    let deleted = deleted || !branch_exists(plan).unwrap_or(true);
                     if let Some(last) = done.last_mut() {
                         last.branch_deleted = deleted;
                     }
