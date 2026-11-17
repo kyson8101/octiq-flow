@@ -14,10 +14,20 @@ pub(crate) mod process;
 thread_local! {
     static FINAL_DEADLINE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
 }
+/// The one bound every final check runs inside: 10 seconds. Unit tests run
+/// hundreds of real Git and `lsof` processes in parallel on a loaded machine,
+/// where the same work takes several times longer, so a test build gives the
+/// bound twelve times the room. A test that is about the bound itself names its
+/// own (`FinalBudget::with_timeout`, `final_budget`'s explicit clock).
+#[cfg(not(test))]
+pub(crate) const FINAL_BOUND: Duration = Duration::from_secs(10);
+#[cfg(test)]
+pub(crate) const FINAL_BOUND: Duration = Duration::from_secs(120);
+
 pub(crate) struct FinalBudget(Option<Instant>);
 impl FinalBudget {
     pub(crate) fn start() -> Self {
-        Self::with_timeout(Duration::from_secs(10))
+        Self::with_timeout(FINAL_BOUND)
     }
     pub(crate) fn with_timeout(timeout: Duration) -> Self {
         let deadline = Instant::now() + timeout;

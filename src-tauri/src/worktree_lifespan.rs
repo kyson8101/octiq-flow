@@ -955,6 +955,14 @@ thread_local! {
     /// A test's own `lsof` (slow, or answering what it likes).
     static TEST_LSOF: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
+#[cfg(test)]
+/// The whole-machine `lsof` is the heaviest thing a removal runs, and every
+/// removal runs one. With the suite in parallel, dozens at once starve each
+/// other (one took 16 to 25 seconds on a loaded Mac, alone about 2) and every
+/// other test with them. A test build takes turns; the final budget a test
+/// runs inside (`git::FINAL_BOUND`) has room for the queue. Production is
+/// unchanged.
+static LSOF_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[derive(Default)]
 struct Usage {
     known: bool,
@@ -969,11 +977,25 @@ impl Usage {
         let executable = TEST_LSOF
             .with(|p| p.borrow().clone())
             .unwrap_or_else(|| "lsof".into());
+        // A test's own lsof costs nothing and keeps its own timing; only the
+        // real machine-wide scan takes its turn.
+        #[cfg(test)]
+        let _turn = TEST_LSOF
+            .with(|p| p.borrow().is_none())
+            .then(|| LSOF_SERIAL.lock().unwrap_or_else(|e| e.into_inner()));
         #[cfg(not(test))]
         let executable = "lsof";
         let mut cmd = Command::new(executable);
         cmd.args(["-nP", "-F0n"]);
-        let Ok(bytes) = git::command(&mut cmd, Duration::from_secs(12)) else {
+        // The scan's own bound. A test build is given the final budget's room
+        // (`git::FINAL_BOUND`): measured on a Mac under a full parallel suite
+        // one real, whole-machine `lsof` took 16 to 25 seconds, far past 12.
+        let bound = if cfg!(test) {
+            git::FINAL_BOUND
+        } else {
+            Duration::from_secs(12)
+        };
+        let Ok(bytes) = git::command(&mut cmd, bound) else {
             return Self::default();
         };
         let paths: Vec<_> = bytes
@@ -1883,7 +1905,7 @@ fn ownership_unchanged(now: &[Allocation], before: &Allocation) -> Result<(), St
     Ok(())
 }
 fn final_budget(start: std::time::Instant) -> Result<Duration, String> {
-    let remaining = Duration::from_secs(10).saturating_sub(start.elapsed());
+    let remaining = git::FINAL_BOUND.saturating_sub(start.elapsed());
     if remaining.is_zero() {
         return Err("Final cleanup checks reached their 10 second bound; folder kept.".into());
     }

@@ -371,9 +371,9 @@ fn is_checkout_at(dir: &Path, repo_common: &Path) -> Result<bool, String> {
     let admin = PathBuf::from(admin.trim());
     let back = fs::read_to_string(admin.join("gitdir"))
         .map_err(|e| format!("{} could not be read: {e}", admin.join("gitdir").display()))?;
-    let back = fs::canonicalize(back.trim())
+    let back = crate::paths::canonicalize(back.trim())
         .map_err(|e| format!("{} could not be resolved: {e}", back.trim()))?;
-    let own = fs::canonicalize(&dot_git)
+    let own = crate::paths::canonicalize(&dot_git)
         .map_err(|e| format!("{} could not be resolved: {e}", dot_git.display()))?;
     if back != own {
         return Ok(false);
@@ -384,7 +384,7 @@ fn is_checkout_at(dir: &Path, repo_common: &Path) -> Result<bool, String> {
             admin.join("commondir").display()
         )
     })?;
-    let common = fs::canonicalize(admin.join(common.trim())).map_err(|e| {
+    let common = crate::paths::canonicalize(admin.join(common.trim())).map_err(|e| {
         format!(
             "The common directory of {} could not be resolved: {e}",
             dir.display()
@@ -397,7 +397,7 @@ fn is_checkout_at(dir: &Path, repo_common: &Path) -> Result<bool, String> {
 /// everything: with no identity for the repository nothing can be matched.
 fn repo_common_dir(repo: &str) -> Result<PathBuf, String> {
     let out = git::text(repo, &["rev-parse", "--git-common-dir"])?;
-    fs::canonicalize(Path::new(repo).join(out.trim()))
+    crate::paths::canonicalize(Path::new(repo).join(out.trim()))
         .map_err(|e| format!("The repository {repo} has no resolvable git directory: {e}"))
 }
 

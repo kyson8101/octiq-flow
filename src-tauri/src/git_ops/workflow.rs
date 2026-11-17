@@ -991,14 +991,15 @@ pub(crate) mod tests {
     fn checkout_identity_resolves_subdirectories_and_aliases() {
         let repo = Repo::new();
         std::fs::create_dir(Path::new(&repo.root).join("nested")).unwrap();
-        let alias = repo.dir.join("alias");
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&repo.root, &alias).unwrap();
-        #[cfg(unix)]
-        assert_eq!(
-            checkout_identity(&alias.join("nested").to_string_lossy()).unwrap(),
-            repo.root
-        );
+        {
+            let alias = repo.dir.join("alias");
+            std::os::unix::fs::symlink(&repo.root, &alias).unwrap();
+            assert_eq!(
+                checkout_identity(&alias.join("nested").to_string_lossy()).unwrap(),
+                repo.root
+            );
+        }
         assert_eq!(
             checkout_identity(&format!("{}/nested", repo.root)).unwrap(),
             repo.root

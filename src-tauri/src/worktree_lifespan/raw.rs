@@ -10,7 +10,14 @@ use std::{
 };
 
 const LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+/// The wall-clock bound of the raw Restore comparison. A test build gets five
+/// times the room: the suite runs hundreds of Git processes in parallel, and a
+/// 72 MiB comparison that takes seconds alone has been seen to pass 120 s.
+/// Production is unchanged; a test of the bound itself passes its own budget.
+#[cfg(not(test))]
 const TIME: Duration = Duration::from_secs(120);
+#[cfg(test)]
+const TIME: Duration = Duration::from_secs(600);
 
 /// Refuse special files and redirects both before opening and on the handle.
 /// NONBLOCK prevents a racing replacement with a FIFO from hanging open.

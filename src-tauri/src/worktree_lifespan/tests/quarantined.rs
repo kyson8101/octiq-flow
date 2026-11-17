@@ -4,6 +4,12 @@
 use super::*;
 use crate::worktree_lifespan::quarantine::{self, Record, PREFIX};
 
+/// Make a folder through the profile's one door (the source scan allows no
+/// other), whatever path type the test holds.
+fn mkdir(dir: impl AsRef<Path>) -> std::io::Result<()> {
+    crate::profile::create_dir_all(dir.as_ref())
+}
+
 /// A git whose first `worktree <sub>` waits (later ones pass), for the test: it says it has
 /// arrived (`hold`), runs `before`, and goes on when `release` exists.
 fn barrier_script(sub: &str, hold: &Path, release: &Path, before: &str) -> String {
@@ -76,8 +82,9 @@ fn a_registered_process_above_the_checkout_cannot_write_into_it_once_it_is_moved
     let name = name_of(&r);
     let elsewhere = r._home.join("elsewhere");
     crate::profile::make_dir(&elsewhere).unwrap();
+    // Long enough to outlast the sweep on a loaded machine; the test ends it.
     let mut sleeper = std::process::Command::new("sleep")
-        .arg("60")
+        .arg("600")
         .current_dir(&above)
         .spawn()
         .unwrap();
@@ -190,13 +197,13 @@ fn a_writer_holding_a_file_or_folder_inside_follows_the_move_and_keeps_the_folde
             let reader = std::process::Command::new("sh")
                 .arg("-c")
                 .arg(format!(
-                    "exec 3<'{file}'; touch '{}'; exec sleep 60",
+                    "exec 3<'{file}'; touch '{}'; exec sleep 600",
                     ready.display()
                 ))
                 .spawn()
                 .unwrap();
             let sitter = std::process::Command::new("sleep")
-                .arg("60")
+                .arg("600")
                 .current_dir(&r.work)
                 .spawn()
                 .unwrap();
@@ -245,7 +252,7 @@ fn a_process_that_makes_the_old_path_again_is_never_deleted_or_merged_into() {
         let late = scope.spawn(|| {
             wait_file(&hold);
             // `mkdir -p` by the old path, then a file in it.
-            fs::create_dir_all(Path::new(&original).join("sub")).unwrap();
+            mkdir(Path::new(&original).join("sub")).unwrap();
             fs::write(Path::new(&original).join("sub/kept.txt"), "mine").unwrap();
             fs::write(&release, "release").unwrap();
         });
@@ -422,7 +429,7 @@ exec /usr/bin/git "$@"
     // An occupied name is kept and never overwritten.
     quarantine::NEXT_ID.with(|id| *id.borrow_mut() = Some("0123456789abcdef".into()));
     let taken = Path::new(&above_of(&r)).join(format!("{PREFIX}0123456789abcdef"));
-    fs::create_dir_all(&taken).unwrap();
+    mkdir(&taken).unwrap();
     fs::write(taken.join("theirs"), "not ours").unwrap();
     sweep_checked(&svc, &store, &checks()).unwrap();
     let kept = report(&store);
@@ -495,7 +502,7 @@ fn a_quarantine_left_by_a_killed_server_is_put_back_or_kept_never_removed() {
     let c = record("cccccccccccccccc");
     quarantine::write_record(&c).unwrap();
     git::move_worktree(&r.root, &r.work, &c.quarantine).unwrap();
-    fs::create_dir_all(&r.work).unwrap();
+    mkdir(&r.work).unwrap();
     fs::write(Path::new(&r.work).join("theirs"), "new").unwrap();
     let said = recover();
     assert!(
@@ -521,7 +528,7 @@ fn a_quarantine_left_by_a_killed_server_is_put_back_or_kept_never_removed() {
     assert_eq!(records(), 0);
     let mut odd = record("eeeeeeeeeeeeeeee");
     odd.quarantine = format!("{parent}/elsewhere");
-    fs::create_dir_all(&odd.quarantine).unwrap();
+    mkdir(&odd.quarantine).unwrap();
     quarantine::write_record(&odd).unwrap();
     let said = recover();
     assert!(
@@ -580,7 +587,7 @@ exec /usr/bin/git "$@"
             let reader = std::process::Command::new("sh")
                 .arg("-c")
                 .arg(format!(
-                    "exec 3<'{file}'; touch '{}'; exec sleep 60",
+                    "exec 3<'{file}'; touch '{}'; exec sleep 600",
                     ready.display()
                 ))
                 .spawn()
@@ -726,7 +733,7 @@ fn a_quarantine_name_made_between_the_check_and_the_move_does_not_strand_the_rec
     // checkout INTO it. The removal follows the real path, deletes nothing
     // of theirs, and leaves no record naming a folder that is not the checkout.
     quarantine::BEFORE_MOVE.with(|hook| {
-        *hook.borrow_mut() = Some(|q| fs::create_dir_all(q).unwrap());
+        *hook.borrow_mut() = Some(|q| mkdir(q).unwrap());
     });
     sweep_checked(&svc, &store, &checks()).unwrap();
     let kept = report(&store);
@@ -750,7 +757,7 @@ fn a_record_that_names_the_checkout_inside_a_folder_made_first_is_put_back_from_
     crate::profile::available().unwrap();
     let (r, svc) = merged_checkout();
     let q = format!("{}/{PREFIX}bbbbbbbbbbbbbbbb", above_of(&r));
-    fs::create_dir_all(&q).unwrap();
+    mkdir(&q).unwrap();
     let nested = format!("{q}/{}", name_of(&r));
     git::move_worktree(&r.root, &r.work, &nested).unwrap();
     quarantine::write_record(&Record {
@@ -785,10 +792,10 @@ fn a_record_that_still_names_the_outer_folder_finds_the_checkout_inside_it() {
         .open(format!("{}/.git/info/exclude", r.root))
         .and_then(|mut f| std::io::Write::write_all(&mut f, b"works/\n"))
         .unwrap();
-    fs::create_dir_all(format!("{}/works", r.work)).unwrap();
+    mkdir(format!("{}/works", r.work)).unwrap();
     fs::write(format!("{}/works/clip", r.work), "only copy").unwrap();
     let q = format!("{}/{PREFIX}cccccccccccccccc", above_of(&r));
-    fs::create_dir_all(&q).unwrap();
+    mkdir(&q).unwrap();
     let nested = format!("{q}/{}", name_of(&r));
     git::move_worktree(&r.root, &r.work, &nested).unwrap();
     // The record on disk is the one written before the move: the outer name.
@@ -817,7 +824,7 @@ fn a_record_that_still_names_the_outer_folder_finds_the_checkout_inside_it() {
     // Nothing to find (an empty outer folder): everything is kept, the
     // record stays, and it is said.
     let empty = format!("{}/{PREFIX}dddddddddddddddd", above_of(&r));
-    fs::create_dir_all(&empty).unwrap();
+    mkdir(&empty).unwrap();
     quarantine::write_record(&Record {
         id: "dddddddddddddddd".into(),
         repo: r.root.clone(),
@@ -847,11 +854,11 @@ fn locating_keeps_everything_for_an_unreadable_child_or_another_repositorys_chec
 
     // One unreadable child and one valid checkout of this repository.
     let q = format!("{}/{PREFIX}eeeeeeeeeeeeeeee", above_of(&r));
-    fs::create_dir_all(&q).unwrap();
+    mkdir(&q).unwrap();
     let nested = format!("{q}/{}", name_of(&r));
     git::move_worktree(&r.root, &r.work, &nested).unwrap();
     let locked = format!("{q}/locked");
-    fs::create_dir_all(&locked).unwrap();
+    mkdir(&locked).unwrap();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
     quarantine::write_record(&Record {
         id: "eeeeeeeeeeeeeeee".into(),
@@ -873,7 +880,7 @@ fn locating_keeps_everything_for_an_unreadable_child_or_another_repositorys_chec
     // A valid checkout that belongs to a different repository.
     let other = Repo::new();
     let q2 = format!("{}/{PREFIX}ffffffffffffffff", above_of(&r));
-    fs::create_dir_all(&q2).unwrap();
+    mkdir(&q2).unwrap();
     let foreign = format!("{q2}/{}", name_of(&other));
     git::move_worktree(&other.root, &other.work, &foreign).unwrap();
     quarantine::write_record(&Record {

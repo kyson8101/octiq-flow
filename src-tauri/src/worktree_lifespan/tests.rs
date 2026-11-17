@@ -1459,7 +1459,9 @@ fn wait_file(path: &Path) {
     let started = std::time::Instant::now();
     while !path.exists() {
         assert!(
-            started.elapsed() < Duration::from_secs(45),
+            // A removal reaches this point after the whole-machine `lsof`,
+            // which queues behind the other tests' on a loaded machine.
+            started.elapsed() < Duration::from_secs(180),
             "hold was not reached: {}",
             path.display()
         );
@@ -3311,6 +3313,9 @@ fn terminal(svc: &Services, id: &str, cwd: &str, start: Option<String>) -> Resul
         None,
     )
 }
+// Its helpers are shell scripts for a stand-in git, `lsof` and a unix terminal;
+// Windows has no `lsof` and refuses the rename itself (`quarantine::held`).
+#[cfg(unix)]
 mod quarantined;
 #[test]
 fn an_own_branch_alias_that_differs_only_by_case_proves_no_merge() {
