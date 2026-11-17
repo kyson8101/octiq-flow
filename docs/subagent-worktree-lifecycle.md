@@ -470,10 +470,17 @@ The one thread starts three minutes after host startup and scans hourly; tests
 never start it. Disabled settings or an unavailable pinned profile withhold a
 pass. A cargo/rustc process withholds stripping build folders only (it may use
 one); removal asks about the checkout itself. No timer belongs to a worktree.
-The final ownership check compares only allocations at or inside the checkout. A
-folder above it (a non-Git project folder a run works in place) is another
-checkout with another repository and used to refuse every worktree under it. A
-project folder that is not a Git repository, or is gone, is skipped, not listed
+The final ownership check compares allocations at or inside the checkout, and an
+allocation above it only while it is active (an unsettled attempt, an open
+decision or an unfinished task). A settled folder above it (a non-Git project
+folder a run worked in place) is another checkout with another repository and
+used to refuse every worktree under it; an active one can still write below it
+and keeps the folder. Chats are claimed the same way: under lifecycle, after the
+path mark and until the folder is gone, `hold_lifespan_ancestors` refuses every
+start or queued turn whose cwd or extra directory is above the checkout, and a
+live process or queued turn already above it keeps the folder. An open-file
+snapshot does not replace that claim. A checkout's own branch, and any ref that
+differs from it only by ASCII case, never proves it merged. A project folder that is not a Git repository, or is gone, is skipped, not listed
 as a failure.
 
 Build stripping is an allow-list: only ignored, untracked `target` beside
@@ -491,7 +498,9 @@ Each worktree, including validation checkouts, gets a `git status --ignored=matc
 inventory bounded to 60 seconds (15 at the final door under lifecycle), 32 MiB of
 Git output and 100,000 inspected entries outside build folders plus 5,000,000
 inside a qualifying `target`/`node_modules`/`dist`/`.astro` (the part of a checkout
-a React Native `node_modules` fills with ~156,000 entries). Inside such a folder
+a React Native `node_modules` fills with ~156,000 entries). Tree sizing is a
+separate walk and recognises only `target` and `node_modules` as build folders;
+`dist`/`.astro` count against its 100,000 entries. Inside such a folder
 each directory is classified once and its files follow, unless a `source`,
 `works` or `anime` folder, a `.git` or bare-repo shape, a non-regular file, or
 (under `dist`/`.astro`) a link is met; those stay at stake. Metadata is read without following symlinks/junctions; redirected
@@ -603,9 +612,11 @@ Heavy usage capture, tree walks and content hashes run outside the global
 workspace lifecycle lock while checkout/start marks prevent host starts. The
 host reacquires lifecycle for each final operation and rechecks allocations and
 activity; it releases it between items. Content hashing is bounded to 2 GiB
-total/120 seconds, sizing to 100,000 entries outside build folders (5,000,000
-inside) and 60 seconds. Final under-lock ignored checks use 15 seconds with Git
-status bounded by the 10-second final budget; the normal inventory is 60 seconds. A limit holds that item in words and lets
+total/120 seconds, sizing to 100,000 entries outside `target`/`node_modules` build
+folders (5,000,000 inside) and 60 seconds. Final under-lock ignored checks use 15
+seconds with Git status bounded by the 10-second final budget; the normal
+inventory is 60 seconds. The Windows reparse scan under lock gets only what is
+left of the final budget. A limit holds that item in words and lets
 other workspaces continue. Git metadata output is capped at 32 MiB per command and Git
 removal at 15 seconds; archive commands/comparison have 120-second bounds outside
 lifecycle; OS filesystem operations may still block.

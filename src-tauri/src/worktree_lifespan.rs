@@ -44,13 +44,30 @@ pub(crate) fn require_no_at_stake_ignored(path: &str) -> Result<(), String> {
     {
         // Git for Windows can descend into an ignored junction during
         // worktree remove. Link classification never grants that traversal.
-        let mut tree = Tree::default();
-        walk(path, Path::new(path), false, &mut tree)?;
-        if tree.reparse {
+        if final_reparse_scan(path, git::remaining(Duration::from_secs(15))?, None)? {
             return Err("A Windows validation checkout contains a reparse point; its folder is kept. Remove the link separately before retrying cleanup.".into());
         }
     }
     Ok(())
+}
+
+/// Whether the checkout holds a reparse point, walked under the workspace
+/// lifecycle lock. It gets what is left of the final budget and never the
+/// 60 seconds an inspection before the lock may take: `FinalBudget` bounds
+/// Git calls only, so the walk is given its own limit. `clock` is how a test
+/// says how long the walk has run.
+fn final_reparse_scan(
+    path: &str,
+    budget: Duration,
+    clock: Option<fn(std::time::Instant) -> Duration>,
+) -> Result<bool, String> {
+    let mut tree = Tree {
+        limit: Some(budget),
+        clock,
+        ..Tree::default()
+    };
+    walk(path, Path::new(path), false, &mut tree)?;
+    Ok(tree.reparse)
 }
 
 /// Every non-Archive removal prepares this outside workspace lifecycle. The
@@ -799,6 +816,11 @@ struct Tree {
     /// several hundred thousand, so they have their own, far larger, bound.
     build_entries: usize,
     started: Option<std::time::Instant>,
+    /// How long this walk may run; `WALK_TIME` when not set. The final door,
+    /// which runs under the lifecycle lock, sets what is left of its budget.
+    limit: Option<Duration>,
+    /// Replaces the wall clock in a test.
+    clock: Option<fn(std::time::Instant) -> Duration>,
 }
 /// Entries a walk may visit outside build folders, and inside them.
 pub(crate) const WALK_ENTRIES: usize = 100_000;
@@ -861,9 +883,10 @@ fn walk(root: &str, path: &Path, in_build: bool, tree: &mut Tree) -> Result<(), 
         tree.entries += 1;
     }
     let started = *tree.started.get_or_insert_with(std::time::Instant::now);
+    let elapsed = tree.clock.map_or_else(|| started.elapsed(), |c| c(started));
     if tree.entries > WALK_ENTRIES
         || tree.build_entries > BUILD_ENTRIES
-        || started.elapsed() > WALK_TIME
+        || elapsed > tree.limit.unwrap_or(WALK_TIME)
     {
         return Err(walk_limit("Worktree walk", in_build));
     }
@@ -1576,7 +1599,7 @@ fn merged_into(root: &str, head: &str, own: Option<&str>, base: Option<&str>) ->
         .chain(default)
         .chain(["develop", "main", "master"].map(String::from))
     {
-        if !name.is_empty() && !names.contains(&name) && Some(name.as_str()) != own {
+        if !name.is_empty() && !names.contains(&name) && !is_own_branch(&name, own) {
             names.push(name);
         }
     }
@@ -1588,6 +1611,16 @@ fn merged_into(root: &str, head: &str, own: Option<&str>, base: Option<&str>) ->
         .iter()
         .find(|r| holders.contains(r.as_str()))
         .map(|r| strip_ref(r))
+    })
+}
+/// The checkout's own branch, however a case-folding filesystem spells it:
+/// `refs/remotes/origin/main` and `refs/remotes/origin/Main` are one ref file
+/// on macOS and Windows, so a listed ref that differs from the own branch only
+/// by ASCII case is the same ref and proves nothing. In doubt, not merged.
+fn is_own_branch(name: &str, own: Option<&str>) -> bool {
+    own.is_some_and(|own| {
+        let own = own.strip_prefix("origin/").unwrap_or(own);
+        name.eq_ignore_ascii_case(own)
     })
 }
 fn strip_ref(r: &str) -> String {
@@ -1790,6 +1823,19 @@ fn final_allocation(svc: &Services, before: &Allocation) -> Result<(), String> {
 }
 fn ownership_unchanged(now: &[Allocation], before: &Allocation) -> Result<(), String> {
     for a in now {
+        // A folder ABOVE the checkout is no new owner of it, but while its
+        // run or task is unsettled its worker can still write below it, so
+        // that withholds the removal. A settled one is history (the project
+        // folder a finished Direct run worked in place).
+        if Path::new(&before.path).starts_with(&a.path)
+            && Path::new(&a.path) != Path::new(&before.path)
+            && a.active.is_some()
+        {
+            return Err(
+                "An unsettled run or task works in a folder above this checkout; the folder was kept."
+                    .into(),
+            );
+        }
         if Path::new(&a.path).starts_with(&before.path)
             && (a.active.is_some()
                 || a.last_activity > before.last_activity
@@ -1934,6 +1980,7 @@ fn operate_progress(
             walk(&preview.path, build, true, &mut deleted)?;
             let usage = (checks.usage)();
             let _lifecycle = hold_lifecycle(svc)?;
+            let _above = svc.chats.hold_lifespan_ancestors(&preview.path)?;
             let final_started = std::time::Instant::now();
             final_ready(svc, store, &a, preview, &usage)?;
             require_unprotected(build)?;
@@ -2022,6 +2069,9 @@ fn operate_progress(
         {
             let final_usage = (checks.usage)();
             let _lifecycle = hold_lifecycle(svc)?;
+            // Claim the checkout against chats ABOVE it before the final
+            // ownership check, and keep the claim through the removal.
+            let _above = svc.chats.hold_lifespan_ancestors(&preview.path)?;
             final_ready(svc, store, &a, preview, &final_usage)?;
             let mut cache = store.inner.lock().map_err(|e| e.to_string())?;
             store.load(&mut cache)?;

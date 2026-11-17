@@ -3673,20 +3673,36 @@ cwd/open-file inventory (always Windows today)
 withholds both stripping and worktree removal, as does a Windows reparse point. No profile means
 no sweep. Git calls are bounded, non-interactive and do not fetch.
 
-Entries inside a qualifying build folder (`target`, `node_modules`, `dist`,
-`.astro`) count against their own bound (5,000,000, `BUILD_ENTRIES`), not the
-100,000 for the rest of the checkout (`WALK_ENTRIES`); a React Native
-`node_modules` alone is ~156,000. One inspection has 60 seconds
-(`WALK_TIME`) before any lock; the final door under lifecycle keeps 15.
+Entries inside a qualifying build folder count against their own bound
+(5,000,000, `BUILD_ENTRIES`), not the 100,000 for the rest of the checkout
+(`WALK_ENTRIES`); a React Native `node_modules` alone is ~156,000. The two
+walks recognise different folders: **tree sizing** (`Tree::walk`) treats only
+`target` beside `Cargo.toml` and `node_modules` beside `package.json` as build
+folders, so `dist` and `.astro` count against the 100,000; the **ignored
+inventory** (`ignored.rs`) also classifies `dist` and `.astro` as rebuildable
+build trees. One inspection of either has 60 seconds (`WALK_TIME`) before any
+lock. Under lifecycle the ignored inventory keeps 15 seconds (Git status inside
+it is also bounded by the 10-second final budget) and the Windows reparse scan
+of a validation checkout gets only what is left of the final budget: the final
+budget bounds Git calls, so that walk carries its own limit.
 Inside such a folder the walk knows once per directory that its files are
 rebuildable (`ignored::Under`), unless a `source`/`works`/`anime` folder,
 a `.git` or bare-repo shape, a non-regular file or (under `dist`) a link is
 found: the at-stake rules are unchanged. A bound that is still hit says which
 part and what to do (`walk_limit`). A final ownership check
-(`ownership_unchanged`) looks only at allocations AT or INSIDE the checkout: a
-folder above it that a run works in place (a non-Git project folder holding
-`.worktrees`) has another repository by definition and rejected every worktree
-under it, every sweep. A project folder that is not a Git repository, or is gone,
+(`ownership_unchanged`) looks at allocations AT or INSIDE the checkout, and at
+an allocation ABOVE it only while that one is active (unsettled attempt, open
+decision or unfinished task of its run): a settled folder a run worked in place
+(a non-Git project folder holding `.worktrees`) has another repository by
+definition and rejected every worktree under it, every sweep, but an active one
+can still write below it. **Chats above the checkout are claimed too**
+(`ChatManager::hold_lifespan_ancestors`, taken under lifecycle after the path
+mark and kept through the removal): the claim is made first, so every later
+start or queued turn whose cwd or extraDirs is above the checkout is refused
+under the session table, and a live process or queued turn already above it
+withholds the removal in words. An open-file snapshot does not stand in for it.
+A checkout's own branch, and any listed ref that differs from it only by ASCII
+case (one ref file on a case-folding filesystem), never proves it merged. A project folder that is not a Git repository, or is gone,
 is skipped without a failure line.
 
 Removal refreshes chat delivery first, saves intent before `git worktree remove`
@@ -3736,9 +3752,12 @@ limit withholds that subtree. Abandoned may still lose a proven safe build tree.
 Heavy usage, tree and content checks run outside the workspace lifecycle lock,
 with path/start marks retained. Reacquire lifecycle for each final operation and
 recheck allocation/activity. Content hashing has a 2 GiB total and 120-second
-budget, tree sizing 100,000 entries/15 seconds, inventory 100,000 entries/15
-seconds. The final inventory under lifecycle has 100,000 entries/10 seconds; a
-bound withholds that item with a reason and other workspaces continue. Archive capture and fresh-index comparisons have 120-second command bounds
+budget; tree sizing and the ignored inventory each 60 seconds, 100,000 entries
+outside build folders and 5,000,000 inside them (the two walks recognise
+different build folders, above). The final ignored inventory under lifecycle
+has 15 seconds with the same entry bounds, Git status inside it limited by the
+10-second final budget, and the final Windows reparse scan gets what is left of
+that budget; a bound withholds that item with a reason and other workspaces continue. Archive capture and fresh-index comparisons have 120-second command bounds
 outside lifecycle. Git
 metadata output stays capped at 32 MiB per command. Git removal is bounded to 15 seconds;
 filesystem mutation can still wait on the OS. Release lifecycle between items.

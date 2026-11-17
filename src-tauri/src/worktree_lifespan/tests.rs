@@ -3114,7 +3114,7 @@ fn merged_work_inside_the_short_period_or_in_use_is_kept() {
     assert!(gone(&r.work));
 }
 #[test]
-fn only_an_allocation_at_or_inside_the_checkout_can_change_its_ownership() {
+fn only_an_active_ancestor_or_an_allocation_at_or_inside_the_checkout_withholds_removal() {
     let r = Repo::new();
     let before = r.allocation();
     let at = |path: &str, repo: &str| Allocation {
@@ -3132,10 +3132,23 @@ fn only_an_allocation_at_or_inside_the_checkout_can_change_its_ownership() {
         .to_string_lossy()
         .into_owned();
     let mut ancestor = at(&parent, &parent);
-    ancestor.active = Some("The owning run still has unfinished tasks.".into());
+    ancestor.active = None;
     ancestor.last_activity = i64::MAX;
-    assert!(ownership_unchanged(&[ancestor, at("/somewhere/else", "/else")], &before).is_ok());
+    // A settled ancestor (no unsettled attempt, no open decision, no
+    // unfinished task) is history, however recent: this is the pandahrms case.
+    assert!(
+        ownership_unchanged(&[ancestor.clone(), at("/somewhere/else", "/else")], &before).is_ok()
+    );
     assert!(ownership_unchanged(&[r.allocation()], &before).is_ok());
+    // An ACTIVE one still writes below it, so it withholds the removal.
+    ancestor.active = Some("The owning run still has unfinished tasks.".into());
+    let refusal =
+        ownership_unchanged(&[ancestor, at("/somewhere/else", "/else")], &before).unwrap_err();
+    assert!(refusal.contains("above this checkout"), "{refusal}");
+    // An active allocation elsewhere is nothing to this checkout.
+    let mut elsewhere = at("/somewhere/else", "/else");
+    elsewhere.active = Some("busy".into());
+    assert!(ownership_unchanged(&[elsewhere], &before).is_ok());
     // The checkout's own allocation, or one inside it, still refuses.
     let mut newer = r.allocation();
     newer.last_activity = 1;
@@ -3262,4 +3275,90 @@ fn a_several_hundred_thousand_entry_node_modules_is_observed_not_refused() {
     assert_eq!(o.item.ignored_files, Some(0));
     assert_eq!(o.item.state, "finished", "{}", o.item.why);
     assert!(o.tree.builds.iter().any(|b| b.ends_with("node_modules")));
+}
+#[test]
+fn a_chat_working_above_a_merged_checkout_keeps_it_until_that_chat_is_gone() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    crate::profile::available().unwrap();
+    let r = Repo::new();
+    r.write("work", "one");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "work"]).unwrap();
+    r.age(2);
+    git::text(&r.root, &["merge", "--no-edit", "octiq/test"]).unwrap();
+    let svc = r.services(2);
+    let store = Store::default();
+    // A turn queued for a chat whose cwd is the folder above the checkout: it
+    // can write below it at any moment.
+    let above = Path::new(&r.work)
+        .parent()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    svc.chats.test_lifespan_queue(&above).unwrap();
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(
+        Path::new(&r.work).exists(),
+        "an ancestor writer keeps the folder"
+    );
+    let report = &store.saved().unwrap().history[0];
+    assert!(
+        report
+            .failed
+            .iter()
+            .any(|f| f.path == r.work && f.why.contains("above this checkout")),
+        "{:?}",
+        report.failed
+    );
+    // Once it is gone, the settled ancestor is nothing and the folder goes.
+    svc.chats.test_clear_lifespan_queue();
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(
+        gone(&r.work),
+        "{:?}",
+        store.saved().unwrap().history[0].failed
+    );
+}
+#[test]
+fn an_own_branch_alias_that_differs_only_by_case_proves_no_merge() {
+    assert!(is_own_branch("main", Some("Main")));
+    assert!(is_own_branch("main", Some("origin/Main")));
+    assert!(is_own_branch("Develop", Some("develop")));
+    assert!(!is_own_branch("develop", Some("main")));
+    assert!(!is_own_branch("main", None));
+    // The real repository: the checkout's own origin copy is listed under the
+    // lower-case spelling a case-folding filesystem treats as the same ref.
+    let r = Repo::new();
+    r.write("work", "one");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "work"]).unwrap();
+    let head = git::text(&r.work, &["rev-parse", "HEAD"]).unwrap();
+    git::text(&r.root, &["update-ref", "refs/remotes/origin/main", &head]).unwrap();
+    assert_eq!(
+        merged_into(&r.work, &head, Some("Main"), Some("origin/main")),
+        None,
+        "own=Main: origin/main is the same ref file as origin/Main"
+    );
+    // A checkout whose own branch is another name still counts the default.
+    assert_eq!(
+        merged_into(&r.work, &head, Some("octiq/test"), Some("origin/main")),
+        Some("origin/main".into())
+    );
+}
+fn twenty_seconds(_: std::time::Instant) -> Duration {
+    Duration::from_secs(20)
+}
+#[test]
+fn the_final_reparse_scan_runs_on_what_is_left_of_the_final_budget() {
+    let r = Repo::new();
+    r.write("a/b/file", "x");
+    // The walk has "run" 20 seconds. Inside the 60 second inspection window
+    // that is fine; at the final door only what is left of the budget counts.
+    assert!(!final_reparse_scan(&r.work, Duration::from_secs(60), Some(twenty_seconds)).unwrap());
+    let refusal =
+        final_reparse_scan(&r.work, Duration::from_secs(10), Some(twenty_seconds)).unwrap_err();
+    assert!(refusal.contains("limit"), "{refusal}");
+    // With the real clock a generous budget still walks the folder.
+    assert!(!final_reparse_scan(&r.work, Duration::from_secs(10), None).unwrap());
 }
