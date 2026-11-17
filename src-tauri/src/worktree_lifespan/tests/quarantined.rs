@@ -832,3 +832,69 @@ fn a_record_that_still_names_the_outer_folder_finds_the_checkout_inside_it() {
     assert!(Path::new(&empty).exists());
     assert_eq!(sweep.failed.len(), 1, "{:?}", sweep.failed);
 }
+
+/// Locating the checkout inside an outer quarantine folder keeps everything
+/// whenever it cannot be sure: a child it cannot read, even beside a valid
+/// one, and a valid checkout that belongs to some other repository.
+#[cfg(unix)]
+#[test]
+fn locating_keeps_everything_for_an_unreadable_child_or_another_repositorys_checkout() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    crate::profile::available().unwrap();
+    let (r, svc) = merged_checkout();
+
+    // One unreadable child and one valid checkout of this repository.
+    let q = format!("{}/{PREFIX}eeeeeeeeeeeeeeee", above_of(&r));
+    fs::create_dir_all(&q).unwrap();
+    let nested = format!("{q}/{}", name_of(&r));
+    git::move_worktree(&r.root, &r.work, &nested).unwrap();
+    let locked = format!("{q}/locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    quarantine::write_record(&Record {
+        id: "eeeeeeeeeeeeeeee".into(),
+        repo: r.root.clone(),
+        original: r.work.clone(),
+        quarantine: q.clone(),
+        at: now(),
+    })
+    .unwrap();
+    let mut sweep = Sweep::default();
+    quarantine::recover(&svc, &mut sweep).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(sweep.failed.len(), 1, "{:?}", sweep.failed);
+    assert_eq!(records(), 1, "the record is kept");
+    assert!(gone(&r.work), "nothing was put back");
+    assert!(Path::new(&nested).join("work").exists());
+    assert!(Path::new(&locked).exists());
+
+    // A valid checkout that belongs to a different repository.
+    let other = Repo::new();
+    let q2 = format!("{}/{PREFIX}ffffffffffffffff", above_of(&r));
+    fs::create_dir_all(&q2).unwrap();
+    let foreign = format!("{q2}/{}", name_of(&other));
+    git::move_worktree(&other.root, &other.work, &foreign).unwrap();
+    quarantine::write_record(&Record {
+        id: "ffffffffffffffff".into(),
+        repo: r.root.clone(),
+        original: format!("{}-other", r.work),
+        quarantine: q2.clone(),
+        at: now(),
+    })
+    .unwrap();
+    // Take the first record out of the way so only this one is judged.
+    fs::remove_file(
+        crate::profile::profile_dir()
+            .join("lifespan-quarantine")
+            .join("eeeeeeeeeeeeeeee.json"),
+    )
+    .unwrap();
+    let mut sweep = Sweep::default();
+    quarantine::recover(&svc, &mut sweep).unwrap();
+    assert_eq!(sweep.failed.len(), 1, "{:?}", sweep.failed);
+    assert_eq!(records(), 1, "the record is kept");
+    assert!(gone(&format!("{}-other", r.work)), "nothing was put back");
+    assert!(Path::new(&foreign).join(".git").exists());
+}

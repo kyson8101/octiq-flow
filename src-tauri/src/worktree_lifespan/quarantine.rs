@@ -349,27 +349,64 @@ fn restore(record: &Record) -> Result<(), String> {
 
 /// Whether `dir` is a checkout whose Git record points back at it: its `.git`
 /// file names an admin folder whose `gitdir` file names this `.git`.
-fn is_checkout_at(dir: &Path) -> bool {
+///
+/// `Ok(false)` only for a folder with no `.git` at all, or one whose `.git` is
+/// plainly not a `gitdir:` pointer. Every other failure to read or resolve is
+/// `Err`: a child that cannot be read is not a child that is not a checkout.
+/// `Ok(true)` also needs the admin folder's `commondir` to resolve to `repo`'s
+/// own common git directory, so a checkout of some other repository is never
+/// taken for this record's.
+fn is_checkout_at(dir: &Path, repo_common: &Path) -> Result<bool, String> {
     let dot_git = dir.join(".git");
-    let Ok(text) = fs::read_to_string(&dot_git) else {
-        return false;
+    let text = match fs::read_to_string(&dot_git) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        // A `.git` directory (a plain repository) is not a pointer file.
+        Err(_) if fs::symlink_metadata(&dot_git).is_ok_and(|m| m.is_dir()) => return Ok(false),
+        Err(e) => return Err(format!("{} could not be read: {e}", dot_git.display())),
     };
     let Some(admin) = text.trim().strip_prefix("gitdir:") else {
-        return false;
+        return Ok(false);
     };
-    let Ok(back) = fs::read_to_string(Path::new(admin.trim()).join("gitdir")) else {
-        return false;
-    };
-    match (fs::canonicalize(back.trim()), fs::canonicalize(&dot_git)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
+    let admin = PathBuf::from(admin.trim());
+    let back = fs::read_to_string(admin.join("gitdir"))
+        .map_err(|e| format!("{} could not be read: {e}", admin.join("gitdir").display()))?;
+    let back = fs::canonicalize(back.trim())
+        .map_err(|e| format!("{} could not be resolved: {e}", back.trim()))?;
+    let own = fs::canonicalize(&dot_git)
+        .map_err(|e| format!("{} could not be resolved: {e}", dot_git.display()))?;
+    if back != own {
+        return Ok(false);
     }
+    let common = fs::read_to_string(admin.join("commondir")).map_err(|e| {
+        format!(
+            "{} could not be read: {e}",
+            admin.join("commondir").display()
+        )
+    })?;
+    let common = fs::canonicalize(admin.join(common.trim())).map_err(|e| {
+        format!(
+            "The common directory of {} could not be resolved: {e}",
+            dir.display()
+        )
+    })?;
+    Ok(common == repo_common)
+}
+
+/// The record's repository's common git directory, resolved. An error keeps
+/// everything: with no identity for the repository nothing can be matched.
+fn repo_common_dir(repo: &str) -> Result<PathBuf, String> {
+    let out = git::text(repo, &["rev-parse", "--git-common-dir"])?;
+    fs::canonicalize(Path::new(repo).join(out.trim()))
+        .map_err(|e| format!("The repository {repo} has no resolvable git directory: {e}"))
 }
 
 /// The record with `quarantine` set to where the checkout is. When
 /// `<q>/.git` exists that is `<q>`. When it does not, exactly one child of
-/// `<q>` must be a checkout whose Git record points back at it; none, several
-/// or anything unreadable is an error, and the caller keeps everything.
+/// `<q>` must be a checkout of THIS record's repository whose Git record
+/// points back at it; none, several or anything unreadable (any child, not
+/// only the one that would match) is an error, and the caller keeps
+/// everything.
 fn locate(record: &Record) -> Result<Record, String> {
     if present(&format!("{}/.git", record.quarantine)) {
         return Ok(record.clone());
@@ -380,12 +417,13 @@ fn locate(record: &Record) -> Result<Record, String> {
             record.quarantine, record.id
         )
     };
+    let repo_common = repo_common_dir(&record.repo).map_err(&kept)?;
     let entries = fs::read_dir(&record.quarantine).map_err(|e| kept(e.to_string()))?;
     let mut found = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| kept(e.to_string()))?;
         let meta = fs::symlink_metadata(entry.path()).map_err(|e| kept(e.to_string()))?;
-        if meta.is_dir() && is_checkout_at(&entry.path()) {
+        if meta.is_dir() && is_checkout_at(&entry.path(), &repo_common).map_err(&kept)? {
             found.push(entry.path());
         }
     }
@@ -394,7 +432,7 @@ fn locate(record: &Record) -> Result<Record, String> {
             quarantine: one.to_string_lossy().into_owned(),
             ..record.clone()
         }),
-        [] => Err(kept("no checkout inside".into())),
+        [] => Err(kept("no checkout of this repository inside".into())),
         _ => Err(kept("more than one checkout inside".into())),
     }
 }
