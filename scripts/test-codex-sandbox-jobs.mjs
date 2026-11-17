@@ -28,7 +28,7 @@ try {
         if (req.url === '/hook/job') {
           hookCalls.push(body);
           res.writeHead(200, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ id: 'fixture-job', token: 'fixture-token' }));
+          res.end(JSON.stringify({ result: { id: 'fixture-job', token: 'fixture-token' } }));
           return;
         }
         assert.equal(req.url, '/v1/responses');
@@ -123,6 +123,7 @@ try {
         assert.equal(files.length, 0, 'Full keeps reporting over the hook');
         assert.deepEqual(hookCalls.filter(c => c.action !== 'progress').map(c => c.action), ['start', 'end']);
         assert.equal(hookCalls.find(c => c.action === 'end').args.exitCode, 7);
+        assert.doesNotMatch(command.aggregatedOutput, /host could not be reached|chat was not told/);
       } else if (mode === 'auto-no-spool') {
         assert.equal(files.length, 0);
         assert.match(command.aggregatedOutput, /the chat was not told/);
