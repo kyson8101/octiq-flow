@@ -347,6 +347,58 @@ fn restore(record: &Record) -> Result<(), String> {
     })
 }
 
+/// Whether `dir` is a checkout whose Git record points back at it: its `.git`
+/// file names an admin folder whose `gitdir` file names this `.git`.
+fn is_checkout_at(dir: &Path) -> bool {
+    let dot_git = dir.join(".git");
+    let Ok(text) = fs::read_to_string(&dot_git) else {
+        return false;
+    };
+    let Some(admin) = text.trim().strip_prefix("gitdir:") else {
+        return false;
+    };
+    let Ok(back) = fs::read_to_string(Path::new(admin.trim()).join("gitdir")) else {
+        return false;
+    };
+    match (fs::canonicalize(back.trim()), fs::canonicalize(&dot_git)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// The record with `quarantine` set to where the checkout is. When
+/// `<q>/.git` exists that is `<q>`. When it does not, exactly one child of
+/// `<q>` must be a checkout whose Git record points back at it; none, several
+/// or anything unreadable is an error, and the caller keeps everything.
+fn locate(record: &Record) -> Result<Record, String> {
+    if present(&format!("{}/.git", record.quarantine)) {
+        return Ok(record.clone());
+    }
+    let kept = |why: String| {
+        format!(
+            "The quarantined folder {} holds no checkout of its own ({why}); it is kept, and the record {} still names it.",
+            record.quarantine, record.id
+        )
+    };
+    let entries = fs::read_dir(&record.quarantine).map_err(|e| kept(e.to_string()))?;
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| kept(e.to_string()))?;
+        let meta = fs::symlink_metadata(entry.path()).map_err(|e| kept(e.to_string()))?;
+        if meta.is_dir() && is_checkout_at(&entry.path()) {
+            found.push(entry.path());
+        }
+    }
+    match found.as_slice() {
+        [one] => Ok(Record {
+            quarantine: one.to_string_lossy().into_owned(),
+            ..record.clone()
+        }),
+        [] => Err(kept("no checkout inside".into())),
+        _ => Err(kept("more than one checkout inside".into())),
+    }
+}
+
 /// A quarantine left by a server that was killed mid-removal. Each record is
 /// looked at under the workspace lifecycle lock, like the removal it belongs
 /// to: put back when the original path is free, kept and reported otherwise,
@@ -386,6 +438,24 @@ pub(super) fn recover(svc: &Services, sweep: &mut Sweep) -> Result<(), String> {
             });
             continue;
         }
+        // Where the checkout really is: a crash after `inside_destination`
+        // moved it into a folder made first, before the rewritten record was
+        // in place, leaves a record naming the outer folder.
+        let record = if present(&record.quarantine) {
+            match locate(&record) {
+                Ok(record) => record,
+                Err(why) => {
+                    eprintln!("[worktree-lifespan] {why}");
+                    sweep.failed.push(Failed {
+                        path: record.original.clone(),
+                        why,
+                    });
+                    continue;
+                }
+            }
+        } else {
+            record
+        };
         match (present(&record.original), present(&record.quarantine)) {
             // Removed (or never moved): nothing is quarantined any more.
             (_, false) => drop_record(&record.id),

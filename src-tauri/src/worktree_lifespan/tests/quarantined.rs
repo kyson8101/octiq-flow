@@ -769,3 +769,66 @@ fn a_record_that_names_the_checkout_inside_a_folder_made_first_is_put_back_from_
     );
     assert_eq!(records(), 0);
 }
+
+/// The crash `inside_destination` leaves: the checkout was moved INTO a folder
+/// made first, and the server died before the rewritten record (the nested
+/// path) was put in place, so the durable record still names the outer folder.
+#[test]
+fn a_record_that_still_names_the_outer_folder_finds_the_checkout_inside_it() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    crate::profile::available().unwrap();
+    let (r, svc) = merged_checkout();
+    // An ignored file that a removal would delete without a word.
+    fs::OpenOptions::new()
+        .append(true)
+        .open(format!("{}/.git/info/exclude", r.root))
+        .and_then(|mut f| std::io::Write::write_all(&mut f, b"works/\n"))
+        .unwrap();
+    fs::create_dir_all(format!("{}/works", r.work)).unwrap();
+    fs::write(format!("{}/works/clip", r.work), "only copy").unwrap();
+    let q = format!("{}/{PREFIX}cccccccccccccccc", above_of(&r));
+    fs::create_dir_all(&q).unwrap();
+    let nested = format!("{q}/{}", name_of(&r));
+    git::move_worktree(&r.root, &r.work, &nested).unwrap();
+    // The record on disk is the one written before the move: the outer name.
+    quarantine::write_record(&Record {
+        id: "cccccccccccccccc".into(),
+        repo: r.root.clone(),
+        original: r.work.clone(),
+        quarantine: q.clone(),
+        at: now(),
+    })
+    .unwrap();
+    let mut sweep = Sweep::default();
+    quarantine::recover(&svc, &mut sweep).unwrap();
+    assert!(
+        Path::new(&r.work).join("work").exists(),
+        "{:?}",
+        sweep.failed
+    );
+    assert_eq!(
+        fs::read_to_string(format!("{}/works/clip", r.work)).unwrap(),
+        "only copy"
+    );
+    assert!(Path::new(&q).exists(), "the outer folder is not deleted");
+    assert_eq!(records(), 0, "no record is left stranded");
+
+    // Nothing to find (an empty outer folder): everything is kept, the
+    // record stays, and it is said.
+    let empty = format!("{}/{PREFIX}dddddddddddddddd", above_of(&r));
+    fs::create_dir_all(&empty).unwrap();
+    quarantine::write_record(&Record {
+        id: "dddddddddddddddd".into(),
+        repo: r.root.clone(),
+        original: format!("{}-gone", r.work),
+        quarantine: empty.clone(),
+        at: now(),
+    })
+    .unwrap();
+    let mut sweep = Sweep::default();
+    quarantine::recover(&svc, &mut sweep).unwrap();
+    assert_eq!(records(), 1);
+    assert!(Path::new(&empty).exists());
+    assert_eq!(sweep.failed.len(), 1, "{:?}", sweep.failed);
+}

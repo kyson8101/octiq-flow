@@ -3761,7 +3761,15 @@ reaches it like any external writer; the name is random and exists for a
 moment. A process that holds nothing open inside and only has its working
 folder above is, by design, unaffected. The `lsof` is a snapshot: a process
 that gets a descriptor for the folder by passing one over a socket after the
-scan is outside what a path or an `lsof` can see. A review of a new removal
+scan is outside what a path or an `lsof` can see. Accepted limit: a process
+that lists the parent folder, finds the `.octiq-removing-*` name and writes its
+only copy of some data into it after the final proof can still lose that data;
+every check-then-remove leaves some window, and the quarantine narrows it to
+this case. Recovery decides where the checkout really is before acting: when
+`<q>/.git` is missing, exactly one child of `<q>` whose `.git` and Git's
+back-pointer name each other is taken as the checkout (a crash after the move
+into a folder made first, before the rewritten record landed); none, several
+or anything unreadable keeps everything and says so. A review of a new removal
 path checks that it goes through `quarantine::remove`, not that it enumerates
 writers.
 A checkout's own branch, and any listed ref that differs from it only by ASCII
