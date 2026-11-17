@@ -1593,28 +1593,18 @@ mod tests {
         task.workspace.as_ref().unwrap().state
     }
 
-    /// What the run says of each root's removal and branch deletion. A fact
-    /// the ledger already held when the card was made (the branch really was
-    /// gone then) is not what these tests look for.
-    fn delivery_flags(store: &OrchestrationStore, run: &Run) -> Vec<(bool, bool)> {
+    /// The run's whole saved delivery, as the ledger holds it.
+    fn delivery_json(store: &OrchestrationStore, run: &Run) -> String {
         let saved = store.snapshot(Some(&run.id)).unwrap().runs[0].clone();
-        saved
-            .mission_delivery
-            .iter()
-            .map(|d| (d.removed, d.branch_deleted))
-            .collect()
+        serde_json::to_string(&saved.mission_delivery).unwrap()
     }
 
-    fn nothing_was_closed_or_deleted(
-        store: &OrchestrationStore,
-        run: &Run,
-        before: &[(bool, bool)],
-    ) {
+    fn nothing_was_closed_or_deleted(store: &OrchestrationStore, run: &Run, before: &str) {
         let saved = store.snapshot(Some(&run.id)).unwrap().runs[0].clone();
         assert_ne!(saved.status, RunStatus::Closed);
-        assert_eq!(
-            delivery_flags(store, run),
-            before,
+        assert_eq!(delivery_json(store, run), before);
+        assert!(
+            saved.mission_delivery.iter().all(|d| !d.branch_deleted),
             "{:?}",
             saved.mission_delivery
         );
@@ -1631,8 +1621,13 @@ mod tests {
             eprintln!("skipped: this filesystem keeps case, a loose alias is another file");
             return;
         }
+        let before = delivery_json(&store, &run);
         let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
-        let before = delivery_flags(&store, &run);
+        assert_eq!(
+            delivery_json(&store, &run),
+            before,
+            "asking for a card records nothing"
+        );
         let unmerged = repo.git(&["commit-tree", "main^{tree}", "-p", "main", "-m", "unmerged"]);
         repo.git(&["branch", &alias, &unmerged]);
         if pack {
@@ -1680,7 +1675,7 @@ mod tests {
             eprintln!("skipped: modes are not enforced for this user");
             return;
         }
-        let before = delivery_flags(&store, &run);
+        let before = delivery_json(&store, &run);
         let saved = store.snapshot(Some(&run.id)).unwrap().runs[0].clone();
         let plan = {
             let inner = store.inner.lock().unwrap();
@@ -1696,8 +1691,9 @@ mod tests {
     #[test]
     fn a_folder_and_branch_recreated_at_the_same_head_after_the_card_are_kept() {
         let (repo, store, run, first) = gone_branch_fixture(true);
+        let before = delivery_json(&store, &run);
         let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
-        let before = delivery_flags(&store, &run);
+        assert_eq!(delivery_json(&store, &run), before);
         let root = first.cwd.trim_end_matches(['/', '\\']).to_string();
         repo.git(&["worktree", "add", "-b", &first.branch, &root, "main"]);
         let result = store
@@ -1715,6 +1711,98 @@ mod tests {
         );
         assert!(branch_exists(&repo, &first.branch));
         nothing_was_closed_or_deleted(&store, &run, &before);
+    }
+
+    #[test]
+    fn asking_for_a_card_records_nothing_a_close_alone_records() {
+        let (_repo, store, run, _first) = gone_branch_fixture(true);
+        let before = delivery_json(&store, &run);
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        assert!(matches!(card.items[0].kind, Kind::Mission));
+        assert_eq!(delivery_json(&store, &run), before);
+        // Declining changes nothing either.
+        store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, false)
+            .unwrap();
+        assert_eq!(delivery_json(&store, &run), before);
+        // The approved Close is what records them.
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        let saved = store.snapshot(Some(&run.id)).unwrap().runs[0].clone();
+        assert!(saved.mission_delivery[0].removed && saved.mission_delivery[0].branch_deleted);
+    }
+
+    #[test]
+    fn a_folder_and_branch_made_again_while_a_gone_mission_closes_are_not_recorded_removed() {
+        let (repo, store, run, first) = gone_branch_fixture(true);
+        let before = delivery_json(&store, &run);
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        let root = first.cwd.trim_end_matches(['/', '\\']).to_string();
+        let (r, branch, path) = (repo.root.clone(), first.branch.clone(), root.clone());
+        super::super::mission::AFTER_BRANCH_DELETE.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                crate::git_ops::lifespan::git(
+                    &r,
+                    &["worktree", "add", "-b", &branch, &path, "main"],
+                )
+                .unwrap();
+            }))
+        });
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
+        assert!(
+            result.items[0].reason.contains("appeared or went"),
+            "{}",
+            result.items[0].reason
+        );
+        assert!(Path::new(&root).exists());
+        nothing_was_closed_or_deleted(&store, &run, &before);
+    }
+
+    #[test]
+    fn a_folder_and_branch_made_again_during_a_swept_task_cleanup_are_not_recorded_cleaned() {
+        let (repo, store, run) = setup(WorkspaceMode::Worktree);
+        let (task, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        store
+            .refresh_workspace("chat:master", &first.task_id)
+            .unwrap();
+        crate::git_ops::lifespan::remove(&repo.root, &first.cwd, false).unwrap();
+        store.lifespan_record_swept(&first.cwd, 100).unwrap();
+        repo.git(&["branch", "-D", &first.branch]);
+        let card = ask(&store, &run).expect("a card for the swept task");
+        let (r, branch, path) = (repo.root.clone(), first.branch.clone(), first.cwd.clone());
+        super::super::mission::AFTER_SWEPT_EVIDENCE.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                crate::git_ops::lifespan::git(
+                    &r,
+                    &["worktree", "add", "-b", &branch, &path, "main"],
+                )
+                .unwrap();
+            }))
+        });
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
+        assert!(
+            result.items[0].reason.contains("appeared or went"),
+            "{}",
+            result.items[0].reason
+        );
+        assert!(
+            Path::new(&first.cwd).exists(),
+            "the new folder was not touched"
+        );
+        assert_ne!(
+            task_workspace_state(&store, &run, &task.id),
+            WorkspaceState::Cleaned
+        );
     }
 
     #[test]
@@ -1758,6 +1846,37 @@ mod tests {
         assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
         let state = task_workspace_state(&store, &run, &task.id);
         assert_eq!(state, WorkspaceState::Cleaned);
+    }
+
+    #[test]
+    fn a_task_whose_folder_is_back_is_not_taken_for_swept_and_gone() {
+        let (repo, store, run) = setup(WorkspaceMode::Worktree);
+        let (_task, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        store
+            .refresh_workspace("chat:master", &first.task_id)
+            .unwrap();
+        crate::git_ops::lifespan::remove(&repo.root, &first.cwd, false).unwrap();
+        store.lifespan_record_swept(&first.cwd, 100).unwrap();
+        repo.git(&["branch", "-D", &first.branch]);
+        let ws = |store: &OrchestrationStore| {
+            store
+                .owned_task("chat:master", &first.task_id)
+                .unwrap()
+                .1
+                .workspace
+                .unwrap()
+        };
+        assert_eq!(
+            super::super::mission::swept_task_branch_gone(&ws(&store)),
+            Ok(true)
+        );
+        // Only the folder comes back: the branch stays gone.
+        std::fs::create_dir_all(&first.cwd).unwrap();
+        let error = super::super::mission::swept_task_branch_gone(&ws(&store)).unwrap_err();
+        assert!(error.contains("there again"), "{error}");
+        assert!(Path::new(&first.cwd).exists(), "the folder was not touched");
     }
 
     #[test]

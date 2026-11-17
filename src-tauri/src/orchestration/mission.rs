@@ -238,6 +238,19 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 #[cfg(test)]
+thread_local! {
+    /// Runs once right after a swept task's saved evidence was read in
+    /// `cleanup_workspace_expected`, before Cleaned is recorded.
+    pub(super) static AFTER_SWEPT_EVIDENCE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn after_swept_evidence() {
+    if let Some(hook) = AFTER_SWEPT_EVIDENCE.with(|h| h.borrow_mut().take()) {
+        hook();
+    }
+}
+#[cfg(test)]
 fn after_branch_delete() {
     if let Some(hook) = AFTER_BRANCH_DELETE.with(|h| h.borrow_mut().take()) {
         hook();
@@ -274,7 +287,12 @@ pub(super) fn swept_task_branch_gone(
     if branch_exists(&ws.plan).map_err(kept)? {
         return Ok(false);
     }
-    confirmed_missing(&ws.plan.checkout_root).map_err(kept)?;
+    if !confirmed_missing(&ws.plan.checkout_root).map_err(kept)? {
+        return Err(kept(format!(
+            "the folder {} is there again, so this is not a swept workspace",
+            ws.plan.checkout_root
+        )));
+    }
     match ws
         .delivery
         .as_ref()
@@ -301,19 +319,14 @@ pub(super) fn presence(plan: &WorkspacePlan) -> Result<(bool, bool), String> {
 /// a release's merged-branch cleanup removed the branch). Nothing physical is
 /// left to remove, so the recorded delivery answers for it, but only a delivery
 /// that was recorded as merged: a merge is never guessed from a missing ref.
+/// The answer is the saved delivery as it is: `removed` and `branch_deleted`
+/// are what a Close records, never what asking about a close does.
 fn gone_branch_delivery(
     known: Option<&MissionDelivery>,
     plan: &WorkspacePlan,
 ) -> Result<MissionDelivery, String> {
     match known.filter(|k| k.merged && !k.evidence.head_sha.is_empty()) {
-        Some(known) => {
-            let mut delivery = known.clone();
-            delivery.removed = true;
-            delivery.branch_deleted = true;
-            delivery.swept_at = delivery.swept_at.or(Some(now_ms()));
-            delivery.evidence.checked_at = now_ms();
-            Ok(delivery)
-        }
+        Some(known) => Ok(known.clone()),
         None => Err(format!(
             "The folder {} and the branch {} are both gone, and no merge into {} was ever recorded for it, so it is not known to be merged. The mission is kept.",
             plan.checkout_root, plan.branch, plan.base_branch
@@ -379,7 +392,21 @@ pub(super) fn swept_delivery(
     Ok(Some(delivery))
 }
 
-fn delivery_of(run: &Run, plan: &WorkspacePlan) -> Result<MissionDelivery, String> {
+/// `closing` is a Close's own read: it may stamp what only a Close records
+/// (`swept_at` of a folder that is gone). A refresh, and so the ask for a
+/// cleanup card, writes nothing of that kind: a card is a proposal.
+fn delivery_of(run: &Run, plan: &WorkspacePlan, closing: bool) -> Result<MissionDelivery, String> {
+    if confirmed_missing(&plan.checkout_root)? && !branch_exists(plan)? {
+        let known = run
+            .mission_delivery
+            .iter()
+            .find(|d| d.checkout_root == plan.checkout_root);
+        let mut delivery = gone_branch_delivery(known, plan)?;
+        if closing {
+            delivery.swept_at = delivery.swept_at.or(Some(now_ms()));
+        }
+        return Ok(delivery);
+    }
     if let Some(mut delivery) = swept_delivery(run, plan)? {
         delivery.merged |=
             workflow::merged_into_remote_base(plan, &delivery.evidence.head_sha) == Some(true);
@@ -550,7 +577,7 @@ impl OrchestrationStore {
         }
         let deliveries = plans
             .iter()
-            .map(|plan| delivery_of(&run, plan))
+            .map(|plan| delivery_of(&run, plan, false))
             .collect::<Result<Vec<_>, _>>()?;
         self.mutate(|data| {
             let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
@@ -657,13 +684,19 @@ impl OrchestrationStore {
         // refusal (a gate that opened after the branch was deleted) still
         // leaves its facts to be recorded: they are about Git, not the run.
         let mut done: Vec<MissionDelivery> = Vec::new();
+        // What each root was when this Close looked at it: folder present,
+        // branch present. Looked at again right before anything is recorded.
+        let mut seen_roots: Vec<(usize, (bool, bool))> = Vec::new();
+        let mut moved_roots: BTreeSet<String> = BTreeSet::new();
         let outcome = (|| -> Result<(), String> {
             for key in &workers {
                 crate::agent_chat::chat_stop_impl(chats, key.clone())?;
             }
-            for (plan, proof) in plans.iter().zip(&proofs) {
+            for (index, (plan, proof)) in plans.iter().zip(&proofs).enumerate() {
                 chats.require_checkout_idle(&plan.checkout_root, plan.is_managed_worktree())?;
-                let mut delivery = delivery_of(&run, plan)?;
+                let seen = presence(plan)?;
+                seen_roots.push((index, seen));
+                let mut delivery = delivery_of(&run, plan, true)?;
                 #[cfg(test)]
                 after_delivery();
                 if let Some(expected) = expected {
@@ -737,9 +770,27 @@ impl OrchestrationStore {
             // here, after every Git call and before the closing write.
             #[cfg(test)]
             after_delivery();
+            // A root that was gone when it was looked at is recorded removed
+            // on that look alone, so it must still be gone now: a folder or a
+            // branch made again since is not something this Close removed.
+            // Roots this Close removes itself are not asked.
+            for (index, (folder, branch)) in &seen_roots {
+                let plan = &plans[*index];
+                let moved = (!folder && !confirmed_missing(&plan.checkout_root)?)
+                    || (!branch && branch_exists(plan)?);
+                if moved {
+                    moved_roots.insert(plan.checkout_root.clone());
+                }
+            }
+            if let Some(root) = moved_roots.iter().next() {
+                return Err(format!(
+                    "The folder or the branch of {root} appeared or went since this Close looked at it; the mission is kept. Ask again."
+                ));
+            }
             Ok(())
         })();
 
+        done.retain(|d| !moved_roots.contains(&d.checkout_root));
         let result = self.mutate(|data| {
             // The write that closes the mission decides again, under the
             // ledger: a run that became active again is never marked Closed.

@@ -1803,6 +1803,13 @@ impl OrchestrationStore {
             chats.require_checkout_idle(&ws.plan.checkout_root, true)?;
             let swept = ws.swept_at.is_some()
                 && matches!(std::fs::symlink_metadata(&ws.plan.checkout_root), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+            // What the folder and the branch were when the swept path was
+            // chosen: asked again right before Cleaned is recorded.
+            let seen = if swept {
+                Some(super::mission::presence(&ws.plan)?)
+            } else {
+                None
+            };
             let evidence = if swept && super::mission::swept_task_branch_gone(ws)? {
                 // Folder confirmed missing, branch proven absent: the saved
                 // merged delivery answers for it and no git work remains.
@@ -1832,6 +1839,8 @@ impl OrchestrationStore {
             } else {
                 workflow::inspect(&ws.plan, true)?
             };
+            #[cfg(test)]
+            super::mission::after_swept_evidence();
             if expected_head.is_empty() || evidence.head_sha != expected_head {
                 if swept {
                     return Err("This workspace was swept; the preview does not match its verified kept branch. Use that branch's saved delivery HEAD, or restore and refresh before Cleanup.".into());
@@ -1882,6 +1891,19 @@ impl OrchestrationStore {
             if !swept {
                 chats.require_lifespan_idle(&ws.plan.checkout_root)?;
                 workflow::cleanup_verified(&ws.plan, &evidence.head_sha, proof.as_ref())?;
+            } else if let Some(seen) = seen {
+                // A swept workspace removes nothing, so what it records must be
+                // what is there now: a folder or a branch made again during the
+                // Git work above is not something this Cleanup cleaned.
+                let now = super::mission::presence(&ws.plan)?;
+                if now != seen
+                    || expected_plan.is_some_and(|e| now != (e.folder_present, e.branch_present))
+                {
+                    return Err(format!(
+                        "The folder {} or the branch {} appeared or went since the approved card; nothing was recorded. Ask again.",
+                        ws.plan.checkout_root, ws.plan.branch
+                    ));
+                }
             }
             Ok(evidence)
         })();
