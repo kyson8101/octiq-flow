@@ -660,3 +660,112 @@ fn a_slow_lsof_ends_in_unknown_inside_the_final_budget_and_the_folder_goes_back(
     remove_proven(&r.root, &r.work, &proof).unwrap();
     assert!(gone(&r.work));
 }
+
+#[test]
+fn a_sweep_puts_a_crashed_validation_quarantine_back_before_it_records_anything_swept() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    crate::profile::available().unwrap();
+    let (r, svc) = merged_checkout();
+    svc.orchestrations
+        .install_validation_for_test(&r.root, vec![r.work.clone()]);
+    let record = Record {
+        id: "aaaaaaaaaaaaaaaa".into(),
+        repo: r.root.clone(),
+        original: r.work.clone(),
+        quarantine: format!("{}/{PREFIX}aaaaaaaaaaaaaaaa", above_of(&r)),
+        at: now(),
+    };
+    let crash = || {
+        quarantine::write_record(&record).unwrap();
+        git::move_worktree(&r.root, &r.work, &record.quarantine).unwrap();
+    };
+    // Killed after the rename: the folder is aside, not gone. The sweep puts
+    // it back first, so the validation checkout is still the ledger's.
+    crash();
+    reconcile(&svc, &Store::default(), now(), &mut Sweep::default()).unwrap();
+    assert!(Path::new(&r.work).join("work").exists());
+    assert_eq!(
+        svc.orchestrations.validation_paths_for_test(),
+        [r.work.clone()]
+    );
+    assert_eq!(records(), 0);
+    // It cannot be put back (Git refuses the move): the original is missing
+    // and a record names the folder, so it is still not "gone".
+    crash();
+    let script = r#"
+case " $* " in
+  *" worktree move "*) echo "fatal: refused" >&2; exit 128 ;;
+esac
+exec /usr/bin/git "$@"
+"#;
+    with_git_wrapper(&r._home, script, || {
+        reconcile(&svc, &Store::default(), now(), &mut Sweep::default()).unwrap();
+    });
+    assert!(!Path::new(&r.work).exists());
+    assert!(Path::new(&record.quarantine).join("work").exists());
+    assert_eq!(
+        svc.orchestrations.validation_paths_for_test(),
+        [r.work.clone()]
+    );
+    assert_eq!(records(), 1, "the record stays while it is unresolved");
+    // Safe control: with Git working again the next pass puts it back.
+    reconcile(&svc, &Store::default(), now(), &mut Sweep::default()).unwrap();
+    assert!(Path::new(&r.work).join("work").exists());
+    assert_eq!(records(), 0);
+}
+
+#[test]
+fn a_quarantine_name_made_between_the_check_and_the_move_does_not_strand_the_record() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    crate::profile::available().unwrap();
+    let (r, svc) = merged_checkout();
+    let store = Store::default();
+    // Someone makes the name after it was found free: Git then moves the
+    // checkout INTO it. The removal follows the real path, deletes nothing
+    // of theirs, and leaves no record naming a folder that is not the checkout.
+    quarantine::BEFORE_MOVE.with(|hook| {
+        *hook.borrow_mut() = Some(|q| fs::create_dir_all(q).unwrap());
+    });
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    let kept = report(&store);
+    assert!(gone(&r.work), "{:?}", kept.failed);
+    assert_eq!(kept.removed.len(), 1, "{:?}", kept.failed);
+    assert_eq!(records(), 0);
+    let made = leftovers(&r);
+    assert_eq!(made.len(), 1, "their folder stays: {made:?}");
+    assert!(Path::new(&above_of(&r))
+        .join(&made[0])
+        .read_dir()
+        .unwrap()
+        .next()
+        .is_none());
+}
+
+#[test]
+fn a_record_that_names_the_checkout_inside_a_folder_made_first_is_put_back_from_there() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    crate::profile::available().unwrap();
+    let (r, svc) = merged_checkout();
+    let q = format!("{}/{PREFIX}bbbbbbbbbbbbbbbb", above_of(&r));
+    fs::create_dir_all(&q).unwrap();
+    let nested = format!("{q}/{}", name_of(&r));
+    git::move_worktree(&r.root, &r.work, &nested).unwrap();
+    quarantine::write_record(&Record {
+        id: "bbbbbbbbbbbbbbbb".into(),
+        repo: r.root.clone(),
+        original: r.work.clone(),
+        quarantine: nested.clone(),
+        at: now(),
+    })
+    .unwrap();
+    quarantine::recover(&svc, &mut Sweep::default()).unwrap();
+    assert!(Path::new(&r.work).join("work").exists());
+    assert!(
+        Path::new(&q).exists(),
+        "the folder someone made is not deleted"
+    );
+    assert_eq!(records(), 0);
+}

@@ -22,6 +22,11 @@ mod ignored;
 mod quarantine;
 mod raw;
 
+/// Whether a quarantine record says this checkout is aside, not gone.
+pub(crate) fn quarantine_holds(path: &str) -> bool {
+    quarantine::holds(path)
+}
+
 /// The same at-stake inventory used by every removal; unknown is never zero.
 pub(crate) fn at_stake_ignored_count(path: &str) -> Option<u64> {
     ignored::inventory(path)
@@ -1770,12 +1775,17 @@ fn hold_lifecycle(svc: &Services) -> Result<LifecycleGuard<'_>, String> {
     })
 }
 fn reconcile(svc: &Services, store: &Store, at: i64, sweep: &mut Sweep) -> Result<(), String> {
+    // A folder a killed server left in quarantine is put back, or kept and
+    // said, never removed. This comes first: a folder that is aside is not a
+    // folder that is gone, and what is recorded below cannot be undone.
+    quarantine::recover(svc, sweep)?;
     for a in svc.orchestrations.lifespan_allocations()? {
         let _lifecycle = hold_lifecycle(svc)?;
         if a.owner.kind == "unknown"
             || a.swept_at.is_some()
             || !a.reconcilable
             || !gone(&a.path)
+            || quarantine::holds(&a.path)
             || !parents_present(&a.repo, &a.path, a.owner.kind == "validation")
         {
             continue;
@@ -1784,15 +1794,13 @@ fn reconcile(svc: &Services, store: &Store, at: i64, sweep: &mut Sweep) -> Resul
         // Reconciliation changes the ledger, not the filesystem. Do not
         // report a manually missing folder as a host deletion.
     }
-    // A folder a killed server left in quarantine is put back, or kept and
-    // said, never removed.
-    quarantine::recover(svc, sweep)?;
     // A restart may have happened on either side of git worktree remove.
     // Existing folders are re-verified by a later sweep, never blindly replayed.
     for intent in store.saved()?.intents {
         let _lifecycle = hold_lifecycle(svc)?;
         let repo = Some(intent.repo.clone());
         if !gone(&intent.item.path)
+            || quarantine::holds(&intent.item.path)
             || !repo.is_some_and(|r| {
                 parents_present(
                     &r,

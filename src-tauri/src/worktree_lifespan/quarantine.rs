@@ -97,6 +97,55 @@ fn present(path: &str) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
 
+/// Whether a quarantine record still names `original` with a folder at its
+/// quarantine path: that checkout is not gone, it is aside. Anything this
+/// cannot read is a yes (unknown keeps), and a record whose folder is gone
+/// (the removal finished, the record was not dropped) is not one.
+pub(crate) fn holds(original: &str) -> bool {
+    let entries = match fs::read_dir(records_dir()) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { return true };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || !name.ends_with(".json") {
+            continue;
+        }
+        let Ok(bytes) = fs::read(entry.path()) else {
+            return true;
+        };
+        match serde_json::from_slice::<Record>(&bytes) {
+            Ok(record) => {
+                if Path::new(&record.original) == Path::new(original) && present(&record.quarantine)
+                {
+                    return true;
+                }
+            }
+            Err(_) => return true,
+        }
+    }
+    false
+}
+
+/// The name a quarantine record trusts: the one this host makes, either the
+/// folder itself or (when something made that folder first and Git moved the
+/// checkout into it) the checkout inside it.
+fn name_is_ours(record: &Record) -> bool {
+    let ours = format!("{PREFIX}{}", record.id);
+    let path = Path::new(&record.quarantine);
+    let leaf = |p: &Path| p.file_name().is_some_and(|n| n.to_string_lossy() == ours);
+    leaf(path) || path.parent().is_some_and(leaf)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Runs after the quarantine name was found free and before the move, so
+    /// a test can make that name between the two.
+    pub(super) static BEFORE_MOVE: std::cell::RefCell<Option<fn(&str)>> = const { std::cell::RefCell::new(None) };
+}
+
 /// Whether anything holds the quarantined folder: a working folder or an open
 /// file at or below it. Unknown is a yes. The scan runs inside the final
 /// budget (`git::command` takes what is left of it), so a slow `lsof` ends in
@@ -157,9 +206,20 @@ pub(super) fn remove(
     // rename: nothing may be left that nothing names.
     write_record(&record)
         .map_err(|e| format!("The quarantine could not be recorded ({e}); the folder is kept."))?;
+    #[cfg(test)]
+    if let Some(hook) = BEFORE_MOVE.with(|hook| hook.borrow_mut().take()) {
+        hook(&record.quarantine);
+    }
     if let Err(why) = git::move_worktree(repo, path, &record.quarantine) {
         return Err(failed_move(&record, &why));
     }
+    // Git moves INTO a destination that is a folder already. If the name was
+    // made between the look above and the move, the checkout is inside it:
+    // carry on with the real path, never the folder that is not the checkout.
+    let record = match inside_destination(record) {
+        Ok(record) => record,
+        Err(why) => return Err(why),
+    };
     if let Err(why) = held(&record.quarantine).and_then(|()| verify(&record.quarantine)) {
         return Err(put_back(&record, &why));
     }
@@ -182,6 +242,36 @@ pub(super) fn remove(
         }
     }
     Ok(())
+}
+
+/// Where the checkout really is after a move whose destination may already
+/// have been a folder. The record is rewritten to the real path before any
+/// further step, so a crash leaves a record that names the checkout; if that
+/// cannot be written the checkout goes back. Nothing is deleted or overwritten
+/// and the folder someone made is left as it is.
+fn inside_destination(record: Record) -> Result<Record, String> {
+    if present(&format!("{}/.git", record.quarantine)) {
+        return Ok(record);
+    }
+    let Some(leaf) = Path::new(&record.original).file_name() else {
+        return Ok(record);
+    };
+    let nested = Path::new(&record.quarantine).join(leaf);
+    let nested = nested.to_string_lossy().into_owned();
+    if !present(&format!("{nested}/.git")) {
+        return Ok(record);
+    }
+    let inside = Record {
+        quarantine: nested,
+        ..record
+    };
+    match write_record(&inside) {
+        Ok(()) => Ok(inside),
+        Err(e) => Err(put_back(
+            &inside,
+            &format!("The quarantine name was made just before the move and the new record could not be written ({e})"),
+        )),
+    }
 }
 
 /// Git's move failed (a different volume, an occupied name, a locked
@@ -287,10 +377,7 @@ pub(super) fn recover(svc: &Services, sweep: &mut Sweep) -> Result<(), String> {
     for record in records {
         let _lifecycle = super::hold_lifecycle(svc)?;
         // The record is only trusted for the name this host makes.
-        let name_ok = Path::new(&record.quarantine)
-            .file_name()
-            .is_some_and(|n| n.to_string_lossy() == format!("{PREFIX}{}", record.id));
-        if !name_ok {
+        if !name_is_ours(&record) {
             sweep.failed.push(Failed {
                 path: record.original.clone(),
                 why:

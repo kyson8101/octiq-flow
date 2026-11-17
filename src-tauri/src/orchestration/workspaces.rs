@@ -1993,7 +1993,10 @@ pub(super) fn recover_workspaces(data: &mut Stored) -> bool {
         if let Some(ws) = task.workspace.as_mut() {
             changed |= ws.lease_attempt_id.take().is_some();
             if ws.state == WorkspaceState::Cleaning {
-                let removed = !Path::new(&ws.plan.checkout_root).exists();
+                // A checkout a quarantine record says is aside is not gone:
+                // the sweep puts it back, and it stays what it was.
+                let removed = !Path::new(&ws.plan.checkout_root).exists()
+                    && !crate::worktree_lifespan::quarantine_holds(&ws.plan.checkout_root);
                 if removed && ws.cleanup_intent.is_some() {
                     ws.state = WorkspaceState::Cleaned;
                     ws.abandoned = ws.cleanup_intent == Some(true);
@@ -6212,6 +6215,53 @@ mod recovery_tests {
                 Ok(())
             })
             .unwrap();
+    }
+    #[test]
+    fn startup_recovery_keeps_a_cleaning_checkout_a_quarantine_record_says_is_aside() {
+        let repo = Repo::new();
+        let store = OrchestrationStore::default();
+        let run = super::super::tests::run(&store);
+        let task = super::super::tests::task(&store, &run, vec![]);
+        let plan = workflow::plan(&repo.root, "main", &task.id, WorkspaceMode::Worktree).unwrap();
+        // A killed server left the checkout in quarantine: its original path
+        // is missing and a record names the folder that holds it now.
+        let aside = format!("{}/.octiq-removing-aaaaaaaaaaaaaaaa", repo.root);
+        fs::create_dir_all(&aside).unwrap();
+        let records = crate::profile::profile_dir().join("lifespan-quarantine");
+        crate::profile::make_dir(&records).unwrap();
+        let record = records.join("aaaaaaaaaaaaaaaa.json");
+        fs::write(
+            &record,
+            serde_json::to_vec(&json!({
+                "id": "aaaaaaaaaaaaaaaa", "repo": repo.root,
+                "original": plan.checkout_root, "quarantine": aside, "at": 1,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        store
+            .mutate(|data| {
+                data.tasks.get_mut(&task.id).unwrap().workspace = Some(TaskWorkspace {
+                    swept_at: None,
+                    plan,
+                    state: WorkspaceState::Cleaning,
+                    lease_attempt_id: None,
+                    delivery: None,
+                    abandoned: false,
+                    cleanup_intent: Some(true),
+                    validation_paths: vec![],
+                });
+                assert!(recover_workspaces(data));
+                let task = &data.tasks[&task.id];
+                assert_ne!(task.status, TaskStatus::Cancelled);
+                let ws = task.workspace.as_ref().unwrap();
+                assert_eq!(ws.state, WorkspaceState::Retained);
+                assert!(!ws.abandoned);
+                Ok(())
+            })
+            .unwrap();
+        fs::remove_file(&record).unwrap();
+        fs::remove_dir_all(&aside).unwrap();
     }
     #[test]
     fn coordinator_gate_cannot_resurrect_a_settled_attempt() {
