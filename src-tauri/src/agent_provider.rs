@@ -1880,6 +1880,10 @@ pub(crate) fn codex_developer_instructions(
     let mut prompt = format!(
         "{CODEX_COMMON_HOST_PROMPT}\n\n{question_prompt}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{diagram}{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{runtime}"
     );
+    if let Some(guidance) = codex_sandbox_guidance(access, orchestration_worker) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&guidance);
+    }
     if let Some(authorizations) = persistent_authorizations {
         prompt.push_str("\n\n");
         prompt.push_str(authorizations);
@@ -1889,6 +1893,22 @@ pub(crate) fn codex_developer_instructions(
         prompt.push_str(&orchestration_worker_prompt());
     }
     prompt
+}
+
+fn codex_sandbox_guidance(access: Option<Access>, worker: bool) -> Option<String> {
+    let access = access.filter(|access| *access != Access::Full)?;
+    let mut guidance = String::from(
+        "Codex's OS sandbox can refuse a command with `Operation not permitted`, a DNS/network error or a Git lock error. That alone does not create an OctiqFlow safety approval card. Network is off, including localhost listeners and connections; ps, sysctl, native device tools and writes outside the writable roots may also be refused. Use an available authorized host tool or a project-local output/cache when it covers the work. For tests that support it, disable Watchman instead of connecting to its socket. `octiq-job` uses its existing spool folder when Codex reports that network is disabled; a successful spool is a reported job.\n\nAt Auto/Edits, linked-worktree Git grants cover only this worktree's operation files and the current eligible branch ref/reflog. Other branches, shared refs, packed-refs, hooks and config stay protected. A packed-refs.lock warning can accompany a successful commit: check the exit code and resulting HEAD before retrying. Rebase and multi-commit sequencer operations need Full; use merge or a supported single-commit operation where it meets the task. Do not widen roots or retry with another sandbox setting to bypass a refusal.",
+    );
+    if worker {
+        guidance.push_str("\n\nA worker cannot use `request_access` to change its assigned access. If the remaining work requires a blocked operation, record the exact need with `orchestration_gate_create` for this run/task and end the turn. Ask for the coordinator to perform it, or for an authorized retry at Full (at Read, a project write only needs Auto). Never create a replacement worker to raise your own access.");
+    } else {
+        guidance.push_str("\n\nIf a required operation is still blocked, use `request_access` with the least level that allows it and a concrete reason, then end the turn: Full is needed for sandboxed network, external writes and protected Git operations. A decline, timeout or unanswered card leaves access unchanged; do not repeat the request. Codex takes an accepted access change from the next turn.");
+        if access == Access::Read {
+            guidance.push_str(" A project file write only needs Auto (`level: auto`); do not request Full for that.");
+        }
+    }
+    Some(guidance)
 }
 
 /// An MCP server carrying the tools print mode cannot otherwise answer.
@@ -2206,6 +2226,33 @@ pub(crate) mod tests {
         assert!(pi.contains("--thinking high"));
         assert!(pi.contains("--tools read,bash,edit,write,grep,find,ls"));
         assert!(!pi.contains("octiq-ask"));
+    }
+
+    #[test]
+    fn codex_sandbox_guidance_names_the_least_access_and_the_workers_gate() {
+        for access in [Access::Read, Access::Manual, Access::Edits, Access::Auto] {
+            for worker in [false, true] {
+                let prompt =
+                    codex_developer_instructions(None, None, Some(access), None, true, worker);
+                assert!(prompt.contains("Network is off, including localhost"));
+                assert!(prompt.contains("packed-refs.lock warning"));
+                assert!(prompt.contains("does not create an OctiqFlow safety approval card"));
+                if worker {
+                    assert!(prompt.contains("A worker cannot use `request_access`"));
+                    assert!(prompt.contains("authorized retry at Full"));
+                } else {
+                    assert!(prompt.contains("use `request_access` with the least level"));
+                    assert!(prompt.contains("next turn"));
+                    if access == Access::Read {
+                        assert!(prompt.contains("only needs Auto (`level: auto`)"));
+                    }
+                }
+            }
+        }
+        for access in [None, Some(Access::Full)] {
+            assert!(codex_sandbox_guidance(access, false).is_none());
+            assert!(codex_sandbox_guidance(access, true).is_none());
+        }
     }
 
     /// Feedback 8301d3b9: auto mode's classifier does not read tool results,

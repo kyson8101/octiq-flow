@@ -382,6 +382,22 @@ gitdir back-pointer to name this worktree's .git file, before any grant. Fresh s
 resumes and turns keep all writable roots together; `--add-dir` is for
 directories, not these file roots. Native cards carry the actual provider.
 
+Sandbox OS errors are not themselves safety approval cards. Codex's host
+instructions explain the next step: an ordinary chat uses `request_access`
+at the least useful level (Auto for a Read chat's project write, Full for
+network/external writes/protected Git); a worker uses its task's decision
+gate, since `request_access` cannot change a worker's assigned access.
+Use merge/supported single-commit operations where sufficient, a project-local
+cache, or an authorized host tool before asking for more access. Inspect the
+exit code and resulting HEAD after a packed-refs.lock cleanup warning: the
+commit can have succeeded. Never broaden Git roots to suppress the warning.
+The dated measurement and its counting limits are in
+`docs/codex-sandbox-refusals-2026-11-17.md`. The real CLI/stub-model job
+transport check is `node scripts/test-codex-sandbox-jobs.mjs <octiq-job binary>`.
+Refusal audits count direct invocations separately from log readbacks,
+source/doc quotations and intentional test controls; a warning with exit 0
+is not a failed operation. Report access-history and timestamp gaps explicitly.
+
 ### Persistence locations
 
 | Store | Path | Owner |
@@ -2944,6 +2960,10 @@ or shows a process already running with the MCP `job_register`; the page reads
 - **The wrapper never fails the command for the host's sake**: with no hook
   environment, or a host that does not answer, it runs the command, passes
   its output through unchanged and exits with its code.
+  When Codex sets `CODEX_SANDBOX_NETWORK_DISABLED=1` and the launch supplies
+  a spool folder, it starts in that existing capability-scoped spool without
+  first attempting the forbidden loopback connection. Full and other launches
+  keep the hook-first route; a failed spool is reported, never called success.
 
 ### Attention alerts
 
