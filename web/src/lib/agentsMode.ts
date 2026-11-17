@@ -48,6 +48,10 @@ export type TeamAgent = {
    *  is launched with, after the agent policy and before its role. Never shown
    *  where it is listed to others. Absent when it has none. */
   persistentPrompt?: string;
+  /** Codex only: its orchestration workers keep the person's own browser and
+   *  computer-use route instead of starting isolated (team.rs `desktop_tools`).
+   *  Absent when off. */
+  desktopTools?: boolean;
   createdAt: number;
   updatedAt: number;
 };
@@ -97,6 +101,8 @@ export type TeamDraft = {
   teamId?: string | null;
   /** Absent keeps it, "" clears it, any other text replaces it. */
   persistentPrompt?: string;
+  /** Absent keeps it; only a Codex agent may have it on. */
+  desktopTools?: boolean;
 };
 
 /** Global agents plus the project's own; every agent with `all`. */

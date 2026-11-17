@@ -2032,12 +2032,86 @@ never affects the launch (nor does the other scope's entry step in).
 an unreadable config or a definition the host cannot take adds nothing and never
 refuses the launch; an unreadable Codex server list still does. Native/exec
 Codex, resume and relaunch all use that policy; front desks keep full
-isolation. Calls take the normal permission cards (no allow rule is added). The
-Codex plugins `browser`, `unified-computer-use` and the `cua_repl` and
-`node_repl` servers are NOT given to workers: `cua_repl`'s browser needs the
-Codex desktop app's browser access host (unavailable from OctiqFlow) and its
-computer surface is desktop control. Claude in Chrome needs `--chrome`, which no
-launch passes.
+isolation. Calls take the normal permission cards (no allow rule is added).
+Claude in Chrome needs `--chrome`, which no launch passes. The Codex browser and
+computer-use route (`cua_repl`, `node_repl`, the plugins that carry them) is NOT
+given to workers below full access by default; one registered Codex agent can
+opt in (next paragraph).
+
+**A worker whose EXACT attempt runs at Full access gets the person's whole tool
+set** (the person's decision of 2026-11-17: "Full access 的 agent 全给"): the
+same MCP servers, plugins and apps an ordinary chat of its provider gets
+(`AgentCommand::worker_full_tools`, set in `start_session`). Claude launches
+without `--strict-mcp-config` (the OctiqFlow `--mcp-config` and the worker
+browser file stay); Codex gets no `--disable apps`, no `--disable plugins`, no
+per-server `enabled=false` entry and no host `octiq_playwright` copy (the
+person's own `playwright` is inherited); OctiqFlow's own `octiq` server is on
+either way. Access is read by the same snapshot resolution as the agent
+(`OrchestrationStore::worker_runtime`: the access each attempt of that chat key
+recorded when it was reserved, with the batch or assignee identity agreeing),
+and the launch must itself run at Full. Never read it from the task, the run's
+defaults or the roster: a task reassigned from a Full agent to an Auto one
+leaves the old chat Full and the new chat Auto, and the reverse. A missing or
+mixed snapshot, an unreadable ledger, a batch before its first claim, a front
+desk or a lite chat is isolated, as are workers below Full (their flags are
+byte-identical to before; a Codex agent below Full still opts in to browser and
+computer use with the `desktopTools` checkbox). **Cost:** a chat that keeps the
+person's servers carries its own copy of each (~480 MB a chat was measured with
+the ordinary set, `docs/agent-chat-footprint.md`), so this applies to Full
+workers only. Its first-turn gate (Codex app-server) watches every ENABLED
+server of `codex mcp list` (a disabled one never reports a startup state), with
+the longest `startup_timeout_sec` as bound, capped at 120 s, off every lock.
+
+**A registered Codex agent can keep the person's browser and computer use**
+(`TeamAgent::desktop_tools`, JSON `desktopTools`, default off; Settings →
+Agents' "Keep my browser and computer use", or `agent_register` /
+`agent_update`'s `desktopTools`, shown on the approval card as `Browser and
+computer use: on`). Only a Codex agent may have it on (`team::apply` refuses the
+rest and clears it when the agent moves off Codex). It exists because 7c90613b
+(2026-11-08) took the route away from a worker that had it: the 2026-10-13
+STAR SOCIAL worker made 29 `cua_repl` `js` calls through the person's Brave
+(`backend: chrome, browser_family: brave`, plugin `unified-computer-use`),
+which `--disable plugins` and the per-server `enabled=false` entries stopped.
+What the route needs, checked against codex-cli 0.164 (`codex mcp list --json`
+and `codex app-server`'s `mcpServerStatus/list`, `thread/start`,
+`mcpServer/tool/call`, no model turn):
+
+- `cua_repl` is a server **the `unified-computer-use` plugin** brings
+  (`.mcp.json`), so `--disable plugins` removes it. `node_repl` is defined in the
+  person's `~/.codex/config.toml`; with `--disable plugins` it still starts and
+  lists `js` but is a bare REPL (no `cua` or `browser` global). The route needs
+  the plugins ON, not only the servers.
+- The `BROWSER_USE_ACCESS_*` names in `env_vars` are optional: the server
+  starts, reaches `ready` and runs `js` with none of them set (OctiqFlow's
+  server has none), and `cua_repl`'s own wrapper defaults the executor id to
+  empty. Whether the browser access host accepts the call is decided inside a
+  live turn ("Cannot verify browser access without the current turn" outside
+  one), so the end-to-end proof is the 2026-10-13 worker run, not a probe.
+- An opted-in worker's launch (`codex_worker_desktop`, set in `start_session`
+  only for a Codex orchestration worker, never a front desk, when the worker's
+  agent has it on AND `codex mcp list` names `cua_repl` or `node_repl`) drops
+  `--disable plugins`, keeps `--disable apps`, and leaves exactly those two
+  servers alone; every other inherited server (plugin ones included) is still
+  turned off by name. Off, the flags are byte-identical to before (test). The
+  worker's agent is read through the ledger by the chat's own reservation, never
+  the task's current assignee (`worker_agent_id`: a batch chat is its batch's
+  agent; any other worker chat is the assignee snapshot its attempt was
+  reserved with), then the roster. A task reassigned from plain agent A to
+  opted-in B leaves A's old chat resolving to A in every start path (fresh,
+  queued, resume, relaunch); a missing snapshot, attempts of one chat naming
+  different agents, or a batch whose attempt names another agent is "no", as is
+  any other doubt (ledger or roster unreadable, agent gone). A Claude worker is unchanged; a Claude
+  equivalent would be the person's own `claude-in-chrome` / computer-use MCP
+  server added to the second `--mcp-config` like `playwright`, plus `--chrome`,
+  which no launch passes: not built.
+- Not narrowed: the other installed plugins' skills still load (`-c
+  plugins."<id>".enabled=false` did not change `skills/list`, so nothing is
+  claimed of it). A plugin MCP server absent from `codex mcp list` would also
+  start; none was seen (`mcpServerStatus/list` shows only the three).
+- The first-turn gate (`codex_mcp_ready`) now watches every kept server and
+  waits for the longest `startup_timeout_sec` Codex reports for them (120 s for
+  both in the person's config, capped at 120 s); Codex fails a server itself at
+  that point, which the gate reads, so it never waits longer than Codex does.
 
 **Codex MCP isolation is checked against the real CLI's resolved config, never
 against the `-c` text.** A whole-table `-c mcp_servers.<name>={…}` does NOT
@@ -2052,8 +2126,10 @@ with no entry, a stdio entry, a url entry and a disabled entry, and with
 **Codex discovers MCP tools when a turn starts**, so a worker launch that
 carries the browser on app-server holds its FIRST turn until that server
 settles (`codex_mcp_ready`: the `mcpServer/startupStatus/updated` for the
-server says `ready`, `failed` or `cancelled`; at most 30 s, Codex's own
-`startup_timeout_sec` default). It only delays: failure or timeout starts the
+server says `ready`, `failed` or `cancelled`; at most 30 s for the
+Playwright-only launch, Codex's own `startup_timeout_sec` default, and up to
+120 s, the longest `startup_timeout_sec` Codex lists for a kept server
+(capped), for an opted-in desktop worker). It only delays: failure or timeout starts the
 turn anyway with one `mcp-startup` diagnostics line, and ordinary chats, front
 desks and launches with no entry have no gate. Fresh, resumed and relaunched
 workers share the one start path. **The wait is on a thread of its own, after

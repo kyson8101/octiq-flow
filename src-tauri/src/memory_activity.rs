@@ -1524,6 +1524,7 @@ mod tests {
                     avatar: None,
                     team_id: None,
                     persistent_prompt: None,
+                    desktop_tools: None,
                 },
             )
             .unwrap()

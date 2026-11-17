@@ -27,8 +27,9 @@
 //! (package download) in the order of ten, so the bound leaves headroom for
 //! both.
 //!
-//! Only worker launches that carry the `playwright` entry on the app-server
-//! transport have a gate. `codex exec` has no equivalent: it prints no MCP
+//! Only worker launches that carry the `playwright` entry, or keep the
+//! computer-use servers for an agent that opted in (`desktop_tools`), on the
+//! app-server transport have a gate, and it waits for every one of them. `codex exec` has no equivalent: it prints no MCP
 //! startup state on its stream and takes its prompt as an argument, so the
 //! host has nothing to wait on (see `docs/agent-chat-footprint.md`).
 
@@ -40,6 +41,11 @@ use std::time::{Duration, Instant};
 pub(crate) const BOUND: Duration = Duration::from_secs(30);
 
 const METHOD: &str = "mcpServer/startupStatus/updated";
+
+/// The most a startup timeout from the person's config may stretch the wait
+/// to. The bundled computer-use servers ask for 120 s; a value past this is
+/// treated as this.
+const MOST: Duration = Duration::from_secs(120);
 
 /// Where the watched server stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,49 +67,81 @@ pub(crate) enum Outcome {
 }
 
 pub(crate) struct McpReady {
-    server: String,
-    state: Mutex<Readiness>,
+    /// Every server the first turn waits for, each with where it stands.
+    servers: Mutex<Vec<(String, Readiness)>>,
+    /// The longest `startup_timeout_sec` any of them was given, so the wait
+    /// is never shorter than Codex itself allows (`bound_for`).
+    longest: Duration,
     changed: Condvar,
 }
 
 impl McpReady {
     pub(crate) fn new(server: &str) -> Arc<Self> {
+        Self::watching(&[server.to_owned()], Duration::ZERO)
+    }
+
+    /// Wait for every one of `servers`. `longest` is the longest startup
+    /// timeout Codex gives any of them (zero when none says).
+    pub(crate) fn watching(servers: &[String], longest: Duration) -> Arc<Self> {
         Arc::new(Self {
-            server: server.to_owned(),
-            state: Mutex::new(Readiness::Waiting),
+            servers: Mutex::new(
+                servers
+                    .iter()
+                    .map(|name| (name.clone(), Readiness::Waiting))
+                    .collect(),
+            ),
+            longest,
             changed: Condvar::new(),
         })
     }
 
-    fn set(&self, next: Readiness) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+    /// `base`, or the longest startup timeout of a watched server when that is
+    /// longer: past it Codex has already marked the server `failed`, which the
+    /// wait reads, so waiting longer than it allows cannot produce a tool.
+    pub(crate) fn bound_for(&self, base: Duration) -> Duration {
+        base.max(self.longest.min(MOST))
+    }
+
+    fn names(&self) -> String {
+        let servers = self.servers.lock().unwrap_or_else(|e| e.into_inner());
+        servers
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join("`, `")
+    }
+
+    fn set(&self, server: &str, next: Readiness) {
+        let mut servers = self.servers.lock().unwrap_or_else(|e| e.into_inner());
         // The first word that settles stays: a later `starting` from a
         // restart, or a `closed` after `ready`, changes nothing.
-        if *state == Readiness::Waiting {
-            *state = next;
-            self.changed.notify_all();
+        if let Some((_, state)) = servers.iter_mut().find(|(name, _)| name == server) {
+            if *state == Readiness::Waiting {
+                *state = next;
+                self.changed.notify_all();
+            }
         }
     }
 
-    /// Feed every line the app-server wrote. Anything that is not this
+    /// Feed every line the app-server wrote. Anything that is not a watched
     /// server's startup status is ignored.
     pub(crate) fn observe(&self, message: &Value) {
         if message.get("method").and_then(Value::as_str) != Some(METHOD) {
             return;
         }
         let params = &message["params"];
-        if params.get("name").and_then(Value::as_str) != Some(self.server.as_str()) {
+        let Some(server) = params.get("name").and_then(Value::as_str) else {
             return;
-        }
+        };
         match params.get("status").and_then(Value::as_str) {
-            Some("ready") => self.set(Readiness::Ready),
+            Some("ready") => self.set(server, Readiness::Ready),
             Some(status @ ("failed" | "cancelled")) => {
                 let why = params
                     .get("error")
                     .and_then(Value::as_str)
                     .filter(|why| !why.trim().is_empty())
                     .unwrap_or(status);
-                self.set(Readiness::Failed(why.to_owned()));
+                self.set(server, Readiness::Failed(why.to_owned()));
             }
             _ => {}
         }
@@ -111,27 +149,47 @@ impl McpReady {
 
     /// The app-server's output ended.
     pub(crate) fn close(&self) {
-        self.set(Readiness::Closed);
+        let mut servers = self.servers.lock().unwrap_or_else(|e| e.into_inner());
+        for (_, state) in servers.iter_mut() {
+            if *state == Readiness::Waiting {
+                *state = Readiness::Closed;
+            }
+        }
+        self.changed.notify_all();
     }
 
-    /// Block until the server settles, the process closes or `bound` passes.
+    /// Block until every watched server settles, the process closes or
+    /// `bound` passes.
     pub(crate) fn wait(&self, bound: Duration) -> Outcome {
         let deadline = Instant::now() + bound;
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut servers = self.servers.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            match &*state {
-                Readiness::Ready => return Outcome::Ready,
-                Readiness::Failed(why) => return Outcome::Failed(why.clone()),
-                Readiness::Closed => return Outcome::Closed,
-                Readiness::Waiting => {}
+            if servers
+                .iter()
+                .all(|(_, state)| *state != Readiness::Waiting)
+            {
+                if servers.iter().any(|(_, state)| *state == Readiness::Closed) {
+                    return Outcome::Closed;
+                }
+                let failed = servers.iter().find_map(|(name, state)| match state {
+                    Readiness::Failed(why) => Some((name, why)),
+                    _ => None,
+                });
+                return match failed {
+                    Some((name, why)) if servers.len() > 1 => {
+                        Outcome::Failed(format!("{name}: {why}"))
+                    }
+                    Some((_, why)) => Outcome::Failed(why.clone()),
+                    None => Outcome::Ready,
+                };
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Outcome::TimedOut;
             }
-            state = self
+            servers = self
                 .changed
-                .wait_timeout(state, left)
+                .wait_timeout(servers, left)
                 .unwrap_or_else(|e| e.into_inner())
                 .0;
         }
@@ -152,7 +210,7 @@ pub(crate) struct Hold {
 /// Wait for the gate. Meant for a thread of its own: it holds no lock of the
 /// host's and ends at once when the process closes (a Stop kills it).
 pub(crate) fn hold_first_turn(ready: &McpReady, bound: Duration) -> Hold {
-    let server = &ready.server;
+    let server = ready.names();
     match ready.wait(bound) {
         Outcome::Ready => Hold {
             goes_on: true,
@@ -310,5 +368,62 @@ mod tests {
         ready.observe(&json!({ "id": 1, "result": {} }));
         ready.observe(&json!({ "method": METHOD, "params": { "name": "playwright" } }));
         assert_eq!(ready.wait(Duration::from_millis(20)), Outcome::TimedOut);
+    }
+
+    #[test]
+    fn it_waits_for_every_watched_server_and_names_the_one_that_failed() {
+        let names = [
+            "octiq_playwright".to_owned(),
+            "cua_repl".to_owned(),
+            "node_repl".to_owned(),
+        ];
+        let ready = McpReady::watching(&names, Duration::from_secs(120));
+        ready.observe(&status("octiq_playwright", "ready", None));
+        ready.observe(&status("cua_repl", "ready", None));
+        assert_eq!(
+            ready.wait(Duration::from_millis(30)),
+            Outcome::TimedOut,
+            "one still starting holds the turn"
+        );
+        ready.observe(&status("node_repl", "failed", Some("spawn failed")));
+        assert_eq!(
+            ready.wait(Duration::from_secs(1)),
+            Outcome::Failed("node_repl: spawn failed".into())
+        );
+        let note = hold_first_turn(&ready, Duration::from_secs(1))
+            .note
+            .unwrap();
+        assert!(
+            note.contains("octiq_playwright") && note.contains("cua_repl"),
+            "{note}"
+        );
+        assert!(note.contains("node_repl: spawn failed"), "{note}");
+
+        let all = McpReady::watching(&names, Duration::ZERO);
+        for name in &names {
+            all.observe(&status(name, "ready", None));
+        }
+        assert_eq!(all.wait(Duration::from_secs(1)), Outcome::Ready);
+    }
+
+    #[test]
+    fn the_wait_is_never_shorter_than_codexs_own_startup_timeout() {
+        let one = McpReady::new("playwright");
+        assert_eq!(one.bound_for(BOUND), BOUND, "no timeout said: unchanged");
+        let slow = McpReady::watching(&["node_repl".to_owned()], Duration::from_secs(120));
+        assert_eq!(slow.bound_for(BOUND), Duration::from_secs(120));
+        let short = McpReady::watching(&["x".to_owned()], Duration::from_secs(10));
+        assert_eq!(short.bound_for(BOUND), BOUND);
+        let silly = McpReady::watching(&["x".to_owned()], Duration::from_secs(9999));
+        assert_eq!(silly.bound_for(BOUND), Duration::from_secs(120));
+    }
+
+    #[test]
+    fn a_close_ends_the_wait_for_every_server_still_starting() {
+        let names = ["a".to_owned(), "b".to_owned()];
+        let ready = McpReady::watching(&names, Duration::ZERO);
+        ready.observe(&status("a", "ready", None));
+        ready.close();
+        assert_eq!(ready.wait(Duration::from_secs(1)), Outcome::Closed);
     }
 }

@@ -364,6 +364,12 @@ pub struct TaskAssignee {
 }
 
 /// See `OrchestrationStore::worker_owner`.
+/// What one worker chat was reserved as (`OrchestrationStore::worker_runtime`).
+struct WorkerRuntime {
+    agent_id: String,
+    access: Option<Access>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkerOwner {
     pub assignee: Option<TaskAssignee>,
@@ -2300,6 +2306,82 @@ impl OrchestrationStore {
             .max_by_key(|attempt| attempt.created_at)?;
         let task = inner.data.tasks.get(&attempt.task_id)?;
         Some((task.id.clone(), task.run_id.clone(), task.title.clone()))
+    }
+
+    /// The registered agent a worker chat runs as, from what was reserved for
+    /// THAT chat and never from the task's current assignee, so a reassigned
+    /// task's old chat never speaks for the new agent (`worker_owner` keeps the
+    /// same boundary). A batch's chat is its batch's agent. Any other worker
+    /// chat is its attempt's assignee snapshot. `None` for a chat that is no
+    /// worker, a snapshot the attempt lacks, attempts of one chat that name
+    /// different agents, or a batch whose attempts name another agent than the
+    /// batch. A ledger that cannot be read answers `None`: a caller that widens
+    /// what a worker may do treats that as "no". Call sites that care which
+    /// rule applies (desktop tools today, possibly access later) sit on this
+    /// one resolution.
+    pub(crate) fn worker_agent_id(&self, chat_key: &str) -> Option<String> {
+        self.worker_runtime(chat_key)
+            .map(|runtime| runtime.agent_id)
+    }
+
+    /// Whether this worker chat's EXACT attempts were reserved at full access:
+    /// the access each attempt recorded when it was reserved (the settings the
+    /// person approved), through the same snapshot resolution as
+    /// `worker_agent_id`. Never the task's, the run's or the roster's current
+    /// value. Missing, mixed or conflicting is "no".
+    pub(crate) fn worker_is_full_access(&self, chat_key: &str) -> bool {
+        self.worker_runtime(chat_key)
+            .is_some_and(|runtime| runtime.access == Some(Access::Full))
+    }
+
+    /// What a worker chat was reserved as, from its own attempts and its
+    /// batch alone: the one resolution every launch-time widening reads.
+    /// `access` is `None` where the chat has no attempt yet (a batch before
+    /// its first claim) or its attempts were reserved at different levels.
+    fn worker_runtime(&self, chat_key: &str) -> Option<WorkerRuntime> {
+        let inner = self.inner.lock().ok()?;
+        if inner.load_error.is_some() {
+            return None;
+        }
+        let snapshots = || {
+            inner
+                .data
+                .attempts
+                .values()
+                .filter(|attempt| attempt.worker_chat_key == chat_key)
+        };
+        let access = {
+            let mut levels = snapshots().map(|attempt| attempt.access);
+            levels
+                .next()
+                .filter(|first| levels.all(|level| level == *first))
+        };
+        if let Some(batch) = inner.data.batches.iter().find(|b| {
+            inner
+                .data
+                .batch_launches
+                .get(&b.id)
+                .is_some_and(|l| l.worker_chat_key == chat_key)
+        }) {
+            // A batch's worker is the batch's agent; an attempt of the chat
+            // that was reserved for another agent is a conflict.
+            let conflict = snapshots().any(|attempt| {
+                attempt
+                    .assignee
+                    .as_ref()
+                    .is_some_and(|a| a.id != batch.agent_id)
+            });
+            return (!conflict).then(|| WorkerRuntime {
+                agent_id: batch.agent_id.clone(),
+                access,
+            });
+        }
+        let mut ids = snapshots().map(|attempt| attempt.assignee.as_ref().map(|a| a.id.as_str()));
+        let first = ids.next()??;
+        ids.all(|id| id == Some(first)).then(|| WorkerRuntime {
+            agent_id: first.to_string(),
+            access,
+        })
     }
 
     pub fn worker_assignment(

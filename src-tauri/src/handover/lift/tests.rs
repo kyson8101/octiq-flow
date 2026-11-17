@@ -74,6 +74,7 @@ impl World {
                 avatar: None,
                 team_id: None,
                 persistent_prompt: None,
+                desktop_tools: None,
             },
         )
         .expect("the agent is saved")

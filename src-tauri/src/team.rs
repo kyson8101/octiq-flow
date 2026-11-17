@@ -62,6 +62,13 @@ pub struct TeamAgent {
     /// Empty: none. Absent in files written before it existed.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub persistent_prompt: String,
+    /// Codex only: the agent's orchestration workers keep the person's
+    /// browser and computer-use route (the `cua_repl` / `node_repl` servers and
+    /// the plugins that carry them) instead of the isolation every worker
+    /// starts with. It widens what a worker can do, so the person approves it
+    /// on the card. Off in files written before it existed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub desktop_tools: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -141,6 +148,10 @@ pub struct TeamDraft {
     /// text replaces it.
     #[serde(default)]
     pub persistent_prompt: Option<String>,
+    /// Absent keeps the current setting; `true` or `false` sets it. Only a
+    /// Codex agent may have it on (`apply`).
+    #[serde(default)]
+    pub desktop_tools: Option<bool>,
 }
 
 /// A chat a task was handed to: the host needs it to know that a run the chat
@@ -454,6 +465,11 @@ fn apply(
         Some(team) => Some(Some(team.to_owned())),
     };
 
+    if draft.desktop_tools == Some(true) && draft.agent != ChatAgent::Codex {
+        return Err(
+            "Browser and computer use for workers is only available to a Codex agent.".into(),
+        );
+    }
     let id = draft.id.filter(|id| !id.is_empty());
     if let (Some(me), Some(expected)) = (&id, expected) {
         let current = stored
@@ -601,6 +617,9 @@ fn apply(
                 team_id,
                 persistent_prompt: persistent_prompt
                     .unwrap_or_else(|| existing.persistent_prompt.clone()),
+                // Moving off Codex ends it: nothing else could use it.
+                desktop_tools: draft.agent == ChatAgent::Codex
+                    && draft.desktop_tools.unwrap_or(existing.desktop_tools),
                 created_at: existing.created_at,
                 // Never the same stamp twice, so a card made against one
                 // version is never taken for the next.
@@ -623,6 +642,7 @@ fn apply(
                 avatar: avatar.flatten(),
                 team_id,
                 persistent_prompt: persistent_prompt.unwrap_or_default(),
+                desktop_tools: draft.desktop_tools.unwrap_or(false),
                 created_at: now,
                 updated_at: now,
             };
@@ -1621,6 +1641,7 @@ pub fn create_front_desk(path: &Path, draft: FrontDeskDraft) -> Result<TeamAgent
             avatar: None,
             team_id: None,
             persistent_prompt: None,
+            desktop_tools: None,
         },
     )?;
     set_front_desk(path, Some(&saved.id))?;
@@ -3238,6 +3259,7 @@ mod tests {
             avatar: None,
             team_id: None,
             persistent_prompt: None,
+            desktop_tools: None,
         }
     }
 
@@ -3284,6 +3306,94 @@ mod tests {
         assert!(continuable_front_desk_chats(&path).unwrap().is_empty());
         assert_eq!(front_desk_chats(&path).len(), 1);
         assert!(dismiss_desk_chat(&path, "chat:other").is_err());
+    }
+
+    fn codex_draft(name: &str) -> TeamDraft {
+        TeamDraft {
+            agent: ChatAgent::Codex,
+            model: "gpt-5.6-terra".into(),
+            ..draft(name, None)
+        }
+    }
+
+    #[test]
+    fn desktop_tools_start_off_and_change_only_when_the_draft_says() {
+        let path = temp();
+        let made = save(&path, codex_draft("Social")).unwrap();
+        assert!(!made.desktop_tools, "default off");
+        // Not written for an agent that has it off: older files read the same.
+        assert!(!std::fs::read_to_string(&*path)
+            .unwrap()
+            .contains("desktopTools"));
+        let on = save(
+            &path,
+            TeamDraft {
+                id: Some(made.id.clone()),
+                desktop_tools: Some(true),
+                ..codex_draft("Social")
+            },
+        )
+        .unwrap();
+        assert!(on.desktop_tools);
+        assert!(std::fs::read_to_string(&*path)
+            .unwrap()
+            .contains("\"desktopTools\": true"));
+        // Absent keeps it, as the avatar and the prompt are kept.
+        let kept = save(
+            &path,
+            TeamDraft {
+                id: Some(made.id.clone()),
+                role: "changed".into(),
+                ..codex_draft("Social")
+            },
+        )
+        .unwrap();
+        assert!(kept.desktop_tools && kept.role == "changed");
+        let off = save(
+            &path,
+            TeamDraft {
+                id: Some(made.id.clone()),
+                desktop_tools: Some(false),
+                ..codex_draft("Social")
+            },
+        )
+        .unwrap();
+        assert!(!off.desktop_tools);
+    }
+
+    #[test]
+    fn desktop_tools_are_for_a_codex_agent_only_and_end_when_it_leaves_codex() {
+        let path = temp();
+        let refused = save(
+            &path,
+            TeamDraft {
+                desktop_tools: Some(true),
+                ..draft("Claude one", None)
+            },
+        )
+        .unwrap_err();
+        assert!(
+            refused.contains("only available to a Codex agent"),
+            "{refused}"
+        );
+        let made = save(
+            &path,
+            TeamDraft {
+                desktop_tools: Some(true),
+                ..codex_draft("Social")
+            },
+        )
+        .unwrap();
+        assert!(made.desktop_tools);
+        let moved = save(
+            &path,
+            TeamDraft {
+                id: Some(made.id),
+                ..draft("Social", None)
+            },
+        )
+        .unwrap();
+        assert!(!moved.desktop_tools, "a Claude agent has nothing to keep");
     }
 
     #[test]
@@ -4901,6 +5011,7 @@ mod tests {
     fn standing(name: &str, project: Option<&str>, text: &str) -> TeamDraft {
         TeamDraft {
             persistent_prompt: Some(text.into()),
+            desktop_tools: None,
             ..draft(name, project)
         }
     }
@@ -5166,6 +5277,7 @@ mod tests {
             &path,
             TeamDraft {
                 persistent_prompt: Some(hidden.into()),
+                desktop_tools: None,
                 team_id: Some(web.id.clone()),
                 ..under("Report", None, &manager)
             },
@@ -5175,6 +5287,7 @@ mod tests {
             &path,
             TeamDraft {
                 persistent_prompt: Some(hidden.into()),
+                desktop_tools: None,
                 ..under("Other", None, &lead)
             },
         )

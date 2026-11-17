@@ -47,12 +47,29 @@ orchestration operations, so workers do not need another copy of those servers.
   arrived, an unlisted one did not); Claude's file is 0600. `CLAUDE_CONFIG_DIR`
   is resolved as the launch resolves it (a leading `~` expands). Nothing is
   added, and the launch is never refused, when the person has no usable
-  definition.   the person has no definition. Codex's `cua_repl` / `unified-computer-use` /
-  `browser@openai-bundled` / `node_repl` are not given to workers:
-  `cua_repl`'s browser surface needs the Codex desktop app's browser access
-  host (`The browser access host is unavailable` from OctiqFlow, also in an
-  unrestricted `codex app-server`) and its computer surface drives the person's
-  desktop.
+  definition. Codex's `cua_repl` / `unified-computer-use` / `browser@openai-bundled`
+  / `node_repl` route is not given to workers **unless their registered agent opted
+  in** (`desktopTools`, below); the 2026-11-08 text that called it unavailable from
+  OctiqFlow was wrong: the 2026-10-13 STAR SOCIAL worker used `cua_repl` against
+  the person's Brave from an OctiqFlow worker.
+- **Opt-in browser and computer use for a Codex agent's workers.** codex-cli
+  0.164 measured with `codex app-server` and no model turn. Today's worker flags
+  (`--disable apps --disable plugins`, every listed server off): `mcpServerStatus/list`
+  shows `codex_app`, `cua_repl`, `node_repl` with no tools. `--disable plugins`
+  with only `cua_repl` off: `node_repl` starts (`starting` → `ready`) with `js`,
+  `js_add_node_module_dir`, `js_reset`, `turn_ended`, but `cua` and `browser` are
+  `undefined` in it. `--disable apps` only (plugins on) with `codex_app` off:
+  `cua_repl` (`js`, `js_reset`, `turn_ended`) and `node_repl` both reach `ready`
+  within about five seconds and `cua_repl`'s `js` returns the Computer Use API
+  (`cua.getBrowser`, `listBrowsers`, `getApp`, …). None of it needed a
+  `BROWSER_USE_ACCESS_*` variable (the OctiqFlow-run shell has none). A direct
+  `cua.listBrowsers()` outside a turn answers `Cannot verify browser access
+  without the current turn`, so a live proof needs a paid turn and was not made.
+  The opted-in launch therefore leaves out only `--disable plugins` and the two
+  `enabled=false` entries; its first turn is held until both are `ready` (or
+  Codex's own `startup_timeout_sec`, 120 s here, passes). `-c plugins."<id>".enabled=false`
+  did not remove an installed plugin's skills, so other plugins' skills load for an
+  opted-in worker (about seven more skill names; no tools).
 - **Codex builds a turn's tool list when the turn starts.** Measured against
   codex-cli 0.164.0 through `codex app-server` (`mcpServer/startupStatus/updated`
   then `thread/start` and `turn/start`): the `npx` server reached `ready` a few
@@ -65,9 +82,12 @@ orchestration operations, so workers do not need another copy of those servers.
   cold; a later turn of the thread has it.
 - **The host waits for the server before the first app-server turn**
   (`codex_mcp_ready.rs`). Only a worker launch that carries the `playwright`
-  entry has the gate; the reader thread watches `mcpServer/startupStatus/updated`
-  for that name and the start path holds the first `turn/start` until it says
-  `ready` (or `failed` / `cancelled`), the process closes, or 30 s pass. 30 s is
+  entry, or keeps `cua_repl` / `node_repl` for an opted-in agent, has the gate; the
+  reader thread watches `mcpServer/startupStatus/updated` for those names (all of
+  them) and the start path holds the first `turn/start` until it says
+  `ready` (or `failed` / `cancelled`), the process closes, or the limit passes: 30 s for the Playwright-only launch, up to 120 s (the
+  longest `startup_timeout_sec` Codex lists for a kept server, capped) for an
+  opted-in desktop worker. 30 s is
   Codex's own default `startup_timeout_sec` for an MCP server: past it Codex has
   already marked the server failed, so waiting longer cannot help. Any
   non-ready end starts the turn anyway and writes one `mcp-startup` line to
@@ -108,6 +128,22 @@ orchestration operations, so workers do not need another copy of those servers.
 - Pi is already one-shot and has no OctiqFlow MCP integration. Antigravity's
   installed CLI has no per-launch strict MCP flag; its personal settings are
   not rewritten to imitate one. Its existing plugin/access rules are unchanged.
+
+- **Full-access workers keep the person's whole tool set.** A worker whose exact
+  attempt was reserved, and is launched, at Full gets what an ordinary chat of
+  its provider gets: Claude without `--strict-mcp-config`; Codex with no
+  `--disable apps`, no `--disable plugins`, no per-server disable and no host
+  browser entry. OctiqFlow's `octiq` server stays. The access comes from that
+  attempt's recorded settings (the same snapshot as its agent), never from the
+  task, the run's defaults or the roster; missing or mixed means isolated, and
+  front desks are never given it. Memory: every kept server is one more
+  subprocess in that chat's bucket (a chat is ~480 MB with the ordinary set; nine
+  left open held 4.3 GB), so only Full workers pay it; workers below Full are
+  unchanged. Checked against codex-cli 0.164: `codex mcp list --json` under the
+  Full flags lists `cua_repl` and `node_repl` enabled, under the isolated flags
+  disabled; `codex_app` is `enabled: false` in the person's config either way.
+  The first turn waits for every enabled server (a disabled one reports no
+  startup state), bounded by the longest `startup_timeout_sec` (120 s cap).
 
 No approval rule, `HOST_BOOKKEEPING` entry, capability, writable root or Windows
 launch quoting rule changes. Front desks still expose only `route_chat`.
