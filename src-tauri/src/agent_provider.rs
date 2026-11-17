@@ -182,6 +182,14 @@ pub struct AgentCommand<'a> {
     /// and the plugins that carry them). False leaves the launch exactly as
     /// every worker's. Only set when one of those servers exists.
     pub codex_worker_desktop: bool,
+    /// An orchestration worker whose exact attempt runs at full access
+    /// (`OrchestrationStore::worker_is_full_access`) gets the person's whole
+    /// tool set, the MCP servers, plugins and apps an ordinary chat of its
+    /// provider gets: Claude without `--strict-mcp-config`, Codex without
+    /// `--disable apps`, `--disable plugins` or any per-server disable. OctiqFlow's own
+    /// `octiq` server is on either way. Never set for a front desk, a lite
+    /// chat or anything that is not an orchestration worker.
+    pub worker_full_tools: bool,
     /// A Claude worker's second MCP config: the person's own definitions of
     /// the servers in `CLAUDE_WORKER_MCP_ON`, nothing else (`worker_browser`).
     pub claude_worker_mcp: Option<&'a Path>,
@@ -210,6 +218,9 @@ pub struct CodexMcpServer {
     /// Codex's own `startup_timeout_sec` for it, whole seconds, when the
     /// listing says one.
     pub startup_timeout_secs: Option<u64>,
+    /// Whether Codex starts it (`enabled` in the listing; true when the
+    /// listing does not say). A disabled server never reports a startup state.
+    pub enabled: bool,
 }
 
 /// The Codex servers that carry the person's browser and computer use: the
@@ -227,6 +238,41 @@ pub fn codex_desktop_servers(servers: &[CodexMcpServer]) -> Vec<&CodexMcpServer>
         .iter()
         .filter(|s| !s.remote && CODEX_DESKTOP_SERVERS.contains(&s.name.as_str()))
         .collect()
+}
+
+/// The servers a Codex worker's first turn waits for, and the longest
+/// `startup_timeout_sec` any of them was given (zero when none says):
+/// the host's own browser entry; for a full-access worker every ENABLED server
+/// of the person's list (a disabled one never reports a startup state); for
+/// an opted-in desktop worker the desktop servers. Names are not repeated.
+pub fn codex_gate_servers(
+    host_browser: Option<&str>,
+    full: bool,
+    desktop: bool,
+    servers: &[CodexMcpServer],
+) -> (Vec<String>, std::time::Duration) {
+    let mut watched: Vec<String> = Vec::new();
+    let mut longest = std::time::Duration::ZERO;
+    let mut add = |name: &str, secs: Option<u64>| {
+        if !watched.iter().any(|n| n == name) {
+            watched.push(name.to_owned());
+        }
+        longest = longest.max(std::time::Duration::from_secs(secs.unwrap_or(0)));
+    };
+    if let Some(name) = host_browser {
+        add(name, None);
+    }
+    if full {
+        for server in servers.iter().filter(|s| s.enabled) {
+            add(&server.name, server.startup_timeout_secs);
+        }
+    }
+    if desktop {
+        for server in codex_desktop_servers(servers) {
+            add(&server.name, server.startup_timeout_secs);
+        }
+    }
+    (watched, longest)
 }
 
 /// The person's Codex MCP servers, read from `codex mcp list --json`. Codex
@@ -268,6 +314,10 @@ pub fn codex_front_desk_mcp_servers(json: &str) -> Result<Vec<CodexMcpServer>, S
             name: name.to_owned(),
             remote,
             startup_timeout_secs,
+            enabled: server
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
         });
     }
     Ok(servers)
@@ -680,7 +730,11 @@ impl AgentProvider for ClaudeProvider {
         // that built-in tool is removed in favour of OctiqFlow's MCP tool.
         cmd.push_str(" --permission-prompt-tool stdio");
         cmd.push_str(" --disallowedTools AskUserQuestion");
-        if request.orchestration_worker && !request.front_desk && !request.lite {
+        if request.orchestration_worker
+            && !request.front_desk
+            && !request.lite
+            && !request.worker_full_tools
+        {
             // Keep settings/hooks/skills and leave the system prompt last:
             // the Windows launch-line guard checks its final outage guidance.
             cmd.push_str(" --strict-mcp-config");
@@ -971,7 +1025,7 @@ fn codex_exec_command(request: &AgentCommand<'_>, provider: &CodexProvider) -> S
     append_codex_mcp(&mut cmd, request.mcp_config, request.front_desk);
     if request.front_desk {
         append_codex_front_desk(&mut cmd, request.codex_user_mcp);
-    } else if request.orchestration_worker {
+    } else if request.orchestration_worker && !request.worker_full_tools {
         append_codex_worker_mcp(
             &mut cmd,
             request.codex_user_mcp,
@@ -1077,7 +1131,7 @@ impl AgentProvider for CodexProvider {
             append_codex_mcp(&mut cmd, request.mcp_config, request.front_desk);
             if request.front_desk {
                 append_codex_front_desk(&mut cmd, request.codex_user_mcp);
-            } else if request.orchestration_worker {
+            } else if request.orchestration_worker && !request.worker_full_tools {
                 append_codex_worker_mcp(
                     &mut cmd,
                     request.codex_user_mcp,
@@ -2099,6 +2153,7 @@ pub(crate) mod tests {
             codex_user_mcp: &[],
             codex_worker_playwright: None,
             codex_worker_desktop: false,
+            worker_full_tools: false,
             claude_worker_mcp: None,
             preferences: None,
         })
@@ -2348,6 +2403,7 @@ pub(crate) mod tests {
             codex_user_mcp: &[],
             codex_worker_playwright: None,
             codex_worker_desktop: false,
+            worker_full_tools: false,
             claude_worker_mcp: None,
             preferences: None,
         });
@@ -2375,6 +2431,7 @@ pub(crate) mod tests {
             codex_user_mcp: &[],
             codex_worker_playwright: None,
             codex_worker_desktop: false,
+            worker_full_tools: false,
             claude_worker_mcp: None,
             preferences: None,
         });
@@ -2423,6 +2480,7 @@ pub(crate) mod tests {
             codex_user_mcp: servers,
             codex_worker_playwright: None,
             codex_worker_desktop: false,
+            worker_full_tools: false,
             claude_worker_mcp: None,
             preferences: None,
         }
@@ -2468,11 +2526,13 @@ pub(crate) mod tests {
                 name: "node_repl".into(),
                 remote: false,
                 startup_timeout_secs: None,
+                enabled: true,
             },
             CodexMcpServer {
                 name: "sentry".into(),
                 remote: true,
                 startup_timeout_secs: None,
+                enabled: true,
             },
         ]
     }
@@ -2605,6 +2665,7 @@ pub(crate) mod tests {
             lite: false,
             codex_worker_playwright: playwright,
             codex_worker_desktop: false,
+            worker_full_tools: false,
             ..codex_request(false, servers)
         }
     }
@@ -2656,6 +2717,7 @@ pub(crate) mod tests {
             name: name.into(),
             remote,
             startup_timeout_secs: secs,
+            enabled: true,
         };
         vec![
             server("codex_app", false, Some(10)),
@@ -2698,6 +2760,7 @@ pub(crate) mod tests {
         let servers = desktop_servers();
         let on = AgentCommand {
             codex_worker_desktop: true,
+            worker_full_tools: false,
             ..browser_worker(&servers, None)
         };
         for line in [CODEX.build_command(&on), codex_exec_command(&on, &CODEX)] {
@@ -2725,6 +2788,7 @@ pub(crate) mod tests {
         let browser = browser();
         let both = AgentCommand {
             codex_worker_desktop: true,
+            worker_full_tools: false,
             ..browser_worker(&servers, Some(&browser))
         };
         let line = CODEX.build_command(&both);
@@ -2734,6 +2798,7 @@ pub(crate) mod tests {
         let desk = AgentCommand {
             front_desk: true,
             codex_worker_desktop: true,
+            worker_full_tools: false,
             ..browser_worker(&servers, None)
         };
         let line = CODEX.build_command(&desk);
@@ -2764,6 +2829,7 @@ pub(crate) mod tests {
             name: "cua_repl".into(),
             remote: true,
             startup_timeout_secs: None,
+            enabled: true,
         }];
         assert!(codex_desktop_servers(&remote).is_empty());
     }
@@ -2818,6 +2884,7 @@ pub(crate) mod tests {
             name: "playwright".into(),
             remote: false,
             startup_timeout_secs: None,
+            enabled: true,
         });
         let browser = browser();
         let with = codex_exec_command(&browser_worker(&servers, Some(&browser)), &CODEX);
@@ -2836,12 +2903,160 @@ pub(crate) mod tests {
             name: "playwright".into(),
             remote: true,
             startup_timeout_secs: None,
+            enabled: true,
         });
         // Without a definition of the person's, Codex's own stays off too.
         let without = codex_exec_command(&browser_worker(&servers, None), &CODEX);
         assert!(
             without.contains("mcp_servers.playwright={command=\"false\",enabled=false}"),
             "{without}"
+        );
+    }
+
+    /// A full-access worker gets the person's whole tool set, as an ordinary
+    /// chat of its provider has it: no isolation flag, no per-server disable,
+    /// no host copy of the browser (the person's own is inherited). OctiqFlow's
+    /// own `octiq` server is on either way.
+    #[test]
+    fn a_full_access_worker_keeps_the_persons_whole_tool_set_on_both_providers() {
+        let servers = desktop_servers();
+        let browser = browser();
+        let full = AgentCommand {
+            access: Some(Access::Full),
+            worker_full_tools: true,
+            ..browser_worker(&servers, Some(&browser))
+        };
+        for line in [
+            CODEX.build_command(&full),
+            codex_exec_command(&full, &CODEX),
+        ] {
+            assert!(!line.contains("--disable apps"), "{line}");
+            assert!(!line.contains("--disable plugins"), "{line}");
+            assert!(!line.contains("enabled=false"), "{line}");
+            assert!(!line.contains("octiq_playwright"), "{line}");
+            for name in ["codex_app", "cua_repl", "node_repl", "sentry"] {
+                assert!(
+                    !line.contains(&format!("mcp_servers.{name}=")),
+                    "{name}: {line}"
+                );
+            }
+            assert!(
+                line.contains(
+                    "mcp_servers.octiq.tools.orchestration_worker_report.approval_mode=\"approve\""
+                ),
+                "ours stays: {line}"
+            );
+        }
+        let claude = CLAUDE.build_command(&full);
+        assert!(!claude.contains("--strict-mcp-config"), "{claude}");
+        assert!(
+            claude.contains("--mcp-config 'octiq-ask.json'"),
+            "ours stays: {claude}"
+        );
+        // The worker browser file stays beside it.
+        let file = Path::new("/tmp/worker-browser.json");
+        let with_file = AgentCommand {
+            claude_worker_mcp: Some(file),
+            ..full
+        };
+        let claude = CLAUDE.build_command(&with_file);
+        assert!(
+            claude.contains("--mcp-config '/tmp/worker-browser.json'"),
+            "{claude}"
+        );
+        assert!(!claude.contains("--strict-mcp-config"), "{claude}");
+    }
+
+    /// Below Full nothing moves: the flag is simply false, so the text is the
+    /// one every worker had before.
+    #[test]
+    fn below_full_access_a_workers_flags_are_byte_identical_to_the_isolated_launch() {
+        let servers = desktop_servers();
+        let browser = browser();
+        for access in [Access::Read, Access::Manual, Access::Edits, Access::Auto] {
+            let base = AgentCommand {
+                access: Some(access),
+                ..browser_worker(&servers, Some(&browser))
+            };
+            for line in [
+                CODEX.build_command(&base),
+                codex_exec_command(&base, &CODEX),
+            ] {
+                assert!(line.contains(" --disable apps --disable plugins"), "{line}");
+                assert!(line.contains("mcp_servers.octiq_playwright="), "{line}");
+                assert!(
+                    line.contains("mcp_servers.cua_repl={command=\"false\",enabled=false}"),
+                    "{line}"
+                );
+            }
+            assert!(CLAUDE.build_command(&base).contains(" --strict-mcp-config"));
+        }
+    }
+
+    /// The flag is the host's to set for a worker alone: a front desk and a
+    /// lite chat stay isolated even when it is handed in.
+    #[test]
+    fn a_front_desk_or_lite_chat_stays_isolated_whatever_the_flag_says() {
+        let servers = desktop_servers();
+        let desk = AgentCommand {
+            access: Some(Access::Full),
+            worker_full_tools: true,
+            orchestration_worker: true,
+            ..codex_request(true, &servers)
+        };
+        for line in [
+            CODEX.build_command(&desk),
+            codex_exec_command(&desk, &CODEX),
+        ] {
+            assert!(line.contains(" --disable plugins"), "{line}");
+            assert!(
+                line.contains("mcp_servers.cua_repl={command=\"false\",enabled=false}"),
+                "{line}"
+            );
+        }
+        let claude = CLAUDE.build_command(&desk);
+        assert!(claude.contains("--strict-mcp-config"), "{claude}");
+        assert!(claude.contains("--tools ''"), "{claude}");
+        let lite = AgentCommand {
+            lite: true,
+            access: Some(Access::Full),
+            worker_full_tools: true,
+            ..browser_worker(&servers, None)
+        };
+        assert!(CLAUDE.build_command(&lite).contains("--strict-mcp-config"));
+    }
+
+    #[test]
+    fn the_first_turn_gate_watches_what_a_launch_keeps() {
+        use std::time::Duration;
+        let mut servers = desktop_servers();
+        servers[0].enabled = false; // codex_app: disabled, never reports
+                                    // Isolated, nothing kept: no gate.
+        assert_eq!(
+            codex_gate_servers(None, false, false, &servers),
+            (Vec::<String>::new(), Duration::ZERO)
+        );
+        // Full: every enabled server, the longest timeout, no repeats.
+        let (names, longest) = codex_gate_servers(Some("octiq_playwright"), true, true, &servers);
+        assert_eq!(
+            names,
+            ["octiq_playwright", "cua_repl", "node_repl", "sentry"]
+        );
+        assert_eq!(longest, Duration::from_secs(120));
+        // Desktop alone: the two desktop servers only.
+        let (names, _) = codex_gate_servers(None, false, true, &servers);
+        assert_eq!(names, ["cua_repl", "node_repl"]);
+    }
+
+    #[test]
+    fn the_listing_says_whether_a_server_is_enabled() {
+        let json = r#"[{"name":"codex_app","enabled":false,"transport":{"type":"stdio"},"startup_timeout_sec":10.0},
+            {"name":"cua_repl","enabled":true,"transport":{"type":"stdio"},"startup_timeout_sec":120.0},
+            {"name":"old","transport":{"type":"stdio"}}]"#;
+        let servers = codex_front_desk_mcp_servers(json).unwrap();
+        assert_eq!(
+            servers.iter().map(|s| s.enabled).collect::<Vec<_>>(),
+            [false, true, true]
         );
     }
 
@@ -2854,6 +3069,7 @@ pub(crate) mod tests {
         let desk = AgentCommand {
             codex_worker_playwright: Some(&entry),
             codex_worker_desktop: false,
+            worker_full_tools: false,
             ..codex_request(true, &servers)
         };
         for line in [
@@ -2866,6 +3082,7 @@ pub(crate) mod tests {
         let ordinary = AgentCommand {
             codex_worker_playwright: Some(&entry),
             codex_worker_desktop: false,
+            worker_full_tools: false,
             ..codex_request(false, &servers)
         };
         for line in [
@@ -2968,16 +3185,19 @@ pub(crate) mod tests {
                     name: "chatgpt-bridge".into(),
                     remote: false,
                     startup_timeout_secs: None,
+                    enabled: true,
                 },
                 CodexMcpServer {
                     name: "codex_app".into(),
                     remote: false,
                     startup_timeout_secs: None,
+                    enabled: false,
                 },
                 CodexMcpServer {
                     name: "sentry".into(),
                     remote: true,
                     startup_timeout_secs: None,
+                    enabled: true,
                 },
             ],
             "ours is set on the command line; a disabled one is turned off all the same"
@@ -3028,6 +3248,7 @@ pub(crate) mod tests {
             codex_user_mcp: &[],
             codex_worker_playwright: None,
             codex_worker_desktop: false,
+            worker_full_tools: false,
             claude_worker_mcp: None,
             preferences: None,
         });
@@ -3062,6 +3283,7 @@ pub(crate) mod tests {
             codex_user_mcp: &[],
             codex_worker_playwright: None,
             codex_worker_desktop: false,
+            worker_full_tools: false,
             claude_worker_mcp: None,
             preferences: None,
         });
@@ -3161,6 +3383,7 @@ pub(crate) mod tests {
                     codex_user_mcp: &[],
                     codex_worker_playwright: None,
                     codex_worker_desktop: false,
+                    worker_full_tools: false,
                     claude_worker_mcp: None,
                     preferences: None,
                 });
@@ -3227,6 +3450,7 @@ pub(crate) mod tests {
             codex_user_mcp: &[],
             codex_worker_playwright: None,
             codex_worker_desktop: false,
+            worker_full_tools: false,
             claude_worker_mcp: None,
             preferences: None,
         });
@@ -3418,6 +3642,7 @@ pub(crate) mod tests {
             codex_user_mcp: &[],
             codex_worker_playwright: None,
             codex_worker_desktop: false,
+            worker_full_tools: false,
             claude_worker_mcp: None,
             preferences: None,
         }

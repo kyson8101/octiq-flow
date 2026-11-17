@@ -129,6 +129,22 @@ orchestration operations, so workers do not need another copy of those servers.
   installed CLI has no per-launch strict MCP flag; its personal settings are
   not rewritten to imitate one. Its existing plugin/access rules are unchanged.
 
+- **Full-access workers keep the person's whole tool set.** A worker whose exact
+  attempt was reserved, and is launched, at Full gets what an ordinary chat of
+  its provider gets: Claude without `--strict-mcp-config`; Codex with no
+  `--disable apps`, no `--disable plugins`, no per-server disable and no host
+  browser entry. OctiqFlow's `octiq` server stays. The access comes from that
+  attempt's recorded settings (the same snapshot as its agent), never from the
+  task, the run's defaults or the roster; missing or mixed means isolated, and
+  front desks are never given it. Memory: every kept server is one more
+  subprocess in that chat's bucket (a chat is ~480 MB with the ordinary set; nine
+  left open held 4.3 GB), so only Full workers pay it; workers below Full are
+  unchanged. Checked against codex-cli 0.164: `codex mcp list --json` under the
+  Full flags lists `cua_repl` and `node_repl` enabled, under the isolated flags
+  disabled; `codex_app` is `enabled: false` in the person's config either way.
+  The first turn waits for every enabled server (a disabled one reports no
+  startup state), bounded by the longest `startup_timeout_sec` (120 s cap).
+
 No approval rule, `HOST_BOOKKEEPING` entry, capability, writable root or Windows
 launch quoting rule changes. Front desks still expose only `route_chat`.
 

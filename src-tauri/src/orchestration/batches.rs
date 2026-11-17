@@ -1195,22 +1195,20 @@ mod tests {
         );
         store
             .mutate(|data| {
-                data.attempts.get_mut(&attempts[0].id).unwrap().assignee =
-                    Some(TaskAssignee {
-                        id: "agent_other".into(),
-                        name: "Other".into(),
-                    });
+                data.attempts.get_mut(&attempts[0].id).unwrap().assignee = Some(TaskAssignee {
+                    id: "agent_other".into(),
+                    name: "Other".into(),
+                });
                 Ok(())
             })
             .unwrap();
         assert_eq!(store.worker_agent_id(&runtime.worker_chat_key), None);
         store
             .mutate(|data| {
-                data.attempts.get_mut(&attempts[0].id).unwrap().assignee =
-                    Some(TaskAssignee {
-                        id: "agent_test".into(),
-                        name: "Test".into(),
-                    });
+                data.attempts.get_mut(&attempts[0].id).unwrap().assignee = Some(TaskAssignee {
+                    id: "agent_test".into(),
+                    name: "Test".into(),
+                });
                 Ok(())
             })
             .unwrap();

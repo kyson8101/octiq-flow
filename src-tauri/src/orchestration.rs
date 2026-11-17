@@ -364,6 +364,12 @@ pub struct TaskAssignee {
 }
 
 /// See `OrchestrationStore::worker_owner`.
+/// What one worker chat was reserved as (`OrchestrationStore::worker_runtime`).
+struct WorkerRuntime {
+    agent_id: String,
+    access: Option<Access>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkerOwner {
     pub assignee: Option<TaskAssignee>,
@@ -2314,6 +2320,25 @@ impl OrchestrationStore {
     /// rule applies (desktop tools today, possibly access later) sit on this
     /// one resolution.
     pub(crate) fn worker_agent_id(&self, chat_key: &str) -> Option<String> {
+        self.worker_runtime(chat_key)
+            .map(|runtime| runtime.agent_id)
+    }
+
+    /// Whether this worker chat's EXACT attempts were reserved at full access:
+    /// the access each attempt recorded when it was reserved (the settings the
+    /// person approved), through the same snapshot resolution as
+    /// `worker_agent_id`. Never the task's, the run's or the roster's current
+    /// value. Missing, mixed or conflicting is "no".
+    pub(crate) fn worker_is_full_access(&self, chat_key: &str) -> bool {
+        self.worker_runtime(chat_key)
+            .is_some_and(|runtime| runtime.access == Some(Access::Full))
+    }
+
+    /// What a worker chat was reserved as, from its own attempts and its
+    /// batch alone: the one resolution every launch-time widening reads.
+    /// `access` is `None` where the chat has no attempt yet (a batch before
+    /// its first claim) or its attempts were reserved at different levels.
+    fn worker_runtime(&self, chat_key: &str) -> Option<WorkerRuntime> {
         let inner = self.inner.lock().ok()?;
         if inner.load_error.is_some() {
             return None;
@@ -2324,6 +2349,12 @@ impl OrchestrationStore {
                 .attempts
                 .values()
                 .filter(|attempt| attempt.worker_chat_key == chat_key)
+        };
+        let access = {
+            let mut levels = snapshots().map(|attempt| attempt.access);
+            levels
+                .next()
+                .filter(|first| levels.all(|level| level == *first))
         };
         if let Some(batch) = inner.data.batches.iter().find(|b| {
             inner
@@ -2340,11 +2371,17 @@ impl OrchestrationStore {
                     .as_ref()
                     .is_some_and(|a| a.id != batch.agent_id)
             });
-            return (!conflict).then(|| batch.agent_id.clone());
+            return (!conflict).then(|| WorkerRuntime {
+                agent_id: batch.agent_id.clone(),
+                access,
+            });
         }
         let mut ids = snapshots().map(|attempt| attempt.assignee.as_ref().map(|a| a.id.as_str()));
         let first = ids.next()??;
-        ids.all(|id| id == Some(first)).then(|| first.to_string())
+        ids.all(|id| id == Some(first)).then(|| WorkerRuntime {
+            agent_id: first.to_string(),
+            access,
+        })
     }
 
     pub fn worker_assignment(

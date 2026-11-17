@@ -3652,6 +3652,7 @@ fn build_command_with_context(
         codex_user_mcp: &[],
         codex_worker_playwright: None,
         codex_worker_desktop: false,
+        worker_full_tools: false,
         claude_worker_mcp: None,
         preferences: None,
     })
@@ -4716,12 +4717,25 @@ fn start_session_with_recovery(
     } else {
         Vec::new()
     };
+    // A worker whose exact attempt was reserved at full access, and is
+    // launched at it, gets the person's whole tool set (`AgentCommand::
+    // worker_full_tools`). Both Claude and Codex; never a front desk; any
+    // doubt (an unreadable ledger, no snapshot, mixed levels) leaves the
+    // worker isolated as before.
+    let worker_full_tools = orchestration_worker
+        && !front_desk
+        && access == Some(Access::Full)
+        && matches!(agent, ChatAgent::Claude | ChatAgent::Codex)
+        && manager.orchestrations.worker_is_full_access(&key);
     // The one browser a worker keeps: the person's own `playwright`, read from
     // their Claude settings. Claude takes it as a second config file, Codex as
     // one whole `-c` entry. Never an error: no definition, no browser.
+    // (A full-access Codex worker inherits the person's `playwright` itself,
+    // so the host's copy would only duplicate it.)
     let (claude_worker_mcp, codex_worker_playwright) = if orchestration_worker && !front_desk {
         match agent {
             ChatAgent::Claude => (crate::worker_browser::for_launch(&cwd, env.as_ref()), None),
+            ChatAgent::Codex if worker_full_tools => (None, None),
             ChatAgent::Codex => {
                 let taken: Vec<String> = codex_user_mcp.iter().map(|s| s.name.clone()).collect();
                 let project_env = env
@@ -4760,6 +4774,7 @@ fn start_session_with_recovery(
     // a Codex with neither server leaves the launch exactly as every worker's.
     let codex_worker_desktop = orchestration_worker
         && !front_desk
+        && !worker_full_tools
         && agent == ChatAgent::Codex
         && worker_wants_desktop_tools(&manager, &key)
         && !crate::agent_provider::codex_desktop_servers(&codex_user_mcp).is_empty();
@@ -4769,6 +4784,14 @@ fn start_session_with_recovery(
             &key,
             "desktop-tools",
             "The worker keeps the person's browser and computer use (plugins on; other inherited MCP servers off).",
+        );
+    }
+    if worker_full_tools {
+        crate::diagnostics::record(
+            agent,
+            &key,
+            "full-tools",
+            "The worker runs at full access and keeps the person's whole tool set (their MCP servers, plugins and apps).",
         );
     }
     manager.admit_beside_writers(
@@ -4991,6 +5014,7 @@ fn start_session_with_recovery(
         codex_user_mcp: &codex_user_mcp,
         codex_worker_playwright: codex_worker_playwright.as_ref(),
         codex_worker_desktop,
+        worker_full_tools,
         claude_worker_mcp: claude_worker_mcp.as_deref(),
         preferences: preferences.as_deref(),
     };
@@ -5246,22 +5270,12 @@ fn start_session_with_recovery(
     // until that server settles (`codex_mcp_ready`): Codex fixes a turn's tool
     // list when the turn starts, and a cold `npx` is not ready by then.
     let mcp_ready = {
-        let mut watched: Vec<String> = Vec::new();
-        let mut longest = Duration::ZERO;
-        if let Some(browser) = codex_worker_playwright.as_ref() {
-            watched.push(browser.name.clone());
-        }
-        if codex_worker_desktop {
-            // Codex's own startup timeout for each (node_repl's is 120 s in
-            // the person's config): past it Codex marks the server failed,
-            // which the wait reads, so honouring it costs nothing extra.
-            for server in crate::agent_provider::codex_desktop_servers(&codex_user_mcp) {
-                watched.push(server.name.clone());
-                longest = longest.max(Duration::from_secs(
-                    server.startup_timeout_secs.unwrap_or(0),
-                ));
-            }
-        }
+        let (watched, longest) = crate::agent_provider::codex_gate_servers(
+            codex_worker_playwright.as_ref().map(|b| b.name.as_str()),
+            worker_full_tools && agent == ChatAgent::Codex,
+            codex_worker_desktop,
+            &codex_user_mcp,
+        );
         (transport.is_app_server() && !watched.is_empty())
             .then(|| crate::codex_mcp_ready::McpReady::watching(&watched, longest))
     };

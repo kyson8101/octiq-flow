@@ -314,3 +314,117 @@ fn a_reassigned_tasks_old_chat_never_resolves_to_the_new_agent() {
         Some("agent_b")
     );
 }
+
+/// Full access is read the way the agent is: from the exact attempt a chat
+/// was reserved for, never from the task as it stands after a handoff.
+#[test]
+fn a_reassigned_tasks_chats_resolve_full_access_by_their_own_attempt() {
+    for (first, second) in [(Access::Full, Access::Auto), (Access::Auto, Access::Full)] {
+        let home = crate::test_dir::TestDir::new("worker-full-access-reassign");
+        let _profile = crate::profile::started_in(&home);
+        let svc = Services::at_profile();
+        let store = svc.orchestrations.clone();
+        let (run, task) = pending_plan(&store);
+        let settings = |access| automation::WorkerSettings {
+            agent: ChatAgent::Codex,
+            access,
+            model: Some("gpt-5.6-terra".into()),
+            effort: None,
+            recovery: None,
+        };
+        let hand_to = |id: &str, access| {
+            store
+                .reassign_task(
+                    "chat:master",
+                    &task.id,
+                    (Some(settings(access)), Some(who(id)), None),
+                    "Hand over".into(),
+                )
+                .unwrap();
+            store
+                .approve_plan("chat:master", &run.id, None, None)
+                .unwrap();
+        };
+        let start = |access| {
+            store
+                .reserve_attempt(
+                    "chat:master",
+                    &WorkerLaunch {
+                        agent: ChatAgent::Codex,
+                        model: Some("gpt-5.6-terra".into()),
+                        access,
+                        ..launch_for(&task.id)
+                    },
+                )
+                .unwrap()
+                .2
+        };
+        hand_to("agent_a", first);
+        let old = start(first);
+        let old = store
+            .activate_attempt(&old.id, "/tmp".into(), "a".into(), true)
+            .unwrap();
+        finish_attempt(&store, old.clone(), WorkerOutcome::Blocked);
+        hand_to("agent_b", second);
+        let new = start(second);
+        assert_eq!(
+            store.worker_is_full_access(&old.worker_chat_key),
+            first == Access::Full,
+            "the old chat keeps what it was reserved at: {first:?} then {second:?}"
+        );
+        assert_eq!(
+            store.worker_is_full_access(&new.worker_chat_key),
+            second == Access::Full,
+            "the new chat has its own: {first:?} then {second:?}"
+        );
+    }
+}
+
+#[test]
+fn a_chat_with_no_clear_reservation_is_not_full_access() {
+    let home = crate::test_dir::TestDir::new("worker-full-access-doubt");
+    let _profile = crate::profile::started_in(&home);
+    let svc = Services::at_profile();
+    let store = svc.orchestrations.clone();
+    let run = run(&store);
+    let live = running_worker_of(&store, &run, &who("agent_a"));
+    let key = live.worker_chat_key.clone();
+    let set = |access: Access| {
+        store
+            .mutate(|data| {
+                data.attempts.get_mut(&live.id).unwrap().access = access;
+                Ok(())
+            })
+            .unwrap();
+    };
+    set(Access::Full);
+    assert!(store.worker_is_full_access(&key));
+    // Mixed levels on one chat, a stranger, the coordinator and an unknown key
+    // are all "no", and so is a snapshot with no agent.
+    store
+        .mutate(|data| {
+            let mut twin = data.attempts[&live.id].clone();
+            twin.id = "attempt_twin".into();
+            twin.access = Access::Auto;
+            data.attempts.insert(twin.id.clone(), twin);
+            Ok(())
+        })
+        .unwrap();
+    assert!(!store.worker_is_full_access(&key));
+    store
+        .mutate(|data| {
+            data.attempts.remove("attempt_twin");
+            Ok(())
+        })
+        .unwrap();
+    assert!(store.worker_is_full_access(&key));
+    assert!(!store.worker_is_full_access("chat:orch-unknown"));
+    assert!(!store.worker_is_full_access(&run.coordinator_chat_key));
+    store
+        .mutate(|data| {
+            data.attempts.get_mut(&live.id).unwrap().assignee = None;
+            Ok(())
+        })
+        .unwrap();
+    assert!(!store.worker_is_full_access(&key));
+}
