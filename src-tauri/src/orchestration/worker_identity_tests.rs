@@ -174,3 +174,33 @@ fn reload_restores_legacy_identity_and_preserves_load_errors() {
         .unwrap_err()
         .contains("read-only"));
 }
+
+#[test]
+fn a_workers_registered_agent_is_read_from_its_attempts_task_and_nothing_else() {
+    let home = crate::test_dir::TestDir::new("worker-agent-id");
+    let _profile = crate::profile::started_in(&home);
+    let svc = Services::at_profile();
+    let store = svc.orchestrations.clone();
+    let run = run(&store);
+    let live = running_worker(&store, &run);
+    // A task with no assignee says nothing, and neither does a stranger.
+    assert_eq!(store.worker_agent_id(&live.worker_chat_key), None);
+    assert_eq!(store.worker_agent_id("chat:orch-unknown"), None);
+    assert_eq!(store.worker_agent_id("chat:ordinary"), None);
+    store
+        .mutate(|data| {
+            let task = data.attempts[&live.id].task_id.clone();
+            data.tasks.get_mut(&task).unwrap().assignee = Some(TaskAssignee {
+                id: "agent_social".into(),
+                name: "Social".into(),
+            });
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        store.worker_agent_id(&live.worker_chat_key).as_deref(),
+        Some("agent_social")
+    );
+    // Not the coordinator's own chat.
+    assert_eq!(store.worker_agent_id(&run.coordinator_chat_key), None);
+}

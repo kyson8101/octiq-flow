@@ -75,6 +75,10 @@ pub struct Proposal {
     /// Its standing instructions; `""` clears them.
     #[serde(default)]
     pub persistent_prompt: Option<String>,
+    /// Codex only: its orchestration workers keep the person's browser and
+    /// computer-use route (their Brave/Chrome session). Absent keeps it.
+    #[serde(default)]
+    pub desktop_tools: Option<bool>,
     /// How long the person's card may stay up, in seconds. The MCP sets it
     /// from what its provider will wait for a tool call; the host clamps it.
     #[serde(default)]
@@ -287,6 +291,7 @@ fn public(roster: &Roster, agent: &TeamAgent) -> Value {
         "name": agent.name,
         "role": agent.role,
         "persistentPrompt": agent.persistent_prompt,
+        "desktopTools": agent.desktop_tools,
         "provider": agent.agent,
         "model": agent.model,
         "effort": agent.effort,
@@ -391,6 +396,7 @@ pub fn draft(roster: &Roster, kind: Kind, p: &Proposal) -> Result<Draft, String>
                     None => None,
                 },
                 persistent_prompt: p.persistent_prompt.clone(),
+                desktop_tools: p.desktop_tools,
             };
             Ok(Draft {
                 draft,
@@ -413,7 +419,8 @@ pub fn draft(roster: &Roster, kind: Kind, p: &Proposal) -> Result<Draft, String>
                 && p.project.is_none()
                 && p.reports_to.is_none()
                 && p.team.is_none()
-                && p.persistent_prompt.is_none();
+                && p.persistent_prompt.is_none()
+                && p.desktop_tools.is_none();
             if nothing {
                 return Err(format!("Say what to change about {}.", current.name));
             }
@@ -452,6 +459,7 @@ pub fn draft(roster: &Roster, kind: Kind, p: &Proposal) -> Result<Draft, String>
                 },
                 // Absent keeps it, as in `team::save`.
                 persistent_prompt: p.persistent_prompt.clone(),
+                desktop_tools: p.desktop_tools,
             };
             Ok(Draft {
                 draft,
@@ -637,12 +645,33 @@ fn moves(
     before: &TeamAgent,
     after: &TeamAgent,
 ) -> Vec<(&'static str, String, String)> {
-    fields(roster, before)
+    let mut moved: Vec<(&'static str, String, String)> = fields(roster, before)
         .into_iter()
         .zip(fields(roster, after))
         .filter(|((_, was), (_, now))| was != now)
         .map(|((label, was), (_, now))| (label, was, now))
-        .collect()
+        .collect();
+    if before.desktop_tools != after.desktop_tools {
+        moved.push((
+            DESKTOP_TOOLS,
+            on_off(before.desktop_tools).into(),
+            on_off(after.desktop_tools).into(),
+        ));
+    }
+    moved
+}
+
+/// The card's label for an agent's browser and computer use. It widens what a
+/// worker can do, so it is stated on a new agent that has it on and whenever it
+/// moves; it is not a row of every card (a removal, a change to something else).
+const DESKTOP_TOOLS: &str = "Browser and computer use";
+
+fn on_off(on: bool) -> &'static str {
+    if on {
+        "on"
+    } else {
+        "off"
+    }
 }
 
 /// The persistent prompt an agent had before this change; none for a new one.
@@ -664,6 +693,9 @@ pub fn describe(roster: &Roster, change: &Draft, after: &TeamAgent) -> String {
         None => {
             for (label, value) in fields(roster, after) {
                 text.push_str(&format!("\n{label}: {value}"));
+            }
+            if after.desktop_tools {
+                text.push_str(&format!("\n{DESKTOP_TOOLS}: on"));
             }
         }
         Some(before) => {
@@ -702,6 +734,7 @@ pub fn facts(roster: &Roster, change: &Draft, after: &TeamAgent) -> ChangeFacts 
         None => fields(roster, after)
             .into_iter()
             .map(|(label, value)| plain(label, value))
+            .chain(after.desktop_tools.then(|| plain(DESKTOP_TOOLS, "on")))
             .collect(),
         Some(before) => moves(roster, before, after)
             .into_iter()
@@ -1524,6 +1557,7 @@ mod tests {
                 avatar: None,
                 team_id: None,
                 persistent_prompt: None,
+                desktop_tools: None,
             },
         )
         .unwrap()
@@ -1862,6 +1896,7 @@ mod tests {
                     avatar: None,
                     team_id: None,
                     persistent_prompt: None,
+                    desktop_tools: None,
                 },
             )
             .unwrap();
@@ -1961,6 +1996,7 @@ mod tests {
             TeamDraft {
                 id: Some(potato.id.clone()),
                 persistent_prompt: Some("Build first.".into()),
+                desktop_tools: None,
                 ..redraft(&potato)
             },
         )
@@ -1986,12 +2022,121 @@ mod tests {
             avatar: None,
             team_id: None,
             persistent_prompt: None,
+            desktop_tools: None,
         }
     }
 
     /// The card lists the role with the other fields and never the persistent
     /// prompt, unless this change sets or clears it: then the whole text, and
     /// how long it is.
+    /// Browser and computer use widens what a worker can do, so it is a row of
+    /// the card whether it is registered on or switched later, and only a
+    /// Codex agent can have it.
+    #[tokio::test]
+    async fn the_card_shows_browser_and_computer_use_and_only_codex_may_have_it() {
+        let (_dir, team) = temp_team();
+        let text = |shown: &Arc<Mutex<Vec<crate::permission::Request>>>| {
+            shown.lock().unwrap().pop().unwrap().tool_input.unwrap()["change"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let (shown, allow) = asker("allow", "you allowed it");
+        let saved = propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Register,
+            Proposal {
+                name: Some("Social".into()),
+                provider: Some(ChatAgent::Codex),
+                model: Some("gpt-5.6-terra".into()),
+                desktop_tools: Some(true),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap();
+        assert!(saved.desktop_tools);
+        assert!(text(&shown).contains("Browser and computer use: on"));
+        assert_eq!(public(&roster(&team), &saved)["desktopTools"], true);
+
+        let (shown, allow) = asker("allow", "you allowed it");
+        let off = propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Update,
+            Proposal {
+                agent: Some("Social".into()),
+                desktop_tools: Some(false),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap();
+        assert!(!off.desktop_tools);
+        assert!(text(&shown).contains("Browser and computer use: on → off"));
+
+        // Another field's change leaves it out of the card and keeps it.
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Update,
+            Proposal {
+                agent: Some("Social".into()),
+                desktop_tools: Some(true),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap();
+        let _ = text(&shown);
+        let (shown, allow) = asker("allow", "you allowed it");
+        propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Update,
+            Proposal {
+                agent: Some("Social".into()),
+                role: Some("Posts.".into()),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap();
+        assert!(!text(&shown).contains("Browser and computer use"));
+        assert!(stored(&team)[0].desktop_tools);
+
+        // A Claude agent is refused before any card is raised.
+        let (shown, allow) = asker("allow", "you allowed it");
+        let refused = propose(
+            &roster(&team),
+            &team,
+            "chat:lead",
+            Kind::Register,
+            Proposal {
+                name: Some("Writer".into()),
+                provider: Some(ChatAgent::Claude),
+                model: Some("sonnet".into()),
+                desktop_tools: Some(true),
+                ..Proposal::default()
+            },
+            allow,
+        )
+        .await
+        .unwrap_err();
+        assert!(refused.message.contains("Codex"), "{}", refused.message);
+        assert!(shown.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn the_card_shows_a_persistent_prompt_only_when_it_changes() {
         let (_dir, team) = temp_team();
@@ -2001,6 +2146,7 @@ mod tests {
             &team,
             TeamDraft {
                 persistent_prompt: Some(hidden.clone()),
+                desktop_tools: None,
                 ..redraft(&potato)
             },
         )
@@ -2232,6 +2378,7 @@ mod tests {
                 avatar: None,
                 team_id: None,
                 persistent_prompt: None,
+                desktop_tools: None,
             },
         )
         .unwrap();
@@ -2250,6 +2397,7 @@ mod tests {
                 avatar: None,
                 team_id: None,
                 persistent_prompt: None,
+                desktop_tools: None,
             },
         )
         .unwrap();
@@ -2315,6 +2463,7 @@ mod tests {
             avatar: None,
             team_id: None,
             persistent_prompt: None,
+            desktop_tools: None,
         };
         crate::team::save(&team, edited).unwrap();
         let (_, allow) = asker("allow", "you allowed it");
@@ -2395,6 +2544,7 @@ mod tests {
                 avatar: None,
                 team_id: None,
                 persistent_prompt: None,
+                desktop_tools: None,
             },
         )
         .unwrap()
@@ -2418,6 +2568,7 @@ mod tests {
                 avatar: None,
                 team_id: None,
                 persistent_prompt: None,
+                desktop_tools: None,
             },
         )
         .unwrap()

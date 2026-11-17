@@ -122,6 +122,7 @@ fn clear_all_providers_preserves_settings_and_blocks_stale_save_start_and_init()
                 front_desk: false,
                 codex_user_mcp: &[],
                 codex_worker_playwright: None,
+                codex_worker_desktop: false,
                 claude_worker_mcp: None,
                 preferences: None,
             });

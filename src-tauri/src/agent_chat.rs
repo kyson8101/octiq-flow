@@ -3651,6 +3651,7 @@ fn build_command_with_context(
         front_desk: false,
         codex_user_mcp: &[],
         codex_worker_playwright: None,
+        codex_worker_desktop: false,
         claude_worker_mcp: None,
         preferences: None,
     })
@@ -4491,6 +4492,23 @@ fn worker_launch_role(
     manager.orchestrations.is_worker_chat(key)
 }
 
+/// Whether the registered agent this worker chat runs as has browser and
+/// computer use switched on. The ledger answers first and is let go before the
+/// roster is read (roster, then ledger is the one lock order). Any failure is
+/// "no".
+fn worker_wants_desktop_tools(manager: &ChatManager, key: &str) -> bool {
+    let Some(agent_id) = manager.orchestrations.worker_agent_id(key) else {
+        return false;
+    };
+    crate::team::list(&crate::team::default_path(), None, true)
+        .map(|agents| {
+            agents
+                .iter()
+                .any(|a| a.id == agent_id && a.desktop_tools && a.agent == ChatAgent::Codex)
+        })
+        .unwrap_or(false)
+}
+
 /// The person's own Codex MCP servers, as the Codex this chat would start
 /// sees them: `codex mcp list --json` through the agent shell, in the chat's
 /// folder, with the project's environment (a project may set `CODEX_HOME`).
@@ -4735,6 +4753,24 @@ fn start_session_with_recovery(
     } else {
         (None, None)
     };
+    // The opt-in route (`team::TeamAgent::desktop_tools`): a Codex worker of
+    // an agent the person registered with it keeps their browser and
+    // computer-use servers and the plugins that carry them. Every doubt means
+    // "no": an unreadable ledger or roster, a missing agent, a front desk, or
+    // a Codex with neither server leaves the launch exactly as every worker's.
+    let codex_worker_desktop = orchestration_worker
+        && !front_desk
+        && agent == ChatAgent::Codex
+        && worker_wants_desktop_tools(&manager, &key)
+        && !crate::agent_provider::codex_desktop_servers(&codex_user_mcp).is_empty();
+    if codex_worker_desktop {
+        crate::diagnostics::record(
+            agent,
+            &key,
+            "desktop-tools",
+            "The worker keeps the person's browser and computer use (plugins on; other inherited MCP servers off).",
+        );
+    }
     manager.admit_beside_writers(
         &session_key,
         &key,
@@ -4954,6 +4990,7 @@ fn start_session_with_recovery(
         front_desk,
         codex_user_mcp: &codex_user_mcp,
         codex_worker_playwright: codex_worker_playwright.as_ref(),
+        codex_worker_desktop,
         claude_worker_mcp: claude_worker_mcp.as_deref(),
         preferences: preferences.as_deref(),
     };
@@ -5208,13 +5245,26 @@ fn start_session_with_recovery(
     // A worker that was given the person's `playwright` holds its first turn
     // until that server settles (`codex_mcp_ready`): Codex fixes a turn's tool
     // list when the turn starts, and a cold `npx` is not ready by then.
-    let mcp_ready = (transport.is_app_server() && codex_worker_playwright.is_some()).then(|| {
-        crate::codex_mcp_ready::McpReady::new(
-            codex_worker_playwright
-                .as_ref()
-                .map_or(crate::worker_browser::CODEX_SERVER, |b| b.name.as_str()),
-        )
-    });
+    let mcp_ready = {
+        let mut watched: Vec<String> = Vec::new();
+        let mut longest = Duration::ZERO;
+        if let Some(browser) = codex_worker_playwright.as_ref() {
+            watched.push(browser.name.clone());
+        }
+        if codex_worker_desktop {
+            // Codex's own startup timeout for each (node_repl's is 120 s in
+            // the person's config): past it Codex marks the server failed,
+            // which the wait reads, so honouring it costs nothing extra.
+            for server in crate::agent_provider::codex_desktop_servers(&codex_user_mcp) {
+                watched.push(server.name.clone());
+                longest = longest.max(Duration::from_secs(
+                    server.startup_timeout_secs.unwrap_or(0),
+                ));
+            }
+        }
+        (transport.is_app_server() && !watched.is_empty())
+            .then(|| crate::codex_mcp_ready::McpReady::watching(&watched, longest))
+    };
     // Whether this launch hands a first prompt over on stdin after startup
     // (command-line providers already have it in their launch command).
     let writes_first_prompt = transport.accepts_stdin()
@@ -6181,7 +6231,10 @@ fn hand_over_first_turn(
     agent: ChatAgent,
     turn: FirstTurn<'_>,
 ) {
-    let held = crate::codex_mcp_ready::hold_first_turn(ready, crate::codex_mcp_ready::BOUND);
+    let held = crate::codex_mcp_ready::hold_first_turn(
+        ready,
+        ready.bound_for(crate::codex_mcp_ready::BOUND),
+    );
     // Everything below acts on THIS launch's session, never on whatever is
     // under the key by now: a Stop followed by a new launch of the chat inside
     // any of the gaps here must leave that new process alone.
@@ -11053,6 +11106,72 @@ mod tests {
             original.cwd
         );
         end_process(&manager, &key).unwrap();
+    }
+
+    /// The opt-in is the registered agent's, read at launch through the
+    /// ledger's assignee; every doubt is "no".
+    #[test]
+    fn a_worker_keeps_desktop_tools_only_when_its_registered_codex_agent_has_them_on() {
+        use crate::orchestration::tests::{run, running_worker, running_worker_of};
+        use crate::orchestration::TaskAssignee;
+        let home = crate::test_dir::TestDir::new("worker-desktop-optin");
+        let _profile = crate::profile::started_in(&home);
+        let roster = home.join("team.json");
+        let _team = crate::team::use_test_path(roster.clone());
+        let manager = Arc::new(ChatManager::default());
+        let store = &manager.orchestrations;
+        let register = |name: &str, desktop: Option<bool>| {
+            crate::team::save(
+                &roster,
+                serde_json::from_value(json!({
+                    "name": name, "agent": "codex", "model": "gpt-5.6-terra",
+                    "desktopTools": desktop,
+                }))
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let worker_of = |id: &str| {
+            let run = run(store);
+            running_worker_of(
+                store,
+                &run,
+                &TaskAssignee {
+                    id: id.into(),
+                    name: "Social".into(),
+                },
+            )
+            .worker_chat_key
+        };
+        // No assignee, no agent: no.
+        let run0 = run(store);
+        let unassigned = running_worker(store, &run0).worker_chat_key;
+        assert!(!worker_wants_desktop_tools(&manager, &unassigned));
+        let plain = register("Plain", None);
+        assert!(
+            !worker_wants_desktop_tools(&manager, &worker_of(&plain.id)),
+            "default off"
+        );
+        let opted = register("Opted", Some(true));
+        let key = worker_of(&opted.id);
+        assert!(worker_wants_desktop_tools(&manager, &key));
+        // Not another chat, and not an agent that is no longer on the roster.
+        assert!(!worker_wants_desktop_tools(&manager, "chat:orch-other"));
+        assert!(!worker_wants_desktop_tools(
+            &manager,
+            &worker_of("agent_gone")
+        ));
+        // Switched off later: the next launch sees it.
+        crate::team::save(
+            &roster,
+            serde_json::from_value(json!({
+                "id": opted.id, "name": "Opted", "agent": "codex",
+                "model": "gpt-5.6-terra", "desktopTools": false,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(!worker_wants_desktop_tools(&manager, &key));
     }
 
     #[test]

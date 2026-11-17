@@ -41,6 +41,9 @@ test("agent tools are offered to both providers, list-only for a worker, none ou
     assert.match(register.description, /approves or declines it on a card/);
     // The standing instructions are proposed like any other field.
     assert.equal(register.inputSchema.properties.persistentPrompt.maxLength, 8000);
+    // Browser and computer use for a Codex agent's workers is a boolean the
+    // person approves on the card.
+    assert.equal(register.inputSchema.properties.desktopTools.type, "boolean");
     const policy = listed.tools.find(tool => tool.name === "agent_policy_update");
     assert.deepEqual(policy.inputSchema.required, ["policy"]);
     assert.deepEqual(Object.keys(policy.inputSchema.properties), ["policy"]);

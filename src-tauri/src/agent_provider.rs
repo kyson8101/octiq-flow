@@ -177,6 +177,11 @@ pub struct AgentCommand<'a> {
     /// it. Its env VALUES are not here: they are in the spawned process's
     /// environment, and the table names them.
     pub codex_worker_playwright: Option<&'a crate::worker_browser::CodexBrowser>,
+    /// A Codex worker of an agent registered with `desktop_tools`: it keeps
+    /// the person's browser and computer-use route (`CODEX_DESKTOP_SERVERS`
+    /// and the plugins that carry them). False leaves the launch exactly as
+    /// every worker's. Only set when one of those servers exists.
+    pub codex_worker_desktop: bool,
     /// A Claude worker's second MCP config: the person's own definitions of
     /// the servers in `CLAUDE_WORKER_MCP_ON`, nothing else (`worker_browser`).
     pub claude_worker_mcp: Option<&'a Path>,
@@ -202,6 +207,26 @@ pub struct CodexMcpServer {
     pub name: String,
     /// Reached by URL rather than started as a command.
     pub remote: bool,
+    /// Codex's own `startup_timeout_sec` for it, whole seconds, when the
+    /// listing says one.
+    pub startup_timeout_secs: Option<u64>,
+}
+
+/// The Codex servers that carry the person's browser and computer use: the
+/// bundled `unified-computer-use` plugin's `cua_repl` (what the 2026-10-13
+/// STAR SOCIAL worker drove Brave through) and the `node_repl` of the person's
+/// own Codex config (the `browser` plugin's route). Checked against
+/// codex-cli 0.164: `--disable plugins` removes `cua_repl` and leaves
+/// `node_repl` as a bare REPL with no `cua` or `browser` global, so the route
+/// needs the plugins ON, not only the servers.
+pub const CODEX_DESKTOP_SERVERS: &[&str] = &["cua_repl", "node_repl"];
+
+/// The desktop servers among `servers`, by name, in the person's order.
+pub fn codex_desktop_servers(servers: &[CodexMcpServer]) -> Vec<&CodexMcpServer> {
+    servers
+        .iter()
+        .filter(|s| !s.remote && CODEX_DESKTOP_SERVERS.contains(&s.name.as_str()))
+        .collect()
 }
 
 /// The person's Codex MCP servers, read from `codex mcp list --json`. Codex
@@ -234,9 +259,15 @@ pub fn codex_front_desk_mcp_servers(json: &str) -> Result<Vec<CodexMcpServer>, S
             .and_then(|t| t.get("type"))
             .and_then(Value::as_str)
             .is_some_and(|kind| kind != "stdio");
+        let startup_timeout_secs = server
+            .get("startup_timeout_sec")
+            .and_then(Value::as_f64)
+            .filter(|secs| secs.is_finite() && *secs > 0.0)
+            .map(|secs| secs.ceil() as u64);
         servers.push(CodexMcpServer {
             name: name.to_owned(),
             remote,
+            startup_timeout_secs,
         });
     }
     Ok(servers)
@@ -293,9 +324,23 @@ fn append_codex_worker_mcp(
     cmd: &mut String,
     servers: &[CodexMcpServer],
     browser: Option<&crate::worker_browser::CodexBrowser>,
+    desktop: bool,
 ) {
-    cmd.push_str(" --disable apps --disable plugins");
-    append_codex_inherited_mcp_off(cmd, servers);
+    if desktop {
+        // The opt-in route (`CODEX_DESKTOP_SERVERS`): plugins stay on because
+        // they carry the route, apps stay off, and every other inherited
+        // server (the plugins' others included) is still turned off by name.
+        cmd.push_str(" --disable apps");
+        let rest: Vec<CodexMcpServer> = servers
+            .iter()
+            .filter(|s| s.remote || !CODEX_DESKTOP_SERVERS.contains(&s.name.as_str()))
+            .cloned()
+            .collect();
+        append_codex_inherited_mcp_off(cmd, &rest);
+    } else {
+        cmd.push_str(" --disable apps --disable plugins");
+        append_codex_inherited_mcp_off(cmd, servers);
+    }
     if let Some(browser) = browser {
         cmd.push_str(&format!(
             " -c {}",
@@ -931,6 +976,7 @@ fn codex_exec_command(request: &AgentCommand<'_>, provider: &CodexProvider) -> S
             &mut cmd,
             request.codex_user_mcp,
             request.codex_worker_playwright,
+            request.codex_worker_desktop,
         );
     }
     let extra_dirs: &[String] = if request.front_desk {
@@ -1036,6 +1082,7 @@ impl AgentProvider for CodexProvider {
                     &mut cmd,
                     request.codex_user_mcp,
                     request.codex_worker_playwright,
+                    request.codex_worker_desktop,
                 );
             }
             cmd
@@ -2051,6 +2098,7 @@ pub(crate) mod tests {
             front_desk: false,
             codex_user_mcp: &[],
             codex_worker_playwright: None,
+            codex_worker_desktop: false,
             claude_worker_mcp: None,
             preferences: None,
         })
@@ -2299,6 +2347,7 @@ pub(crate) mod tests {
             front_desk: false,
             codex_user_mcp: &[],
             codex_worker_playwright: None,
+            codex_worker_desktop: false,
             claude_worker_mcp: None,
             preferences: None,
         });
@@ -2325,6 +2374,7 @@ pub(crate) mod tests {
             front_desk: true,
             codex_user_mcp: &[],
             codex_worker_playwright: None,
+            codex_worker_desktop: false,
             claude_worker_mcp: None,
             preferences: None,
         });
@@ -2372,6 +2422,7 @@ pub(crate) mod tests {
             front_desk,
             codex_user_mcp: servers,
             codex_worker_playwright: None,
+            codex_worker_desktop: false,
             claude_worker_mcp: None,
             preferences: None,
         }
@@ -2416,10 +2467,12 @@ pub(crate) mod tests {
             CodexMcpServer {
                 name: "node_repl".into(),
                 remote: false,
+                startup_timeout_secs: None,
             },
             CodexMcpServer {
                 name: "sentry".into(),
                 remote: true,
+                startup_timeout_secs: None,
             },
         ]
     }
@@ -2551,6 +2604,7 @@ pub(crate) mod tests {
             access: Some(Access::Auto),
             lite: false,
             codex_worker_playwright: playwright,
+            codex_worker_desktop: false,
             ..codex_request(false, servers)
         }
     }
@@ -2595,6 +2649,123 @@ pub(crate) mod tests {
                 "no definition, no browser: {line}"
             );
         }
+    }
+
+    fn desktop_servers() -> Vec<CodexMcpServer> {
+        let server = |name: &str, remote: bool, secs: Option<u64>| CodexMcpServer {
+            name: name.into(),
+            remote,
+            startup_timeout_secs: secs,
+        };
+        vec![
+            server("codex_app", false, Some(10)),
+            server("cua_repl", false, Some(120)),
+            server("node_repl", false, Some(120)),
+            server("sentry", true, None),
+        ]
+    }
+
+    /// Off, the worker's flags are what they were before the opt-in existed:
+    /// the exact text, not a property of it.
+    #[test]
+    fn without_desktop_tools_a_codex_workers_flags_are_unchanged() {
+        let servers = desktop_servers();
+        let mut off = String::new();
+        append_codex_worker_mcp(&mut off, &servers, None, false);
+        assert_eq!(
+            off,
+            " --disable apps --disable plugins \
+             -c 'mcp_servers.codex_app={command=\"false\",enabled=false}' \
+             -c 'mcp_servers.cua_repl={command=\"false\",enabled=false}' \
+             -c 'mcp_servers.node_repl={command=\"false\",enabled=false}' \
+             -c 'mcp_servers.sentry={url=\"http://127.0.0.1:9/\",enabled=false}'"
+        );
+        // And through both transports the flag is simply not there.
+        let worker = browser_worker(&servers, None);
+        for line in [
+            CODEX.build_command(&worker),
+            codex_exec_command(&worker, &CODEX),
+        ] {
+            assert!(line.contains(&off), "{line}");
+        }
+    }
+
+    /// On, plugins stay (they carry the route: with `--disable plugins`,
+    /// checked against codex-cli 0.164, `cua_repl` is gone and `node_repl` is a
+    /// bare REPL), apps stay off, and every other inherited server is still off.
+    #[test]
+    fn with_desktop_tools_a_codex_worker_keeps_plugins_and_the_two_servers_only() {
+        let servers = desktop_servers();
+        let on = AgentCommand {
+            codex_worker_desktop: true,
+            ..browser_worker(&servers, None)
+        };
+        for line in [CODEX.build_command(&on), codex_exec_command(&on, &CODEX)] {
+            assert!(line.contains(" --disable apps"), "{line}");
+            assert!(!line.contains("--disable plugins"), "{line}");
+            assert!(!line.contains("cua_repl"), "left to Codex: {line}");
+            assert!(!line.contains("node_repl"), "left to Codex: {line}");
+            assert!(
+                line.contains("mcp_servers.codex_app={command=\"false\",enabled=false}"),
+                "{line}"
+            );
+            assert!(
+                line.contains("mcp_servers.sentry={url=\"http://127.0.0.1:9/\",enabled=false}"),
+                "{line}"
+            );
+            // Nothing else about the worker changed.
+            assert!(
+                line.contains(
+                    "mcp_servers.octiq.tools.orchestration_worker_report.approval_mode=\"approve\""
+                ),
+                "{line}"
+            );
+        }
+        // The person's own playwright still rides beside it.
+        let browser = browser();
+        let both = AgentCommand {
+            codex_worker_desktop: true,
+            ..browser_worker(&servers, Some(&browser))
+        };
+        let line = CODEX.build_command(&both);
+        assert!(line.contains("mcp_servers.octiq_playwright="), "{line}");
+        assert!(!line.contains("s3cret-value"), "no env value: {line}");
+        // A front desk never gets it, whatever the flag says.
+        let desk = AgentCommand {
+            front_desk: true,
+            codex_worker_desktop: true,
+            ..browser_worker(&servers, None)
+        };
+        let line = CODEX.build_command(&desk);
+        assert!(line.contains(" --disable plugins"), "{line}");
+        assert!(
+            line.contains("mcp_servers.cua_repl={command=\"false\",enabled=false}"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn the_desktop_servers_are_found_by_name_and_carry_codexs_own_timeout() {
+        let listed = r#"[
+            {"name":"codex_app","enabled":false,"transport":{"type":"stdio","command":"x"},"startup_timeout_sec":10.0},
+            {"name":"cua_repl","enabled":true,"transport":{"type":"stdio","command":"/bin/sh"},"startup_timeout_sec":120.0},
+            {"name":"node_repl","enabled":true,"transport":{"type":"stdio","command":"node_repl"}},
+            {"name":"sentry","enabled":true,"transport":{"type":"streamable_http","url":"https://x"}}
+        ]"#;
+        let servers = codex_front_desk_mcp_servers(listed).unwrap();
+        let found: Vec<_> = codex_desktop_servers(&servers)
+            .into_iter()
+            .map(|s| (s.name.as_str(), s.startup_timeout_secs))
+            .collect();
+        assert_eq!(found, [("cua_repl", Some(120)), ("node_repl", None)]);
+        assert!(codex_desktop_servers(&person_servers()[1..]).is_empty());
+        // A remote server of the same name is not the local bridge.
+        let remote = [CodexMcpServer {
+            name: "cua_repl".into(),
+            remote: true,
+            startup_timeout_secs: None,
+        }];
+        assert!(codex_desktop_servers(&remote).is_empty());
     }
 
     /// A Codex worker gets the person's playwright as one whole entry under
@@ -2646,6 +2817,7 @@ pub(crate) mod tests {
         servers.push(CodexMcpServer {
             name: "playwright".into(),
             remote: false,
+            startup_timeout_secs: None,
         });
         let browser = browser();
         let with = codex_exec_command(&browser_worker(&servers, Some(&browser)), &CODEX);
@@ -2663,6 +2835,7 @@ pub(crate) mod tests {
         servers.push(CodexMcpServer {
             name: "playwright".into(),
             remote: true,
+            startup_timeout_secs: None,
         });
         // Without a definition of the person's, Codex's own stays off too.
         let without = codex_exec_command(&browser_worker(&servers, None), &CODEX);
@@ -2680,6 +2853,7 @@ pub(crate) mod tests {
         let entry = browser();
         let desk = AgentCommand {
             codex_worker_playwright: Some(&entry),
+            codex_worker_desktop: false,
             ..codex_request(true, &servers)
         };
         for line in [
@@ -2691,6 +2865,7 @@ pub(crate) mod tests {
         }
         let ordinary = AgentCommand {
             codex_worker_playwright: Some(&entry),
+            codex_worker_desktop: false,
             ..codex_request(false, &servers)
         };
         for line in [
@@ -2791,15 +2966,18 @@ pub(crate) mod tests {
             vec![
                 CodexMcpServer {
                     name: "chatgpt-bridge".into(),
-                    remote: false
+                    remote: false,
+                    startup_timeout_secs: None,
                 },
                 CodexMcpServer {
                     name: "codex_app".into(),
-                    remote: false
+                    remote: false,
+                    startup_timeout_secs: None,
                 },
                 CodexMcpServer {
                     name: "sentry".into(),
-                    remote: true
+                    remote: true,
+                    startup_timeout_secs: None,
                 },
             ],
             "ours is set on the command line; a disabled one is turned off all the same"
@@ -2849,6 +3027,7 @@ pub(crate) mod tests {
             front_desk: false,
             codex_user_mcp: &[],
             codex_worker_playwright: None,
+            codex_worker_desktop: false,
             claude_worker_mcp: None,
             preferences: None,
         });
@@ -2882,6 +3061,7 @@ pub(crate) mod tests {
             front_desk: false,
             codex_user_mcp: &[],
             codex_worker_playwright: None,
+            codex_worker_desktop: false,
             claude_worker_mcp: None,
             preferences: None,
         });
@@ -2980,6 +3160,7 @@ pub(crate) mod tests {
                     front_desk: false,
                     codex_user_mcp: &[],
                     codex_worker_playwright: None,
+                    codex_worker_desktop: false,
                     claude_worker_mcp: None,
                     preferences: None,
                 });
@@ -3045,6 +3226,7 @@ pub(crate) mod tests {
             front_desk: false,
             codex_user_mcp: &[],
             codex_worker_playwright: None,
+            codex_worker_desktop: false,
             claude_worker_mcp: None,
             preferences: None,
         });
@@ -3235,6 +3417,7 @@ pub(crate) mod tests {
             front_desk: false,
             codex_user_mcp: &[],
             codex_worker_playwright: None,
+            codex_worker_desktop: false,
             claude_worker_mcp: None,
             preferences: None,
         }

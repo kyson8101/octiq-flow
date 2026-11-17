@@ -1166,6 +1166,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(runtime.head, older.id);
+        // Before any claim, the batch's own worker is already the agent's.
+        assert_eq!(
+            store.worker_agent_id(&runtime.worker_chat_key).as_deref(),
+            Some("agent_test")
+        );
         assert!(
             runtime.candidates.is_empty(),
             "another run is never a candidate"

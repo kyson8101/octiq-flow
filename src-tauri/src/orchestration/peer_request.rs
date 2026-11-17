@@ -1387,6 +1387,7 @@ pub(crate) mod tests {
             created_at: 0,
             updated_at: 0,
             persistent_prompt: String::new(),
+            desktop_tools: false,
         }
     }
 
@@ -5107,6 +5108,7 @@ pub(crate) mod tests {
                 avatar: None,
                 team_id: team.map(Into::into),
                 persistent_prompt: None,
+                desktop_tools: None,
             };
         let leads = crate::team::save_team(
             &path,

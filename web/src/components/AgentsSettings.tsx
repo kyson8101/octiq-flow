@@ -737,7 +737,8 @@ export function teamDraftFields(draft: TeamDraft, team: TeamAgent[], teams: Agen
     const model = teamModels(agent)[0]?.flag ?? "";
     const effort = EFFORTS[agent].some((e) => e.id === draft.effort) ? draft.effort : EFFORTS[agent][0]?.id;
     const level = ACCESS[agent].some((a) => a.id === draft.access) ? draft.access : "auto";
-    onChange({ ...draft, agent, model, effort, access: level });
+    // Browser and computer use for workers is Codex's; leaving Codex ends it.
+    onChange({ ...draft, agent, model, effort, access: level, ...(agent === "codex" ? {} : { desktopTools: false }) });
   };
   const lead = leadOnly(draft);
   // A manager must be visible wherever this agent is, and must not already
@@ -843,6 +844,18 @@ function AgentIdentity({ agent, teams, depth, roleButton }: { agent: TeamDraft; 
   </div>;
 }
 
+/** Codex agents only. Off by default: it lets this agent's orchestration
+ *  workers drive the person's own browser and apps, so the host shows it on
+ *  the card too (team.rs `desktop_tools`). */
+function DesktopToolsField({ draft, saving, set }: { draft: TeamDraft; saving: boolean; set: (patch: Partial<TeamDraft>) => void }) {
+  if (draft.agent !== "codex") return null;
+  return <label className="team-form-wide team-check"><span>Browser and computer use</span>
+    <input type="checkbox" aria-label="Keep my browser and computer use" disabled={saving} checked={!!draft.desktopTools}
+      onChange={(event) => set({ desktopTools: event.target.checked })} />
+    <small className="team-field-note">Its workers keep your own browser (your logged-in Brave or Chrome) and computer use instead of starting without them. Off by default; it widens what a worker can do.</small>
+  </label>;
+}
+
 export function InlineAgentRow({ draft, depth, team, teams, projects, saving, onChange, onSave, onCancel, onDetails }: {
   draft: TeamDraft; depth: number; team: TeamAgent[]; teams: AgentTeam[]; projects: ProjectRef[]; saving: boolean;
   onChange: (draft: TeamDraft) => void; onSave: () => void; onCancel: () => void; onDetails: (draft: TeamDraft) => void;
@@ -875,6 +888,7 @@ export function InlineAgentRow({ draft, depth, team, teams, projects, saving, on
           <option value="">Every project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
         <label><span>Team</span><select aria-label="Team" disabled={saving} value={draft.teamId ?? ""} onChange={(event) => set({ teamId: event.target.value || null })}>
           <option value="">None</option>{joinable.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
+        <DesktopToolsField draft={draft} saving={saving} set={set} />
       </div>
       {leadOnly(draft) && <small className="team-field-note">Astra can lead a task, but it cannot be given one.</small>}
       <div className="agents-edit-footer">
@@ -1012,6 +1026,7 @@ export function TeamForm({ draft, team, teams, projects, saving, onChange, onSav
           {joinable.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
         </select>
       </label>
+      <DesktopToolsField draft={draft} saving={saving} set={set} />
       {lead && (
         <p className="settings-note team-form-wide">
           Astra can lead a task, but it cannot be given one.

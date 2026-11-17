@@ -2032,12 +2032,56 @@ never affects the launch (nor does the other scope's entry step in).
 an unreadable config or a definition the host cannot take adds nothing and never
 refuses the launch; an unreadable Codex server list still does. Native/exec
 Codex, resume and relaunch all use that policy; front desks keep full
-isolation. Calls take the normal permission cards (no allow rule is added). The
-Codex plugins `browser`, `unified-computer-use` and the `cua_repl` and
-`node_repl` servers are NOT given to workers: `cua_repl`'s browser needs the
-Codex desktop app's browser access host (unavailable from OctiqFlow) and its
-computer surface is desktop control. Claude in Chrome needs `--chrome`, which no
-launch passes.
+isolation. Calls take the normal permission cards (no allow rule is added).
+Claude in Chrome needs `--chrome`, which no launch passes. The Codex browser and
+computer-use route (`cua_repl`, `node_repl`, the plugins that carry them) is NOT
+given to workers by default; one registered agent can opt in (next paragraph).
+
+**A registered Codex agent can keep the person's browser and computer use**
+(`TeamAgent::desktop_tools`, JSON `desktopTools`, default off; Settings →
+Agents' "Keep my browser and computer use", or `agent_register` /
+`agent_update`'s `desktopTools`, shown on the approval card as `Browser and
+computer use: on`). Only a Codex agent may have it on (`team::apply` refuses the
+rest and clears it when the agent moves off Codex). It exists because 7c90613b
+(2026-11-08) took the route away from a worker that had it: the 2026-10-13
+STAR SOCIAL worker made 29 `cua_repl` `js` calls through the person's Brave
+(`backend: chrome, browser_family: brave`, plugin `unified-computer-use`),
+which `--disable plugins` and the per-server `enabled=false` entries stopped.
+What the route needs, checked against codex-cli 0.164 (`codex mcp list --json`
+and `codex app-server`'s `mcpServerStatus/list`, `thread/start`,
+`mcpServer/tool/call`, no model turn):
+
+- `cua_repl` is a server **the `unified-computer-use` plugin** brings
+  (`.mcp.json`), so `--disable plugins` removes it. `node_repl` is defined in the
+  person's `~/.codex/config.toml`; with `--disable plugins` it still starts and
+  lists `js` but is a bare REPL (no `cua` or `browser` global). The route needs
+  the plugins ON, not only the servers.
+- The `BROWSER_USE_ACCESS_*` names in `env_vars` are optional: the server
+  starts, reaches `ready` and runs `js` with none of them set (OctiqFlow's
+  server has none), and `cua_repl`'s own wrapper defaults the executor id to
+  empty. Whether the browser access host accepts the call is decided inside a
+  live turn ("Cannot verify browser access without the current turn" outside
+  one), so the end-to-end proof is the 2026-10-13 worker run, not a probe.
+- An opted-in worker's launch (`codex_worker_desktop`, set in `start_session`
+  only for a Codex orchestration worker, never a front desk, when the worker's
+  agent has it on AND `codex mcp list` names `cua_repl` or `node_repl`) drops
+  `--disable plugins`, keeps `--disable apps`, and leaves exactly those two
+  servers alone; every other inherited server (plugin ones included) is still
+  turned off by name. Off, the flags are byte-identical to before (test). The
+  worker's agent is read through the ledger (`worker_agent_id`: the batch's agent,
+  else the latest attempt's assignee), then the roster, and any doubt (ledger or
+  roster unreadable, agent gone) is "no". A Claude worker is unchanged; a Claude
+  equivalent would be the person's own `claude-in-chrome` / computer-use MCP
+  server added to the second `--mcp-config` like `playwright`, plus `--chrome`,
+  which no launch passes: not built.
+- Not narrowed: the other installed plugins' skills still load (`-c
+  plugins."<id>".enabled=false` did not change `skills/list`, so nothing is
+  claimed of it). A plugin MCP server absent from `codex mcp list` would also
+  start; none was seen (`mcpServerStatus/list` shows only the three).
+- The first-turn gate (`codex_mcp_ready`) now watches every kept server and
+  waits for the longest `startup_timeout_sec` Codex reports for them (120 s for
+  both in the person's config, capped at 120 s); Codex fails a server itself at
+  that point, which the gate reads, so it never waits longer than Codex does.
 
 **Codex MCP isolation is checked against the real CLI's resolved config, never
 against the `-c` text.** A whole-table `-c mcp_servers.<name>={…}` does NOT

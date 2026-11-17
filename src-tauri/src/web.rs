@@ -4529,6 +4529,7 @@ mod tests {
                 avatar: None,
                 team_id: None,
                 persistent_prompt: None,
+                desktop_tools: None,
             },
         )
         .unwrap();
@@ -4599,6 +4600,7 @@ mod tests {
                 avatar: None,
                 team_id: None,
                 persistent_prompt: None,
+                desktop_tools: None,
             },
         )
         .unwrap();
@@ -4709,6 +4711,7 @@ mod tests {
                 avatar: None,
                 team_id: None,
                 persistent_prompt: None,
+                desktop_tools: None,
             },
         )
         .unwrap();
@@ -4947,6 +4950,7 @@ mod tests {
                 avatar: None,
                 team_id: None,
                 persistent_prompt: None,
+                desktop_tools: None,
             },
         )
         .unwrap();
@@ -6546,6 +6550,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             persistent_prompt: String::new(),
+            desktop_tools: false,
         }
     }
 
