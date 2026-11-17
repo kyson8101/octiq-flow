@@ -3695,50 +3695,71 @@ an allocation ABOVE it only while that one is active (unsettled attempt, open
 decision or unfinished task of its run): a settled folder a run worked in place
 (a non-Git project folder holding `.worktrees`) has another repository by
 definition and rejected every worktree under it, every sweep, but an active one
-can still write below it. **Chats above the checkout are claimed too**
-(`ChatManager::hold_lifespan_ancestors`, taken under lifecycle after the path
-mark and kept through the removal): the claim is made first, so every later
-start or queued turn whose cwd or extraDirs is above the checkout is refused
-under the session table, and a live process or queued turn already above it
-withholds the removal in words. The claim follows the host's own work, never
-the provider process: a chat above the checkout withholds it while a registered
-job, background work, a waiting queue, a provider handoff or a start in flight
-exists (`chat_jobs::running_chats`, `background_tasks::running_chats`), and
-running work with no saved folders withholds every folder. Explicit validation
-removal takes the same claim at its final door. An open-file snapshot does not
-stand in for it.
-**The claim covers every host-owned writer, and admission is fenced, not only
-read.** The inventory, in the order the claim takes it: (1) chat sessions,
-queued turns, a held first turn; (2) a registered job (`octiq-job`,
-`job_register`, the spool), background work, a waiting queue, a handoff, a
-start in flight; (3) **host terminals** (`PtyManager::fence_lifespan`): every
-PTY shell and every process below it (`proc::with_descendants`) is asked its
-working folder (`proc::working_folders`, one `lsof -d cwd`); a folder at,
-inside or ABOVE the checkout, or one that cannot be read (a live pid with no
-answer, no `lsof`, Windows), withholds the removal. Every unreadable store
-answers `Err`, never "nothing runs" (`chat_jobs::running_chats` checks
-`load_error`, as `background_tasks` does). The fence goes up BEFORE the reads,
-and each door that admits a writer checks it in the same step as it admits:
-`pty_spawn_impl` holds the fence list from its look at the folder until the
-shell is in `sessions`, so a shell started at, above or inside the checkout
-after the claim is refused, and one started before it is seen by the claim;
-`chat_jobs::Store::add` (`start`, `register`, `start_spooled`) holds the fence
-list from its check to its insert. A job is refused only when its chat's saved
-folders (unknown folders count) or its process's folder (wrapper pid, or the
-registered pid, read with `proc::working_folders`) is at, above or inside a
-fenced checkout; it first waits for the fence to lift (2 s over the hook, less
-than the wrapper's 3 s timeout, 20 s for the spool) and then answers `retry
-shortly`. `octiq-job` has already started its command by then, so it asks
-again for 30 s (`HOST_RETRY`) instead of leaving the job unseen: its command is
-never held back or failed. Lock order: `fences` (jobs) -> `starts`/`inner`;
-the PTY fence list -> `sessions`; nobody takes a fence list while holding
-those. **A terminal is never stopped to make a folder removable**, and a shell
-that is elsewhere at the claim and later changes to a folder above the checkout
-is an arbitrary writer like a person's own Terminal: it cannot be stopped
-without refusing keystrokes, so it is not. A new host-owned writer (a spawn
-path, a store of work, an admission door) joins this list, with its fence and
-its test at the barrier (`worktree_lifespan::tests`: kept while the writer is
-live, refused or kept at the final-to-Git barrier, removed after it ends).
+can still write below it.
+**A removal moves the folder aside first** (`worktree_lifespan/quarantine.rs`).
+Four review rounds each found one more host-side writer that a claim over chats,
+jobs and terminals had not listed (a chat above the checkout, a registered job
+whose process works above it, a host terminal, a job admitted after the claim).
+The class is closed structurally instead: after every final check, still under
+the lifecycle lock and the path/start claims, the checkout is renamed to a
+sibling on the same volume, `<parent>/.octiq-removing-<id>`, with
+`git worktree move` (Git's own record follows; a move across volumes, an
+occupied name, a locked worktree or Windows refusing the rename for an open
+handle fails the move whole and the folder is kept, in words). From then on no
+process can reach the folder by its path: a shell or job above it, a child
+nobody registered, a shell that later `cd`s. What can still touch it is what
+already holds it open, and that is asked on the new name, in this order:
+(a) one `lsof` for every working folder and open file at or below the
+quarantine (unknown is a yes; on Windows the refused rename is that check);
+(b) the content proof again (`verify_contents`: config, HEAD, at-stake ignored
+inventory, file stamps, which are keyed by the path inside the checkout so they
+compare across the move); (c) only then Git's removal on the quarantine path.
+Any failure at (a) or (b) moves the folder back (`git worktree move`, preceded
+by a `worktree repair` when a kill left Git's record behind), never over
+anything. **The original path made again while the folder was away** (a writer
+ran `mkdir -p` on it) is never deleted or merged into: the removal goes on only
+when (b) passed, and the sweep's report names the recreated path
+(`quarantine::take_notes`); a move back that finds the original path occupied
+keeps the quarantine and says where it is.
+**The intent is durable before the rename**: `<profile>/lifespan-quarantine/
+<id>.json` (`Record`: repo, original, quarantine, time), written and synced
+through `profile::make_dir`; an unwritable record means no rename. Every sweep
+starts by looking at the records (`quarantine::recover`, under lifecycle, before
+anything is listed): the folder is put back when its original path is free, kept
+and reported when both exist or the move back fails, a record whose folder is
+gone is dropped, and one that names a folder this host would not have made
+(`PREFIX` + its id) is refused. Nothing left behind is ever removed blindly.
+All physical removals go through it: the sweep and Cleanup/Close/validation
+(`remove_proven`) and the confirmed Archive (force removal, with its own
+ignored-hash and stamp comparison on the quarantine path). The shared 10 s
+final budget covers every scan: the `lsof` and the proof run inside it, a
+timeout is "unknown" and puts the folder back, and the undo itself runs
+without the budget (`git::unbudgeted`) because a rename is never skipped for
+want of time.
+**What was dropped, and why.** The ancestor claim over chats, queued turns,
+jobs, background work, handoffs and starts in flight
+(`ChatManager::hold_lifespan_ancestors`), the host-terminal fence
+(`PtyManager::fence_lifespan`, with its refusal to spawn a shell) and the job
+admission fence (`chat_jobs::Store::fences`, `retry shortly`, the wrapper's 30 s
+retry) are gone: each existed to keep a writer that works ABOVE the checkout
+from writing into it, and after the move that writer's path no longer exists
+(it fails, or recreates an empty path that is left alone). They also kept a
+whole `.worktrees` tree for as long as a terminal or chat sat at its parent
+folder, which is a common habit. What is kept is what a path cannot solve: the
+claims on chats and starts AT or INSIDE the checkout
+(`hold_lifespan_checkout`, `claim_start`, `require_lifespan_idle`), the ledger's
+active-ancestor ownership check (`ownership_unchanged`), and the `lsof` on the
+quarantine. Strip (rebuildable build folders only) never needed it: a file
+lost from `target` or `node_modules` is regenerated.
+**Residual limits.** A process that opens the quarantine by its new name (a
+`find` or `rm -r` over the whole parent folder that was already walking it)
+reaches it like any external writer; the name is random and exists for a
+moment. A process that holds nothing open inside and only has its working
+folder above is, by design, unaffected. The `lsof` is a snapshot: a process
+that gets a descriptor for the folder by passing one over a socket after the
+scan is outside what a path or an `lsof` can see. A review of a new removal
+path checks that it goes through `quarantine::remove`, not that it enumerates
+writers.
 A checkout's own branch, and any listed ref that differs from it only by ASCII
 case (one ref file on a case-folding filesystem), never proves it merged. A project folder that is not a Git repository, or is gone,
 is skipped without a failure line.
@@ -3825,16 +3846,21 @@ file stamps within the same remaining 10-second budget. Stamps are checked after
 inventory; unknowns and changed evidence keep the folder. Callers hold lifecycle,
 checkout path marks and start claims, and recheck ownership, unsettled workers,
 active/queued chats and their operation-specific delivery gates before removal.
+The last step of every physical removal, Archive included, is the quarantine
+(`worktree_lifespan/quarantine.rs`, see Host worktree lifespan): rename the
+checkout aside, `lsof` and the content proof again on the new path, then Git.
+No door enumerates writers any more; a new removal path calls
+`quarantine::remove` or is not a removal path.
 
 | Path | Guard before physical removal |
 | --- | --- |
-| Automatic ordinary chat / task / mission / validation lifespan | `operate_progress` verifies policy, pins, idle/activity, known usage and ownership, then the shared `remove_proven` door |
+| Automatic ordinary chat / task / mission / validation lifespan | `operate_progress` verifies policy, pins, idle/activity, known usage and ownership, then the shared `remove_proven` door (quarantine, then Git) |
 | Per-task Cleanup | `cleanup_workspace` rechecks coordinator, task/workspace identity, leases, gates, other owners and merge/expected HEAD; `cleanup_verified` enters the shared door |
 | Per-task Abandon | Same task guards and shared door; unpublished commits keep the folder; no discard bypass |
 | Mission Close | `close_mission` rechecks the complete mission plan set, workers, gates and merge; each `cleanup_verified` enters the shared door |
 | Mission Abandon | Same mission guards and shared door, with the existing published-commit gate; no discard bypass |
 | Explicit validation removal | `remove_validation` rechecks allocation ownership and activity; `remove_validation_verified` requires detached HEAD, then enters the shared door |
-| Confirmed Archive then remove | Its own lifecycle/path/start/usage/pin guards, exact preview hash including ignored inventory, verified archive ref/tree and full captured-tree disk/type proof, config guard and final stamps; only this path calls force removal |
+| Confirmed Archive then remove | Its own lifecycle/path/start/usage/pin guards, exact preview hash including ignored inventory, verified archive ref/tree and full captured-tree disk/type proof, config guard and final stamps, repeated on the quarantine path; only this path calls force removal, and only after the quarantine |
 | Coordinator batch approval | Existing per-task Cleanup / mission Close paths below the socket-only answer; exact approved plan/HEAD, save-first, same raw/ignored/profile/activity proofs; no Abandon or Archive |
 | Disk report downloaded cleanup script | Prints and skips each worktree: an offline script cannot hold the host guards; use host Cleanup/lifespan or confirmed Archive |
 

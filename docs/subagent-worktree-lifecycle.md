@@ -475,36 +475,48 @@ allocation above it only while it is active (an unsettled attempt, an open
 decision or an unfinished task). A settled folder above it (a non-Git project
 folder a run worked in place) is another checkout with another repository and
 used to refuse every worktree under it; an active one can still write below it
-and keeps the folder. Chats are claimed the same way: under lifecycle, after the
-path mark and until the folder is gone, `hold_lifespan_ancestors` refuses every
-start or queued turn whose cwd or extra directory is above the checkout, and a
-live process or queued turn already above it keeps the folder. The claim
-follows the host's own work, not the provider process: a chat whose saved
-cwd or extra directory is above the checkout keeps it while it has a running
-registered job (`octiq-job`, `job_register`), background work, a queue waiting
-for the profile, a provider handoff or a start in flight, even when its process
-has exited and nothing is queued. Running work whose chat has no saved folders
-keeps every folder. Explicit validation removal takes the same claim at its
-final lifecycle door and holds it until the folder is gone. An open-file
-snapshot does not replace that claim.
+and keeps the folder.
 
-The claim covers every host-owned writer and fences their admission. It reads
-chat sessions, queued turns and held first turns; running jobs, background
-work, waiting queues, handoffs and starts in flight; and the host's terminals:
-each PTY shell and every process below it is asked its working folder, and one
-at, inside or above the checkout (or whose folder cannot be read) keeps it.
-An unreadable jobs or background store answers an error, never "idle". The
-claim puts its fence up BEFORE reading, and the doors that admit a writer check
-it in the same step as the admission: a terminal started at, above or inside
-the checkout after the claim is refused (`start the terminal again shortly`),
-and a job whose chat folders or process folder are at, above or inside it waits
-for the fence to lift (2 s over the hook, 20 s for the spool) and is then
-refused with `retry shortly`. A wrapper that is refused keeps asking for 30 s
-while its command runs, so the job is seen once the fence lifts; the command is
-never held back. No terminal is ever stopped to free a folder; a shell elsewhere
-that later changes into a folder above the checkout is an ordinary external
-writer and is not stopped either. A checkout's own branch, and any ref that
-differs from it only by ASCII case, never proves it merged. A project folder that is not a Git repository, or is gone, is skipped, not listed
+**Quarantine before removal.** Rather than list every writer that could reach a
+folder by its path (chats, queued turns, registered jobs, background work,
+terminals: four review rounds each found one more), the last step of every
+physical removal moves the folder out of reach. After all final checks, under
+lifecycle and the path/start claims, the checkout is renamed to
+`<parent>/.octiq-removing-<id>` on the same volume with `git worktree move`
+(Git's own record follows). Nothing can then reach it by its path: a shell,
+terminal or job whose working folder is above it, a child nobody registered, a
+shell that later changes directory. What can still touch it is what already holds
+it open, so the new name is checked: (a) `lsof` for any working folder or open
+file at or below it (unknown is a yes; on Windows the refused rename is that
+check), (b) the content proof again (config, HEAD, at-stake ignored inventory,
+file stamps keyed by path inside the checkout), then (c) Git's non-force
+removal (force only for a confirmed Archive). Any failure at (a) or (b) moves
+the folder back; a failed move (another volume, an occupied name, a locked
+worktree, an open handle on Windows) keeps it in words.
+
+If something made the old path again while the folder was away, that path is
+never deleted or merged into; the removal goes on only when (b) passed and the
+sweep reports the recreated path. A move back that finds its original path
+occupied keeps the quarantine and says where it is. The intent is recorded
+before the rename (`<profile>/lifespan-quarantine/<id>.json`, synced); a server
+killed mid-removal leaves a record that the next sweep reads first: the folder is
+put back when its path is free, kept and reported when both exist, dropped when
+nothing is quarantined any more, and refused when the record names a folder this
+host would not have made. Nothing left behind is removed blindly. Every scan
+runs inside the 10-second final budget; a timeout puts the folder back, and the
+undo runs without the budget because a rename is never skipped for want of time.
+
+The ancestor claim over chats, jobs, background work and terminals, the host
+terminal fence and the job admission fence were removed with it: they only kept
+a writer working ABOVE the checkout from writing into it, which the move does,
+and they kept a whole `.worktrees` tree for as long as a terminal or chat sat at
+its parent folder. Claims on chats and starts at or inside the checkout, and the
+ledger's active-ancestor check, stay. Residual limit: a process that opens the
+quarantine by its new name (a `find` or `rm -r` over the whole parent that was
+already walking it) or receives a descriptor for the folder after the `lsof`
+snapshot is an ordinary external writer.
+
+A checkout's own branch, and any ref that differs from it only by ASCII case, never proves it merged. A project folder that is not a Git repository, or is gone, is skipped, not listed
 as a failure.
 
 Build stripping is an allow-list: only ignored, untracked `target` beside

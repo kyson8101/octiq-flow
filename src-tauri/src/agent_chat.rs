@@ -1324,7 +1324,7 @@ pub struct ChatManager {
     turn_sequences: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicU64>>>,
     /// How each running agent was last started — see `StartContext`. Keyed by
     /// process key, so each chat resumes independently.
-    starts: Arc<Mutex<HashMap<String, StartContext>>>,
+    starts: Mutex<HashMap<String, StartContext>>,
     /// Serializes native-id I/O with /clear, independently of process locks.
     /// Stop/interrupt never take this gate. Weak entries are swept in batches.
     native_writes: Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
@@ -1371,13 +1371,6 @@ pub struct ChatManager {
     start_claims: Mutex<HashMap<String, thread::ThreadId>>,
     /// Leaf path marks, taken under sessions before checking idleness.
     lifespan_holds: Mutex<std::collections::BTreeSet<String>>,
-    /// Checkouts about to be removed, one entry per operation. A chat that
-    /// would work in a folder ABOVE one is refused while it is held
-    /// (`hold_lifespan_ancestors`). A leaf, like `lifespan_holds`.
-    lifespan_ancestor_holds: Mutex<Vec<String>>,
-    /// The host's terminals, once something has told this manager
-    /// (`attach_terminals`): a removal's ancestor claim must cover them too.
-    terminals: Mutex<Option<Arc<crate::pty::PtyManager>>>,
     /// Chats the person is completing, each with the id of its wrap-up turn
     /// — see `chat_complete_impl`. In memory only: a server restart forgets
     /// it and the chat is simply not ticked.
@@ -2223,10 +2216,6 @@ impl ChatManager {
         )
         .map(|_| ())
     }
-    #[cfg(test)]
-    pub(crate) fn test_clear_lifespan_queue(&self) {
-        self.forget_queued_turns("chat:validation-queued");
-    }
     /// Path/start marks are acquired under lifecycle before this question.
     /// Include queued turns even when the chat has no live process.
     pub(crate) fn require_lifespan_idle(&self, checkout: &str) -> Result<(), String> {
@@ -2338,209 +2327,19 @@ impl ChatManager {
         })
     }
     fn lifespan_refusal(&self, cwd: &str, extra: Option<&Vec<String>>) -> Result<(), String> {
-        {
-            let holds = self.lifespan_holds.lock().map_err(|e| e.to_string())?;
-            for path in std::iter::once(cwd).chain(extra.into_iter().flatten().map(String::as_str))
-            {
-                if holds.iter().any(|root| {
-                    crate::paths::canonical_target(std::path::Path::new(path))
-                        .unwrap_or_else(|| std::path::PathBuf::from(path))
-                        .starts_with(root)
-                }) {
-                    return Err(
-                        "This worktree is being checked for lifespan cleanup; retry shortly."
-                            .into(),
-                    );
-                }
-            }
-        }
-        let ancestors = self
-            .lifespan_ancestor_holds
-            .lock()
-            .map_err(|e| e.to_string())?;
-        if ancestors.is_empty() {
-            return Ok(());
-        }
+        let holds = self.lifespan_holds.lock().map_err(|e| e.to_string())?;
         for path in std::iter::once(cwd).chain(extra.into_iter().flatten().map(String::as_str)) {
-            let path = crate::paths::canonical_target(std::path::Path::new(path))
-                .unwrap_or_else(|| std::path::PathBuf::from(path));
-            if ancestors
-                .iter()
-                .any(|root| std::path::Path::new(root).starts_with(&path))
-            {
-                return Err("A worktree below this folder is being removed; retry shortly.".into());
+            if holds.iter().any(|root| {
+                crate::paths::canonical_target(std::path::Path::new(path))
+                    .unwrap_or_else(|| std::path::PathBuf::from(path))
+                    .starts_with(root)
+            }) {
+                return Err(
+                    "This worktree is being checked for lifespan cleanup; retry shortly.".into(),
+                );
             }
         }
         Ok(())
-    }
-    /// A chat working in a folder ABOVE `checkout` can write into it without
-    /// ever having its cwd there, and no open-file snapshot sees a write that
-    /// has not happened yet. So the removal's final door claims the checkout
-    /// against such chats the way `hold_lifespan_checkout` claims it against
-    /// chats inside it: the claim is made first (every later start or queued
-    /// turn above the checkout is refused under the session table), and only
-    /// then are the live processes and queued turns looked at. One that is
-    /// there withholds the removal, in words. The caller holds the workspace
-    /// lifecycle lock and keeps the returned guard until the folder is gone.
-    pub(crate) fn hold_lifespan_ancestors(
-        &self,
-        checkout: &str,
-    ) -> Result<LifespanAncestorHold<'_>, String> {
-        let terminals = self.terminals.lock().map_err(|e| e.to_string())?.clone();
-        let checkout = crate::paths::canonical_target(std::path::Path::new(checkout))
-            .unwrap_or_else(|| std::path::PathBuf::from(checkout));
-        let above = |path: &str| {
-            let path = crate::paths::canonical_target(std::path::Path::new(path))
-                .unwrap_or_else(|| std::path::PathBuf::from(path));
-            path != checkout && checkout.starts_with(&path)
-        };
-        {
-            let _sessions = self.sessions.lock().map_err(|e| e.to_string())?;
-            self.lifespan_ancestor_holds
-                .lock()
-                .map_err(|e| e.to_string())?
-                .push(checkout.to_string_lossy().into_owned());
-        }
-        let mut hold = LifespanAncestorHold {
-            manager: self,
-            checkout: checkout.to_string_lossy().into_owned(),
-            _terminals: None,
-            _jobs: None,
-        };
-        // The host's other writers are fenced the same way, before anything
-        // is read: a job or a shell admitted after this is refused, and one
-        // admitted before it is seen by the reads below.
-        let starts_for_jobs = self.starts.clone();
-        hold._jobs = Some(self.jobs.fence(
-            &checkout,
-            Arc::new(move |chat: &str| {
-                let starts = starts_for_jobs.lock().ok()?;
-                let start = starts.get(chat)?;
-                Some(
-                    std::iter::once(start.cwd.clone())
-                        .chain(start.extra_dirs.iter().flatten().cloned())
-                        .collect(),
-                )
-            }),
-        )?);
-        if let Some(terminals) = &terminals {
-            hold._terminals = Some(terminals.fence_lifespan(&checkout)?);
-        }
-        {
-            let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
-            let starts = self.starts.lock().map_err(|e| e.to_string())?;
-            for key in sessions.keys() {
-                let start = starts
-                    .get(key)
-                    .ok_or("A running chat has unknown workspace settings.")?;
-                if std::iter::once(&start.cwd)
-                    .chain(start.extra_dirs.iter().flatten())
-                    .any(|p| above(p))
-                {
-                    return Err(format!(
-                        "Chat {key} works in a folder above this checkout and could still write into it; the folder is kept."
-                    ));
-                }
-            }
-        }
-        // What the host itself still runs for a chat outlives its provider
-        // process: a registered job, background work, a queue that waits for
-        // the profile, a start in flight. Each is a writer for as long as it
-        // lasts, so the chat's saved folders decide, not whether a process
-        // is up. Each store is read on its own, holding no other lock.
-        let mut queued = Vec::new();
-        {
-            let turns = self.queued_turns.lock().map_err(|e| e.to_string())?;
-            for (key, queue) in turns.iter() {
-                if queue.iter().any(|turn| {
-                    turn.context.as_ref().is_some_and(|context| {
-                        std::iter::once(&context.cwd)
-                            .chain(context.extra_dirs.iter().flatten())
-                            .any(|p| above(p))
-                    })
-                }) {
-                    return Err(format!(
-                        "A queued turn in {key} works in a folder above this checkout; the folder is kept."
-                    ));
-                }
-                if !queue.is_empty() {
-                    queued.push(key.clone());
-                }
-            }
-        }
-        let mut host_work: Vec<(String, &'static str, bool)> = Vec::new();
-        host_work.extend(queued.into_iter().map(|k| (k, "a queued message", false)));
-        host_work.extend(
-            self.waiting
-                .lock()
-                .map_err(|e| e.to_string())?
-                .keys()
-                .map(|k| (k.clone(), "a queue waiting for the profile", false)),
-        );
-        host_work.extend(
-            self.jobs
-                .running_chats()?
-                .into_iter()
-                .map(|k| (k, "a running job", true)),
-        );
-        host_work.extend(
-            self.background
-                .running_chats()?
-                .into_iter()
-                .map(|k| (k, "background work", true)),
-        );
-        {
-            let claims = self.start_claims.lock().map_err(|e| e.to_string())?;
-            host_work.extend(
-                claims
-                    .keys()
-                    .map(|k| (k.clone(), "a start in flight", false)),
-            );
-        }
-        {
-            let handoffs = self.handoffs.lock().map_err(|e| e.to_string())?;
-            host_work.extend(
-                handoffs
-                    .iter()
-                    .map(|k| (k.clone(), "a provider handoff", false)),
-            );
-        }
-        let starts = self.starts.lock().map_err(|e| e.to_string())?;
-        for (key, what, strict) in host_work {
-            match starts.get(&key) {
-                Some(start)
-                    if std::iter::once(&start.cwd)
-                        .chain(start.extra_dirs.iter().flatten())
-                        .any(|p| above(p)) =>
-                {
-                    return Err(format!(
-                        "Chat {key} has {what} and works in a folder above this checkout; the folder is kept."
-                    ));
-                }
-                Some(_) => {}
-                // Work already running whose folders are not known could be
-                // anywhere. A queue, a handoff or a start in flight is turned
-                // away by the claim just made, or was judged by its context.
-                None if strict => {
-                    return Err(format!(
-                        "Chat {key} has {what} and its folders are unknown; the folder is kept."
-                    ));
-                }
-                None => {}
-            }
-        }
-        drop(starts);
-        Ok(hold)
-    }
-    /// Tell this manager where the host's terminals are, so a removal's
-    /// ancestor claim covers them (`hold_lifespan_ancestors`). Said again
-    /// with the same terminals it changes nothing.
-    pub(crate) fn attach_terminals(&self, terminals: &Arc<crate::pty::PtyManager>) {
-        if let Ok(mut held) = self.terminals.lock() {
-            if !held.as_ref().is_some_and(|t| Arc::ptr_eq(t, terminals)) {
-                *held = Some(terminals.clone());
-            }
-        }
     }
     pub(crate) fn lifespan_chat_keys(&self, checkout: &str) -> Result<Vec<String>, String> {
         let starts = self.starts.lock().map_err(|e| e.to_string())?;
@@ -14810,24 +14609,6 @@ impl Drop for LifespanHold<'_> {
     }
 }
 
-/// See `ChatManager::hold_lifespan_ancestors`. Dropping it lets chats above
-/// the checkout start again.
-pub(crate) struct LifespanAncestorHold<'a> {
-    manager: &'a ChatManager,
-    checkout: String,
-    _terminals: Option<crate::pty::TerminalFence>,
-    _jobs: Option<crate::chat_jobs::Fence<'a>>,
-}
-impl Drop for LifespanAncestorHold<'_> {
-    fn drop(&mut self) {
-        if let Ok(mut holds) = self.manager.lifespan_ancestor_holds.lock() {
-            if let Some(i) = holds.iter().position(|c| *c == self.checkout) {
-                holds.remove(i);
-            }
-        }
-    }
-}
-
 /// A start's claim on a chat keeps every other start out (`claim_start`).
 #[cfg(test)]
 mod start_claim_tests {
@@ -14875,155 +14656,6 @@ mod start_claim_tests {
         drop(claim);
         drop(mark);
         assert!(manager.lifespan_refusal("/tmp/project", None).is_ok());
-    }
-
-    #[test]
-    fn a_chat_above_a_checkout_withholds_its_removal_and_cannot_start_during_it() {
-        let manager = ChatManager::default();
-        let parent = crate::test_dir::TestDir::new("lifespan-above").canonicalized();
-        let checkout = parent.join("work");
-        std::fs::create_dir_all(&checkout).unwrap();
-        let above = parent.to_string_lossy().into_owned();
-        let checkout = checkout.to_string_lossy().into_owned();
-        // Nothing above: the claim is made, and a chat above it cannot start
-        // or queue while it is held.
-        let hold = manager.hold_lifespan_ancestors(&checkout).unwrap();
-        assert!(manager
-            .lifespan_refusal(&above, None)
-            .unwrap_err()
-            .contains("below this folder"));
-        assert!(manager
-            .lifespan_refusal("/tmp/elsewhere", Some(&vec![above.clone()]))
-            .is_err());
-        assert!(manager.test_lifespan_queue(&above).is_err());
-        // A sibling or a folder inside the checkout is not above it.
-        assert!(manager
-            .lifespan_refusal(&format!("{checkout}/inner"), None)
-            .is_ok());
-        assert!(manager.lifespan_refusal("/tmp/not-above", None).is_ok());
-        drop(hold);
-        assert!(manager.lifespan_refusal(&above, None).is_ok());
-        // A turn queued above before the claim withholds the removal, and the
-        // failed claim leaves nothing held.
-        manager.test_lifespan_queue(&above).unwrap();
-        let refusal = manager.hold_lifespan_ancestors(&checkout).err().unwrap();
-        assert!(refusal.contains("folder above this checkout"), "{refusal}");
-        assert!(manager.lifespan_refusal(&above, None).is_ok());
-        manager.test_clear_lifespan_queue();
-        drop(manager.hold_lifespan_ancestors(&checkout).unwrap());
-    }
-
-    /// Host-registered work outlives the provider process: with no session
-    /// and nothing queued, a chat whose saved folder is above the checkout
-    /// still writes below it while its job or background task runs.
-    #[test]
-    fn host_work_above_a_checkout_withholds_removal_after_the_provider_exits() {
-        let manager = ChatManager::default();
-        let parent = crate::test_dir::TestDir::new("lifespan-job").canonicalized();
-        let checkout = parent.join("work");
-        std::fs::create_dir_all(&checkout).unwrap();
-        let above = parent.to_string_lossy().into_owned();
-        let checkout = checkout.to_string_lossy().into_owned();
-        manager.test_remember_start("chat:above", &above);
-        assert!(!manager.has_process("chat:above"));
-        drop(manager.hold_lifespan_ancestors(&checkout).unwrap());
-        // A job, as `octiq-job` registers it.
-        let (job, token) = manager
-            .jobs
-            .start(
-                "chat:above",
-                serde_json::from_value(json!({ "label": "render", "wake": false })).unwrap(),
-            )
-            .unwrap();
-        let refusal = manager.hold_lifespan_ancestors(&checkout).err().unwrap();
-        assert!(refusal.contains("running job"), "{refusal}");
-        // The failed claim left nothing held.
-        assert!(manager.lifespan_refusal(&above, None).is_ok());
-        // Its end releases the folder.
-        manager
-            .jobs
-            .end(
-                job["id"].as_str().unwrap(),
-                &token,
-                serde_json::from_value(json!({ "exitCode": 0 })).unwrap(),
-            )
-            .unwrap();
-        drop(manager.hold_lifespan_ancestors(&checkout).unwrap());
-        // A job of a chat whose folders are unknown could be anywhere.
-        let (_, _) = manager
-            .jobs
-            .start(
-                "chat:unknown",
-                serde_json::from_value(json!({ "label": "render", "wake": false })).unwrap(),
-            )
-            .unwrap();
-        let refusal = manager.hold_lifespan_ancestors(&checkout).err().unwrap();
-        assert!(refusal.contains("unknown"), "{refusal}");
-    }
-
-    #[test]
-    fn background_work_a_start_in_flight_and_a_waiting_queue_above_a_checkout_withhold_removal() {
-        let manager = ChatManager::default();
-        let parent = crate::test_dir::TestDir::new("lifespan-host-work").canonicalized();
-        let checkout = parent.join("work");
-        std::fs::create_dir_all(&checkout).unwrap();
-        let above = parent.to_string_lossy().into_owned();
-        let checkout = checkout.to_string_lossy().into_owned();
-        manager.test_remember_start("chat:bg", &above);
-        manager
-            .background
-            .observe(
-                "chat:bg",
-                "launch-1",
-                &json!({
-                    "type": "system", "subtype": "task_started",
-                    "task_id": "t1", "description": "build",
-                }),
-            )
-            .unwrap();
-        let refusal = manager.hold_lifespan_ancestors(&checkout).err().unwrap();
-        assert!(refusal.contains("background work"), "{refusal}");
-        manager
-            .background
-            .observe(
-                "chat:bg",
-                "launch-1",
-                &json!({
-                    "type": "system", "subtype": "task_updated",
-                    "task_id": "t1", "status": "completed",
-                }),
-            )
-            .unwrap();
-        drop(manager.hold_lifespan_ancestors(&checkout).unwrap());
-        // A start in flight for a chat above the checkout.
-        manager.test_remember_start("chat:starting", &above);
-        let claim = manager.claim_start("chat:starting").unwrap();
-        let refusal = manager.hold_lifespan_ancestors(&checkout).err().unwrap();
-        assert!(refusal.contains("start in flight"), "{refusal}");
-        drop(claim);
-        // A queue that waits for the profile, with no context to read.
-        manager.waiting.lock().unwrap().insert(
-            "chat:waiting".into(),
-            Waiting {
-                stream_key: "chat:waiting".into(),
-                why: "folder away".into(),
-            },
-        );
-        manager.test_remember_start("chat:waiting", &above);
-        let refusal = manager.hold_lifespan_ancestors(&checkout).err().unwrap();
-        assert!(refusal.contains("waiting"), "{refusal}");
-        manager.waiting.lock().unwrap().clear();
-        drop(manager.hold_lifespan_ancestors(&checkout).unwrap());
-        // Work in an unrelated folder is not this checkout's concern.
-        manager.test_remember_start("chat:elsewhere", "/tmp/elsewhere-lifespan");
-        manager
-            .jobs
-            .start(
-                "chat:elsewhere",
-                serde_json::from_value(json!({ "label": "render", "wake": false })).unwrap(),
-            )
-            .unwrap();
-        drop(manager.hold_lifespan_ancestors(&checkout).unwrap());
     }
 
     #[test]

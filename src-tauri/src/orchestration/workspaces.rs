@@ -1382,10 +1382,6 @@ impl OrchestrationStore {
             return Err("This task no longer owns that validation workspace.".into());
         }
         let _budget = crate::git_ops::lifespan::FinalBudget::start();
-        // Chats above the checkout, and the host's own jobs for them, can write
-        // into it without a cwd inside: claim it against them and keep the
-        // claim until the folder is gone, as the sweep's final door does.
-        let _above = chats.hold_lifespan_ancestors(path)?;
         chats.require_lifespan_idle(path)?;
         workflow::remove_validation_verified(&ws.plan, path, proof.as_ref())?;
         self.mutate(|data| {
@@ -3591,58 +3587,6 @@ exec /usr/bin/git "$@"
             .remove_validation(&ChatManager::default(), "chat:master", &task.id, &path)
             .unwrap();
         assert!(!Path::new(&path).exists());
-    }
-
-    #[test]
-    fn explicit_validation_removal_claims_chats_and_jobs_above_the_checkout() {
-        let repo = Repo::new();
-        let (store, _, task) = setup(&repo, WorkspaceMode::Worktree);
-        let first = prepare(&store, &task, Access::Auto).unwrap();
-        let base = repo.git(&["rev-parse", "HEAD"]);
-        let path = store
-            .create_validation(&first.worker_chat_key, &task.id, &base, vec![])
-            .unwrap();
-        let above = Path::new(&path)
-            .parent()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let chats = ChatManager::default();
-        // No provider process, nothing queued: only a registered job runs.
-        chats.test_remember_start("chat:above", &above);
-        let (job, token) = chats
-            .jobs
-            .start(
-                "chat:above",
-                serde_json::from_value(serde_json::json!({ "label": "render", "wake": false }))
-                    .unwrap(),
-            )
-            .unwrap();
-        let error = store
-            .remove_validation(&chats, "chat:master", &task.id, &path)
-            .unwrap_err();
-        assert!(error.contains("running job"), "{error}");
-        assert!(Path::new(&path).exists());
-        assert!(
-            chats.test_lifespan_admission(&above).is_ok(),
-            "the refusal leaked the ancestor claim"
-        );
-        chats
-            .jobs
-            .end(
-                job["id"].as_str().unwrap(),
-                &token,
-                serde_json::from_value(serde_json::json!({ "exitCode": 0 })).unwrap(),
-            )
-            .unwrap();
-        store
-            .remove_validation(&chats, "chat:master", &task.id, &path)
-            .unwrap();
-        assert!(!Path::new(&path).exists());
-        assert!(
-            chats.test_lifespan_admission(&above).is_ok(),
-            "the claim outlived the removal"
-        );
     }
 
     #[test]

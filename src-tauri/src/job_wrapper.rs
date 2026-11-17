@@ -42,8 +42,6 @@ pub const TAIL_LINES: usize = 20;
 const REPORT_EVERY: Duration = Duration::from_millis(500);
 /// How long a call to the host may take before it is given up.
 const HOST_TIMEOUT: Duration = Duration::from_secs(3);
-/// How long a start the host asked to retry is asked again.
-const HOST_RETRY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct Options {
@@ -478,6 +476,28 @@ fn run(
             };
         }
     };
+    // The command's output is read from the moment it runs. Telling the host
+    // of the job can take as long as the host takes to answer (up to its
+    // timeout), and a command with more output than a pipe holds must not wait
+    // for that.
+    let shared = Arc::new(Mutex::new(Shared {
+        parser: Parser::new(options.format),
+        tail: Tail::new(TAIL_LINES),
+        progress: None,
+        dirty: false,
+        from_file: options.progress_file.is_some(),
+    }));
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let stdout = child
+        .stdout
+        .take()
+        .map(|out| pass_on(out, std::io::stdout(), shared.clone(), done_tx.clone()));
+    let stderr = child
+        .stderr
+        .take()
+        .map(|err| pass_on(err, std::io::stderr(), shared.clone(), done_tx.clone()));
+    drop(done_tx);
+    let readers = usize::from(stdout.is_some()) + usize::from(stderr.is_some());
     let shown = display_command(&options.command);
     let label = options
         .label
@@ -518,24 +538,6 @@ fn run(
     }
     let job = started.ok();
 
-    let shared = Arc::new(Mutex::new(Shared {
-        parser: Parser::new(options.format),
-        tail: Tail::new(TAIL_LINES),
-        progress: None,
-        dirty: false,
-        from_file: options.progress_file.is_some(),
-    }));
-    let (done_tx, done_rx) = mpsc::channel::<()>();
-    let stdout = child
-        .stdout
-        .take()
-        .map(|out| pass_on(out, std::io::stdout(), shared.clone(), done_tx.clone()));
-    let stderr = child
-        .stderr
-        .take()
-        .map(|err| pass_on(err, std::io::stderr(), shared.clone(), done_tx.clone()));
-    drop(done_tx);
-    let readers = usize::from(stdout.is_some()) + usize::from(stderr.is_some());
     let finished = Arc::new(AtomicBool::new(false));
     if let Some(path) = options.progress_file.clone() {
         watch_file(path, shared.clone(), finished.clone());
@@ -701,20 +703,7 @@ fn begin(
     let Some(host) = host else {
         return Err("not run from an OctiqFlow chat".into());
     };
-    // The command is already running (it was started before this), so a host
-    // that says "retry shortly" because a removal holds the folders the job
-    // works in is asked again for a while rather than left to run unseen: a
-    // job the host does not know of is one whose writes it cannot see. The
-    // command is never held back and never failed for it.
-    let retry_until = Instant::now() + HOST_RETRY;
-    let mut asked = host.ask("start", start.clone());
-    while matches!(&asked, Err(failed) if failed.why.contains(crate::chat_jobs::RETRY_SHORTLY))
-        && Instant::now() < retry_until
-    {
-        std::thread::sleep(Duration::from_millis(250));
-        asked = host.ask("start", start.clone());
-    }
-    match asked {
+    match host.ask("start", start.clone()) {
         Ok(value) => Ok(Report::Hook {
             id: value["id"].as_str().ok_or("no job id")?.to_string(),
             token: value["token"].as_str().ok_or("no job token")?.to_string(),

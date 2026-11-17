@@ -145,8 +145,11 @@ impl Stamps {
             if result.len() >= 100_000 || start.elapsed() >= budget {
                 return Err("File stamp inventory reached its final bound; folder kept.".into());
             }
-            let p = Path::new(root).join(std::str::from_utf8(name).map_err(|e| e.to_string())?);
-            result.insert(p.clone(), stamp(&p)?);
+            let relative = PathBuf::from(std::str::from_utf8(name).map_err(|e| e.to_string())?);
+            let p = Path::new(root).join(&relative);
+            // Keyed by the path inside the checkout, so the same files are
+            // equal before and after the checkout is moved (quarantine).
+            result.insert(relative, stamp(&p)?);
         }
         let config = config_path(root, budget.saturating_sub(start.elapsed()))?;
         result.insert(config.clone(), stamp(&config)?);

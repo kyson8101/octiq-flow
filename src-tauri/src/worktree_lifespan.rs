@@ -19,6 +19,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 mod ignored;
+mod quarantine;
 mod raw;
 
 /// The same at-stake inventory used by every removal; unknown is never zero.
@@ -118,6 +119,11 @@ pub(crate) fn verify_validation_removal(path: &str, proof: &RemovalProof) -> Res
     if registered_agent_worktree(path)? {
         return Err("A registered agent retains this worktree; folder kept.".into());
     }
+    verify_contents(path, proof)
+}
+/// What the removal proof says about the folder's own content, asked of the
+/// folder wherever it now is (the quarantine asks it again after the move).
+fn verify_contents(path: &str, proof: &RemovalProof) -> Result<(), String> {
     raw::require_recreatable_config(path, git::remaining(Duration::from_secs(10))?)?;
     if git::text(path, &["rev-parse", "HEAD"])? != proof.head {
         return Err("Removal HEAD changed during comparison; folder kept.".into());
@@ -127,6 +133,9 @@ pub(crate) fn verify_validation_removal(path: &str, proof: &RemovalProof) -> Res
 }
 /// Sole non-Archive physical removal door. Lifecycle and path/start guards are
 /// held by the caller; every call consumes an off-lock, full-path Restore proof.
+/// The folder is moved aside (`quarantine`) and checked again there before Git
+/// removes it, so nothing that reaches a folder by its path can write into it
+/// between the last check and the removal.
 pub(crate) fn remove_proven(repo: &str, path: &str, proof: &RemovalProof) -> Result<(), String> {
     let _budget = git::FinalBudget::start();
     crate::profile::available()?;
@@ -151,7 +160,9 @@ pub(crate) fn remove_proven(repo: &str, path: &str, proof: &RemovalProof) -> Res
     verify_validation_removal(path, proof)?;
     crate::profile::available()?;
     git::remaining(Duration::from_secs(10))?;
-    git::remove(repo, path, false)
+    quarantine::remove(repo, path, false, &mut |quarantined| {
+        verify_contents(quarantined, proof)
+    })
 }
 /// Reused by task Cleanup/Abandon, mission Close/Abandon and validation.
 /// Take under lifecycle, before dropping it for the long Restore comparison.
@@ -934,6 +945,11 @@ fn walk(root: &str, path: &Path, in_build: bool, tree: &mut Tree) -> Result<(), 
     }
     Ok(())
 }
+#[cfg(test)]
+thread_local! {
+    /// A test's own `lsof` (slow, or answering what it likes).
+    static TEST_LSOF: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
 #[derive(Default)]
 struct Usage {
     known: bool,
@@ -944,7 +960,13 @@ impl Usage {
         if windows {
             return Self::default();
         }
-        let mut cmd = Command::new("lsof");
+        #[cfg(test)]
+        let executable = TEST_LSOF
+            .with(|p| p.borrow().clone())
+            .unwrap_or_else(|| "lsof".into());
+        #[cfg(not(test))]
+        let executable = "lsof";
+        let mut cmd = Command::new(executable);
         cmd.args(["-nP", "-F0n"]);
         let Ok(bytes) = git::command(&mut cmd, Duration::from_secs(12)) else {
             return Self::default();
@@ -1762,6 +1784,9 @@ fn reconcile(svc: &Services, store: &Store, at: i64, sweep: &mut Sweep) -> Resul
         // Reconciliation changes the ledger, not the filesystem. Do not
         // report a manually missing folder as a host deletion.
     }
+    // A folder a killed server left in quarantine is put back, or kept and
+    // said, never removed.
+    quarantine::recover(svc, sweep)?;
     // A restart may have happened on either side of git worktree remove.
     // Existing folders are re-verified by a later sweep, never blindly replayed.
     for intent in store.saved()?.intents {
@@ -1980,8 +2005,6 @@ fn operate_progress(
             walk(&preview.path, build, true, &mut deleted)?;
             let usage = (checks.usage)();
             let _lifecycle = hold_lifecycle(svc)?;
-            svc.chats.attach_terminals(&svc.ptys);
-            let _above = svc.chats.hold_lifespan_ancestors(&preview.path)?;
             let final_started = std::time::Instant::now();
             final_ready(svc, store, &a, preview, &usage)?;
             require_unprotected(build)?;
@@ -2070,10 +2093,6 @@ fn operate_progress(
         {
             let final_usage = (checks.usage)();
             let _lifecycle = hold_lifecycle(svc)?;
-            // Claim the checkout against chats ABOVE it before the final
-            // ownership check, and keep the claim through the removal.
-            svc.chats.attach_terminals(&svc.ptys);
-            let _above = svc.chats.hold_lifespan_ancestors(&preview.path)?;
             final_ready(svc, store, &a, preview, &final_usage)?;
             let mut cache = store.inner.lock().map_err(|e| e.to_string())?;
             store.load(&mut cache)?;
@@ -2232,6 +2251,11 @@ fn sweep_checked(svc: &Services, store: &Store, checks: &Checks) -> Result<(), S
                 }
             }
         }
+    }
+    // A folder removed while something had made its old path again: the
+    // removal went through, and what the process made was not touched.
+    for (path, why) in quarantine::take_notes() {
+        report.failed.push(Failed { path, why });
     }
     let changed = report.stripped > 0 || !report.removed.is_empty();
     store.change(true, |s| {
@@ -2467,7 +2491,21 @@ fn archive_checked(
         stamps.verify(&preview.path)?;
         crate::profile::available()?;
         final_budget(final_started)?;
-        git::remove(&preview.repo, &preview.path, true)?;
+        // Moved aside, then compared again where it now is, before Git
+        // force-removes it: the archive only covers what was there.
+        quarantine::remove(&preview.repo, &preview.path, true, &mut |quarantined| {
+            let ignored = ignored::bounded(quarantined, final_budget(final_started)?, 100_000)
+                .map_err(|e| {
+                    format!("Ignored-file inventory unavailable; archive and folder kept: {e}")
+                })?;
+            if Some(&ignored.hash) != check.ignored_hash.as_ref() {
+                return Err(
+                    "Ignored files changed after the archive preview; the archive and folder are kept."
+                        .into(),
+                );
+            }
+            stamps.verify(quarantined)
+        })?;
     }
     {
         let _lifecycle = hold_lifecycle(svc)?;
