@@ -166,7 +166,7 @@ fn is_redirect(meta: &std::fs::Metadata) -> bool {
 /// files, which may be offline and dirty, so the mission is kept. The one
 /// redirect allowed is a link directly under the filesystem root, which is how
 /// macOS spells `/tmp` and `/var`.
-fn confirmed_missing(path: &str) -> Result<bool, String> {
+pub(super) fn confirmed_missing(path: &str) -> Result<bool, String> {
     let kept = |why: String| {
         format!("{path} is not found, but that is not confirmed: {why} The mission is kept.")
     };
@@ -238,6 +238,33 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 #[cfg(test)]
+thread_local! {
+    /// Runs once right after a swept task's saved evidence was read in
+    /// `cleanup_workspace_expected`, before Cleaned is recorded.
+    pub(super) static AFTER_SWEPT_EVIDENCE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+thread_local! {
+    /// Runs once inside the final presence re-check (`presence_last` and
+    /// the close loop's last pass), after the Git branch lookup and before the folder is
+    /// read: the window a folder made again during that lookup used to hide in.
+    pub(super) static AFTER_BRANCH_LOOKUP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+fn after_branch_lookup() {
+    if let Some(hook) = AFTER_BRANCH_LOOKUP.with(|h| h.borrow_mut().take()) {
+        hook();
+    }
+}
+#[cfg(test)]
+pub(super) fn after_swept_evidence() {
+    if let Some(hook) = AFTER_SWEPT_EVIDENCE.with(|h| h.borrow_mut().take()) {
+        hook();
+    }
+}
+#[cfg(test)]
 fn after_branch_delete() {
     if let Some(hook) = AFTER_BRANCH_DELETE.with(|h| h.borrow_mut().take()) {
         hook();
@@ -250,12 +277,101 @@ fn after_delivery() {
     }
 }
 
+/// `Ok(false)` only with positive proof that no local branch of that name
+/// exists (`lifespan::local_branch_exists`: rev-parse exit 1, no case alias,
+/// no unreadable ref folder, nothing on stderr). Everything else that is not a
+/// plain yes is `Err`: not being able to ask proves nothing.
+pub(super) fn branch_exists(plan: &WorkspacePlan) -> Result<bool, String> {
+    crate::git_ops::lifespan::local_branch_exists(&plan.repository_root, &plan.branch)
+}
+
+/// A swept TASK worktree whose branch is gone as well (a release's cleanup
+/// deleted the merged branch). `Ok(true)` only when the folder is confirmed
+/// missing, the branch is proven absent and the saved delivery was recorded
+/// merged, clean, with a head: nothing physical is left, the record answers.
+/// `Ok(false)` when the branch is still there (the normal swept path decides).
+/// Anything that cannot be confirmed, or a gone branch with no recorded merge,
+/// is `Err` with a sentence: the task is kept.
+pub(super) fn swept_task_branch_gone(
+    ws: &super::workspaces::TaskWorkspace,
+) -> Result<bool, String> {
+    let kept = |why: String| {
+        format!("This workspace was swept; its kept branch cannot be verified. Restore the branch before Cleanup: {why}")
+    };
+    if branch_exists(&ws.plan).map_err(kept)? {
+        return Ok(false);
+    }
+    if !confirmed_missing(&ws.plan.checkout_root).map_err(kept)? {
+        return Err(kept(format!(
+            "the folder {} is there again, so this is not a swept workspace",
+            ws.plan.checkout_root
+        )));
+    }
+    match ws
+        .delivery
+        .as_ref()
+        .filter(|d| d.merged && !d.dirty && !d.head_sha.is_empty())
+    {
+        Some(_) => Ok(true),
+        None => Err(format!(
+            "The folder {} and the branch {} are both gone, and no clean merge into {} was ever recorded for this task, so it is not known to be merged. The task is kept.",
+            ws.plan.checkout_root, ws.plan.branch, ws.plan.base_branch
+        )),
+    }
+}
+
+/// What a card records of each root, and the answer compares again: whether
+/// the folder and the branch were there. A change either way keeps the item.
+/// The Git lookup comes first and the folder is read last, so nothing that
+/// takes time sits between the folder read and what the caller does with it.
+pub(super) fn presence(plan: &WorkspacePlan) -> Result<(bool, bool), String> {
+    let branch = branch_exists(plan)?;
+    Ok((!confirmed_missing(&plan.checkout_root)?, branch))
+}
+
+/// `presence` for the re-check made right before a durable Closed/Cleaned
+/// write: the same order, with the test window between the two reads.
+pub(super) fn presence_last(plan: &WorkspacePlan) -> Result<(bool, bool), String> {
+    let branch = branch_exists(plan)?;
+    #[cfg(test)]
+    after_branch_lookup();
+    Ok((!confirmed_missing(&plan.checkout_root)?, branch))
+}
+
+/// The folder and the local branch are both gone (the sweep removed the folder,
+/// a release's merged-branch cleanup removed the branch). Nothing physical is
+/// left to remove, so the recorded delivery answers for it, but only a delivery
+/// that was recorded as merged: a merge is never guessed from a missing ref.
+/// The answer is the saved delivery as it is: `removed` and `branch_deleted`
+/// are what a Close records, never what asking about a close does.
+fn gone_branch_delivery(
+    known: Option<&MissionDelivery>,
+    plan: &WorkspacePlan,
+) -> Result<MissionDelivery, String> {
+    match known.filter(|k| k.merged && !k.evidence.head_sha.is_empty()) {
+        Some(known) => Ok(known.clone()),
+        None => Err(format!(
+            "The folder {} and the branch {} are both gone, and no merge into {} was ever recorded for it, so it is not known to be merged. The mission is kept.",
+            plan.checkout_root, plan.branch, plan.base_branch
+        )),
+    }
+}
+
+/// `closing` is a Close's own read: only it stamps `swept_at`; asking about a
+/// close (the card, a refresh) records nothing it did not find.
+///
 /// A folder that is gone has no working tree to inspect, so nothing in it can
 /// be at stake: whether the sweep removed it or it vanished some other way, its
 /// kept branch and the last saved delivery still answer for it, and it is
 /// never recreated to draw the page. With no saved delivery at all the branch
-/// alone says where it stands. A folder that exists is never taken for swept.
-fn swept_delivery(run: &Run, plan: &WorkspacePlan) -> Result<Option<MissionDelivery>, String> {
+/// alone says where it stands. A branch that is gone as well answers from the
+/// saved delivery only when that was recorded merged (`gone_branch_delivery`).
+/// A folder that exists is never taken for swept.
+pub(super) fn swept_delivery(
+    run: &Run,
+    plan: &WorkspacePlan,
+    closing: bool,
+) -> Result<Option<MissionDelivery>, String> {
     if !confirmed_missing(&plan.checkout_root)? {
         return Ok(None);
     }
@@ -263,6 +379,9 @@ fn swept_delivery(run: &Run, plan: &WorkspacePlan) -> Result<Option<MissionDeliv
         .mission_delivery
         .iter()
         .find(|d| d.checkout_root == plan.checkout_root);
+    if !branch_exists(plan)? {
+        return gone_branch_delivery(known, plan).map(Some);
+    }
     let head = crate::git_ops::lifespan::text(
         &plan.repository_root,
         &[
@@ -285,7 +404,9 @@ fn swept_delivery(run: &Run, plan: &WorkspacePlan) -> Result<Option<MissionDeliv
         swept_at: None,
         branch_deleted: false,
     });
-    delivery.swept_at = delivery.swept_at.or(Some(now_ms()));
+    if closing {
+        delivery.swept_at = delivery.swept_at.or(Some(now_ms()));
+    }
     delivery.evidence.head_sha = head.clone();
     delivery.evidence.dirty = false;
     delivery.evidence.has_commits = head != plan.base_sha;
@@ -300,8 +421,22 @@ fn swept_delivery(run: &Run, plan: &WorkspacePlan) -> Result<Option<MissionDeliv
     Ok(Some(delivery))
 }
 
-fn delivery_of(run: &Run, plan: &WorkspacePlan) -> Result<MissionDelivery, String> {
-    if let Some(mut delivery) = swept_delivery(run, plan)? {
+/// `closing` is a Close's own read: it may stamp what only a Close records
+/// (`swept_at` of a folder that is gone). A refresh, and so the ask for a
+/// cleanup card, writes nothing of that kind: a card is a proposal.
+fn delivery_of(run: &Run, plan: &WorkspacePlan, closing: bool) -> Result<MissionDelivery, String> {
+    if confirmed_missing(&plan.checkout_root)? && !branch_exists(plan)? {
+        let known = run
+            .mission_delivery
+            .iter()
+            .find(|d| d.checkout_root == plan.checkout_root);
+        let mut delivery = gone_branch_delivery(known, plan)?;
+        if closing {
+            delivery.swept_at = delivery.swept_at.or(Some(now_ms()));
+        }
+        return Ok(delivery);
+    }
+    if let Some(mut delivery) = swept_delivery(run, plan, closing)? {
         delivery.merged |=
             workflow::merged_into_remote_base(plan, &delivery.evidence.head_sha) == Some(true);
         delivery.evidence.merged = delivery.merged;
@@ -361,7 +496,7 @@ fn delivery_of(run: &Run, plan: &WorkspacePlan) -> Result<MissionDelivery, Strin
 /// local look at its worktrees and the merge the last refresh recorded.
 fn close_blocker(run: &Run, plans: &[WorkspacePlan]) -> Option<String> {
     for plan in plans {
-        match swept_delivery(run, plan) {
+        match swept_delivery(run, plan, false) {
             Ok(Some(delivery)) => {
                 if delivery.merged {
                     continue;
@@ -471,7 +606,7 @@ impl OrchestrationStore {
         }
         let deliveries = plans
             .iter()
-            .map(|plan| delivery_of(&run, plan))
+            .map(|plan| delivery_of(&run, plan, false))
             .collect::<Result<Vec<_>, _>>()?;
         self.mutate(|data| {
             let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
@@ -578,13 +713,19 @@ impl OrchestrationStore {
         // refusal (a gate that opened after the branch was deleted) still
         // leaves its facts to be recorded: they are about Git, not the run.
         let mut done: Vec<MissionDelivery> = Vec::new();
+        // What each root was when this Close looked at it: folder present,
+        // branch present. Looked at again right before anything is recorded.
+        let mut seen_roots: Vec<(usize, (bool, bool))> = Vec::new();
+        let mut moved_roots: BTreeSet<String> = BTreeSet::new();
         let outcome = (|| -> Result<(), String> {
             for key in &workers {
                 crate::agent_chat::chat_stop_impl(chats, key.clone())?;
             }
-            for (plan, proof) in plans.iter().zip(&proofs) {
+            for (index, (plan, proof)) in plans.iter().zip(&proofs).enumerate() {
                 chats.require_checkout_idle(&plan.checkout_root, plan.is_managed_worktree())?;
-                let mut delivery = delivery_of(&run, plan)?;
+                let seen = presence(plan)?;
+                seen_roots.push((index, seen));
+                let mut delivery = delivery_of(&run, plan, true)?;
                 #[cfg(test)]
                 after_delivery();
                 if let Some(expected) = expected {
@@ -643,6 +784,10 @@ impl OrchestrationStore {
                         self.require_named_run_finished(run_id)?;
                     }
                     let deleted = workflow::delete_merged_branch(plan)?;
+                    // A branch that was already gone (deleted by a release's
+                    // cleanup) is deleted all the same; git refusing `-d` is
+                    // told apart from it by asking whether the ref is there.
+                    let deleted = deleted || !branch_exists(plan).unwrap_or(true);
                     if let Some(last) = done.last_mut() {
                         last.branch_deleted = deleted;
                     }
@@ -654,9 +799,35 @@ impl OrchestrationStore {
             // here, after every Git call and before the closing write.
             #[cfg(test)]
             after_delivery();
+            // A root that was gone when it was looked at is recorded removed
+            // on that look alone, so it must still be gone now: a folder or a
+            // branch made again since is not something this Close removed.
+            // Roots this Close removes itself are not asked.
+            // The Git lookups come first for every root; the folders are read
+            // last, with no external process between that read and the write.
+            for (index, (_, branch)) in &seen_roots {
+                let plan = &plans[*index];
+                if !branch && branch_exists(plan)? {
+                    moved_roots.insert(plan.checkout_root.clone());
+                }
+            }
+            #[cfg(test)]
+            after_branch_lookup();
+            for (index, (folder, _)) in &seen_roots {
+                let plan = &plans[*index];
+                if !folder && !confirmed_missing(&plan.checkout_root)? {
+                    moved_roots.insert(plan.checkout_root.clone());
+                }
+            }
+            if let Some(root) = moved_roots.iter().next() {
+                return Err(format!(
+                    "The folder or the branch of {root} appeared or went since this Close looked at it; the mission is kept. Ask again."
+                ));
+            }
             Ok(())
         })();
 
+        done.retain(|d| !moved_roots.contains(&d.checkout_root));
         let result = self.mutate(|data| {
             // The write that closes the mission decides again, under the
             // ledger: a run that became active again is never marked Closed.

@@ -54,6 +54,23 @@ fn command_io(
     limit: usize,
     strict_errors: bool,
 ) -> Result<Vec<u8>, String> {
+    let (status, bytes, errors) = command_run(cmd, timeout, input, limit)?;
+    if !status.success() || strict_errors && !errors.is_empty() {
+        return Err(format!(
+            "Command failed: {}",
+            String::from_utf8_lossy(&errors).trim()
+        ));
+    }
+    Ok(bytes)
+}
+/// Runs the command to its end and hands back how it ended, with stdout and
+/// stderr, so a caller that must tell an exit code from a failure to ask can.
+fn command_run(
+    cmd: &mut Command,
+    timeout: Duration,
+    input: Option<Vec<u8>>,
+    limit: usize,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), String> {
     let timeout = remaining(timeout)?;
     let start = Instant::now();
     cmd.stdin(if input.is_some() {
@@ -111,13 +128,21 @@ fn command_io(
     if bytes.len() > limit {
         return Err("Command output exceeded the safety limit.".into());
     }
-    if !status.success() || strict_errors && !errors.is_empty() {
-        return Err(format!(
-            "Command failed: {}",
-            String::from_utf8_lossy(&errors).trim()
-        ));
-    }
-    Ok(bytes)
+    Ok((status, bytes, errors))
+}
+/// Git's own answer, untouched: its exit code (None when a signal ended it),
+/// stdout and stderr. Only a failure to run it at all is an `Err`.
+pub(crate) fn git_exit(
+    root: &str,
+    args: &[&str],
+) -> Result<(Option<i32>, Vec<u8>, Vec<u8>), String> {
+    let (status, out, err) = command_run(
+        &mut git_command(root, args),
+        Duration::from_secs(15),
+        None,
+        32 * 1024 * 1024,
+    )?;
+    Ok((status.code(), out, err))
 }
 #[cfg(test)]
 thread_local! {
@@ -165,6 +190,94 @@ pub(crate) fn git_io(
 }
 pub(crate) fn git(root: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     command(&mut git_command(root, args), Duration::from_secs(15))
+}
+/// Whether the local branch `refs/heads/<branch>` exists, asked of the
+/// repository at `root`. `Ok(true)` when git resolves it to a commit.
+/// `Ok(false)` ONLY with positive proof of absence, every one of:
+/// `rev-parse --verify --quiet` exits exactly 1 with nothing on stderr; a full
+/// listing of `refs/heads` (success, nothing on stderr) has no name equal to it
+/// ignoring case; and every directory that exists on its path under the
+/// repository's ref folder can be read. Anything else is `Err`, which means
+/// unknown: an empty successful listing is not absence (a case-insensitive
+/// filesystem lists the real `FEATURE/X` as nothing for `feature/x`, and an
+/// unreadable loose-ref folder lists as empty with exit 0). Refnames are
+/// compared byte for byte, never through a trimming helper. A non-ASCII name
+/// is unknown: Unicode-normalising filesystems fold names this does not.
+pub(crate) fn local_branch_exists(root: &str, branch: &str) -> Result<bool, String> {
+    let unknown = |why: String| {
+        format!("Whether the branch {branch} exists could not be confirmed ({why}); nothing is assumed about it.")
+    };
+    if branch.is_empty() || !branch.is_ascii() {
+        return Err(unknown("its name is empty or not plain ASCII".into()));
+    }
+    let wanted = format!("refs/heads/{branch}");
+    let (code, out, err) = git_exit(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{wanted}^{{commit}}"),
+        ],
+    )?;
+    match code {
+        Some(0) => return Ok(true),
+        Some(1) if err.is_empty() && out.is_empty() => {}
+        other => {
+            return Err(unknown(format!(
+                "rev-parse answered {other:?}: {}",
+                String::from_utf8_lossy(&err).trim()
+            )))
+        }
+    }
+    let (code, out, err) = git_exit(root, &["for-each-ref", "--format=%(refname)", "refs/heads"])?;
+    if code != Some(0) || !err.is_empty() {
+        return Err(unknown(format!(
+            "listing refs answered {code:?}: {}",
+            String::from_utf8_lossy(&err).trim()
+        )));
+    }
+    let listed = String::from_utf8(out).map_err(|e| unknown(e.to_string()))?;
+    if listed.lines().any(|l| l.eq_ignore_ascii_case(&wanted)) {
+        return Err(unknown(
+            "a ref of that name exists but does not resolve to a commit, or differs only in case"
+                .into(),
+        ));
+    }
+    // Loose refs live under the repository's COMMON git dir, also for a
+    // linked worktree. Every folder that exists on the branch's path must be
+    // readable, or a ref inside it could be hidden from both git calls above.
+    let (code, out, err) = git_exit(root, &["rev-parse", "--git-common-dir"])?;
+    if code != Some(0) || !err.is_empty() {
+        return Err(unknown("the git directory could not be found".into()));
+    }
+    let common = String::from_utf8(out).map_err(|e| unknown(e.to_string()))?;
+    let common = common.strip_suffix('\n').unwrap_or(&common);
+    let common = Path::new(root).join(common);
+    let mut dir = common.join("refs").join("heads");
+    let mut parts = branch.split('/');
+    loop {
+        match std::fs::symlink_metadata(&dir) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(unknown(format!("{} could not be read: {e}", dir.display()))),
+            Ok(m) if m.is_dir() => {
+                std::fs::read_dir(&dir)
+                    .map_err(|e| unknown(format!("{} could not be read: {e}", dir.display())))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| unknown(format!("{} could not be read: {e}", dir.display())))?;
+            }
+            Ok(_) => {
+                return Err(unknown(format!(
+                    "{} exists and is not a folder",
+                    dir.display()
+                )))
+            }
+        }
+        match parts.next() {
+            Some(part) => dir.push(part),
+            None => return Ok(false),
+        }
+    }
 }
 pub(crate) fn text(root: &str, args: &[&str]) -> Result<String, String> {
     String::from_utf8(git(root, args)?)
@@ -296,4 +409,96 @@ pub(crate) fn restore(repo: &str, path: &str, branch: &str, reference: &str) -> 
         ],
     )
     .map(|_| ())
+}
+
+#[cfg(test)]
+mod branch_proof_tests {
+    use super::local_branch_exists;
+    use crate::git_ops::workflow::tests::Repo;
+    use std::path::Path;
+
+    /// A path that answers to the other case is a case-folding filesystem
+    /// (macOS and Windows by default): the one where an alias of a branch's
+    /// name resolves to the real branch.
+    fn case_insensitive(repo: &Repo) -> bool {
+        let upper = repo.root.to_uppercase();
+        upper != repo.root && Path::new(&upper).exists()
+    }
+
+    #[test]
+    fn a_branch_that_is_there_is_found_and_one_that_is_not_is_proven_absent() {
+        let repo = Repo::new();
+        repo.git(&["branch", "feature/one"]);
+        assert_eq!(local_branch_exists(&repo.root, "feature/one"), Ok(true));
+        assert_eq!(local_branch_exists(&repo.root, "feature/two"), Ok(false));
+        assert_eq!(local_branch_exists(&repo.root, "other/one"), Ok(false));
+        // A packed branch is found too: no loose file is needed.
+        repo.git(&["pack-refs", "--all"]);
+        assert_eq!(local_branch_exists(&repo.root, "feature/one"), Ok(true));
+        assert_eq!(local_branch_exists(&repo.root, "feature/two"), Ok(false));
+    }
+
+    #[test]
+    fn a_name_is_never_compared_through_a_trimming_helper() {
+        let repo = Repo::new();
+        // `text` trims trailing white space, a no-break space included, so a
+        // name ending in one used to read as the name without it.
+        repo.git(&["branch", "feature/nbsp\u{a0}"]);
+        assert!(local_branch_exists(&repo.root, "feature/nbsp\u{a0}").is_err());
+        assert_ne!(local_branch_exists(&repo.root, "feature/nbsp"), Ok(true));
+    }
+
+    #[test]
+    fn a_branch_differing_only_in_case_is_never_proven_absent() {
+        // Packed, so the lookup is by exact name: the alias does not resolve,
+        // but the listing names it.
+        let repo = Repo::new();
+        repo.git(&["branch", "Feature/Alias"]);
+        repo.git(&["pack-refs", "--all"]);
+        let alias = local_branch_exists(&repo.root, "feature/alias");
+        assert!(
+            alias.is_err(),
+            "a case alias is unknown, not absent: {alias:?}"
+        );
+        // Loose: a case-folding filesystem resolves the alias to the real
+        // branch although for-each-ref of the alias lists nothing.
+        let repo = Repo::new();
+        repo.git(&["branch", "Feature/Alias"]);
+        let alias = local_branch_exists(&repo.root, "feature/alias");
+        if case_insensitive(&repo) {
+            assert_ne!(
+                alias,
+                Ok(false),
+                "empty for-each-ref is not absence: {alias:?}"
+            );
+        } else {
+            eprintln!("case-sensitive filesystem: a loose alias is a different file; skipped");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_loose_ref_folder_is_unknown_not_absent() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = Repo::new();
+        let hidden = Path::new(&repo.root).join(".git/refs/heads/hidden");
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = std::fs::read_dir(&hidden).is_err();
+        let answer = local_branch_exists(&repo.root, "hidden/branch");
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !unreadable {
+            eprintln!("modes are not enforced for this user; skipped");
+            return;
+        }
+        assert!(answer.is_err(), "unreadable means unknown: {answer:?}");
+    }
+
+    #[test]
+    fn a_failed_git_call_or_a_missing_repository_is_unknown() {
+        let repo = Repo::new();
+        let missing = format!("{}-does-not-exist", repo.root);
+        assert!(local_branch_exists(&missing, "feature/one").is_err());
+        assert!(local_branch_exists(&repo.root, "").is_err());
+    }
 }
