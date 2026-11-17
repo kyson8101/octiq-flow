@@ -444,7 +444,15 @@ Each scan derives Active, Idle, Finished or Abandoned. A process, lease,
 unsettled attempt, open gate, queued turn, observed cwd/open file, or unfinished
 owning run task holds the checkout Active. Last activity is the newest host-known
 task/attempt timestamp, chat index update, last commit and non-build tree mtime.
-Before the removal threshold it is Idle. After it, a clean checkout with no Git
+Before the removal threshold it is Idle. The threshold is
+`removeAfterDays` (default 14), or `removeMergedAfterDays` (default 1, `0` is the
+next sweep, never above `removeAfterDays`) for a task, mission or chat checkout
+whose HEAD is already held by its base: `git for-each-ref --contains HEAD` names
+the recorded base, the project default or develop/main/master, as a local branch
+or its `origin/` copy (`Item.mergedInto`). The checkout's own branch and its
+`origin/` copy never count: a push is not a merge. A stale `origin/` ref can fail
+to prove a merge and can never invent one. The branch is kept, so the folder
+can be rebuilt at the same path. After the threshold, a clean checkout with no Git
 operation and a named, kept branch is Finished; no merge or push is required
 when the local branch still holds its commits. Dirty/untracked files, an
 unfinished Git operation, or detached commits with no retaining ref make it
@@ -460,7 +468,58 @@ Primary, adopted, direct and hand-made worktrees are listed as Unknown and never
 changed. Repositories come from registered projects and ledger allocations.
 The one thread starts three minutes after host startup and scans hourly; tests
 never start it. Disabled settings or an unavailable pinned profile withhold a
-pass. A cargo/rustc process withholds cleanup. No timer belongs to a worktree.
+pass. A cargo/rustc process withholds stripping build folders only (it may use
+one); removal asks about the checkout itself. No timer belongs to a worktree.
+The final ownership check compares allocations at or inside the checkout, and an
+allocation above it only while it is active (an unsettled attempt, an open
+decision or an unfinished task). A settled folder above it (a non-Git project
+folder a run worked in place) is another checkout with another repository and
+used to refuse every worktree under it; an active one can still write below it
+and keeps the folder.
+
+**Quarantine before removal.** Rather than list every writer that could reach a
+folder by its path (chats, queued turns, registered jobs, background work,
+terminals: four review rounds each found one more), the last step of every
+physical removal moves the folder out of reach. After all final checks, under
+lifecycle and the path/start claims, the checkout is renamed to
+`<parent>/.octiq-removing-<id>` on the same volume with `git worktree move`
+(Git's own record follows). Nothing can then reach it by its path: a shell,
+terminal or job whose working folder is above it, a child nobody registered, a
+shell that later changes directory. What can still touch it is what already holds
+it open, so the new name is checked: (a) `lsof` for any working folder or open
+file at or below it (unknown is a yes; on Windows the refused rename is that
+check), (b) the content proof again (config, HEAD, at-stake ignored inventory,
+file stamps keyed by path inside the checkout), then (c) Git's non-force
+removal (force only for a confirmed Archive). Any failure at (a) or (b) moves
+the folder back; a failed move (another volume, an occupied name, a locked
+worktree, an open handle on Windows) keeps it in words.
+
+If something made the old path again while the folder was away, that path is
+never deleted or merged into; the removal goes on only when (b) passed and the
+sweep reports the recreated path. A move back that finds its original path
+occupied keeps the quarantine and says where it is; a path made again in the
+gap right before the move back (Git moves into an existing folder) is reported
+with the place the checkout went, nothing lost or merged. The intent is recorded
+before the rename (`<profile>/lifespan-quarantine/<id>.json`, synced); a server
+killed mid-removal leaves a record that the next sweep reads first: the folder is
+put back when its path is free, kept and reported when both exist, dropped when
+nothing is quarantined any more, and refused when the record names a folder this
+host would not have made. Nothing left behind is removed blindly. Every scan
+runs inside the 10-second final budget; a timeout puts the folder back, and the
+undo runs without the budget because a rename is never skipped for want of time.
+
+The ancestor claim over chats, jobs, background work and terminals, the host
+terminal fence and the job admission fence were removed with it: they only kept
+a writer working ABOVE the checkout from writing into it, which the move does,
+and they kept a whole `.worktrees` tree for as long as a terminal or chat sat at
+its parent folder. Claims on chats and starts at or inside the checkout, and the
+ledger's active-ancestor check, stay. Residual limit: a process that opens the
+quarantine by its new name (a `find` or `rm -r` over the whole parent that was
+already walking it) or receives a descriptor for the folder after the `lsof`
+snapshot is an ordinary external writer.
+
+A checkout's own branch, and any ref that differs from it only by ASCII case, never proves it merged. A project folder that is not a Git repository, or is gone, is skipped, not listed
+as a failure.
 
 Build stripping is an allow-list: only ignored, untracked `target` beside
 `Cargo.toml`, and `node_modules` beside `package.json`. Neither the tree walk nor
@@ -474,8 +533,15 @@ also withhold Git removal because Git may traverse a junction.
 `git worktree remove` deletes them. Starfall intentionally ignores original
 media and renders under `works/` and `anime/`, where they may be the only copy.
 Each worktree, including validation checkouts, gets a `git status --ignored=matching`
-inventory bounded to 15 seconds, 32 MiB of Git output and 100,000 inspected
-entries. Metadata is read without following symlinks/junctions; redirected
+inventory bounded to 60 seconds (15 at the final door under lifecycle), 32 MiB of
+Git output and 100,000 inspected entries outside build folders plus 5,000,000
+inside a qualifying `target`/`node_modules`/`dist`/`.astro` (the part of a checkout
+a React Native `node_modules` fills with ~156,000 entries). Tree sizing is a
+separate walk and recognises only `target` and `node_modules` as build folders;
+`dist`/`.astro` count against its 100,000 entries. Inside such a folder
+each directory is classified once and its files follow, unless a `source`,
+`works` or `anime` folder, a `.git` or bare-repo shape, a non-regular file, or
+(under `dist`/`.astro`) a link is met; those stay at stake. Metadata is read without following symlinks/junctions; redirected
 entries outside a real qualified build folder are at stake; links inside
 `target`/`node_modules` are rebuildable links and their targets are never followed.
 A build root that is itself a link does not qualify. Only these ignored files are rebuildable:
@@ -560,8 +626,10 @@ Socket-only commands (no hook route or MCP tool):
   Each Item includes `ignoredFiles: number|null` and `ignoredBytes: number|null`,
   counting **only at-stake ignored files**. Both are null if the inventory
   failed, timed out, reached its entry/output limit or could not finish.
-- `worktree_lifespan_set { enabled?, buildAfterDays?, removeAfterDays? }` requires
-  days at least 1 and build cleanup no later than folder removal. Enabling needs
+- `worktree_lifespan_set { enabled?, buildAfterDays?, removeAfterDays?,
+  removeMergedAfterDays? }` requires days at least 1 and build cleanup no later
+  than folder removal; `removeMergedAfterDays` is 0 or more and no later than
+  `removeAfterDays`. Enabling needs
   a saved record; disabling acts at once and owes a failed write.
 - `worktree_lifespan_keep { key, keep }` pins/unpins. Pinning acts at once;
   unpinning needs a saved record.
@@ -582,9 +650,11 @@ Heavy usage capture, tree walks and content hashes run outside the global
 workspace lifecycle lock while checkout/start marks prevent host starts. The
 host reacquires lifecycle for each final operation and rechecks allocations and
 activity; it releases it between items. Content hashing is bounded to 2 GiB
-total/120 seconds, sizing to 100,000 entries/15 seconds. Final under-lock ignored
-checks use 100,000 entries/10 seconds including Git status; the normal inventory
-remains 100,000 entries/15 seconds. A limit holds that item in words and lets
+total/120 seconds, sizing to 100,000 entries outside `target`/`node_modules` build
+folders (5,000,000 inside) and 60 seconds. Final under-lock ignored checks use 15
+seconds with Git status bounded by the 10-second final budget; the normal
+inventory is 60 seconds. The Windows reparse scan under lock gets only what is
+left of the final budget. A limit holds that item in words and lets
 other workspaces continue. Git metadata output is capped at 32 MiB per command and Git
 removal at 15 seconds; archive commands/comparison have 120-second bounds outside
 lifecycle; OS filesystem operations may still block.

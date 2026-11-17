@@ -479,6 +479,28 @@ fn run(
             };
         }
     };
+    // The command's output is read from the moment it runs. Telling the host
+    // of the job can take as long as the host takes to answer (up to its
+    // timeout), and a command with more output than a pipe holds must not wait
+    // for that.
+    let shared = Arc::new(Mutex::new(Shared {
+        parser: Parser::new(options.format),
+        tail: Tail::new(TAIL_LINES),
+        progress: None,
+        dirty: false,
+        from_file: options.progress_file.is_some(),
+    }));
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let stdout = child
+        .stdout
+        .take()
+        .map(|out| pass_on(out, std::io::stdout(), shared.clone(), done_tx.clone()));
+    let stderr = child
+        .stderr
+        .take()
+        .map(|err| pass_on(err, std::io::stderr(), shared.clone(), done_tx.clone()));
+    drop(done_tx);
+    let readers = usize::from(stdout.is_some()) + usize::from(stderr.is_some());
     let shown = display_command(&options.command);
     let label = options
         .label
@@ -519,24 +541,6 @@ fn run(
     }
     let job = started.ok();
 
-    let shared = Arc::new(Mutex::new(Shared {
-        parser: Parser::new(options.format),
-        tail: Tail::new(TAIL_LINES),
-        progress: None,
-        dirty: false,
-        from_file: options.progress_file.is_some(),
-    }));
-    let (done_tx, done_rx) = mpsc::channel::<()>();
-    let stdout = child
-        .stdout
-        .take()
-        .map(|out| pass_on(out, std::io::stdout(), shared.clone(), done_tx.clone()));
-    let stderr = child
-        .stderr
-        .take()
-        .map(|err| pass_on(err, std::io::stderr(), shared.clone(), done_tx.clone()));
-    drop(done_tx);
-    let readers = usize::from(stdout.is_some()) + usize::from(stderr.is_some());
     let finished = Arc::new(AtomicBool::new(false));
     if let Some(path) = options.progress_file.clone() {
         watch_file(path, shared.clone(), finished.clone());
@@ -1243,6 +1247,75 @@ mod tests {
         );
         assert_eq!(code, 0);
         assert!(spool_lines(&dir).is_empty());
+    }
+
+    /// The command's output is read from the moment it runs: a host that is
+    /// slow to answer `start` (up to its timeout) must not make a command that
+    /// writes more than a pipe holds wait for it. The exit code is the
+    /// command's own.
+    #[cfg(unix)]
+    #[test]
+    fn a_slow_host_does_not_stall_a_command_that_writes_more_than_a_pipe_holds() {
+        use std::io::{BufRead, BufReader};
+        let dir = crate::test_dir::TestDir::new("job-wrap-slow-host");
+        let wrote = dir.join("wrote-everything");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let marker = wrote.clone();
+        let answered = std::thread::spawn(move || {
+            let mut finished_first = false;
+            for stream in listener.incoming().flatten().take(1) {
+                let mut reader = BufReader::new(&stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; length];
+                let _ = reader.read_exact(&mut body);
+                // Slow, but inside the wrapper's 3 s: the command has this long.
+                let until = Instant::now() + Duration::from_millis(2_000);
+                while Instant::now() < until && !marker.exists() {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                finished_first = marker.exists();
+                let answer = "{\"id\":\"j1\",\"token\":\"t\"}";
+                let _ = (&stream).write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                        answer.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+            finished_first
+        });
+        let host = Host {
+            agent: ureq::AgentBuilder::new().timeout(HOST_TIMEOUT).build(),
+            url: format!("http://127.0.0.1:{port}/hook/job"),
+            capability: "cap".into(),
+            session: "chat:a".into(),
+        };
+        let script = format!(
+            "head -c 300000 /dev/zero | tr '\\0' x; touch '{}'; exit 7",
+            wrote.display()
+        );
+        let code = run(
+            options(&["--", "sh", "-c", &script]),
+            Some(host),
+            None,
+            None,
+        );
+        assert_eq!(code, 7, "the command's own exit code");
+        assert!(
+            answered.join().unwrap(),
+            "the command wrote all of its output while the host had not answered yet"
+        );
     }
 
     /// `--detach` through the spool: the process it starts says what the

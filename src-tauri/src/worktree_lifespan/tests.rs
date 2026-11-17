@@ -121,6 +121,7 @@ fn eligible() -> Decision<'static> {
         reparse: false,
         managed: true,
         complete: true,
+        merged: false,
     }
 }
 #[test]
@@ -128,7 +129,7 @@ fn default_contract_and_no_derived_facts_on_disk() {
     let saved = serde_json::to_value(Saved::default()).unwrap();
     assert_eq!(
         saved["settings"],
-        json!({"enabled":true,"buildAfterDays":3,"removeAfterDays":14})
+        json!({"enabled":true,"buildAfterDays":3,"removeAfterDays":14,"removeMergedAfterDays":1})
     );
     assert!(saved.get("items").is_none());
 }
@@ -698,7 +699,7 @@ fn actual_sweep_strips_only_builds_then_removes_and_chat_recovers_same_path() {
     assert_eq!(held.recovery.head, head);
 }
 #[test]
-fn actual_sweep_pins_busy_compiler_disabled_and_abandoned_all_keep_folder() {
+fn actual_sweep_pins_disabled_and_abandoned_all_keep_folder() {
     let home = crate::profile::tests::Home::with_a_configured_base();
     let _profile = crate::profile::started_in(&home.dir);
     crate::profile::available().unwrap();
@@ -720,14 +721,6 @@ fn actual_sweep_pins_busy_compiler_disabled_and_abandoned_all_keep_folder() {
             Ok(())
         })
         .unwrap();
-    let busy = Checks {
-        windows: false,
-        usage: known,
-        building: || true,
-        inventory: ignored::inventory,
-    };
-    sweep_checked(&svc, &store, &busy).unwrap();
-    assert!(Path::new(&r.work).exists());
     store
         .change(true, |s| {
             s.settings.enabled = false;
@@ -1786,8 +1779,12 @@ fn archive_large_64mib_untracked_preview_and_final_disk_compare() {
     let home = crate::profile::tests::Home::with_a_configured_base();
     let _profile = crate::profile::started_in(&home.dir);
     let r = Repo::new();
-    let file = fs::File::create(Path::new(&r.work).join("large-media.bin")).unwrap();
-    file.set_len(64 * 1024 * 1024).unwrap();
+    // The handle is closed before the sweep: a writer that keeps a file open
+    // inside the checkout is exactly what the quarantine's `lsof` refuses.
+    fs::File::create(Path::new(&r.work).join("large-media.bin"))
+        .unwrap()
+        .set_len(64 * 1024 * 1024)
+        .unwrap();
     r.write("tracked", "changed as well");
     r.age(30);
     let svc = r.services(30);
@@ -2880,4 +2877,480 @@ fn m12_leading_space_paths_are_exactly_filtered_and_really_removed() {
     let store = Store::default();
     sweep_checked(&svc, &store, &checks()).unwrap();
     assert!(gone(&r.work), "clean leading path must reach real removal");
+}
+
+#[test]
+fn merged_work_waits_the_short_period_and_other_work_the_long_one() {
+    let s = Settings::default();
+    let mut merged = eligible();
+    merged.merged = true;
+    merged.idle_ms = DAY - 1;
+    assert_eq!(decide(merged, &s).0, "idle");
+    let mut merged = eligible();
+    merged.merged = true;
+    merged.idle_ms = DAY;
+    let (state, why) = decide(merged, &s);
+    assert_eq!(state, "finished", "{why}");
+    let mut ordinary = eligible();
+    ordinary.idle_ms = 13 * DAY;
+    assert_eq!(decide(ordinary, &s).0, "idle");
+    // Zero is the next sweep, and merged work is never held longer than the
+    // ordinary period even if the two settings were ever read the wrong way.
+    let now_only = Settings {
+        remove_merged_after_days: 0,
+        ..Settings::default()
+    };
+    let mut merged = eligible();
+    merged.merged = true;
+    merged.idle_ms = 0;
+    assert_eq!(decide(merged, &now_only).0, "finished");
+    let reversed = Settings {
+        remove_merged_after_days: 30,
+        ..Settings::default()
+    };
+    let mut merged = eligible();
+    merged.merged = true;
+    assert_eq!(decide(merged, &reversed).0, "finished");
+    // Merged work that is dirty, mid-operation or active is still held.
+    for case in 0..3 {
+        let mut d = eligible();
+        d.merged = true;
+        match case {
+            0 => d.dirty = true,
+            1 => d.operation = true,
+            _ => d.active = Some("A live chat runs here."),
+        }
+        assert_ne!(decide(d, &s).0, "finished", "{case}");
+    }
+}
+#[test]
+fn a_settings_file_from_before_the_merged_period_reads_the_default() {
+    let old: Settings =
+        serde_json::from_value(json!({"enabled":true,"buildAfterDays":3,"removeAfterDays":14}))
+            .unwrap();
+    assert_eq!(old.remove_merged_after_days, 1);
+    assert_eq!(retention_days(&old, true), 1);
+    assert_eq!(retention_days(&old, false), 14);
+}
+#[test]
+fn merged_into_names_only_a_base_that_really_holds_head() {
+    let r = Repo::new();
+    let head = |r: &Repo| git::text(&r.work, &["rev-parse", "HEAD"]).unwrap();
+    // A branch with no work of its own sits at its base.
+    assert_eq!(
+        merged_into(&r.work, &head(&r), Some("octiq/test"), Some("develop")),
+        Some("develop".into())
+    );
+    r.write("work", "one");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "work"]).unwrap();
+    assert_eq!(
+        merged_into(&r.work, &head(&r), Some("octiq/test"), Some("develop")),
+        None,
+        "unmerged work is not merged, and the branch itself proves nothing"
+    );
+    // Its own remote copy is a push, not a merge.
+    git::text(
+        &r.root,
+        &["update-ref", "refs/remotes/origin/octiq/test", &head(&r)],
+    )
+    .unwrap();
+    assert_eq!(
+        merged_into(&r.work, &head(&r), Some("octiq/test"), Some("octiq/test")),
+        None
+    );
+    // A recorded base that is a chat branch holding it counts.
+    git::text(&r.root, &["branch", "octiq/chat", &head(&r)]).unwrap();
+    assert_eq!(
+        merged_into(&r.work, &head(&r), Some("octiq/test"), Some("octiq/chat")),
+        Some("octiq/chat".into())
+    );
+    git::text(&r.root, &["branch", "-D", "octiq/chat"]).unwrap();
+    // The project default and its remote copy count when the recorded base
+    // does not hold it.
+    git::text(
+        &r.root,
+        &["update-ref", "refs/remotes/origin/main", &head(&r)],
+    )
+    .unwrap();
+    assert_eq!(
+        merged_into(&r.work, &head(&r), Some("octiq/test"), Some("octiq/gone")),
+        Some("origin/main".into())
+    );
+    // Merging into develop is what the local base needs.
+    git::text(&r.root, &["update-ref", "-d", "refs/remotes/origin/main"]).unwrap();
+    git::text(&r.root, &["merge", "--no-edit", "octiq/test"]).unwrap();
+    assert_eq!(
+        merged_into(&r.work, &head(&r), Some("octiq/test"), Some("develop")),
+        Some("develop".into())
+    );
+    // An unreadable repository answers "not proven", never an error.
+    assert_eq!(merged_into("/no/such/folder", "abc", None, None), None);
+}
+#[test]
+fn observing_merged_work_shortens_its_removal_and_leaves_other_work_alone() {
+    let r = Repo::new();
+    let at = now() + 2 * DAY;
+    let o = r.observe(at, &known());
+    assert_eq!(o.item.merged_into.as_deref(), Some("develop"));
+    assert_eq!(o.item.state, "finished", "{}", o.item.why);
+    assert!(o.removable);
+    assert!(o.item.remove_at.is_some_and(|t| t <= at));
+    r.write("work", "one");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "work"]).unwrap();
+    let o = r.observe(at, &known());
+    assert_eq!(o.item.merged_into, None);
+    assert_eq!(o.item.state, "idle");
+    assert!(o.item.remove_at.is_none());
+    // The ordinary period still ends it.
+    let o = r.observe(now() + 15 * DAY, &known());
+    assert_eq!(o.item.state, "finished");
+    // A pushed branch alone is not a merge.
+    let sha = git::text(&r.work, &["rev-parse", "HEAD"]).unwrap();
+    git::text(
+        &r.root,
+        &["update-ref", "refs/remotes/origin/octiq/test", &sha],
+    )
+    .unwrap();
+    assert_eq!(r.observe(at, &known()).item.state, "idle");
+}
+#[test]
+fn a_running_build_holds_stripping_of_build_output() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    crate::profile::available().unwrap();
+    let busy = Checks {
+        building: || true,
+        ..checks()
+    };
+    // Control: the same sweep with a compiler running keeps build output.
+    let r = Repo::new();
+    r.write("Cargo.toml", "[package]\nname='test'\n");
+    git::text(&r.work, &["add", "Cargo.toml"]).unwrap();
+    git::text(&r.work, &["commit", "-m", "manifest"]).unwrap();
+    r.write("target/cache", "generated");
+    r.write("dirty", "keeps the folder");
+    r.age(4);
+    let svc = r.services(4);
+    let store = Store::default();
+    sweep_checked(&svc, &store, &busy).unwrap();
+    assert!(Path::new(&r.work).join("target/cache").exists());
+    assert_eq!(store.saved().unwrap().history[0].stripped, 0);
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(!Path::new(&r.work).join("target").exists());
+}
+#[test]
+fn a_running_build_does_not_hold_removal_of_merged_work() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    crate::profile::available().unwrap();
+    let busy = Checks {
+        building: || true,
+        ..checks()
+    };
+    // Merged work, aged two days, goes in a busy sweep; unmerged stays.
+    let r = Repo::new();
+    r.write("work", "one");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "work"]).unwrap();
+    r.age(2);
+    let svc = r.services(2);
+    let store = Store::default();
+    sweep_checked(&svc, &store, &busy).unwrap();
+    assert!(Path::new(&r.work).exists(), "unmerged work is kept");
+    git::text(&r.root, &["merge", "--no-edit", "octiq/test"]).unwrap();
+    sweep_checked(&svc, &store, &busy).unwrap();
+    let report = &store.saved().unwrap().history[0];
+    assert_eq!(
+        report.removed.len(),
+        1,
+        "{:?}",
+        serde_json::to_value(report).unwrap()
+    );
+    assert!(
+        gone(&r.work),
+        "merged work is removed after the short period"
+    );
+    assert!(
+        !report.failed.iter().any(|f| f.path == r.work),
+        "{:?}",
+        report.failed
+    );
+    // The branch is kept: the work lives on and the folder can be rebuilt.
+    assert!(git::text(&r.root, &["rev-parse", "--verify", "refs/heads/octiq/test"]).is_ok());
+}
+thread_local! { static WORK: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) }; }
+fn using_work() -> Usage {
+    Usage {
+        known: true,
+        paths: vec![WORK.with(|w| w.borrow().join("work"))],
+    }
+}
+#[test]
+fn merged_work_inside_the_short_period_or_in_use_is_kept() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    crate::profile::available().unwrap();
+    let r = Repo::new();
+    r.write("work", "one");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "work"]).unwrap();
+    r.age(2);
+    git::text(&r.root, &["merge", "--no-edit", "octiq/test"]).unwrap();
+    // The chat was used a moment ago: not idle for a day yet.
+    let svc = r.services(0);
+    let store = Store::default();
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(Path::new(&r.work).exists(), "not idle for a day yet");
+    let mut meta = crate::chat_index::find("lifespan-chat").unwrap().unwrap();
+    meta.updated_at = now() - 2 * DAY;
+    crate::chat_index::upsert(meta).unwrap();
+    // A process with its cwd or an open file in the folder keeps it.
+    WORK.with(|w| *w.borrow_mut() = PathBuf::from(&r.work));
+    let using = Checks {
+        usage: using_work,
+        ..checks()
+    };
+    sweep_checked(&svc, &store, &using).unwrap();
+    assert!(Path::new(&r.work).exists());
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(gone(&r.work));
+}
+#[test]
+fn only_an_active_ancestor_or_an_allocation_at_or_inside_the_checkout_withholds_removal() {
+    let r = Repo::new();
+    let before = r.allocation();
+    let at = |path: &str, repo: &str| Allocation {
+        path: path.into(),
+        repo: repo.into(),
+        ..r.allocation()
+    };
+    // The folder a run works in place above `.worktrees`, with its own
+    // repository, its own unfinished task and recent activity: not this
+    // checkout's owner. This was every pandahrms worktree's refusal.
+    let parent = Path::new(&r.work)
+        .ancestors()
+        .nth(3)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let mut ancestor = at(&parent, &parent);
+    ancestor.active = None;
+    ancestor.last_activity = i64::MAX;
+    // A settled ancestor (no unsettled attempt, no open decision, no
+    // unfinished task) is history, however recent: this is the pandahrms case.
+    assert!(
+        ownership_unchanged(&[ancestor.clone(), at("/somewhere/else", "/else")], &before).is_ok()
+    );
+    assert!(ownership_unchanged(&[r.allocation()], &before).is_ok());
+    // An ACTIVE one still writes below it, so it withholds the removal.
+    ancestor.active = Some("The owning run still has unfinished tasks.".into());
+    let refusal =
+        ownership_unchanged(&[ancestor, at("/somewhere/else", "/else")], &before).unwrap_err();
+    assert!(refusal.contains("above this checkout"), "{refusal}");
+    // An active allocation elsewhere is nothing to this checkout.
+    let mut elsewhere = at("/somewhere/else", "/else");
+    elsewhere.active = Some("busy".into());
+    assert!(ownership_unchanged(&[elsewhere], &before).is_ok());
+    // The checkout's own allocation, or one inside it, still refuses.
+    let mut newer = r.allocation();
+    newer.last_activity = 1;
+    assert!(ownership_unchanged(&[newer], &before).is_err());
+    let mut active = r.allocation();
+    active.active = Some("An unsettled attempt still uses this checkout.".into());
+    assert!(ownership_unchanged(&[active], &before).is_err());
+    let moved = at(&r.work, "/another/repo");
+    assert!(ownership_unchanged(&[moved], &before).is_err());
+    let mut inside = at(&format!("{}/nested", r.work), &r.root);
+    inside.active = Some("A worker was admitted below.".into());
+    assert!(ownership_unchanged(&[inside], &before).is_err());
+}
+#[test]
+fn a_folder_that_is_not_a_repository_or_is_gone_is_skipped_not_failed() {
+    let plain = TestDir::new("lifespan-plain");
+    let plain_path = plain.to_string_lossy().into_owned();
+    let error = checkouts(&plain_path).err().expect("not a repository");
+    assert!(error.contains("not a git repository"), "{error}");
+    assert!(has_no_worktrees(&plain_path, &error));
+    assert!(has_no_worktrees(
+        "/no/such/folder/at/all",
+        "Command failed: boom"
+    ));
+    // A real failure in a real repository is still reported.
+    assert!(!has_no_worktrees(
+        &plain_path,
+        "Command failed: index.lock exists"
+    ));
+    let r = Repo::new();
+    assert!(!has_no_worktrees(
+        &r.root,
+        "Command failed: index.lock exists"
+    ));
+}
+#[test]
+fn a_build_folder_over_the_outside_limit_is_inspected_and_its_originals_stay_at_stake() {
+    let r = Repo::new();
+    r.write("package.json", "{}");
+    for i in 0..60 {
+        r.write(&format!("node_modules/pkg{i}/index.js"), "generated");
+        r.write(&format!("node_modules/pkg{i}/lib/a.js"), "generated");
+    }
+    // 60 packages of generated files are far above an outside limit of 20.
+    let inventory = ignored::bounded(&r.work, Duration::from_secs(30), 20).unwrap();
+    assert_eq!(inventory.files, 0);
+    // Anything at stake inside is still found, however large the folder.
+    r.write("node_modules/pkg1/source/original.txt", "only copy");
+    r.write("node_modules/pkg2/.git/config", "nested repository");
+    r.write("node_modules/pkg3/works/render.bin", "only copy");
+    let inventory = ignored::bounded(&r.work, Duration::from_secs(30), 20).unwrap();
+    assert_eq!(inventory.files, 3);
+    #[cfg(unix)]
+    {
+        let fifo = Path::new(&r.work).join("node_modules/pkg4/pipe");
+        assert!(Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(
+            ignored::bounded(&r.work, Duration::from_secs(30), 20)
+                .unwrap()
+                .files,
+            4
+        );
+    }
+    // Rebuildable links under dist are at stake; under node_modules they are not.
+    #[cfg(unix)]
+    {
+        r.write("dist/real.js", "generated");
+        std::os::unix::fs::symlink("real.js", Path::new(&r.work).join("dist/link.js")).unwrap();
+        std::os::unix::fs::symlink(
+            "index.js",
+            Path::new(&r.work).join("node_modules/pkg0/link.js"),
+        )
+        .unwrap();
+        assert_eq!(
+            ignored::bounded(&r.work, Duration::from_secs(30), 20)
+                .unwrap()
+                .files,
+            5
+        );
+    }
+}
+#[test]
+fn a_folder_with_too_many_ordinary_files_is_kept_in_words_that_say_what_to_do() {
+    let r = Repo::new();
+    for i in 0..30 {
+        r.write(&format!("untracked/{i}"), "x");
+    }
+    let error = ignored::bounded(&r.work, Duration::from_secs(30), 20)
+        .err()
+        .expect("over the outside limit");
+    assert!(error.contains("outside build folders"), "{error}");
+    assert!(error.contains("remove it yourself"), "{error}");
+    let build = walk_limit("Worktree walk", true);
+    assert!(
+        build.contains("node_modules") && build.contains("retry"),
+        "{build}"
+    );
+}
+#[test]
+fn a_several_hundred_thousand_entry_node_modules_is_observed_not_refused() {
+    // The production failure: 156,000 entries in `node_modules` tripped the
+    // 100,000-entry walk limit on every checkout of a React Native project.
+    let r = Repo::new();
+    r.write("package.json", "{}");
+    git::text(&r.work, &["add", "package.json"]).unwrap();
+    git::text(&r.work, &["commit", "-m", "manifest"]).unwrap();
+    for dir in 0..101 {
+        let folder = Path::new(&r.work).join(format!("node_modules/p{dir}"));
+        crate::profile::make_dir(&folder).unwrap();
+        for file in 0..1000 {
+            fs::File::create(folder.join(format!("f{file}"))).unwrap();
+        }
+    }
+    let o = r.observe(old(), &known());
+    assert!(
+        o.tree.build_entries > WALK_ENTRIES,
+        "{}",
+        o.tree.build_entries
+    );
+    assert_eq!(o.item.ignored_files, Some(0));
+    assert_eq!(o.item.state, "finished", "{}", o.item.why);
+    assert!(o.tree.builds.iter().any(|b| b.ends_with("node_modules")));
+}
+/// A merged checkout (aged, merged into develop) and the services around it.
+fn merged_checkout() -> (Repo, Services) {
+    let r = Repo::new();
+    r.write("work", "one");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "work"]).unwrap();
+    r.age(2);
+    git::text(&r.root, &["merge", "--no-edit", "octiq/test"]).unwrap();
+    let svc = r.services(2);
+    (r, svc)
+}
+fn above_of(r: &Repo) -> String {
+    Path::new(&r.work)
+        .parent()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+#[cfg(unix)]
+fn terminal(svc: &Services, id: &str, cwd: &str, start: Option<String>) -> Result<(), String> {
+    crate::pty::pty_spawn_impl(
+        svc.ptys.clone(),
+        id.into(),
+        cwd.into(),
+        start,
+        None,
+        None,
+        None,
+        None,
+    )
+}
+mod quarantined;
+#[test]
+fn an_own_branch_alias_that_differs_only_by_case_proves_no_merge() {
+    assert!(is_own_branch("main", Some("Main")));
+    assert!(is_own_branch("main", Some("origin/Main")));
+    assert!(is_own_branch("Develop", Some("develop")));
+    assert!(!is_own_branch("develop", Some("main")));
+    assert!(!is_own_branch("main", None));
+    // The real repository: the checkout's own origin copy is listed under the
+    // lower-case spelling a case-folding filesystem treats as the same ref.
+    let r = Repo::new();
+    r.write("work", "one");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "work"]).unwrap();
+    let head = git::text(&r.work, &["rev-parse", "HEAD"]).unwrap();
+    git::text(&r.root, &["update-ref", "refs/remotes/origin/main", &head]).unwrap();
+    assert_eq!(
+        merged_into(&r.work, &head, Some("Main"), Some("origin/main")),
+        None,
+        "own=Main: origin/main is the same ref file as origin/Main"
+    );
+    // A checkout whose own branch is another name still counts the default.
+    assert_eq!(
+        merged_into(&r.work, &head, Some("octiq/test"), Some("origin/main")),
+        Some("origin/main".into())
+    );
+}
+fn twenty_seconds(_: std::time::Instant) -> Duration {
+    Duration::from_secs(20)
+}
+#[test]
+fn the_final_reparse_scan_runs_on_what_is_left_of_the_final_budget() {
+    let r = Repo::new();
+    r.write("a/b/file", "x");
+    // The walk has "run" 20 seconds. Inside the 60 second inspection window
+    // that is fine; at the final door only what is left of the budget counts.
+    assert!(!final_reparse_scan(&r.work, Duration::from_secs(60), Some(twenty_seconds)).unwrap());
+    let refusal =
+        final_reparse_scan(&r.work, Duration::from_secs(10), Some(twenty_seconds)).unwrap_err();
+    assert!(refusal.contains("limit"), "{refusal}");
+    // With the real clock a generous budget still walks the folder.
+    assert!(!final_reparse_scan(&r.work, Duration::from_secs(10), None).unwrap());
 }

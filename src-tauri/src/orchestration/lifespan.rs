@@ -9,6 +9,42 @@ fn unfinished(status: TaskStatus) -> bool {
     )
 }
 impl OrchestrationStore {
+    /// A task whose workspace is retained and whose recorded validation
+    /// checkouts are `validation`, for a test of the sweep's reconciliation.
+    #[cfg(test)]
+    pub(crate) fn install_validation_for_test(&self, repo: &str, validation: Vec<String>) {
+        let run = super::tests::run(self);
+        let task = super::tests::task(self, &run, Vec::new());
+        let base =
+            crate::git_ops::lifespan::text(repo, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap();
+        let plan =
+            crate::git_ops::workflow::plan(repo, &base, &task.id, WorkspaceMode::Worktree).unwrap();
+        self.mutate(|data| {
+            data.tasks.get_mut(&task.id).unwrap().workspace = Some(workspaces::TaskWorkspace {
+                swept_at: None,
+                plan,
+                state: workspaces::WorkspaceState::Retained,
+                lease_attempt_id: None,
+                delivery: None,
+                abandoned: false,
+                cleanup_intent: None,
+                validation_paths: validation,
+            });
+            Ok(())
+        })
+        .unwrap();
+    }
+    #[cfg(test)]
+    pub(crate) fn validation_paths_for_test(&self) -> Vec<String> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .data
+            .tasks
+            .values()
+            .filter_map(|t| t.workspace.as_ref())
+            .flat_map(|w| w.validation_paths.clone())
+            .collect()
+    }
     pub(crate) fn lifespan_allocations(&self) -> Result<Vec<Allocation>, String> {
         let registered: BTreeSet<_> = crate::team::list(&crate::team::default_path(), None, true)?
             .into_iter()

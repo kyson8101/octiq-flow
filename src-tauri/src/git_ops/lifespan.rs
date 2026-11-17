@@ -284,6 +284,26 @@ pub(crate) fn text(root: &str, args: &[&str]) -> Result<String, String> {
         .map(|s| s.trim_end().to_owned())
         .map_err(|e| e.to_string())
 }
+/// Runs `action` without the shared final deadline, which a caller that has
+/// already used it up must not apply to its way back (an undo is a rename and
+/// is never skipped for want of time). Every command still has its own bound.
+pub(crate) fn unbudgeted<T>(action: impl FnOnce() -> T) -> T {
+    let previous = FINAL_DEADLINE.with(|d| d.replace(None));
+    let restore = FinalBudget(previous);
+    let result = action();
+    drop(restore);
+    result
+}
+/// Moves a linked worktree and keeps Git's own record of it consistent.
+/// Git refuses a destination that exists and renames in place, so a move
+/// across volumes fails whole instead of copying.
+pub(crate) fn move_worktree(repo: &str, from: &str, to: &str) -> Result<(), String> {
+    git(repo, &["worktree", "move", "--", from, to]).map(|_| ())
+}
+/// Re-links a worktree whose folder was moved without Git being told.
+pub(crate) fn repair_worktree(repo: &str, path: &str) -> Result<(), String> {
+    git(repo, &["worktree", "repair", "--", path]).map(|_| ())
+}
 pub(crate) fn remove(repo: &str, path: &str, archived: bool) -> Result<(), String> {
     let mut args = vec!["worktree", "remove"];
     if archived {

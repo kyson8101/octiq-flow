@@ -4,15 +4,15 @@ export type WorktreeOwner = { kind: "task" | "mission" | "chat" | "validation" |
 export type LifespanItem = {
   key: string; path: string; repo: string; branch: string | null; head: string; statusHash: string;
   owner: WorktreeOwner; state: "active" | "idle" | "finished" | "abandoned"; pinned: boolean; idleDays: number;
-  bytes: number | null; buildBytes: number | null; dirtyFiles: number; untrackedFiles: number; unmergedCommits: number; pushed: boolean | null;
+  bytes: number | null; buildBytes: number | null; dirtyFiles: number; untrackedFiles: number; unmergedCommits: number; pushed: boolean | null; mergedInto?: string | null;
   ignoredFiles: number | null; ignoredBytes: number | null;
   stripAt: number | null; removeAt: number | null; why: string;
 };
 export type WorktreeArchive = { key: string; ref: string; repo: string; branch: string | null; path: string; archivedAt: number; files: number; restoredAt: number | null };
 export type WorktreeSweep = { at: number; stripped: number; removed: { path: string; branch: string | null; owner: WorktreeOwner; bytes: number | null }[]; freedBytes: number; failed: { path: string; why: string }[] };
-export type LifespanSettings = { enabled: boolean; buildAfterDays: number; removeAfterDays: number };
+export type LifespanSettings = { enabled: boolean; buildAfterDays: number; removeAfterDays: number; removeMergedAfterDays: number };
 export type WorktreeLifespan = { settings: LifespanSettings; lastSweepAt: number | null; scanning: boolean; items: LifespanItem[]; archives: WorktreeArchive[]; history: WorktreeSweep[] };
-export const DEFAULT_LIFESPAN_SETTINGS: LifespanSettings = { enabled: true, buildAfterDays: 3, removeAfterDays: 14 };
+export const DEFAULT_LIFESPAN_SETTINGS: LifespanSettings = { enabled: true, buildAfterDays: 3, removeAfterDays: 14, removeMergedAfterDays: 1 };
 export const worktreeFlight = (key: string) => `worktree-lifespan:${key}`;
 export type WorktreeGroup = "Needs you" | "Waiting to clear" | "Kept" | "In use";
 export const WORKTREE_GROUPS: WorktreeGroup[] = ["Needs you", "Waiting to clear", "Kept", "In use"];
@@ -64,9 +64,11 @@ export function worktreeTotal(items: LifespanItem[]): number | null {
 export function sweepWords(sweep: WorktreeSweep, last = false): string {
   return `${last ? "Last sweep" : "Sweep"} removed ${sweep.removed.length} and freed ${diskBytes(sweep.freedBytes)}${sweep.stripped > 0 ? ` · ${sweep.stripped} build ${sweep.stripped === 1 ? "output" : "outputs"} cleared` : ""}`;
 }
-export function validateLifespanSettings(build: string, remove: string): string | null {
+export function validateLifespanSettings(build: string, remove: string, merged = "1"): string | null {
   if (!/^\d+$/.test(build) || !/^\d+$/.test(remove) || !Number.isSafeInteger(Number(build)) || !Number.isSafeInteger(Number(remove)) || Number(build) < 1 || Number(remove) < 1) return "Use a whole number of at least 1 day for each window.";
   if (Number(build) > Number(remove)) return "Build output must clear no later than folders.";
+  if (!/^\d+$/.test(merged) || !Number.isSafeInteger(Number(merged))) return "Use a whole number of 0 or more days for merged folders.";
+  if (Number(merged) > Number(remove)) return "Merged folders must clear no later than other folders.";
   return null;
 }
 export function archiveQuestion(item: LifespanItem) {
