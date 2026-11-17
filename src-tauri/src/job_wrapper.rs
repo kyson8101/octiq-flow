@@ -1300,6 +1300,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/hook/job"),
             capability: "cap".into(),
             session: "chat:a".into(),
+            network_disabled: false,
         };
         let script = format!(
             "head -c 300000 /dev/zero | tr '\\0' x; touch '{}'; exit 7",
