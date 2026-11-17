@@ -2068,9 +2068,14 @@ and `codex app-server`'s `mcpServerStatus/list`, `thread/start`,
   `--disable plugins`, keeps `--disable apps`, and leaves exactly those two
   servers alone; every other inherited server (plugin ones included) is still
   turned off by name. Off, the flags are byte-identical to before (test). The
-  worker's agent is read through the ledger (`worker_agent_id`: the batch's agent,
-  else the latest attempt's assignee), then the roster, and any doubt (ledger or
-  roster unreadable, agent gone) is "no". A Claude worker is unchanged; a Claude
+  worker's agent is read through the ledger by the chat's own reservation, never
+  the task's current assignee (`worker_agent_id`: a batch chat is its batch's
+  agent; any other worker chat is the assignee snapshot its attempt was
+  reserved with), then the roster. A task reassigned from plain agent A to
+  opted-in B leaves A's old chat resolving to A in every start path (fresh,
+  queued, resume, relaunch); a missing snapshot, attempts of one chat naming
+  different agents, or a batch whose attempt names another agent is "no", as is
+  any other doubt (ledger or roster unreadable, agent gone). A Claude worker is unchanged; a Claude
   equivalent would be the person's own `claude-in-chrome` / computer-use MCP
   server added to the second `--mcp-config` like `playwright`, plus `--chrome`,
   which no launch passes: not built.
@@ -2096,8 +2101,10 @@ with no entry, a stdio entry, a url entry and a disabled entry, and with
 **Codex discovers MCP tools when a turn starts**, so a worker launch that
 carries the browser on app-server holds its FIRST turn until that server
 settles (`codex_mcp_ready`: the `mcpServer/startupStatus/updated` for the
-server says `ready`, `failed` or `cancelled`; at most 30 s, Codex's own
-`startup_timeout_sec` default). It only delays: failure or timeout starts the
+server says `ready`, `failed` or `cancelled`; at most 30 s for the
+Playwright-only launch, Codex's own `startup_timeout_sec` default, and up to
+120 s, the longest `startup_timeout_sec` Codex lists for a kept server
+(capped), for an opted-in desktop worker). It only delays: failure or timeout starts the
 turn anyway with one `mcp-startup` diagnostics line, and ordinary chats, front
 desks and launches with no entry have no gate. Fresh, resumed and relaunched
 workers share the one start path. **The wait is on a thread of its own, after

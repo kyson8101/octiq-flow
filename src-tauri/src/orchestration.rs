@@ -2302,16 +2302,29 @@ impl OrchestrationStore {
         Some((task.id.clone(), task.run_id.clone(), task.title.clone()))
     }
 
-    /// The registered agent a worker chat runs as: the agent of the batch the
-    /// chat is the worker of, else the assignee of its latest attempt's task.
-    /// `None` for a chat that is no worker, or a task with no assignee. A
-    /// ledger that cannot be read answers `None`: a caller that widens what a
-    /// worker may do treats that as "no".
+    /// The registered agent a worker chat runs as, from what was reserved for
+    /// THAT chat and never from the task's current assignee, so a reassigned
+    /// task's old chat never speaks for the new agent (`worker_owner` keeps the
+    /// same boundary). A batch's chat is its batch's agent. Any other worker
+    /// chat is its attempt's assignee snapshot. `None` for a chat that is no
+    /// worker, a snapshot the attempt lacks, attempts of one chat that name
+    /// different agents, or a batch whose attempts name another agent than the
+    /// batch. A ledger that cannot be read answers `None`: a caller that widens
+    /// what a worker may do treats that as "no". Call sites that care which
+    /// rule applies (desktop tools today, possibly access later) sit on this
+    /// one resolution.
     pub(crate) fn worker_agent_id(&self, chat_key: &str) -> Option<String> {
         let inner = self.inner.lock().ok()?;
         if inner.load_error.is_some() {
             return None;
         }
+        let snapshots = || {
+            inner
+                .data
+                .attempts
+                .values()
+                .filter(|attempt| attempt.worker_chat_key == chat_key)
+        };
         if let Some(batch) = inner.data.batches.iter().find(|b| {
             inner
                 .data
@@ -2319,16 +2332,19 @@ impl OrchestrationStore {
                 .get(&b.id)
                 .is_some_and(|l| l.worker_chat_key == chat_key)
         }) {
-            return Some(batch.agent_id.clone());
+            // A batch's worker is the batch's agent; an attempt of the chat
+            // that was reserved for another agent is a conflict.
+            let conflict = snapshots().any(|attempt| {
+                attempt
+                    .assignee
+                    .as_ref()
+                    .is_some_and(|a| a.id != batch.agent_id)
+            });
+            return (!conflict).then(|| batch.agent_id.clone());
         }
-        inner
-            .data
-            .attempts
-            .values()
-            .filter(|attempt| attempt.worker_chat_key == chat_key)
-            .max_by_key(|attempt| attempt.created_at)
-            .and_then(|attempt| inner.data.tasks.get(&attempt.task_id))
-            .and_then(|task| task.assignee.as_ref().map(|a| a.id.clone()))
+        let mut ids = snapshots().map(|attempt| attempt.assignee.as_ref().map(|a| a.id.as_str()));
+        let first = ids.next()??;
+        ids.all(|id| id == Some(first)).then(|| first.to_string())
     }
 
     pub fn worker_assignment(

@@ -4039,6 +4039,18 @@ pub(crate) mod tests {
     /// message is free text nobody approved, so none of any kind reaches the
     /// teammate, whoever coordinates the run.
     #[test]
+    fn a_peer_requests_worker_resolves_to_the_executing_teammate_not_the_requester() {
+        let store = OrchestrationStore::default();
+        let (_, peer) = timed(&store, 30);
+        // The requester is Ada's lead chat; the teammate doing the job is Bo.
+        assert_eq!(
+            store.worker_agent_id(&peer.worker_chat_key).as_deref(),
+            Some("bo")
+        );
+        assert_eq!(store.worker_agent_id(LEAD_CHAT), None);
+    }
+
+    #[test]
     fn no_coordinators_message_reaches_the_worker_of_a_peer_request() {
         // The requester is a lead chat, which coordinates its own request.
         let store = OrchestrationStore::default();

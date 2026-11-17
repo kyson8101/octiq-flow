@@ -1186,6 +1186,34 @@ mod tests {
                 vec![older.id.clone()],
             )
             .unwrap();
+        // A claimed attempt agrees with its batch's agent. One reserved for
+        // another agent is a conflict: the chat is no one's, never the
+        // batch's or the task's later assignee.
+        assert_eq!(
+            store.worker_agent_id(&runtime.worker_chat_key).as_deref(),
+            Some("agent_test")
+        );
+        store
+            .mutate(|data| {
+                data.attempts.get_mut(&attempts[0].id).unwrap().assignee =
+                    Some(TaskAssignee {
+                        id: "agent_other".into(),
+                        name: "Other".into(),
+                    });
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.worker_agent_id(&runtime.worker_chat_key), None);
+        store
+            .mutate(|data| {
+                data.attempts.get_mut(&attempts[0].id).unwrap().assignee =
+                    Some(TaskAssignee {
+                        id: "agent_test".into(),
+                        name: "Test".into(),
+                    });
+                Ok(())
+            })
+            .unwrap();
         store
             .report_worker(
                 &runtime.worker_chat_key,

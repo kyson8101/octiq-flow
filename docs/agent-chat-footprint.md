@@ -85,8 +85,9 @@ orchestration operations, so workers do not need another copy of those servers.
   entry, or keeps `cua_repl` / `node_repl` for an opted-in agent, has the gate; the
   reader thread watches `mcpServer/startupStatus/updated` for those names (all of
   them) and the start path holds the first `turn/start` until it says
-  `ready` (or `failed` / `cancelled`), the process closes, or 30 s pass (the longest `startup_timeout_sec` Codex lists for a kept desktop
-  server, at most 120 s, when that is longer). 30 s is
+  `ready` (or `failed` / `cancelled`), the process closes, or the limit passes: 30 s for the Playwright-only launch, up to 120 s (the
+  longest `startup_timeout_sec` Codex lists for a kept server, capped) for an
+  opted-in desktop worker. 30 s is
   Codex's own default `startup_timeout_sec` for an MCP server: past it Codex has
   already marked the server failed, so waiting longer cannot help. Any
   non-ready end starts the turn anyway and writes one `mcp-startup` line to
