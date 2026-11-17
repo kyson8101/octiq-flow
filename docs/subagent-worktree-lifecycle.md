@@ -486,7 +486,24 @@ for the profile, a provider handoff or a start in flight, even when its process
 has exited and nothing is queued. Running work whose chat has no saved folders
 keeps every folder. Explicit validation removal takes the same claim at its
 final lifecycle door and holds it until the folder is gone. An open-file
-snapshot does not replace that claim. A checkout's own branch, and any ref that
+snapshot does not replace that claim.
+
+The claim covers every host-owned writer and fences their admission. It reads
+chat sessions, queued turns and held first turns; running jobs, background
+work, waiting queues, handoffs and starts in flight; and the host's terminals:
+each PTY shell and every process below it is asked its working folder, and one
+at, inside or above the checkout (or whose folder cannot be read) keeps it.
+An unreadable jobs or background store answers an error, never "idle". The
+claim puts its fence up BEFORE reading, and the doors that admit a writer check
+it in the same step as the admission: a terminal started at, above or inside
+the checkout after the claim is refused (`start the terminal again shortly`),
+and a job whose chat folders or process folder are at, above or inside it waits
+for the fence to lift (2 s over the hook, 20 s for the spool) and is then
+refused with `retry shortly`. A wrapper that is refused keeps asking for 30 s
+while its command runs, so the job is seen once the fence lifts; the command is
+never held back. No terminal is ever stopped to free a folder; a shell elsewhere
+that later changes into a folder above the checkout is an ordinary external
+writer and is not stopped either. A checkout's own branch, and any ref that
 differs from it only by ASCII case, never proves it merged. A project folder that is not a Git repository, or is gone, is skipped, not listed
 as a failure.
 

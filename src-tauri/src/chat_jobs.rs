@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// What `profile_status.owed` calls a jobs file that is behind.
@@ -51,6 +51,15 @@ const COMMAND_MAX: usize = 600;
 const TEXT_MAX: usize = 400;
 /// Why a wrapper's job is interrupted when the wrapper went without an end.
 const WRAPPER_GONE: &str = "octiq-job stopped without saying how the command ended: it was killed, or could not reach OctiqFlow. The command may still be running.";
+/// What a refusal because a removal holds the job's folders says it is, so a
+/// wrapper that is told this keeps trying (`job_wrapper::begin`).
+pub(crate) const RETRY_SHORTLY: &str = "retry shortly";
+/// How long a wrapper's start over the hook waits for a removal to let go
+/// of a folder the job works in: less than the wrapper's own 3 s timeout, so
+/// the host never admits a job whose wrapper already gave up.
+const ADMIT_WAIT_HOOK: Duration = Duration::from_secs(2);
+/// The same for a start read from a spool folder, which no one waits on.
+const ADMIT_WAIT_SPOOL: Duration = Duration::from_secs(20);
 /// How much of a registered job's log is read in one look.
 const LOG_READ_MAX: u64 = 256 * 1024;
 
@@ -214,6 +223,44 @@ pub(crate) struct Store {
     /// One delivery of wake turns at a time, so two never ask the record
     /// about the same turn at once.
     waking: Mutex<()>,
+    /// Checkouts a lifespan removal is about to delete (`fence`). While one
+    /// is here a job is admitted only if neither its chat's folders nor its
+    /// process's folder are at, above or inside it. Admission checks and
+    /// inserts while holding this list, and a claim reads the jobs after
+    /// pushing to it, so a job is either seen by the claim or refused.
+    /// Taken before `inner`, and never while `inner` is held.
+    fences: Mutex<Vec<PathBuf>>,
+    fence_lifted: Condvar,
+    /// A chat's saved folders (cwd and extra directories), as the chat
+    /// manager knows them; `None` for a chat it has no record of.
+    folders: Mutex<Option<Folders>>,
+}
+
+/// Looks up a chat's saved folders.
+pub(crate) type Folders = Arc<dyn Fn(&str) -> Option<Vec<String>> + Send + Sync>;
+
+/// A checkout's fence on job admission; dropped, jobs are admitted again.
+pub(crate) struct Fence<'a> {
+    store: &'a Store,
+    checkout: PathBuf,
+}
+
+impl Drop for Fence<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut fences) = self.store.fences.lock() {
+            if let Some(i) = fences.iter().position(|c| *c == self.checkout) {
+                fences.remove(i);
+            }
+        }
+        self.store.fence_lifted.notify_all();
+    }
+}
+
+fn same_tree(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let canon =
+        |p: &std::path::Path| crate::paths::canonical_target(p).unwrap_or_else(|| p.to_path_buf());
+    let (a, b) = (canon(a), canon(b));
+    a.starts_with(&b) || b.starts_with(&a)
 }
 
 /// What a wrapper says as it starts.
@@ -401,6 +448,7 @@ impl Store {
     /// work which outlives its agent's process. An unreadable store is an
     /// error, never "nothing runs".
     pub(crate) fn running_chats(&self) -> Result<Vec<String>, String> {
+        self.readable()?;
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let mut chats: Vec<String> = inner
             .jobs
@@ -413,11 +461,58 @@ impl Store {
         Ok(chats)
     }
 
+    /// Fence `checkout` against new jobs that work at, above or inside it,
+    /// until the returned fence is dropped, and say where chats' folders
+    /// are looked up. The caller then reads `running_chats`: a job admitted
+    /// before the fence is in it, one after is refused.
+    pub(crate) fn fence(
+        &self,
+        checkout: &std::path::Path,
+        folders: Folders,
+    ) -> Result<Fence<'_>, String> {
+        let checkout =
+            crate::paths::canonical_target(checkout).unwrap_or_else(|| checkout.to_path_buf());
+        *self.folders.lock().map_err(|e| e.to_string())? = Some(folders);
+        self.fences
+            .lock()
+            .map_err(|e| e.to_string())?
+            .push(checkout.clone());
+        Ok(Fence {
+            store: self,
+            checkout,
+        })
+    }
+
+    /// Whether a job of `chat` (whose process is `pid`, when known) could
+    /// write into one of `fences`. What cannot be told is a yes.
+    fn conflicts(&self, fences: &[PathBuf], chat: &str, pid: Option<u32>) -> bool {
+        let Some(lookup) = self.folders.lock().ok().and_then(|f| f.clone()) else {
+            return true;
+        };
+        let Some(folders) = lookup(chat) else {
+            return true;
+        };
+        let touches = |path: &std::path::Path| fences.iter().any(|f| same_tree(f, path));
+        if folders.iter().any(|f| touches(std::path::Path::new(f))) {
+            return true;
+        }
+        match pid {
+            Some(pid) => match i32::try_from(pid)
+                .map_err(|e| e.to_string())
+                .and_then(|pid| crate::proc::working_folders(&[pid]).map(|f| (pid, f)))
+            {
+                Ok((pid, found)) => found.get(&pid).is_none_or(|f| touches(f)),
+                Err(_) => true,
+            },
+            None => false,
+        }
+    }
+
     /// A wrapper's start. Answers the job's id and the token its progress
     /// and its end carry.
     pub(crate) fn start(&self, chat: &str, start: Start) -> Result<(Value, String), String> {
         let token = uuid::Uuid::new_v4().simple().to_string();
-        let job = self.start_as(chat, start, Some(token.clone()))?;
+        let job = self.start_as(chat, start, Some(token.clone()), ADMIT_WAIT_HOOK)?;
         Ok((job, token))
     }
 
@@ -426,10 +521,16 @@ impl Store {
     /// spool reader, which holds the id this answers, reports its progress
     /// and its end.
     pub(crate) fn start_spooled(&self, chat: &str, start: Start) -> Result<Value, String> {
-        self.start_as(chat, start, None)
+        self.start_as(chat, start, None, ADMIT_WAIT_SPOOL)
     }
 
-    fn start_as(&self, chat: &str, start: Start, token: Option<String>) -> Result<Value, String> {
+    fn start_as(
+        &self,
+        chat: &str,
+        start: Start,
+        token: Option<String>,
+        wait: Duration,
+    ) -> Result<Value, String> {
         let spooled = token.is_none();
         let command = start
             .command
@@ -458,6 +559,7 @@ impl Store {
                 unsaid: false,
                 spooled,
             },
+            wait,
             |_| {},
         )
     }
@@ -505,6 +607,7 @@ impl Store {
                 unsaid: false,
                 spooled: false,
             },
+            ADMIT_WAIT_HOOK,
             move |job| {
                 job.log_file = log_file;
                 job.progress_file = progress_file;
@@ -523,12 +626,33 @@ impl Store {
         wake: bool,
         pid: Option<u32>,
         follow: Follow,
+        wait: Duration,
         fill: impl FnOnce(&mut Job),
     ) -> Result<Value, String> {
         // A job is a record the person reads and the agent is woken from:
         // not started while it cannot be kept.
         crate::profile::available()?;
         self.readable()?;
+        // Admission: while a removal fences a checkout, a job that could
+        // write into it waits for the fence to lift, and past `wait` is
+        // refused. The check and the insert are one step under the fence
+        // list, so the removal's read of the jobs, made after it fenced,
+        // either sees this job or this job saw the fence.
+        let mut fences = self.fences.lock().map_err(|e| e.to_string())?;
+        let until = Instant::now() + wait;
+        while !fences.is_empty() && self.conflicts(&fences, chat, pid) {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(format!(
+                    "A worktree this job could write into is being removed; {RETRY_SHORTLY}."
+                ));
+            }
+            fences = self
+                .fence_lifted
+                .wait_timeout(fences, left)
+                .map_err(|e| e.to_string())?
+                .0;
+        }
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         let running = inner
             .jobs
@@ -567,6 +691,7 @@ impl Store {
         let view = job.view(now);
         inner.follow.insert(job.id.clone(), follow);
         inner.jobs.insert(job.id.clone(), job);
+        drop(fences);
         self.save(&mut inner);
         drop(inner);
         say(&view);

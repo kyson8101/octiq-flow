@@ -205,9 +205,99 @@ struct Session {
 #[derive(Default)]
 pub struct PtyManager {
     sessions: Mutex<HashMap<String, Session>>,
+    /// Checkouts a lifespan removal is about to delete
+    /// (`fence_lifespan`). A shell may not be started at, above or inside
+    /// one while it is here. A leaf: nothing is taken while it is held but
+    /// `sessions`, and only by the spawn that registers its shell.
+    lifespan_fences: Mutex<Vec<std::path::PathBuf>>,
+}
+
+/// A terminal fence (`PtyManager::fence_lifespan`): dropped, shells may start
+/// again.
+pub(crate) struct TerminalFence {
+    manager: Arc<PtyManager>,
+    checkout: std::path::PathBuf,
+}
+
+impl Drop for TerminalFence {
+    fn drop(&mut self) {
+        if let Ok(mut fences) = self.manager.lifespan_fences.lock() {
+            if let Some(i) = fences.iter().position(|c| *c == self.checkout) {
+                fences.remove(i);
+            }
+        }
+    }
+}
+
+fn same_tree(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let canon =
+        |p: &std::path::Path| crate::paths::canonical_target(p).unwrap_or_else(|| p.to_path_buf());
+    let (a, b) = (canon(a), canon(b));
+    a.starts_with(&b) || b.starts_with(&a)
 }
 
 impl PtyManager {
+    /// Keep every terminal this server holds away from `checkout`, for a
+    /// removal that is about to delete it, until the returned fence is
+    /// dropped.
+    ///
+    /// A shell whose working folder is the checkout, inside it or ABOVE it
+    /// can write into it at any moment, and nothing the removal looked at
+    /// beforehand shows a write that has not happened yet. So the fence is
+    /// put up first, and only then are the live terminals looked at: every
+    /// shell and everything below it (`proc::with_descendants`) is asked for
+    /// its working folder. One that is there, or whose folder cannot be read,
+    /// withholds the removal. A shell started after the fence at, above or
+    /// inside the checkout is refused (`pty_spawn_impl`), and one started
+    /// before it is in `sessions` when this looks, because a spawn registers
+    /// its shell while holding the fence list.
+    ///
+    /// A terminal is NEVER stopped to make a folder removable. A shell that
+    /// is elsewhere now and changes to a folder above the checkout later
+    /// can do it with any command, as a person's own Terminal can; nothing
+    /// short of refusing keystrokes would stop that, and that is not done.
+    pub(crate) fn fence_lifespan(
+        self: &Arc<Self>,
+        checkout: &std::path::Path,
+    ) -> Result<TerminalFence, String> {
+        let checkout =
+            crate::paths::canonical_target(checkout).unwrap_or_else(|| checkout.to_path_buf());
+        self.lifespan_fences
+            .lock()
+            .map_err(|e| e.to_string())?
+            .push(checkout.clone());
+        let fence = TerminalFence {
+            manager: self.clone(),
+            checkout: checkout.clone(),
+        };
+        let mut roots = Vec::new();
+        {
+            let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+            for (id, session) in sessions.iter() {
+                match session.shell_pid {
+                    Some(pid) => roots.push(pid),
+                    None => {
+                        return Err(format!(
+                            "Terminal {id} has no known process, so what it can write is unknown; the folder is kept."
+                        ))
+                    }
+                }
+            }
+        }
+        if roots.is_empty() {
+            return Ok(fence);
+        }
+        let pids = crate::proc::with_descendants(&roots)?;
+        let folders = crate::proc::working_folders(&pids)?;
+        if let Some((pid, folder)) = folders.iter().find(|(_, f)| same_tree(f, &checkout)) {
+            return Err(format!(
+                "A terminal process ({pid}) works in {}, at, above or inside this checkout and could still write into it; the folder is kept.",
+                folder.display()
+            ));
+        }
+        Ok(fence)
+    }
+
     /// Remove one session and reap its child: kill (best-effort — it may already
     /// be dead), then wait, so the process can never linger as a zombie in the
     /// OS process table. Returns whether a session with this id existed.
@@ -705,10 +795,21 @@ pub fn pty_spawn_impl(
     } else {
         cwd
     };
+    let dir_for_fence = dir.clone();
     cmd.cwd(dir);
 
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    // The fence list is held from the look at the folder to the shell being
+    // registered below, so a removal's fence either comes first (and this is
+    // refused) or finds the shell in `sessions`.
+    let fences = manager.lifespan_fences.lock().map_err(|e| e.to_string())?;
+    if fences
+        .iter()
+        .any(|fence| same_tree(fence, std::path::Path::new(&dir_for_fence)))
+    {
+        return Err("A worktree here is being removed; start the terminal again shortly.".into());
+    }
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     // Read once, here: the handle is moved into the session below, and a pid
     // asked for later would be a pid of whatever is left.
@@ -932,6 +1033,8 @@ pub fn pty_spawn_impl(
             shell_pid,
         },
     );
+    drop(sessions);
+    drop(fences);
 
     Ok(())
 }

@@ -1980,6 +1980,7 @@ fn operate_progress(
             walk(&preview.path, build, true, &mut deleted)?;
             let usage = (checks.usage)();
             let _lifecycle = hold_lifecycle(svc)?;
+            svc.chats.attach_terminals(&svc.ptys);
             let _above = svc.chats.hold_lifespan_ancestors(&preview.path)?;
             let final_started = std::time::Instant::now();
             final_ready(svc, store, &a, preview, &usage)?;
@@ -2071,6 +2072,7 @@ fn operate_progress(
             let _lifecycle = hold_lifecycle(svc)?;
             // Claim the checkout against chats ABOVE it before the final
             // ownership check, and keep the claim through the removal.
+            svc.chats.attach_terminals(&svc.ptys);
             let _above = svc.chats.hold_lifespan_ancestors(&preview.path)?;
             final_ready(svc, store, &a, preview, &final_usage)?;
             let mut cache = store.inner.lock().map_err(|e| e.to_string())?;

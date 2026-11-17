@@ -1324,7 +1324,7 @@ pub struct ChatManager {
     turn_sequences: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicU64>>>,
     /// How each running agent was last started — see `StartContext`. Keyed by
     /// process key, so each chat resumes independently.
-    starts: Mutex<HashMap<String, StartContext>>,
+    starts: Arc<Mutex<HashMap<String, StartContext>>>,
     /// Serializes native-id I/O with /clear, independently of process locks.
     /// Stop/interrupt never take this gate. Weak entries are swept in batches.
     native_writes: Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
@@ -1375,6 +1375,9 @@ pub struct ChatManager {
     /// would work in a folder ABOVE one is refused while it is held
     /// (`hold_lifespan_ancestors`). A leaf, like `lifespan_holds`.
     lifespan_ancestor_holds: Mutex<Vec<String>>,
+    /// The host's terminals, once something has told this manager
+    /// (`attach_terminals`): a removal's ancestor claim must cover them too.
+    terminals: Mutex<Option<Arc<crate::pty::PtyManager>>>,
     /// Chats the person is completing, each with the id of its wrap-up turn
     /// — see `chat_complete_impl`. In memory only: a server restart forgets
     /// it and the chat is simply not ticked.
@@ -2383,6 +2386,7 @@ impl ChatManager {
         &self,
         checkout: &str,
     ) -> Result<LifespanAncestorHold<'_>, String> {
+        let terminals = self.terminals.lock().map_err(|e| e.to_string())?.clone();
         let checkout = crate::paths::canonical_target(std::path::Path::new(checkout))
             .unwrap_or_else(|| std::path::PathBuf::from(checkout));
         let above = |path: &str| {
@@ -2397,10 +2401,31 @@ impl ChatManager {
                 .map_err(|e| e.to_string())?
                 .push(checkout.to_string_lossy().into_owned());
         }
-        let hold = LifespanAncestorHold {
+        let mut hold = LifespanAncestorHold {
             manager: self,
             checkout: checkout.to_string_lossy().into_owned(),
+            _terminals: None,
+            _jobs: None,
         };
+        // The host's other writers are fenced the same way, before anything
+        // is read: a job or a shell admitted after this is refused, and one
+        // admitted before it is seen by the reads below.
+        let starts_for_jobs = self.starts.clone();
+        hold._jobs = Some(self.jobs.fence(
+            &checkout,
+            Arc::new(move |chat: &str| {
+                let starts = starts_for_jobs.lock().ok()?;
+                let start = starts.get(chat)?;
+                Some(
+                    std::iter::once(start.cwd.clone())
+                        .chain(start.extra_dirs.iter().flatten().cloned())
+                        .collect(),
+                )
+            }),
+        )?);
+        if let Some(terminals) = &terminals {
+            hold._terminals = Some(terminals.fence_lifespan(&checkout)?);
+        }
         {
             let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
             let starts = self.starts.lock().map_err(|e| e.to_string())?;
@@ -2506,6 +2531,16 @@ impl ChatManager {
         }
         drop(starts);
         Ok(hold)
+    }
+    /// Tell this manager where the host's terminals are, so a removal's
+    /// ancestor claim covers them (`hold_lifespan_ancestors`). Said again
+    /// with the same terminals it changes nothing.
+    pub(crate) fn attach_terminals(&self, terminals: &Arc<crate::pty::PtyManager>) {
+        if let Ok(mut held) = self.terminals.lock() {
+            if !held.as_ref().is_some_and(|t| Arc::ptr_eq(t, terminals)) {
+                *held = Some(terminals.clone());
+            }
+        }
     }
     pub(crate) fn lifespan_chat_keys(&self, checkout: &str) -> Result<Vec<String>, String> {
         let starts = self.starts.lock().map_err(|e| e.to_string())?;
@@ -14780,6 +14815,8 @@ impl Drop for LifespanHold<'_> {
 pub(crate) struct LifespanAncestorHold<'a> {
     manager: &'a ChatManager,
     checkout: String,
+    _terminals: Option<crate::pty::TerminalFence>,
+    _jobs: Option<crate::chat_jobs::Fence<'a>>,
 }
 impl Drop for LifespanAncestorHold<'_> {
     fn drop(&mut self) {

@@ -3707,6 +3707,38 @@ exists (`chat_jobs::running_chats`, `background_tasks::running_chats`), and
 running work with no saved folders withholds every folder. Explicit validation
 removal takes the same claim at its final door. An open-file snapshot does not
 stand in for it.
+**The claim covers every host-owned writer, and admission is fenced, not only
+read.** The inventory, in the order the claim takes it: (1) chat sessions,
+queued turns, a held first turn; (2) a registered job (`octiq-job`,
+`job_register`, the spool), background work, a waiting queue, a handoff, a
+start in flight; (3) **host terminals** (`PtyManager::fence_lifespan`): every
+PTY shell and every process below it (`proc::with_descendants`) is asked its
+working folder (`proc::working_folders`, one `lsof -d cwd`); a folder at,
+inside or ABOVE the checkout, or one that cannot be read (a live pid with no
+answer, no `lsof`, Windows), withholds the removal. Every unreadable store
+answers `Err`, never "nothing runs" (`chat_jobs::running_chats` checks
+`load_error`, as `background_tasks` does). The fence goes up BEFORE the reads,
+and each door that admits a writer checks it in the same step as it admits:
+`pty_spawn_impl` holds the fence list from its look at the folder until the
+shell is in `sessions`, so a shell started at, above or inside the checkout
+after the claim is refused, and one started before it is seen by the claim;
+`chat_jobs::Store::add` (`start`, `register`, `start_spooled`) holds the fence
+list from its check to its insert. A job is refused only when its chat's saved
+folders (unknown folders count) or its process's folder (wrapper pid, or the
+registered pid, read with `proc::working_folders`) is at, above or inside a
+fenced checkout; it first waits for the fence to lift (2 s over the hook, less
+than the wrapper's 3 s timeout, 20 s for the spool) and then answers `retry
+shortly`. `octiq-job` has already started its command by then, so it asks
+again for 30 s (`HOST_RETRY`) instead of leaving the job unseen: its command is
+never held back or failed. Lock order: `fences` (jobs) -> `starts`/`inner`;
+the PTY fence list -> `sessions`; nobody takes a fence list while holding
+those. **A terminal is never stopped to make a folder removable**, and a shell
+that is elsewhere at the claim and later changes to a folder above the checkout
+is an arbitrary writer like a person's own Terminal: it cannot be stopped
+without refusing keystrokes, so it is not. A new host-owned writer (a spawn
+path, a store of work, an admission door) joins this list, with its fence and
+its test at the barrier (`worktree_lifespan::tests`: kept while the writer is
+live, refused or kept at the final-to-Git barrier, removed after it ends).
 A checkout's own branch, and any listed ref that differs from it only by ASCII
 case (one ref file on a case-folding filesystem), never proves it merged. A project folder that is not a Git repository, or is gone,
 is skipped without a failure line.

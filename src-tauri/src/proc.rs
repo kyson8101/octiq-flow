@@ -23,6 +23,104 @@ pub fn no_console(cmd: &mut Command) {
     }
 }
 
+/// The working folder of each of `pids`, as the system says it now.
+///
+/// An answer is a whole answer: a pid that is alive and whose folder could
+/// not be read is an error, never a missing entry, because a caller that
+/// withholds a removal on a process's folder must not read "unknown" as
+/// "elsewhere". A pid that has already gone is simply absent. Off Unix there
+/// is no cheap way to ask, so the answer is an error there too.
+pub(crate) fn working_folders(
+    pids: &[i32],
+) -> Result<std::collections::HashMap<i32, std::path::PathBuf>, String> {
+    if pids.is_empty() {
+        return Ok(Default::default());
+    }
+    if cfg!(windows) {
+        return Err("The working folders of processes cannot be read on this platform.".into());
+    }
+    let list = pids
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let output = Command::new("lsof")
+        .args(["-a", "-d", "cwd", "-Fpn", "-p", &list])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("Working folders could not be read (lsof): {e}"))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut found = std::collections::HashMap::new();
+    let mut current = None;
+    for line in text.lines() {
+        if let Some(pid) = line.strip_prefix('p') {
+            current = pid.parse::<i32>().ok();
+        } else if let (Some(path), Some(pid)) = (line.strip_prefix('n'), current) {
+            if path.starts_with('/') {
+                found.insert(pid, std::path::PathBuf::from(path));
+            }
+        }
+    }
+    // lsof exits 1 when a pid it was given is gone; that one is simply
+    // absent. A pid that is still there and gave no folder is unknown.
+    let alive = alive_among(pids)?;
+    if let Some(pid) = alive.iter().find(|pid| !found.contains_key(pid)) {
+        return Err(format!(
+            "The working folder of process {pid} could not be read."
+        ));
+    }
+    Ok(found)
+}
+
+/// Which of `pids` are alive now (`ps` lists them).
+fn alive_among(pids: &[i32]) -> Result<Vec<i32>, String> {
+    let all = process_table()?;
+    Ok(pids
+        .iter()
+        .copied()
+        .filter(|pid| all.iter().any(|(p, _)| p == pid))
+        .collect())
+}
+
+/// Every process as `(pid, parent pid)`, from one `ps`.
+fn process_table() -> Result<Vec<(i32, i32)>, String> {
+    let output = Command::new("ps")
+        .args(["-A", "-o", "pid=,ppid="])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("The process list could not be read (ps): {e}"))?;
+    if !output.status.success() {
+        return Err("The process list could not be read (ps failed).".into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+        })
+        .collect())
+}
+
+/// `roots` and every process below them, from one `ps` sweep.
+pub(crate) fn with_descendants(roots: &[i32]) -> Result<Vec<i32>, String> {
+    if roots.is_empty() {
+        return Ok(Vec::new());
+    }
+    let table = process_table()?;
+    let mut all: Vec<i32> = roots.to_vec();
+    let mut next = 0;
+    while next < all.len() {
+        let parent = all[next];
+        next += 1;
+        for (pid, ppid) in &table {
+            if *ppid == parent && !all.contains(pid) {
+                all.push(*pid);
+            }
+        }
+    }
+    Ok(all)
+}
+
 /// A shell to launch an agent through, and the arguments that carry a command.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentShell {

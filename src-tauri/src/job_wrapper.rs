@@ -42,6 +42,8 @@ pub const TAIL_LINES: usize = 20;
 const REPORT_EVERY: Duration = Duration::from_millis(500);
 /// How long a call to the host may take before it is given up.
 const HOST_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long a start the host asked to retry is asked again.
+const HOST_RETRY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct Options {
@@ -699,7 +701,20 @@ fn begin(
     let Some(host) = host else {
         return Err("not run from an OctiqFlow chat".into());
     };
-    match host.ask("start", start.clone()) {
+    // The command is already running (it was started before this), so a host
+    // that says "retry shortly" because a removal holds the folders the job
+    // works in is asked again for a while rather than left to run unseen: a
+    // job the host does not know of is one whose writes it cannot see. The
+    // command is never held back and never failed for it.
+    let retry_until = Instant::now() + HOST_RETRY;
+    let mut asked = host.ask("start", start.clone());
+    while matches!(&asked, Err(failed) if failed.why.contains(crate::chat_jobs::RETRY_SHORTLY))
+        && Instant::now() < retry_until
+    {
+        std::thread::sleep(Duration::from_millis(250));
+        asked = host.ask("start", start.clone());
+    }
+    match asked {
         Ok(value) => Ok(Report::Hook {
             id: value["id"].as_str().ok_or("no job id")?.to_string(),
             token: value["token"].as_str().ok_or("no job token")?.to_string(),

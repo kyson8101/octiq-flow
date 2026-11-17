@@ -99,6 +99,7 @@ impl Services {
             ptys: Arc::new(PtyManager::default()),
             handovers: crate::handover::Wiring::profile(),
         };
+        services.chats.attach_terminals(&services.ptys);
         // What a Stop or an answer could not record is written once the
         // profile folder is back (`settle_owed`).
         #[cfg(not(test))]
@@ -2337,12 +2338,15 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "baseSha")?,
             arg::<Option<Vec<String>>>(&args, "commits")?.unwrap_or_default(),
         )),
-        "orchestration_validation_remove" => to_value(svc.orchestrations.remove_validation(
-            &svc.chats,
-            &arg::<String>(&args, "actorChatKey")?,
-            &arg::<String>(&args, "taskId")?,
-            &arg::<String>(&args, "path")?,
-        )),
+        "orchestration_validation_remove" => {
+            svc.chats.attach_terminals(&svc.ptys);
+            to_value(svc.orchestrations.remove_validation(
+                &svc.chats,
+                &arg::<String>(&args, "actorChatKey")?,
+                &arg::<String>(&args, "taskId")?,
+                &arg::<String>(&args, "path")?,
+            ))
+        }
         "orchestration_workspace_cleanup_request_pending" => {
             to_value(svc.orchestrations.cleanup_request_pending())
         }
