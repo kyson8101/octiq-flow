@@ -1895,7 +1895,7 @@ impl OrchestrationStore {
                 // A swept workspace removes nothing, so what it records must be
                 // what is there now: a folder or a branch made again during the
                 // Git work above is not something this Cleanup cleaned.
-                let now = super::mission::presence(&ws.plan)?;
+                let now = super::mission::presence_last(&ws.plan)?;
                 if now != seen
                     || expected_plan.is_some_and(|e| now != (e.folder_present, e.branch_present))
                 {

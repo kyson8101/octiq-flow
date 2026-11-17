@@ -245,6 +245,20 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 #[cfg(test)]
+thread_local! {
+    /// Runs once inside the final presence re-check (`presence_last` and
+    /// the close loop's last pass), after the Git branch lookup and before the folder is
+    /// read: the window a folder made again during that lookup used to hide in.
+    pub(super) static AFTER_BRANCH_LOOKUP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+fn after_branch_lookup() {
+    if let Some(hook) = AFTER_BRANCH_LOOKUP.with(|h| h.borrow_mut().take()) {
+        hook();
+    }
+}
+#[cfg(test)]
 pub(super) fn after_swept_evidence() {
     if let Some(hook) = AFTER_SWEPT_EVIDENCE.with(|h| h.borrow_mut().take()) {
         hook();
@@ -308,11 +322,20 @@ pub(super) fn swept_task_branch_gone(
 
 /// What a card records of each root, and the answer compares again: whether
 /// the folder and the branch were there. A change either way keeps the item.
+/// The Git lookup comes first and the folder is read last, so nothing that
+/// takes time sits between the folder read and what the caller does with it.
 pub(super) fn presence(plan: &WorkspacePlan) -> Result<(bool, bool), String> {
-    Ok((
-        !confirmed_missing(&plan.checkout_root)?,
-        branch_exists(plan)?,
-    ))
+    let branch = branch_exists(plan)?;
+    Ok((!confirmed_missing(&plan.checkout_root)?, branch))
+}
+
+/// `presence` for the re-check made right before a durable Closed/Cleaned
+/// write: the same order, with the test window between the two reads.
+pub(super) fn presence_last(plan: &WorkspacePlan) -> Result<(bool, bool), String> {
+    let branch = branch_exists(plan)?;
+    #[cfg(test)]
+    after_branch_lookup();
+    Ok((!confirmed_missing(&plan.checkout_root)?, branch))
 }
 
 /// The folder and the local branch are both gone (the sweep removed the folder,
@@ -334,6 +357,9 @@ fn gone_branch_delivery(
     }
 }
 
+/// `closing` is a Close's own read: only it stamps `swept_at`; asking about a
+/// close (the card, a refresh) records nothing it did not find.
+///
 /// A folder that is gone has no working tree to inspect, so nothing in it can
 /// be at stake: whether the sweep removed it or it vanished some other way, its
 /// kept branch and the last saved delivery still answer for it, and it is
@@ -344,6 +370,7 @@ fn gone_branch_delivery(
 pub(super) fn swept_delivery(
     run: &Run,
     plan: &WorkspacePlan,
+    closing: bool,
 ) -> Result<Option<MissionDelivery>, String> {
     if !confirmed_missing(&plan.checkout_root)? {
         return Ok(None);
@@ -377,7 +404,9 @@ pub(super) fn swept_delivery(
         swept_at: None,
         branch_deleted: false,
     });
-    delivery.swept_at = delivery.swept_at.or(Some(now_ms()));
+    if closing {
+        delivery.swept_at = delivery.swept_at.or(Some(now_ms()));
+    }
     delivery.evidence.head_sha = head.clone();
     delivery.evidence.dirty = false;
     delivery.evidence.has_commits = head != plan.base_sha;
@@ -407,7 +436,7 @@ fn delivery_of(run: &Run, plan: &WorkspacePlan, closing: bool) -> Result<Mission
         }
         return Ok(delivery);
     }
-    if let Some(mut delivery) = swept_delivery(run, plan)? {
+    if let Some(mut delivery) = swept_delivery(run, plan, closing)? {
         delivery.merged |=
             workflow::merged_into_remote_base(plan, &delivery.evidence.head_sha) == Some(true);
         delivery.evidence.merged = delivery.merged;
@@ -467,7 +496,7 @@ fn delivery_of(run: &Run, plan: &WorkspacePlan, closing: bool) -> Result<Mission
 /// local look at its worktrees and the merge the last refresh recorded.
 fn close_blocker(run: &Run, plans: &[WorkspacePlan]) -> Option<String> {
     for plan in plans {
-        match swept_delivery(run, plan) {
+        match swept_delivery(run, plan, false) {
             Ok(Some(delivery)) => {
                 if delivery.merged {
                     continue;
@@ -774,11 +803,19 @@ impl OrchestrationStore {
             // on that look alone, so it must still be gone now: a folder or a
             // branch made again since is not something this Close removed.
             // Roots this Close removes itself are not asked.
-            for (index, (folder, branch)) in &seen_roots {
+            // The Git lookups come first for every root; the folders are read
+            // last, with no external process between that read and the write.
+            for (index, (_, branch)) in &seen_roots {
                 let plan = &plans[*index];
-                let moved = (!folder && !confirmed_missing(&plan.checkout_root)?)
-                    || (!branch && branch_exists(plan)?);
-                if moved {
+                if !branch && branch_exists(plan)? {
+                    moved_roots.insert(plan.checkout_root.clone());
+                }
+            }
+            #[cfg(test)]
+            after_branch_lookup();
+            for (index, (folder, _)) in &seen_roots {
+                let plan = &plans[*index];
+                if !folder && !confirmed_missing(&plan.checkout_root)? {
                     moved_roots.insert(plan.checkout_root.clone());
                 }
             }

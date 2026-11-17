@@ -1579,7 +1579,7 @@ mod tests {
             )
         };
         plans[0].repository_root = format!("{}-does-not-exist", plans[0].repository_root);
-        let error = super::super::mission::swept_delivery(&saved, &plans[0]).unwrap_err();
+        let error = super::super::mission::swept_delivery(&saved, &plans[0], false).unwrap_err();
         assert!(!error.contains("both gone"), "{error}");
     }
 
@@ -1681,7 +1681,7 @@ mod tests {
             let inner = store.inner.lock().unwrap();
             super::super::mission::mission_plans(&inner.data, &run.id).remove(0)
         };
-        assert!(super::super::mission::swept_delivery(&saved, &plan).is_err());
+        assert!(super::super::mission::swept_delivery(&saved, &plan, false).is_err());
         assert!(ask_named(&store, "chat:person", &[&run])
             .map(|card| card.is_none())
             .unwrap_or(true));
@@ -1761,6 +1761,125 @@ mod tests {
         );
         assert!(Path::new(&root).exists());
         nothing_was_closed_or_deleted(&store, &run, &before);
+    }
+
+    /// A mission whose folder is gone but whose branch is kept.
+    fn kept_branch_fixture() -> (Repo, OrchestrationStore, Run, Attempt) {
+        let (repo, store, run) = setup(WorkspaceMode::Mission);
+        let (_, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        set_status(&store, &run, RunStatus::Completed);
+        store.refresh_mission("chat:master", &run.id).unwrap();
+        let root = first.cwd.trim_end_matches(['/', '\\']).to_string();
+        crate::git_ops::lifespan::remove(&repo.root, &root, false).unwrap();
+        assert!(branch_exists(&repo, &first.branch));
+        (repo, store, run, first)
+    }
+
+    /// The saved delivery without the time git was last asked, which a
+    /// refresh may move: everything else is what the ask must leave alone.
+    fn delivery_without_clock(store: &OrchestrationStore, run: &Run) -> serde_json::Value {
+        fn strip(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    map.remove("checkedAt");
+                    map.remove("checked_at");
+                    map.values_mut().for_each(strip);
+                }
+                serde_json::Value::Array(items) => items.iter_mut().for_each(strip),
+                _ => {}
+            }
+        }
+        let mut value = serde_json::from_str(&delivery_json(store, run)).unwrap();
+        strip(&mut value);
+        value
+    }
+
+    #[test]
+    fn asking_for_a_card_of_a_swept_mission_with_a_kept_branch_does_not_stamp_it_swept() {
+        let (_repo, store, run, _first) = kept_branch_fixture();
+        // One refresh of the swept mission first (it recomputes what git can
+        // say, such as `pushed`): what follows must change nothing more.
+        store.refresh_mission("chat:master", &run.id).unwrap();
+        let before = delivery_without_clock(&store, &run);
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        assert!(matches!(card.items[0].kind, Kind::Mission));
+        assert_eq!(delivery_without_clock(&store, &run), before, "the ask");
+        store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, false)
+            .unwrap();
+        assert_eq!(delivery_without_clock(&store, &run), before, "a Deny");
+        let saved = store.snapshot(Some(&run.id)).unwrap().runs[0].clone();
+        assert!(saved.mission_delivery[0].swept_at.is_none());
+        // Only the Close's own read stamps it.
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        let saved = store.snapshot(Some(&run.id)).unwrap().runs[0].clone();
+        assert_eq!(saved.status, RunStatus::Closed);
+        assert!(saved.mission_delivery[0].swept_at.is_some());
+    }
+
+    #[test]
+    fn a_folder_made_again_during_the_last_branch_lookup_keeps_a_gone_mission() {
+        let (_repo, store, run, first) = gone_branch_fixture(true);
+        let before = delivery_json(&store, &run);
+        let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
+        let root = first.cwd.trim_end_matches(['/', '\\']).to_string();
+        let path = root.clone();
+        super::super::mission::AFTER_BRANCH_LOOKUP.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                std::fs::create_dir_all(&path).unwrap();
+            }))
+        });
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
+        assert!(
+            result.items[0].reason.contains("appeared or went"),
+            "{}",
+            result.items[0].reason
+        );
+        assert!(Path::new(&root).exists());
+        nothing_was_closed_or_deleted(&store, &run, &before);
+    }
+
+    #[test]
+    fn a_folder_made_again_during_the_last_branch_lookup_keeps_a_swept_task() {
+        let (repo, store, run) = setup(WorkspaceMode::Worktree);
+        let (task, first) = prepare(&store, &run);
+        merged(&repo, &first);
+        finish(&store, &first);
+        store
+            .refresh_workspace("chat:master", &first.task_id)
+            .unwrap();
+        crate::git_ops::lifespan::remove(&repo.root, &first.cwd, false).unwrap();
+        store.lifespan_record_swept(&first.cwd, 100).unwrap();
+        repo.git(&["branch", "-D", &first.branch]);
+        let card = ask(&store, &run).expect("a card for the swept task");
+        let path = first.cwd.clone();
+        super::super::mission::AFTER_BRANCH_LOOKUP.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                std::fs::create_dir_all(&path).unwrap();
+            }))
+        });
+        let result = store
+            .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+            .unwrap();
+        assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
+        assert!(
+            result.items[0].reason.contains("appeared or went"),
+            "{}",
+            result.items[0].reason
+        );
+        assert!(Path::new(&first.cwd).exists());
+        assert_ne!(
+            task_workspace_state(&store, &run, &task.id),
+            WorkspaceState::Cleaned
+        );
     }
 
     #[test]

@@ -4066,6 +4066,10 @@ missing/stale evidence explains the swept state and asks for restore/refresh.
   and the target are intact and byte-identical to the original after 24
   carries at once, the other pauses a last-resort copy and asserts that a
   second carry does not answer until the file is whole.
+- **A presence re-check before a durable Closed/Cleaned write does every
+  external Git call first and reads the folder last, immediately before the
+  write.** A folder read followed by a Git query misses a folder made again
+  during that query (`mission::presence_last` and the close loop's final pass); nothing that takes time may sit between the folder read and the write.
 - **A ref is absent only with positive proof, and an empty successful
   enumeration is not proof.** A review or code path that treats a branch as
   absent before a delete or a Close must cover case aliases (a case-folding
