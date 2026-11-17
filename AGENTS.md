@@ -3720,7 +3720,11 @@ anything. **The original path made again while the folder was away** (a writer
 ran `mkdir -p` on it) is never deleted or merged into: the removal goes on only
 when (b) passed, and the sweep's report names the recreated path
 (`quarantine::take_notes`); a move back that finds the original path occupied
-keeps the quarantine and says where it is.
+keeps the quarantine and says where it is. Git moves INTO a destination that
+is a folder already (as `mv` does), so a path made again in the gap between
+that look and the move back would swallow the checkout: `restore` checks that
+the original is the checkout afterwards and, if not, says where it went
+(`<original>/.octiq-removing-<id>`); nothing is lost or merged.
 **The intent is durable before the rename**: `<profile>/lifespan-quarantine/
 <id>.json` (`Record`: repo, original, quarantine, time), written and synced
 through `profile::make_dir`; an unwritable record means no rename. Every sweep

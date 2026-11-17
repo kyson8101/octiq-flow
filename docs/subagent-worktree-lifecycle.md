@@ -497,7 +497,9 @@ worktree, an open handle on Windows) keeps it in words.
 If something made the old path again while the folder was away, that path is
 never deleted or merged into; the removal goes on only when (b) passed and the
 sweep reports the recreated path. A move back that finds its original path
-occupied keeps the quarantine and says where it is. The intent is recorded
+occupied keeps the quarantine and says where it is; a path made again in the
+gap right before the move back (Git moves into an existing folder) is reported
+with the place the checkout went, nothing lost or merged. The intent is recorded
 before the rename (`<profile>/lifespan-quarantine/<id>.json`, synced); a server
 killed mid-removal leaves a record that the next sweep reads first: the folder is
 put back when its path is free, kept and reported when both exist, dropped when

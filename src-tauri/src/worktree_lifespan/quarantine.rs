@@ -237,6 +237,22 @@ fn restore(record: &Record) -> Result<(), String> {
         );
         moved?;
         drop_record(&record.id);
+        // Git moves INTO a destination that is a folder already (as `mv`
+        // does) instead of refusing it. If the original path was made again
+        // between the look above and the move, the checkout is now inside it:
+        // nothing is lost or merged, and the sentence says where it went.
+        if !present(&format!("{}/.git", record.original)) {
+            let nested = Path::new(&record.original)
+                .join(format!("{PREFIX}{}", record.id))
+                .to_string_lossy()
+                .into_owned();
+            if present(&nested) {
+                return Err(format!(
+                    "{} was made again just as the folder was put back, so it is now at {nested}; nothing was removed or merged",
+                    record.original
+                ));
+            }
+        }
         Ok(())
     })
 }

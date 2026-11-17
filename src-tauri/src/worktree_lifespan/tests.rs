@@ -1779,8 +1779,12 @@ fn archive_large_64mib_untracked_preview_and_final_disk_compare() {
     let home = crate::profile::tests::Home::with_a_configured_base();
     let _profile = crate::profile::started_in(&home.dir);
     let r = Repo::new();
-    let file = fs::File::create(Path::new(&r.work).join("large-media.bin")).unwrap();
-    file.set_len(64 * 1024 * 1024).unwrap();
+    // The handle is closed before the sweep: a writer that keeps a file open
+    // inside the checkout is exactly what the quarantine's `lsof` refuses.
+    fs::File::create(Path::new(&r.work).join("large-media.bin"))
+        .unwrap()
+        .set_len(64 * 1024 * 1024)
+        .unwrap();
     r.write("tracked", "changed as well");
     r.age(30);
     let svc = r.services(30);

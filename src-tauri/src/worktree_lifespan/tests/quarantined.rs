@@ -4,16 +4,18 @@
 use super::*;
 use crate::worktree_lifespan::quarantine::{self, Record, PREFIX};
 
-/// A git whose `worktree <sub>` waits, once, for the test: it says it has
+/// A git whose first `worktree <sub>` waits (later ones pass), for the test: it says it has
 /// arrived (`hold`), runs `before`, and goes on when `release` exists.
 fn barrier_script(sub: &str, hold: &Path, release: &Path, before: &str) -> String {
     format!(
         r#"
 case " $* " in
   *" worktree {sub} "*)
+    if test ! -f '{hold}'; then
     {before}
     touch '{hold}'
     while test ! -f '{release}'; do sleep 0.01; done
+    fi
     ;;
 esac
 exec /usr/bin/git "$@"
@@ -283,7 +285,7 @@ fn a_late_change_goes_back(change: &str) {
     let hold = r._home.join("git-held");
     let release = r._home.join("git-release");
     // Written just before Git moves the folder: after every earlier check.
-    let before = change.replace("{work}", &r.work);
+    let before = change.replace("{work}", &r.work).replace("{root}", &r.root);
     let script = barrier_script("move", &hold, &release, &before);
     std::thread::scope(|scope| {
         let late = scope.spawn(|| {
@@ -303,7 +305,11 @@ fn a_late_change_goes_back(change: &str) {
         "{change}: {:?}",
         kept.failed
     );
-    assert!(Path::new(&r.work).join("work").exists(), "{change}");
+    assert!(
+        Path::new(&r.work).join("work").exists(),
+        "{change}: {:?}",
+        kept.failed
+    );
     assert!(leftovers(&r).is_empty() && records() == 0);
 }
 
@@ -315,6 +321,70 @@ fn a_late_write_to_a_tracked_file_is_seen_in_the_quarantine_and_the_folder_goes_
 #[test]
 fn a_late_untracked_file_is_seen_in_the_quarantine_and_the_folder_goes_back() {
     a_late_change_goes_back("echo late > '{work}/new-file'");
+}
+
+/// Git's own non-force removal refuses a tracked or untracked change, so the
+/// two tests above would pass with the repeated proof switched off. An ignored
+/// file under `works/` is deleted by Git without a word: only the proof on the
+/// quarantine path sees it.
+#[test]
+fn a_late_ignored_file_that_only_the_repeated_proof_sees_sends_the_folder_back() {
+    a_late_change_goes_back(
+        "echo 'works/' >> '{root}/.git/info/exclude'; mkdir -p '{work}/works'; echo late > '{work}/works/clip'",
+    );
+}
+
+/// Git moves INTO a folder that is there already. The original path made again
+/// in the gap before the folder is put back must not lose or merge anything.
+#[test]
+fn a_path_made_again_just_before_the_move_back_is_reported_with_where_the_folder_went() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    crate::profile::available().unwrap();
+    let (r, svc) = merged_checkout();
+    let store = Store::default();
+    let flag = r._home.join("first-move-seen");
+    // The first move (aside) is preceded by a late write, so the proof sends
+    // the folder back; the second (back) finds the old path made again.
+    let script = format!(
+        r#"
+case " $* " in
+  *" worktree move "*)
+    if test ! -f '{flag}'; then
+      touch '{flag}'
+      echo late >> '{work}/work'
+    else
+      mkdir -p '{work}'
+    fi
+    ;;
+esac
+exec /usr/bin/git "$@"
+"#,
+        flag = flag.display(),
+        work = r.work
+    );
+    with_git_wrapper(&r._home, &script, || {
+        sweep_checked(&svc, &store, &checks()).unwrap()
+    });
+    let kept = report(&store);
+    let nested = leftovers(&r);
+    assert!(
+        kept.failed
+            .iter()
+            .any(|f| f.path == r.work && f.why.contains("made again") && f.why.contains(PREFIX)),
+        "{:?}",
+        kept.failed
+    );
+    // Nothing is lost: the checkout is inside the recreated folder, intact.
+    assert!(
+        Path::new(&r.work).read_dir().unwrap().flatten().any(|e| e
+            .file_name()
+            .to_string_lossy()
+            .starts_with(PREFIX)
+            && e.path().join("work").exists()),
+        "{nested:?}"
+    );
+    assert_eq!(records(), 0);
 }
 
 #[test]
