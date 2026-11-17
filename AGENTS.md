@@ -3700,7 +3700,13 @@ can still write below it. **Chats above the checkout are claimed too**
 mark and kept through the removal): the claim is made first, so every later
 start or queued turn whose cwd or extraDirs is above the checkout is refused
 under the session table, and a live process or queued turn already above it
-withholds the removal in words. An open-file snapshot does not stand in for it.
+withholds the removal in words. The claim follows the host's own work, never
+the provider process: a chat above the checkout withholds it while a registered
+job, background work, a waiting queue, a provider handoff or a start in flight
+exists (`chat_jobs::running_chats`, `background_tasks::running_chats`), and
+running work with no saved folders withholds every folder. Explicit validation
+removal takes the same claim at its final door. An open-file snapshot does not
+stand in for it.
 A checkout's own branch, and any listed ref that differs from it only by ASCII
 case (one ref file on a case-folding filesystem), never proves it merged. A project folder that is not a Git repository, or is gone,
 is skipped without a failure line.

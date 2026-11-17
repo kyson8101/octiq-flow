@@ -3321,6 +3321,65 @@ fn a_chat_working_above_a_merged_checkout_keeps_it_until_that_chat_is_gone() {
     );
 }
 #[test]
+fn a_running_job_above_a_merged_checkout_keeps_it_after_its_provider_exited() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _profile = crate::profile::started_in(&home.dir);
+    crate::profile::available().unwrap();
+    let r = Repo::new();
+    r.write("work", "one");
+    git::text(&r.work, &["add", "."]).unwrap();
+    git::text(&r.work, &["commit", "-m", "work"]).unwrap();
+    r.age(2);
+    git::text(&r.root, &["merge", "--no-edit", "octiq/test"]).unwrap();
+    let svc = r.services(2);
+    let store = Store::default();
+    let above = Path::new(&r.work)
+        .parent()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    // The chat has no process and no queue; its registered job still runs.
+    svc.chats.test_remember_start("chat:job-above", &above);
+    assert!(!svc.chats.has_process("chat:job-above"));
+    let (job, token) = svc
+        .chats
+        .jobs
+        .start(
+            "chat:job-above",
+            serde_json::from_value(serde_json::json!({ "label": "render", "wake": false }))
+                .unwrap(),
+        )
+        .unwrap();
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(
+        Path::new(&r.work).exists(),
+        "a running job above the checkout keeps the folder"
+    );
+    let report = &store.saved().unwrap().history[0];
+    assert!(
+        report
+            .failed
+            .iter()
+            .any(|f| f.path == r.work && f.why.contains("running job")),
+        "{:?}",
+        report.failed
+    );
+    svc.chats
+        .jobs
+        .end(
+            job["id"].as_str().unwrap(),
+            &token,
+            serde_json::from_value(serde_json::json!({ "exitCode": 0 })).unwrap(),
+        )
+        .unwrap();
+    sweep_checked(&svc, &store, &checks()).unwrap();
+    assert!(
+        gone(&r.work),
+        "{:?}",
+        store.saved().unwrap().history[0].failed
+    );
+}
+#[test]
 fn an_own_branch_alias_that_differs_only_by_case_proves_no_merge() {
     assert!(is_own_branch("main", Some("Main")));
     assert!(is_own_branch("main", Some("origin/Main")));

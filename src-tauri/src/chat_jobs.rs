@@ -397,6 +397,22 @@ impl Store {
         })
     }
 
+    /// Every chat that has a job running, for a claim that must know of
+    /// work which outlives its agent's process. An unreadable store is an
+    /// error, never "nothing runs".
+    pub(crate) fn running_chats(&self) -> Result<Vec<String>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let mut chats: Vec<String> = inner
+            .jobs
+            .values()
+            .filter(|job| job.running())
+            .map(|job| job.chat_key.clone())
+            .collect();
+        chats.sort();
+        chats.dedup();
+        Ok(chats)
+    }
+
     /// A wrapper's start. Answers the job's id and the token its progress
     /// and its end carry.
     pub(crate) fn start(&self, chat: &str, start: Start) -> Result<(Value, String), String> {

@@ -478,7 +478,14 @@ used to refuse every worktree under it; an active one can still write below it
 and keeps the folder. Chats are claimed the same way: under lifecycle, after the
 path mark and until the folder is gone, `hold_lifespan_ancestors` refuses every
 start or queued turn whose cwd or extra directory is above the checkout, and a
-live process or queued turn already above it keeps the folder. An open-file
+live process or queued turn already above it keeps the folder. The claim
+follows the host's own work, not the provider process: a chat whose saved
+cwd or extra directory is above the checkout keeps it while it has a running
+registered job (`octiq-job`, `job_register`), background work, a queue waiting
+for the profile, a provider handoff or a start in flight, even when its process
+has exited and nothing is queued. Running work whose chat has no saved folders
+keeps every folder. Explicit validation removal takes the same claim at its
+final lifecycle door and holds it until the folder is gone. An open-file
 snapshot does not replace that claim. A checkout's own branch, and any ref that
 differs from it only by ASCII case, never proves it merged. A project folder that is not a Git repository, or is gone, is skipped, not listed
 as a failure.

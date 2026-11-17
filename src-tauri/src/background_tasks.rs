@@ -144,6 +144,23 @@ impl Store {
         self.save(&tasks)
     }
 
+    /// Every chat with background work running. `Err` when the store could
+    /// not be read: then nothing can be said to be idle.
+    pub fn running_chats(&self) -> Result<Vec<String>, String> {
+        if let Some(why) = &self.load_error {
+            return Err(format!("Background work could not be read: {why}"));
+        }
+        let tasks = self.tasks.lock().map_err(|e| e.to_string())?;
+        let mut chats: Vec<String> = tasks
+            .values()
+            .filter(|t| t.status == "running")
+            .map(|t| t.chat_key.clone())
+            .collect();
+        chats.sort();
+        chats.dedup();
+        Ok(chats)
+    }
+
     pub fn has_running(&self, chat: &str) -> bool {
         self.load_error.is_some()
             || self
