@@ -91,6 +91,13 @@ own, for anyone who wants it on their `PATH`.
 
 ## The spool folder: a chat whose commands cannot reach the host
 
+When Codex sets `CODEX_SANDBOX_NETWORK_DISABLED=1`, a wrapper with the launch's
+spool folder starts there directly. It does not first attempt the forbidden
+hook connection or print a connection-failure warning. Without that signal,
+the wrapper still tries the hook first and falls back only on a connection
+failure; a host refusal remains a refusal. A missing or unwritable spool is
+reported as a job-reporting failure, while the command keeps its own exit code.
+
 Codex below Full runs its commands in a sandbox that refuses a connection
 to `127.0.0.1` (`Operation not permitted`), so `octiq-job` there cannot call
 `/hook/job`. Turning on the sandbox's network access would let it, and is

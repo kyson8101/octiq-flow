@@ -196,6 +196,8 @@ pub(crate) struct Host {
     url: String,
     capability: String,
     session: String,
+    /// Codex sets this inside commands whose sandbox has no network.
+    network_disabled: bool,
 }
 
 impl Host {
@@ -212,6 +214,7 @@ impl Host {
             url: format!("http://127.0.0.1:{port}/hook/job"),
             capability,
             session,
+            network_disabled: get("CODEX_SANDBOX_NETWORK_DISABLED").as_deref() == Some("1"),
         })
     }
 
@@ -699,6 +702,14 @@ fn begin(
     let Some(host) = host else {
         return Err("not run from an OctiqFlow chat".into());
     };
+    // This is the same capability-scoped spool used after a failed connect.
+    // Do not attempt a connection we already know the sandbox will refuse.
+    // Without a spool retain the ordinary error; never claim the chat was told.
+    if host.network_disabled {
+        if let Some((dir, key)) = spool {
+            return begin_spooled(dir, key, start);
+        }
+    }
     match host.ask("start", start.clone()) {
         Ok(value) => Ok(Report::Hook {
             id: value["id"].as_str().ok_or("no job id")?.to_string(),
@@ -712,16 +723,22 @@ fn begin(
             let Some((dir, key)) = spool else {
                 return Err(why);
             };
-            let mut writer = crate::job_spool::Writer::create(&dir, &key)
-                .map_err(|e| format!("{why}; and the spool folder could not be written: {e}"))?;
-            if !writer.record("start", start) {
-                return Err(format!("{why}; and the spool folder could not be written"));
-            }
+            let report =
+                begin_spooled(dir, key, start).map_err(|error| format!("{why}; and {error}"))?;
             eprintln!("octiq-job: the host could not be reached ({why}); this job is reported through the chat's spool folder");
-            Ok(Report::Spool(Arc::new(Mutex::new(writer))))
+            Ok(report)
         }
         Err(failed) => Err(failed.why),
     }
+}
+
+fn begin_spooled(dir: std::path::PathBuf, key: String, start: Value) -> Result<Report, String> {
+    let mut writer = crate::job_spool::Writer::create(&dir, &key)
+        .map_err(|error| format!("the spool folder could not be written: {error}"))?;
+    if !writer.record("start", start) {
+        return Err("the spool folder could not be written".into());
+    }
+    Ok(Report::Spool(Arc::new(Mutex::new(writer))))
 }
 
 /// A progress or end report, the way the job is reported.
@@ -973,13 +990,17 @@ mod tests {
         let host = Host::from_env(&full).unwrap();
         assert_eq!(host.url, "http://127.0.0.1:1421/hook/job");
         assert_eq!(host.session, "chat:a");
+        assert!(!host.network_disabled);
         // Codex hid the session's KEY variables; the session is still known.
         let codex = env(&[
             ("OCTIQ_HOOK_PORT", "1421"),
             ("OCTIQ_CHAT_CAPABILITY", "cap"),
             ("OCTIQ_CHAT_KEY", "chat:b"),
+            ("CODEX_SANDBOX_NETWORK_DISABLED", "1"),
         ]);
-        assert_eq!(Host::from_env(&codex).unwrap().session, "chat:b");
+        let host = Host::from_env(&codex).unwrap();
+        assert_eq!(host.session, "chat:b");
+        assert!(host.network_disabled);
         for missing in [
             env(&[
                 ("OCTIQ_CHAT_CAPABILITY", "cap"),
@@ -1059,6 +1080,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/hook/job"),
             capability: "cap".into(),
             session: "chat:a".into(),
+            network_disabled: false,
         }
     }
 
@@ -1075,6 +1097,50 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    #[test]
+    fn known_disabled_network_starts_in_the_spool_without_contacting_the_hook() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut host = unreachable_host();
+        host.url = format!("http://{}/hook/job", listener.local_addr().unwrap());
+        host.network_disabled = true;
+        let dir = crate::test_dir::TestDir::new("job-direct-spool");
+        let report = begin(
+            Some(host),
+            Some((dir.to_path_buf(), "scoped-capability".into())),
+            json!({ "label": "direct", "wrapperPid": std::process::id() }),
+        )
+        .unwrap();
+        assert!(matches!(report, Report::Spool(_)));
+        send(&report, "end", json!({ "exitCode": 7 })).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let files = spool_lines(&dir);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0][0]["type"], "start");
+        assert_eq!(files[0][1]["type"], "end");
+        assert_eq!(files[0][1]["exitCode"], 7);
+        assert!(files[0]
+            .iter()
+            .all(|line| line["key"] == "scoped-capability"));
+
+        // A flag does not invent a launch or make an unwritable spool a success.
+        assert!(begin(None, Some((dir.to_path_buf(), "cap".into())), json!({})).is_err());
+        let mut host = unreachable_host();
+        host.network_disabled = true;
+        assert!(begin(Some(host), None, json!({})).is_err());
+        let mut host = unreachable_host();
+        host.network_disabled = true;
+        assert!(begin(
+            Some(host),
+            Some((dir.join("missing"), "cap".into())),
+            json!({})
+        )
+        .is_err());
     }
 
     /// The hook cannot be connected to and the launch has a spool folder:
@@ -1166,6 +1232,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/hook/job"),
             capability: "cap".into(),
             session: "chat:a".into(),
+            network_disabled: false,
         };
         let dir = crate::test_dir::TestDir::new("job-wrap-refused");
         let code = run(
