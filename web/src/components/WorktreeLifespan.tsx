@@ -118,16 +118,17 @@ function ArchiveRow({ archive, restored, connected, error, action }: { archive: 
   </article>;
 }
 function LifespanSettingsRow({ settings = DEFAULT_LIFESPAN_SETTINGS, connected, error, action }: { settings?: LifespanSettings; connected: boolean; error?: string; action: Action }) {
-  const [draft, setDraft] = useState({ enabled: settings.enabled, build: String(settings.buildAfterDays), remove: String(settings.removeAfterDays) });
-  useEffect(() => setDraft({ enabled: settings.enabled, build: String(settings.buildAfterDays), remove: String(settings.removeAfterDays) }), [settings.enabled, settings.buildAfterDays, settings.removeAfterDays]);
-  const invalid = validateLifespanSettings(draft.build, draft.remove);
-  const changed = draft.enabled !== settings.enabled || Number(draft.build) !== settings.buildAfterDays || Number(draft.remove) !== settings.removeAfterDays;
+  const [draft, setDraft] = useState({ enabled: settings.enabled, build: String(settings.buildAfterDays), remove: String(settings.removeAfterDays), merged: String(settings.removeMergedAfterDays ?? DEFAULT_LIFESPAN_SETTINGS.removeMergedAfterDays) });
+  useEffect(() => setDraft({ enabled: settings.enabled, build: String(settings.buildAfterDays), remove: String(settings.removeAfterDays), merged: String(settings.removeMergedAfterDays ?? DEFAULT_LIFESPAN_SETTINGS.removeMergedAfterDays) }), [settings.enabled, settings.buildAfterDays, settings.removeAfterDays, settings.removeMergedAfterDays]);
+  const invalid = validateLifespanSettings(draft.build, draft.remove, draft.merged);
+  const changed = draft.enabled !== settings.enabled || Number(draft.build) !== settings.buildAfterDays || Number(draft.remove) !== settings.removeAfterDays || Number(draft.merged) !== (settings.removeMergedAfterDays ?? DEFAULT_LIFESPAN_SETTINGS.removeMergedAfterDays);
   const pending = useInFlight(worktreeFlight("settings"));
   const guard = (event: MouseEvent) => { if (repeatsAnother(event)) { event.preventDefault(); return false; } notePress(event); return true; };
-  return <form className="wt-settings" aria-label="Worktree lifespan settings" onSubmit={event => { event.preventDefault(); if (!invalid && changed && connected) void action("settings", "worktree_lifespan_set", { enabled: draft.enabled, buildAfterDays: Number(draft.build), removeAfterDays: Number(draft.remove) }); }}>
+  return <form className="wt-settings" aria-label="Worktree lifespan settings" onSubmit={event => { event.preventDefault(); if (!invalid && changed && connected) void action("settings", "worktree_lifespan_set", { enabled: draft.enabled, buildAfterDays: Number(draft.build), removeAfterDays: Number(draft.remove), removeMergedAfterDays: Number(draft.merged) }); }}>
     <label><input type="checkbox" role="switch" checked={draft.enabled} disabled={!connected || pending} onKeyDown={dropHeld} onClick={guard} onChange={event => setDraft(was => ({ ...was, enabled: event.target.checked }))} />Automatic clearing {draft.enabled ? "on" : "off"}</label>
     <label>Build output after <input aria-label="Build output idle days" type="number" min="1" step="1" value={draft.build} disabled={!connected || pending} onChange={event => setDraft(was => ({ ...was, build: event.target.value }))} /> idle days</label>
     <label>Folders after <input aria-label="Folder idle days" type="number" min="1" step="1" value={draft.remove} disabled={!connected || pending} onChange={event => setDraft(was => ({ ...was, remove: event.target.value }))} /> idle days</label>
+    <label>Merged folders after <input aria-label="Merged folder idle days" type="number" min="0" step="1" value={draft.merged} disabled={!connected || pending} onChange={event => setDraft(was => ({ ...was, merged: event.target.value }))} /> idle days</label>
     <button className="wt-button" type="submit" disabled={!connected || pending || !changed || !!invalid} onKeyDown={dropHeld} onClick={event => { guard(event); }}>Save settings</button>
     {invalid && <p className="wt-validation" role="status">{invalid}</p>}{error && <p className="wt-error" role="alert">{error}</p>}
   </form>;

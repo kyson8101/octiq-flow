@@ -444,7 +444,15 @@ Each scan derives Active, Idle, Finished or Abandoned. A process, lease,
 unsettled attempt, open gate, queued turn, observed cwd/open file, or unfinished
 owning run task holds the checkout Active. Last activity is the newest host-known
 task/attempt timestamp, chat index update, last commit and non-build tree mtime.
-Before the removal threshold it is Idle. After it, a clean checkout with no Git
+Before the removal threshold it is Idle. The threshold is
+`removeAfterDays` (default 14), or `removeMergedAfterDays` (default 1, `0` is the
+next sweep, never above `removeAfterDays`) for a task, mission or chat checkout
+whose HEAD is already held by its base: `git for-each-ref --contains HEAD` names
+the recorded base, the project default or develop/main/master, as a local branch
+or its `origin/` copy (`Item.mergedInto`). The checkout's own branch and its
+`origin/` copy never count: a push is not a merge. A stale `origin/` ref can fail
+to prove a merge and can never invent one. The branch is kept, so the folder
+can be rebuilt at the same path. After the threshold, a clean checkout with no Git
 operation and a named, kept branch is Finished; no merge or push is required
 when the local branch still holds its commits. Dirty/untracked files, an
 unfinished Git operation, or detached commits with no retaining ref make it
@@ -460,7 +468,13 @@ Primary, adopted, direct and hand-made worktrees are listed as Unknown and never
 changed. Repositories come from registered projects and ledger allocations.
 The one thread starts three minutes after host startup and scans hourly; tests
 never start it. Disabled settings or an unavailable pinned profile withhold a
-pass. A cargo/rustc process withholds cleanup. No timer belongs to a worktree.
+pass. A cargo/rustc process withholds stripping build folders only (it may use
+one); removal asks about the checkout itself. No timer belongs to a worktree.
+The final ownership check compares only allocations at or inside the checkout. A
+folder above it (a non-Git project folder a run works in place) is another
+checkout with another repository and used to refuse every worktree under it. A
+project folder that is not a Git repository, or is gone, is skipped, not listed
+as a failure.
 
 Build stripping is an allow-list: only ignored, untracked `target` beside
 `Cargo.toml`, and `node_modules` beside `package.json`. Neither the tree walk nor
@@ -474,8 +488,13 @@ also withhold Git removal because Git may traverse a junction.
 `git worktree remove` deletes them. Starfall intentionally ignores original
 media and renders under `works/` and `anime/`, where they may be the only copy.
 Each worktree, including validation checkouts, gets a `git status --ignored=matching`
-inventory bounded to 15 seconds, 32 MiB of Git output and 100,000 inspected
-entries. Metadata is read without following symlinks/junctions; redirected
+inventory bounded to 60 seconds (15 at the final door under lifecycle), 32 MiB of
+Git output and 100,000 inspected entries outside build folders plus 5,000,000
+inside a qualifying `target`/`node_modules`/`dist`/`.astro` (the part of a checkout
+a React Native `node_modules` fills with ~156,000 entries). Inside such a folder
+each directory is classified once and its files follow, unless a `source`,
+`works` or `anime` folder, a `.git` or bare-repo shape, a non-regular file, or
+(under `dist`/`.astro`) a link is met; those stay at stake. Metadata is read without following symlinks/junctions; redirected
 entries outside a real qualified build folder are at stake; links inside
 `target`/`node_modules` are rebuildable links and their targets are never followed.
 A build root that is itself a link does not qualify. Only these ignored files are rebuildable:
@@ -560,8 +579,10 @@ Socket-only commands (no hook route or MCP tool):
   Each Item includes `ignoredFiles: number|null` and `ignoredBytes: number|null`,
   counting **only at-stake ignored files**. Both are null if the inventory
   failed, timed out, reached its entry/output limit or could not finish.
-- `worktree_lifespan_set { enabled?, buildAfterDays?, removeAfterDays? }` requires
-  days at least 1 and build cleanup no later than folder removal. Enabling needs
+- `worktree_lifespan_set { enabled?, buildAfterDays?, removeAfterDays?,
+  removeMergedAfterDays? }` requires days at least 1 and build cleanup no later
+  than folder removal; `removeMergedAfterDays` is 0 or more and no later than
+  `removeAfterDays`. Enabling needs
   a saved record; disabling acts at once and owes a failed write.
 - `worktree_lifespan_keep { key, keep }` pins/unpins. Pinning acts at once;
   unpinning needs a saved record.
@@ -582,9 +603,9 @@ Heavy usage capture, tree walks and content hashes run outside the global
 workspace lifecycle lock while checkout/start marks prevent host starts. The
 host reacquires lifecycle for each final operation and rechecks allocations and
 activity; it releases it between items. Content hashing is bounded to 2 GiB
-total/120 seconds, sizing to 100,000 entries/15 seconds. Final under-lock ignored
-checks use 100,000 entries/10 seconds including Git status; the normal inventory
-remains 100,000 entries/15 seconds. A limit holds that item in words and lets
+total/120 seconds, sizing to 100,000 entries outside build folders (5,000,000
+inside) and 60 seconds. Final under-lock ignored checks use 15 seconds with Git
+status bounded by the 10-second final budget; the normal inventory is 60 seconds. A limit holds that item in words and lets
 other workspaces continue. Git metadata output is capped at 32 MiB per command and Git
 removal at 15 seconds; archive commands/comparison have 120-second bounds outside
 lifecycle; OS filesystem operations may still block.

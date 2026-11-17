@@ -28,7 +28,7 @@ const withheldReason = "Automatic clearing is withheld because the host cannot d
 const owner = label => ({ kind: "task", label, runId: "run", taskId: label });
 const item = (key, patch = {}) => ({ key, path: `/work/very-long-project-name/.worktrees/${key}/deep-folder`, repo: "/work/very-long-project-name", branch: `feature/${key}`, head: `head-${key}`, statusHash: `status-${key}`, owner: owner(key), state: "finished", pinned: false, idleDays: 15, bytes: 4200000000, buildBytes: 2100000000, dirtyFiles: 0, untrackedFiles: 0, ignoredFiles: 0, ignoredBytes: 0, unmergedCommits: 0, pushed: null, stripAt: now + 86400000, removeAt: now + 7 * 86400000, why: "The host confirmed this task has finished. " + "Whole reason. ".repeat(15), ...patch });
 function fixture() {
-  return { settings: { enabled: true, buildAfterDays: 3, removeAfterDays: 14 }, lastSweepAt: now, scanning: true,
+  return { settings: { enabled: true, buildAfterDays: 3, removeAfterDays: 14, removeMergedAfterDays: 1 }, lastSweepAt: now, scanning: true,
     items: [item("abandoned", { state: "abandoned", dirtyFiles: 3, untrackedFiles: 2, unmergedCommits: 1, pushed: false, stripAt: null, removeAt: null }), item("finished", { idleDays: 30.00318267361111, why: withheldReason, stripAt: null, removeAt: null }), item("idle", { state: "idle", stripAt: now + 1000 }), item("kept", { pinned: true }), item("active", { state: "active" }), item("unknown", { state: "abandoned", owner: { kind: "unknown", label: "Unknown ownership" }, bytes: null, buildBytes: null })],
     archives: [{ key: "archive", ref: "refs/octiq/archive/previous", repo: "/work/project", branch: "feature/previous", path: "/work/project/.worktrees/previous", archivedAt: now, files: 2, restoredAt: null }],
     history: [{ at: now, stripped: 2, removed: [{ path: "/removed/" + "whole-path/".repeat(20), branch: "feature/removed", owner: owner("Old work"), bytes: null }], freedBytes: 3700000000, failed: [{ path: "/failed/" + "whole-path/".repeat(20), why: "Host refusal: open files " + "reason stays whole. ".repeat(20) }] }] };
@@ -274,7 +274,7 @@ async function flow(app) {
   assert.equal(await page.getByRole("button", { name: "Save settings" }).isDisabled(), true);
   await build.fill("4"); await keyClick(page.getByRole("button", { name: "Save settings" }));
   await page.waitForFunction(() => document.querySelector('.wt-settings button')?.disabled);
-  assert.deepEqual(localCalls.find(call => call.cmd === "worktree_lifespan_set").args, { enabled: true, buildAfterDays: 4, removeAfterDays: 14 });
+  assert.deepEqual(localCalls.find(call => call.cmd === "worktree_lifespan_set").args, { enabled: true, buildAfterDays: 4, removeAfterDays: 14, removeMergedAfterDays: 1 });
   await keyClick(page.getByRole("button", { name: "Restore", exact: true }));
   await page.getByText("/restored/new-worktree-path", { exact: true }).waitFor();
   assert.match(await page.getByRole("article", { name: "Archive feature/previous", exact: true }).textContent(), /feature\/restored-new-branch/);

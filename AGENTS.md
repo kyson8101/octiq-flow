@@ -3636,7 +3636,13 @@ for the launch flags and provider references.
 
 `worktree_lifespan.rs` owns one process-wide sweep thread, started from
 `Services::load` only outside tests: first pass after three minutes, then hourly.
-Defaults are enabled, build output after 3 idle days, Finished folders after 14.
+Defaults are enabled, build output after 3 idle days, Finished folders after 14,
+and a task/mission/chat checkout whose HEAD is already held by its base after
+`removeMergedAfterDays` (default 1; 0 is the next sweep). That fast path
+(`merged_into`) is proven with Git (`for-each-ref --contains HEAD`: the recorded
+base, the project default, develop/main/master, local or `origin/`; the
+checkout's own branch and its remote copy never count) and only shortens the
+idle time. Every other guard and `remove_proven` are unchanged.
 Only managed task/mission worktrees, indexed `octiq/` chat worktrees under
 `.worktrees`, and recorded validation checkouts qualify. Primary, adopted,
 direct and hand-made checkouts are informational and never changed. State is
@@ -3660,9 +3666,28 @@ record first. An unread record is never replaced with defaults on that retry.
 The host strips only ignored `target` beside `Cargo.toml` and `node_modules`
 beside `package.json`, with no tracked files inside. `dist`, `out`, `renders`
 and `source` never qualify. Redirects are never traversed. A cargo/rustc process
-withholds cleanup; unknown cwd/open-file inventory (always Windows today)
+withholds STRIPPING only (it may be using a `target`); whole-checkout removal asks
+about that checkout itself, so an unrelated build never holds it (on a busy Mac one
+is nearly always running, and nothing was removed for weeks). Unknown
+cwd/open-file inventory (always Windows today)
 withholds both stripping and worktree removal, as does a Windows reparse point. No profile means
 no sweep. Git calls are bounded, non-interactive and do not fetch.
+
+Entries inside a qualifying build folder (`target`, `node_modules`, `dist`,
+`.astro`) count against their own bound (5,000,000, `BUILD_ENTRIES`), not the
+100,000 for the rest of the checkout (`WALK_ENTRIES`); a React Native
+`node_modules` alone is ~156,000. One inspection has 60 seconds
+(`WALK_TIME`) before any lock; the final door under lifecycle keeps 15.
+Inside such a folder the walk knows once per directory that its files are
+rebuildable (`ignored::Under`), unless a `source`/`works`/`anime` folder,
+a `.git` or bare-repo shape, a non-regular file or (under `dist`) a link is
+found: the at-stake rules are unchanged. A bound that is still hit says which
+part and what to do (`walk_limit`). A final ownership check
+(`ownership_unchanged`) looks only at allocations AT or INSIDE the checkout: a
+folder above it that a run works in place (a non-Git project folder holding
+`.worktrees`) has another repository by definition and rejected every worktree
+under it, every sweep. A project folder that is not a Git repository, or is gone,
+is skipped without a failure line.
 
 Removal refreshes chat delivery first, saves intent before `git worktree remove`
 without force, then records `sweptAt` without changing task workspace state,
@@ -3854,8 +3879,8 @@ missing/stale evidence explains the swept state and asks for restore/refresh.
 ## Conventions & gotchas
 
 - **An automatic cleanup test needs a safe control actually stripped or
-  removed.** Any cargo/rustc on the machine holds the whole sweep, so a
-  no-delete result alone proves nothing. Every fixture agent CLI is a stub;
+  removed.** Any cargo/rustc on the machine holds the strip, so a
+  no-strip result alone proves nothing. Every fixture agent CLI is a stub;
   never allow a test fixture to invoke a paid/live provider CLI.
 
 - **Keep closing replies natural and concise.** Do not append `Task Completed`,

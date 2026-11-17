@@ -72,11 +72,14 @@ describe("facts, words, and absent measurements", () => {
 });
 describe("settings and compatibility", () => {
   it("defaults to three and fourteen days and validates whole windows in words", () => {
-    expect(DEFAULT_LIFESPAN_SETTINGS).toEqual({ enabled: true, buildAfterDays: 3, removeAfterDays: 14 });
+    expect(DEFAULT_LIFESPAN_SETTINGS).toEqual({ enabled: true, buildAfterDays: 3, removeAfterDays: 14, removeMergedAfterDays: 1 });
     for (const value of ["", "0", "-1", "1.5", "NaN", "Infinity", "1e3", "9007199254740992"]) expect(validateLifespanSettings(value, "14")).toContain("whole number of at least 1 day");
     expect(validateLifespanSettings("5", "3")).toContain("no later than folders");
     expect(validateLifespanSettings("1", "1")).toBeNull();
     expect(validateLifespanSettings("3", "14")).toBeNull();
+    expect(validateLifespanSettings("3", "14", "0")).toBeNull();
+    expect(validateLifespanSettings("3", "14", "15")).toContain("Merged folders must clear no later");
+    for (const value of ["", "-1", "1.5", "NaN"]) expect(validateLifespanSettings("3", "14", value)).toContain("0 or more days");
   });
   it("recognises only the host's unavailable-command fallback", () => {
     expect(lifespanUnavailable("'worktree_lifespan_list' is not available on this backend — it may be older than the page asking for it")).toBe(true);

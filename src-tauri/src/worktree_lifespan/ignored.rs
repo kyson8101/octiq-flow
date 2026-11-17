@@ -112,6 +112,53 @@ fn pnpm_placeholder(path: &Path) -> bool {
     })
 }
 
+fn overrides(name: &std::ffi::OsStr) -> bool {
+    ["source", "works", "anime"]
+        .iter()
+        .any(|o| name.to_str().is_some_and(|n| n.eq_ignore_ascii_case(o)))
+}
+
+/// What a directory is to the walk below it. Inside a qualifying build folder
+/// every regular file is rebuildable unless a `source`/`works`/`anime` folder
+/// is on its way, which is exactly the answer `rebuildable` reaches by asking,
+/// for every file, whether some ancestor qualifies. Knowing it once per
+/// directory turns about a dozen stats per file into none, which is what lets
+/// a several-hundred-thousand-entry `node_modules` be inspected in seconds.
+#[derive(Clone, Copy, PartialEq)]
+enum Under {
+    /// Ordinary checkout content.
+    Outside,
+    /// `target` / `node_modules`: regular files and symlinks are rebuildable.
+    Build,
+    /// `dist` / `.astro`: regular files are rebuildable, symlinks are not.
+    Output,
+    /// An at-stake override (`source`, `works`, `anime`) is above: nothing
+    /// below is rebuildable, whatever it is under.
+    Held,
+}
+impl Under {
+    /// The state of the directory `relative` itself, given its parent's.
+    fn of(self, root: &Path, relative: &Path, m: &fs::Metadata) -> Self {
+        let name = relative.file_name().unwrap_or_default();
+        if self == Self::Held || overrides(name) {
+            return Self::Held;
+        }
+        if self != Self::Outside || redirect(m) || !m.is_dir() {
+            return self;
+        }
+        let parent = root.join(relative.parent().unwrap_or(Path::new("")));
+        match name.to_str() {
+            Some("target") if marker(&parent, "Cargo.toml") => Self::Build,
+            Some("node_modules") if marker(&parent, "package.json") => Self::Build,
+            Some("dist" | ".astro") if marker(&parent, "package.json") => Self::Output,
+            _ => Self::Outside,
+        }
+    }
+    fn is_build(self) -> bool {
+        matches!(self, Self::Build | Self::Output)
+    }
+}
+
 pub(super) fn repository_entry(path: &Path, relative: &Path, m: &fs::Metadata) -> bool {
     relative
         .file_name()
@@ -125,8 +172,66 @@ pub(super) fn repository_entry(path: &Path, relative: &Path, m: &fs::Metadata) -
             }))
 }
 
+/// Counts what a walk has seen. Entries inside a qualifying build folder are
+/// metadata the walk only has to classify, and are bounded far more widely than
+/// the checkout's own files.
+struct Limits {
+    start: Instant,
+    budget: Duration,
+    max: usize,
+    visited: usize,
+    build_visited: usize,
+}
+impl Limits {
+    fn new(start: Instant, budget: Duration, max: usize, visited: usize) -> Self {
+        Self {
+            start,
+            budget,
+            max,
+            visited,
+            build_visited: 0,
+        }
+    }
+    fn count(&mut self, relative: &Path, in_build: bool, what: &str) -> Result<(), String> {
+        if in_build {
+            self.build_visited += 1;
+        } else {
+            self.visited += 1;
+        }
+        if self.visited > self.max
+            || self.build_visited > super::BUILD_ENTRIES
+            || relative.components().count() > 256
+            || self.start.elapsed() >= self.budget
+        {
+            return Err(limit_message(what, in_build, self.budget, self.max));
+        }
+        Ok(())
+    }
+}
+fn limit_message(what: &str, in_build: bool, budget: Duration, max: usize) -> String {
+    if in_build {
+        format!(
+            "{what} reached its {} entry or {} second limit inside a build folder; the folder is kept. Delete that build folder (for example node_modules) or the worktree yourself, or retry when the machine is less busy.",
+            super::BUILD_ENTRIES,
+            budget.as_secs()
+        )
+    } else {
+        format!(
+            "{what} reached its {max} entry or {} second limit outside build folders; the folder is kept. It holds more files than automatic cleanup inspects; remove it yourself or clear the large folder.",
+            budget.as_secs()
+        )
+    }
+}
+
+/// Before any lock is held (the sweep's own look, the pre-removal recheck).
 pub(super) fn inventory(root: &str) -> Result<Inventory, String> {
-    bounded(root, Duration::from_secs(15), 100_000)
+    bounded(root, super::WALK_TIME, super::WALK_ENTRIES)
+}
+
+/// At the final door, with the workspace lifecycle held: short, so it never
+/// blocks the others for long. A checkout too large for it is kept.
+pub(super) fn final_inventory(root: &str) -> Result<Inventory, String> {
+    bounded(root, Duration::from_secs(15), super::WALK_ENTRIES)
 }
 
 pub(super) fn bounded(
@@ -147,17 +252,15 @@ pub(super) fn bounded(
         ],
         budget,
     )?;
-    let mut visited = 0;
+    let mut limits = Limits::new(start, budget, max_entries, 0);
     special_entries(
         Path::new(root),
         Path::new(""),
+        Under::Outside,
         &mut bytes,
-        &mut visited,
-        start,
-        budget,
-        max_entries,
+        &mut limits,
     )?;
-    from_status(Path::new(root), &bytes, start, budget, max_entries, visited)
+    from_status(Path::new(root), &bytes, limits)
 }
 
 // Git omits FIFOs/sockets from porcelain entirely. Discover those metadata-only,
@@ -166,21 +269,14 @@ pub(super) fn bounded(
 fn special_entries(
     root: &Path,
     relative: &Path,
+    under: Under,
     rows: &mut Vec<u8>,
-    visited: &mut usize,
-    start: Instant,
-    budget: Duration,
-    max: usize,
+    limits: &mut Limits,
 ) -> Result<(), String> {
     let path = root.join(relative);
     real_dir(&path)?;
     for entry in fs::read_dir(&path).map_err(|e| e.to_string())? {
-        *visited += 1;
-        if *visited > max || relative.components().count() > 256 || start.elapsed() >= budget {
-            return Err(
-                "Special-file inventory reached its time or entry bound; folder kept.".into(),
-            );
-        }
+        limits.count(relative, under.is_build(), "Special-file inventory")?;
         let entry = entry.map_err(|e| e.to_string())?;
         let name = relative.join(entry.file_name());
         if relative.as_os_str().is_empty() && entry.file_name() == ".git" {
@@ -191,7 +287,8 @@ fn special_entries(
             continue;
         }
         if m.is_dir() {
-            special_entries(root, &name, rows, visited, start, budget, max)?;
+            let below = under.of(root, &name, &m);
+            special_entries(root, &name, below, rows, limits)?;
         } else if !m.is_file() {
             rows.extend_from_slice(b"!! ");
             rows.extend_from_slice(
@@ -208,36 +305,28 @@ fn special_entries(
 fn walk(
     root: &Path,
     relative: &Path,
+    under: Under,
     entries: &mut BTreeMap<Vec<u8>, (u64, Vec<u8>)>,
-    visited: &mut usize,
-    start: Instant,
-    budget: Duration,
-    max: usize,
+    limits: &mut Limits,
 ) -> Result<(), String> {
-    *visited += 1;
-    if *visited > max || relative.components().count() > 256 || start.elapsed() >= budget {
-        return Err(
-            "Ignored-file inventory reached its time or entry limit; the folder is kept.".into(),
-        );
-    }
+    limits.count(relative, under.is_build(), "Ignored-file inventory")?;
     let path = root.join(relative);
     real_dir(path.parent().ok_or("Ignored path has no parent")?)?;
     let m = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
     let repository = repository_entry(&path, relative, &m);
     if m.is_dir() && !redirect(&m) && !repository {
+        let below = under.of(root, relative, &m);
         for entry in fs::read_dir(&path).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             walk(
                 root,
                 &relative.join(entry.file_name()),
+                below,
                 entries,
-                visited,
-                start,
-                budget,
-                max,
+                limits,
             )?;
         }
-    } else if repository || !rebuildable(root, relative) {
+    } else if repository || !rebuildable_under(root, relative, under, &m) {
         let name = relative
             .to_str()
             .ok_or("Ignored path is not valid UTF-8")?
@@ -275,6 +364,22 @@ fn walk(
     Ok(())
 }
 
+/// `rebuildable`, with the answer for a regular file or symlink under a
+/// qualifying build folder known from the walk instead of asked again. Every
+/// other case, and every doubt, goes to the full predicate.
+fn rebuildable_under(root: &Path, relative: &Path, under: Under, m: &fs::Metadata) -> bool {
+    let name = relative.file_name().unwrap_or_default();
+    if under == Under::Held || overrides(name) {
+        return false;
+    }
+    let link = redirect(m);
+    match under {
+        Under::Build if m.is_file() || link => true,
+        Under::Output if m.is_file() && !link => true,
+        _ => rebuildable(root, relative),
+    }
+}
+
 /// Strip and whole-folder removal share exactly the same at-stake predicate.
 /// No Git ignore traversal can hide a nested repository or source override.
 pub(super) fn subtree(
@@ -288,23 +393,12 @@ pub(super) fn subtree(
     from_status(
         Path::new(root),
         status.as_bytes(),
-        Instant::now(),
-        budget,
-        max,
-        0,
+        Limits::new(Instant::now(), budget, max, 0),
     )
 }
 
-fn from_status(
-    root: &Path,
-    status: &[u8],
-    start: Instant,
-    budget: Duration,
-    max_entries: usize,
-    initial_visited: usize,
-) -> Result<Inventory, String> {
+fn from_status(root: &Path, status: &[u8], mut limits: Limits) -> Result<Inventory, String> {
     let mut entries = BTreeMap::new();
-    let mut visited = initial_visited;
     let mut rows = status.split(|b| *b == 0).filter(|r| !r.is_empty());
     while let Some(row) = rows.next() {
         if row.starts_with(b"!! ") {
@@ -317,15 +411,22 @@ fn from_status(
                     "Ignored inventory contains an unsafe path; the folder is kept.".into(),
                 );
             }
-            walk(
-                root,
-                path,
-                &mut entries,
-                &mut visited,
-                start,
-                budget,
-                max_entries,
-            )?;
+            // The status row names the folder itself, so the walk must learn
+            // what its ancestors are (a `source` folder above, a build folder
+            // in the middle) before it takes its first step.
+            let mut under = Under::Outside;
+            let mut walked = Path::new("").to_path_buf();
+            if let Some(parent) = path.parent() {
+                for part in parent.components() {
+                    walked.push(part);
+                    let Ok(m) = fs::symlink_metadata(root.join(&walked)) else {
+                        under = Under::Outside;
+                        break;
+                    };
+                    under = under.of(root, &walked, &m);
+                }
+            }
+            walk(root, path, under, &mut entries, &mut limits)?;
         } else if row
             .get(..2)
             .is_some_and(|xy| xy.iter().any(|b| matches!(b, b'R' | b'C')))
@@ -333,7 +434,7 @@ fn from_status(
             rows.next();
         }
     }
-    if start.elapsed() >= budget {
+    if limits.start.elapsed() >= limits.budget {
         return Err("Ignored-file inventory timed out; the folder is kept.".into());
     }
     let files = entries.len() as u64;

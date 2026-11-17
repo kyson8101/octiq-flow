@@ -728,6 +728,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "enabled")?,
                 arg(&args, "buildAfterDays")?,
                 arg(&args, "removeAfterDays")?,
+                arg(&args, "removeMergedAfterDays")?,
             ))
         }
         "worktree_lifespan_keep" => {

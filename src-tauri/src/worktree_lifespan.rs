@@ -32,7 +32,7 @@ pub(crate) fn at_stake_ignored_count(path: &str) -> Option<u64> {
 /// ignored files. Keep unknown/original data until an explicit archive flow.
 pub(crate) fn require_no_at_stake_ignored(path: &str) -> Result<(), String> {
     real_dir(Path::new(path))?;
-    let inventory = ignored::inventory(path)
+    let inventory = ignored::final_inventory(path)
         .map_err(|e| format!("Ignored-file inventory is unavailable; the folder is kept: {e}"))?;
     if inventory.files > 0 {
         return Err(format!(
@@ -206,6 +206,14 @@ pub(crate) struct Settings {
     pub enabled: bool,
     pub build_after_days: u32,
     pub remove_after_days: u32,
+    /// Idle days after which a checkout whose HEAD is already part of its
+    /// base becomes removable (its work lives on in that base). Zero means the
+    /// next sweep. Everything else keeps `remove_after_days`.
+    #[serde(default = "merged_days")]
+    pub remove_merged_after_days: u32,
+}
+fn merged_days() -> u32 {
+    1
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -213,6 +221,7 @@ impl Default for Settings {
             enabled: true,
             build_after_days: 3,
             remove_after_days: 14,
+            remove_merged_after_days: merged_days(),
         }
     }
 }
@@ -272,6 +281,9 @@ struct Item {
     ignored_files: Option<u64>,
     ignored_bytes: Option<u64>,
     unmerged_commits: Option<u64>,
+    /// The ref that already holds HEAD (`develop`, `origin/main`, ...), proven
+    /// with `merge-base --is-ancestor`. Only this shortens the retention.
+    merged_into: Option<String>,
     pushed: Option<bool>,
     strip_at: Option<i64>,
     remove_at: Option<i64>,
@@ -577,12 +589,14 @@ pub(crate) fn set(
     enabled: Option<bool>,
     build: Option<u32>,
     remove: Option<u32>,
+    merged: Option<u32>,
 ) -> Result<Settings, String> {
     store().change(enabled == Some(false), |s| {
         let next = Settings {
             enabled: enabled.unwrap_or(s.settings.enabled),
             build_after_days: build.unwrap_or(s.settings.build_after_days),
             remove_after_days: remove.unwrap_or(s.settings.remove_after_days),
+            remove_merged_after_days: merged.unwrap_or(s.settings.remove_merged_after_days),
         };
         if next.build_after_days < 1
             || next.remove_after_days < 1
@@ -590,6 +604,11 @@ pub(crate) fn set(
         {
             return Err(
                 "Use at least one day, with build cleanup no later than folder removal.".into(),
+            );
+        }
+        if next.remove_merged_after_days > next.remove_after_days {
+            return Err(
+                "Merged-folder removal cannot wait longer than ordinary folder removal.".into(),
             );
         }
         s.settings = next.clone();
@@ -621,15 +640,32 @@ struct Decision<'a> {
     reparse: bool,
     managed: bool,
     complete: bool,
+    merged: bool,
+}
+/// Idle time before a folder may go: the merged period when its HEAD is
+/// already in the base, the ordinary one otherwise.
+fn retention_days(settings: &Settings, merged: bool) -> u32 {
+    if merged {
+        settings
+            .remove_merged_after_days
+            .min(settings.remove_after_days)
+    } else {
+        settings.remove_after_days
+    }
 }
 fn decide(d: Decision<'_>, settings: &Settings) -> (&'static str, String) {
     if let Some(why) = d.active {
         return ("active", why.into());
     }
-    if d.idle_ms < i64::from(settings.remove_after_days) * DAY {
+    if d.idle_ms < i64::from(retention_days(settings, d.merged)) * DAY {
         return (
             "idle",
-            "No active use was found; the folder retention period has not elapsed.".into(),
+            if d.merged {
+                "Its work is already in the base branch; the shorter merged-folder retention period has not elapsed."
+            } else {
+                "No active use was found; the folder retention period has not elapsed."
+            }
+            .into(),
         );
     }
     if d.dirty || d.operation || (!d.named && !d.held) {
@@ -755,8 +791,36 @@ struct Tree {
     build_bytes: u64,
     builds: Vec<PathBuf>,
     reparse: bool,
+    /// Entries outside rebuildable build folders: the part a person's own
+    /// files live in, bounded tightly.
     entries: usize,
+    /// Entries inside a qualifying build folder (`node_modules`, `target`).
+    /// These are metadata only and a React Native `node_modules` alone holds
+    /// several hundred thousand, so they have their own, far larger, bound.
+    build_entries: usize,
     started: Option<std::time::Instant>,
+}
+/// Entries a walk may visit outside build folders, and inside them.
+pub(crate) const WALK_ENTRIES: usize = 100_000;
+pub(crate) const BUILD_ENTRIES: usize = 5_000_000;
+/// One inspection of a checkout, before any lock is held.
+pub(crate) const WALK_TIME: Duration = Duration::from_secs(60);
+/// What an over-bound answer says and what to do about it. Never silent: a
+/// worktree that cannot be inspected is kept, and the person is told how to
+/// make it inspectable.
+pub(crate) fn walk_limit(what: &str, in_build: bool) -> String {
+    if in_build {
+        format!(
+            "{what} reached its {} entry or {} second limit inside a build folder; this worktree is kept. Delete that build folder (for example node_modules) or the worktree yourself, or retry when the machine is less busy.",
+            BUILD_ENTRIES,
+            WALK_TIME.as_secs()
+        )
+    } else {
+        format!(
+            "{what} reached its {WALK_ENTRIES} entry or {} second limit outside build folders; this worktree is kept. It holds more files than automatic cleanup inspects; remove it yourself or clear the large folder.",
+            WALK_TIME.as_secs()
+        )
+    }
 }
 fn stamp(meta: &fs::Metadata) -> i64 {
     meta.modified()
@@ -791,13 +855,17 @@ fn build_dir(root: &str, p: &Path) -> bool {
         && git::git(root, &["ls-files", "-z", "--", &relative]).is_ok_and(|b| b.is_empty())
 }
 fn walk(root: &str, path: &Path, in_build: bool, tree: &mut Tree) -> Result<(), String> {
-    tree.entries += 1;
+    if in_build {
+        tree.build_entries += 1;
+    } else {
+        tree.entries += 1;
+    }
     let started = *tree.started.get_or_insert_with(std::time::Instant::now);
-    if tree.entries > 100_000 || started.elapsed() > Duration::from_secs(15) {
-        return Err(
-            "Worktree walk reached its 100,000 entry or 15 second limit; this worktree is kept."
-                .into(),
-        );
+    if tree.entries > WALK_ENTRIES
+        || tree.build_entries > BUILD_ENTRIES
+        || started.elapsed() > WALK_TIME
+    {
+        return Err(walk_limit("Worktree walk", in_build));
     }
     let m = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if redirect(&m) {
@@ -1337,6 +1405,11 @@ fn observe(
     } else {
         Some(a.base.clone())
     };
+    let merged_into = if matches!(a.owner.kind.as_str(), "task" | "mission" | "chat") {
+        merged_into(root, &head, checkout.branch.as_deref(), base.as_deref())
+    } else {
+        None
+    };
     let unmerged_commits = base.as_ref().and_then(|base| {
         git::text(root, &["rev-list", "--count", &format!("{base}..{head}")])
             .ok()?
@@ -1372,6 +1445,7 @@ fn observe(
             reparse: tree.reparse,
             managed: a.owner.kind != "unknown",
             complete: true,
+            merged: merged_into.is_some(),
         },
         settings,
     );
@@ -1448,10 +1522,11 @@ fn observe(
         ignored_files: ignored.as_ref().ok().map(|i| i.files),
         ignored_bytes: ignored.as_ref().ok().map(|i| i.bytes),
         unmerged_commits,
+        merged_into: merged_into.clone(),
         pushed,
         strip_at: qualified.then_some(last + i64::from(settings.build_after_days) * DAY),
         remove_at: (qualified && state == "finished" && removable)
-            .then_some(last + i64::from(settings.remove_after_days) * DAY),
+            .then_some(last + i64::from(retention_days(settings, merged_into.is_some())) * DAY),
         why,
     };
     Ok(Observation {
@@ -1460,6 +1535,66 @@ fn observe(
         removable,
         ignored_hash: ignored.ok().map(|i| i.hash),
     })
+}
+/// The base-like ref that already holds `head`, if any. One `for-each-ref
+/// --contains` lists every ref that does, so this costs one Git call however
+/// many candidates there are. The checkout's own branch (and its remote copy)
+/// is never a candidate: a pushed branch contains itself and proves nothing.
+/// Local refs only: a stale `origin/<base>` can fail to prove a merge, never
+/// invent one. Any failure answers `None`, which keeps the ordinary period.
+fn merged_into(root: &str, head: &str, own: Option<&str>, base: Option<&str>) -> Option<String> {
+    let holders = git::text(
+        root,
+        &[
+            "for-each-ref",
+            "--contains",
+            head,
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )
+    .ok()?;
+    let holders: BTreeSet<&str> = holders.lines().collect();
+    let strip = |name: &str| -> String {
+        name.strip_prefix("refs/remotes/origin/")
+            .or_else(|| name.strip_prefix("refs/heads/"))
+            .or_else(|| name.strip_prefix("origin/"))
+            .unwrap_or(name)
+            .to_owned()
+    };
+    let default = git::text(
+        root,
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    )
+    .ok()
+    .map(|name| strip(&name));
+    let mut names: Vec<String> = Vec::new();
+    for name in base
+        .map(strip)
+        .into_iter()
+        .chain(default)
+        .chain(["develop", "main", "master"].map(String::from))
+    {
+        if !name.is_empty() && !names.contains(&name) && Some(name.as_str()) != own {
+            names.push(name);
+        }
+    }
+    names.into_iter().find_map(|name| {
+        [
+            format!("refs/heads/{name}"),
+            format!("refs/remotes/origin/{name}"),
+        ]
+        .iter()
+        .find(|r| holders.contains(r.as_str()))
+        .map(|r| strip_ref(r))
+    })
+}
+fn strip_ref(r: &str) -> String {
+    r.strip_prefix("refs/heads/")
+        .map(str::to_owned)
+        .or_else(|| r.strip_prefix("refs/remotes/").map(str::to_owned))
+        .unwrap_or_else(|| r.to_owned())
 }
 fn current(svc: &Services, state: &Store, path: &str) -> Result<(Allocation, Checkout), String> {
     let allocations = svc.orchestrations.lifespan_allocations()?;
@@ -1495,7 +1630,7 @@ fn verify_delivery(svc: &Services, a: &Allocation, item: &Item) -> Result<(), St
             dirty: item.dirty_files + item.untracked_files > 0,
             has_commits: item.unmerged_commits.is_some_and(|n| n > 0),
             pushed: item.pushed == Some(true),
-            merged: item.unmerged_commits == Some(0),
+            merged: item.unmerged_commits == Some(0) || item.merged_into.is_some(),
             checked_at: now(),
             ..Default::default()
         };
@@ -1642,18 +1777,28 @@ fn runtime_checks() -> Checks {
 }
 // Heavy disk/usage checks run with only the path/start marks. Once the
 // lifecycle is reacquired, a newly admitted worker/owner must withhold cleanup.
+//
+// Only an allocation AT this checkout or INSIDE it can be a new owner of it.
+// A folder ABOVE it (a non-Git parent a run works in place, such as a project
+// folder that holds `.worktrees`) is another checkout with another repository,
+// so comparing it as if it were this one's own rejected every worktree under
+// it, on every sweep: 57 to 73 `ownership changed` failures and no removal
+// (2026-11-17). Anything using this folder is caught by the usage, chat-mark,
+// stamp and raw-content checks, which look at the folder itself.
 fn final_allocation(svc: &Services, before: &Allocation) -> Result<(), String> {
-    for a in svc.orchestrations.lifespan_allocations()? {
+    ownership_unchanged(&svc.orchestrations.lifespan_allocations()?, before)
+}
+fn ownership_unchanged(now: &[Allocation], before: &Allocation) -> Result<(), String> {
+    for a in now {
         if Path::new(&a.path).starts_with(&before.path)
-            || Path::new(&before.path).starts_with(&a.path)
+            && (a.active.is_some()
+                || a.last_activity > before.last_activity
+                || (Path::new(&a.path) == Path::new(&before.path) && a.repo != before.repo))
         {
-            if a.active.is_some() || a.repo != before.repo || a.last_activity > before.last_activity
-            {
-                return Err(
-                    "Workspace ownership or activity changed during cleanup; the folder was kept."
-                        .into(),
-                );
-            }
+            return Err(
+                "Workspace ownership or activity changed during cleanup; the folder was kept."
+                    .into(),
+            );
         }
     }
     Ok(())
@@ -1771,8 +1916,7 @@ fn operate_progress(
             let relative = build
                 .strip_prefix(&preview.path)
                 .map_err(|e| e.to_string())?;
-            let inventory =
-                ignored::subtree(&preview.path, relative, Duration::from_secs(15), 100_000)?;
+            let inventory = ignored::subtree(&preview.path, relative, WALK_TIME, WALK_ENTRIES)?;
             if inventory.files > 0 {
                 return Err(format!(
                     "{} at-stake ignored files in a build folder; all build folders were kept.",
@@ -1901,6 +2045,12 @@ fn operate_progress(
     drop(claims);
     Ok(Some(observed))
 }
+/// A folder a run worked in place that is not a Git repository, or that is
+/// gone, has no worktrees to age. Nothing is wrong with it, so the sweep says
+/// nothing about it, rather than listing it as a failure every hour.
+fn has_no_worktrees(repo: &str, error: &str) -> bool {
+    error.contains("not a git repository") || !Path::new(repo).is_dir()
+}
 fn sweep(svc: &Services, store: &Store) -> Result<(), String> {
     sweep_checked(svc, store, &runtime_checks())
 }
@@ -1925,8 +2075,13 @@ fn sweep_checked(svc: &Services, store: &Store, checks: &Checks) -> Result<(), S
         at,
         ..Default::default()
     };
+    // A cargo/rustc anywhere on the machine only withholds STRIPPING build
+    // folders (it may be using one). Removing a whole checkout asks about that
+    // checkout itself (open files and cwd, chats, stamps), so an unrelated
+    // build must not hold the sweep: on a busy Mac one is nearly always
+    // running and nothing was ever removed.
     let builds_running = (checks.building)();
-    if saved.settings.enabled && !builds_running {
+    if saved.settings.enabled {
         reconcile(svc, store, at, &mut report)?;
     }
     let allocations = svc.orchestrations.lifespan_allocations()?;
@@ -1936,6 +2091,7 @@ fn sweep_checked(svc: &Services, store: &Store, checks: &Checks) -> Result<(), S
     for repo in project_repos(svc, &allocations)? {
         let checkouts = match checkouts(&repo) {
             Ok(c) => c,
+            Err(e) if has_no_worktrees(&repo, &e) => continue,
             Err(e) => {
                 report.failed.push(Failed { path: repo, why: e });
                 continue;
@@ -1973,12 +2129,13 @@ fn sweep_checked(svc: &Services, store: &Store, checks: &Checks) -> Result<(), S
     // Make fresh identity available to manual commands without persisting any
     // derived states, usage observations or size estimates.
     store.inner.lock().map_err(|e| e.to_string())?.items = items.clone();
-    if saved.settings.enabled && !builds_running {
+    if saved.settings.enabled {
         for item in &items {
             if item.owner.kind == "unknown" || item.pinned || item.state == "active" {
                 continue;
             }
-            let strip = item.build_bytes.is_some_and(|b| b > 0)
+            let strip = !builds_running
+                && item.build_bytes.is_some_and(|b| b > 0)
                 && item.idle_days >= f64::from(saved.settings.build_after_days);
             if strip {
                 let mut progress = StripProgress::default();
