@@ -166,7 +166,7 @@ fn is_redirect(meta: &std::fs::Metadata) -> bool {
 /// files, which may be offline and dirty, so the mission is kept. The one
 /// redirect allowed is a link directly under the filesystem root, which is how
 /// macOS spells `/tmp` and `/var`.
-fn confirmed_missing(path: &str) -> Result<bool, String> {
+pub(super) fn confirmed_missing(path: &str) -> Result<bool, String> {
     let kept = |why: String| {
         format!("{path} is not found, but that is not confirmed: {why} The mission is kept.")
     };
@@ -250,19 +250,51 @@ fn after_delivery() {
     }
 }
 
-/// `Ok(false)` only when git, asked in the repository, answers that no local
-/// branch of that name exists. Any other failure (the repository is missing, a
-/// timeout, git itself) is `Err`: not being able to ask proves nothing.
-/// `for-each-ref` is used because it answers an absent ref with success and
-/// empty output, so absence is told apart from a failed git call by its exit
-/// status and not by reading an error message.
+/// `Ok(false)` only with positive proof that no local branch of that name
+/// exists (`lifespan::local_branch_exists`: rev-parse exit 1, no case alias,
+/// no unreadable ref folder, nothing on stderr). Everything else that is not a
+/// plain yes is `Err`: not being able to ask proves nothing.
 pub(super) fn branch_exists(plan: &WorkspacePlan) -> Result<bool, String> {
-    let wanted = format!("refs/heads/{}", plan.branch);
-    let found = crate::git_ops::lifespan::text(
-        &plan.repository_root,
-        &["for-each-ref", "--format=%(refname)", &wanted],
-    )?;
-    Ok(found.lines().any(|line| line == wanted))
+    crate::git_ops::lifespan::local_branch_exists(&plan.repository_root, &plan.branch)
+}
+
+/// A swept TASK worktree whose branch is gone as well (a release's cleanup
+/// deleted the merged branch). `Ok(true)` only when the folder is confirmed
+/// missing, the branch is proven absent and the saved delivery was recorded
+/// merged, clean, with a head: nothing physical is left, the record answers.
+/// `Ok(false)` when the branch is still there (the normal swept path decides).
+/// Anything that cannot be confirmed, or a gone branch with no recorded merge,
+/// is `Err` with a sentence: the task is kept.
+pub(super) fn swept_task_branch_gone(
+    ws: &super::workspaces::TaskWorkspace,
+) -> Result<bool, String> {
+    let kept = |why: String| {
+        format!("This workspace was swept; its kept branch cannot be verified. Restore the branch before Cleanup: {why}")
+    };
+    if branch_exists(&ws.plan).map_err(kept)? {
+        return Ok(false);
+    }
+    confirmed_missing(&ws.plan.checkout_root).map_err(kept)?;
+    match ws
+        .delivery
+        .as_ref()
+        .filter(|d| d.merged && !d.dirty && !d.head_sha.is_empty())
+    {
+        Some(_) => Ok(true),
+        None => Err(format!(
+            "The folder {} and the branch {} are both gone, and no clean merge into {} was ever recorded for this task, so it is not known to be merged. The task is kept.",
+            ws.plan.checkout_root, ws.plan.branch, ws.plan.base_branch
+        )),
+    }
+}
+
+/// What a card records of each root, and the answer compares again: whether
+/// the folder and the branch were there. A change either way keeps the item.
+pub(super) fn presence(plan: &WorkspacePlan) -> Result<(bool, bool), String> {
+    Ok((
+        !confirmed_missing(&plan.checkout_root)?,
+        branch_exists(plan)?,
+    ))
 }
 
 /// The folder and the local branch are both gone (the sweep removed the folder,

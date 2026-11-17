@@ -4066,6 +4066,14 @@ missing/stale evidence explains the swept state and asks for restore/refresh.
   and the target are intact and byte-identical to the original after 24
   carries at once, the other pauses a last-resort copy and asserts that a
   second carry does not answer until the file is whole.
+- **A ref is absent only with positive proof, and an empty successful
+  enumeration is not proof.** A review or code path that treats a branch as
+  absent before a delete or a Close must cover case aliases (a case-folding
+  filesystem resolves `feature/x` to a real `FEATURE/X` while `for-each-ref`
+  of the alias lists nothing) and unreadable loose-ref directories (exit 0,
+  empty). Use `git_ops::lifespan::local_branch_exists`: anything but its
+  `Ok(false)` is unknown and keeps the item; never compare a refname through
+  `lifespan::text`, which trims.
 - **A test that reads source as text reads it through `lib/sourceText.lf`.**
   Git for Windows checks files out with CRLF line ends by default and the
   repository has no `.gitattributes`, so a pattern or a replacement that

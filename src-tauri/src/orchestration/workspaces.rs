@@ -1703,7 +1703,7 @@ impl OrchestrationStore {
         task_id: &str,
         abandon: bool,
         expected_head: &str,
-        expected_plan: Option<&WorkspacePlan>,
+        expected_plan: Option<&super::cleanup_request::Worktree>,
         require_finished: bool,
     ) -> Result<Task, String> {
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
@@ -1713,7 +1713,8 @@ impl OrchestrationStore {
             .as_ref()
             .ok_or("This task has no workspace.")?;
         if let Some(expected) = expected_plan {
-            super::cleanup_request::same_plan(expected, &ws.plan)?;
+            super::cleanup_request::same_plan(&expected.plan, &ws.plan)?;
+            super::cleanup_request::same_presence(expected, &ws.plan)?;
             if ws.state != WorkspaceState::Retained || ws.abandoned {
                 return Err("Workspace state changed since the approved card; folder kept.".into());
             }
@@ -1802,7 +1803,13 @@ impl OrchestrationStore {
             chats.require_checkout_idle(&ws.plan.checkout_root, true)?;
             let swept = ws.swept_at.is_some()
                 && matches!(std::fs::symlink_metadata(&ws.plan.checkout_root), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
-            let evidence = if swept {
+            let evidence = if swept && super::mission::swept_task_branch_gone(ws)? {
+                // Folder confirmed missing, branch proven absent: the saved
+                // merged delivery answers for it and no git work remains.
+                let mut saved = ws.delivery.clone().ok_or("This workspace was swept and has no saved delivery evidence. Restore the kept branch before Cleanup.")?;
+                saved.checked_at = now_ms();
+                saved
+            } else if swept {
                 let saved = ws.delivery.clone().ok_or("This workspace was swept and has no saved delivery evidence. Restore the kept branch before Cleanup.")?;
                 let head = crate::git_ops::lifespan::text(&ws.plan.repository_root, &[
                     "rev-parse", "--verify", &format!("refs/heads/{}^{{commit}}", ws.plan.branch)
