@@ -1,5 +1,7 @@
 import {
   modelChoiceForFlag,
+  piModelRef,
+  piUpstreamHeading,
   providerFor,
   type ModelChoice,
   type Provider,
@@ -54,4 +56,22 @@ export function choicesFromCatalog(
     output.push(choice);
   }
   return output;
+}
+
+/** Pi's models as the host listed them, one group to an upstream in the order
+ *  the upstreams first appear: the upstream is who bills the model, so a
+ *  Claude model through the API and the same name elsewhere are told apart. A
+ *  choice with no id of its own (Pi's default) has no upstream and no group. */
+export function groupByUpstream(
+  models: readonly ModelChoice[],
+): { upstream: string; heading: string; models: ModelChoice[] }[] {
+  const groups: { upstream: string; heading: string; models: ModelChoice[] }[] = [];
+  for (const model of models) {
+    if (!model.flag) continue;
+    const upstream = piModelRef(model.flag).upstream;
+    const group = groups.find((g) => g.upstream === upstream);
+    if (group) group.models.push(model);
+    else groups.push({ upstream, heading: piUpstreamHeading(upstream), models: [model] });
+  }
+  return groups;
 }

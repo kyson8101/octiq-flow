@@ -203,21 +203,31 @@ export const providers = {
   pi: {
     id: "pi",
     name: "pi.dev",
-    // Pi is the harness here; OpenAI Codex is its selected upstream provider.
-    // Keep the same model names and visual voices as a direct Codex chat so
-    // choosing the harness does not make the underlying model look different.
+    // Pi is the harness; a model is `<upstream>/<model>`, and the upstream is
+    // who bills it: `anthropic` is Claude through the Anthropic API (an API
+    // key, no weekly window), `openai-codex` is the ChatGPT login. These are
+    // what a Pi chat offers only until the host's catalog (`pi --list-models`,
+    // filtered to the logins that are ready) has been read; it replaces them.
     models: [
-      { id: "pi:astra", agent: "pi", name: "pi.dev", model: "Astra", flag: "gpt-6-astra", hint: "Codex through pi.dev", composerStyle: "pi-astra" },
-      { id: "pi:sol", agent: "pi", name: "pi.dev", model: "Sol", flag: "gpt-5.6-sol", hint: "Codex through pi.dev", composerStyle: "pi-sol" },
-      { id: "pi:terra", agent: "pi", name: "pi.dev", model: "Terra", flag: "gpt-5.6-terra", hint: "Codex through pi.dev", composerStyle: "pi-terra" },
-      { id: "pi:luna", agent: "pi", name: "pi.dev", model: "Luna", flag: "gpt-5.6-luna", hint: "Codex through pi.dev", composerStyle: "pi-luna" },
+      { id: "pi:anthropic-opus-5-5", agent: "pi", name: "pi.dev", model: "Claude Opus 5.5 · API", flag: "anthropic/claude-opus-5-5", hint: "Claude through the Anthropic API", composerStyle: "pi-sol" },
+      { id: "pi:anthropic-sonnet-5-5", agent: "pi", name: "pi.dev", model: "Claude Sonnet 5.5 · API", flag: "anthropic/claude-sonnet-5-5", hint: "Claude through the Anthropic API", composerStyle: "pi-terra" },
+      { id: "pi:anthropic-haiku-5-5", agent: "pi", name: "pi.dev", model: "Claude Haiku 5.5 · API", flag: "anthropic/claude-haiku-5-5", hint: "Claude through the Anthropic API", composerStyle: "pi-luna" },
+      { id: "pi:anthropic-fable-5-2", agent: "pi", name: "pi.dev", model: "Claude Fable 5.2 · API", flag: "anthropic/claude-fable-5-2", hint: "Claude through the Anthropic API", composerStyle: "pi-astra" },
+      { id: "pi:astra", agent: "pi", name: "pi.dev", model: "GPT-6 Astra · ChatGPT", flag: "openai-codex/gpt-6-astra", hint: "Codex through pi.dev", composerStyle: "pi-astra" },
+      { id: "pi:sol", agent: "pi", name: "pi.dev", model: "GPT-5.6 Sol · ChatGPT", flag: "openai-codex/gpt-5.6-sol", hint: "Codex through pi.dev", composerStyle: "pi-sol" },
+      { id: "pi:terra", agent: "pi", name: "pi.dev", model: "GPT-5.6 Terra · ChatGPT", flag: "openai-codex/gpt-5.6-terra", hint: "Codex through pi.dev", composerStyle: "pi-terra" },
+      { id: "pi:luna", agent: "pi", name: "pi.dev", model: "GPT-5.6 Luna · ChatGPT", flag: "openai-codex/gpt-5.6-luna", hint: "Codex through pi.dev", composerStyle: "pi-luna" },
       { id: "pi:default", agent: "pi", name: "pi.dev", model: "Default", flag: "", hint: "whatever Pi picks", composerStyle: "pi" },
     ],
-    // Pi JSON mode does not expose a tool approval handshake. Read-only is a
-    // strict tool allowlist; Full access is an explicit opt-in to all built-ins.
+    // Pi has no permission modes of its own: OctiqFlow's extension sends every
+    // tool call to the host, which decides by the level and asks on the usual
+    // card. There is no Auto (nothing reviews a call as safe); an Auto start
+    // runs as Accept edits, which is narrower, never wider.
     access: [
       { id: "read", label: "Read-only", hint: "only read, search and list tools" },
-      { id: "full", label: "Full access", hint: "Pi can run commands and edit files", bypass: true },
+      { id: "manual", label: "Manual", hint: "asks before any edit or command" },
+      { id: "edits", label: "Accept edits", hint: "edits files in the project; commands ask" },
+      { id: "full", label: "Full access", hint: "Pi can run commands and edit files without asking", bypass: true },
     ],
     efforts: [
       { id: "minimal", label: "Minimal", short: "Min", hint: "the least reasoning" },
@@ -317,8 +327,50 @@ const DYNAMIC_MODEL_ID = ":model:";
 /** Provider model ids are command-line tokens. Match the backend's allowlist
  * here so an exact-id field can fail before it creates a choice the runtime
  * will silently discard. */
-export function validModelFlag(flag: string): boolean {
+export function validModelFlag(flag: string, provider?: Provider): boolean {
+  // `<upstream>/<model>` is Pi's alone, as the host's `safe_model` reads it:
+  // two tokens of the same alphabet, 64 characters in all.
+  if (provider === "pi") return /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$/.test(flag) && flag.length <= 64;
   return /^[A-Za-z0-9._-]{1,64}$/.test(flag);
+}
+
+/** The upstream a Pi model is billed through, and its id there. A bare id is
+ *  what a chat saved before Pi named one means: OpenAI Codex. */
+export function piModelRef(flag: string): { upstream: string; id: string } {
+  const at = flag.indexOf("/");
+  return at > 0
+    ? { upstream: flag.slice(0, at), id: flag.slice(at + 1) }
+    : { upstream: "openai-codex", id: flag };
+}
+
+/** One spelling for a Pi model, so a bare saved id and its named form meet. */
+export function piFlag(flag: string): string {
+  if (!flag) return flag;
+  const { upstream, id } = piModelRef(flag);
+  return `${upstream}/${id}`;
+}
+
+/** The same model, as a provider names it: Pi's bare id equals its Codex form. */
+export function sameModelFlag(provider: Provider, a: string, b: string): boolean {
+  return provider === "pi" ? piFlag(a) === piFlag(b) : a === b;
+}
+
+const PI_UPSTREAM_WORDS: Record<string, string> = {
+  anthropic: "API",
+  "openai-codex": "ChatGPT",
+};
+
+/** How a person reads an upstream: `anthropic` is the API, `openai-codex` the
+ *  ChatGPT login; any other is its own name. */
+export function piUpstreamWord(upstream: string): string {
+  return PI_UPSTREAM_WORDS[upstream] ?? upstream;
+}
+
+/** The heading a Pi upstream's models sit under in the picker. */
+export function piUpstreamHeading(upstream: string): string {
+  if (upstream === "anthropic") return "Claude · Anthropic API";
+  if (upstream === "openai-codex") return "Codex · ChatGPT login";
+  return upstream;
 }
 
 function titleWord(word: string): string {
@@ -327,6 +379,14 @@ function titleWord(word: string): string {
 }
 
 function modelLabel(provider: Provider, flag: string, displayName?: string): string {
+  if (provider === "pi") {
+    // Named by the flag, never the host's display text: the same model reads
+    // the same whether it came from the catalog or was typed in.
+    const { upstream, id } = piModelRef(flag);
+    const claude = claudeModelName(id);
+    const name = claude ? `Claude ${claude}` : modelLabel("codex", id);
+    return `${name} · ${piUpstreamWord(upstream)}`;
+  }
   if (displayName?.trim()) {
     return displayName.trim().replace(/^Claude\s+/i, "");
   }
@@ -375,10 +435,13 @@ function styleForModel(provider: Provider, flag: string): ComposerStyle {
     return "codex";
   }
   if (provider === "antigravity") return "antigravity";
-  if (lower.includes("astra")) return "pi-astra";
-  if (lower.includes("sol")) return "pi-sol";
-  if (lower.includes("terra")) return "pi-terra";
-  if (lower.includes("luna")) return "pi-luna";
+  // A Claude model wears the Pi tier that stands for it (the failover's own
+  // pairing): Fable↔Astra, Opus↔Sol, Sonnet↔Terra, Haiku↔Luna.
+  const id = piModelRef(lower).id;
+  if (id.includes("fable") || id.includes("astra")) return "pi-astra";
+  if (id.includes("opus") || /(^|[-.])sol($|[-.])/.test(id)) return "pi-sol";
+  if (id.includes("sonnet") || id.includes("terra")) return "pi-terra";
+  if (id.includes("haiku") || id.includes("luna")) return "pi-luna";
   return "pi";
 }
 
@@ -391,16 +454,18 @@ export function modelChoiceForFlag(
   displayName?: string,
   hint?: string,
 ): ModelChoice | undefined {
-  const wanted = flag.trim();
-  if (!validModelFlag(wanted)) return undefined;
+  let wanted = flag.trim();
+  if (!validModelFlag(wanted, provider)) return undefined;
   const lower = wanted.toLowerCase();
   const claude = /^(claude-|(?:opus|sonnet|haiku|fable)(?:-|$))/.test(lower);
   const codex = /^(gpt-|codex-)/.test(lower);
   const gemini = lower.startsWith("gemini-");
   if ((provider === "claude" && (codex || gemini))
     || ((provider === "codex" || provider === "pi") && (claude || gemini))) return undefined;
-  const known = providerFor(provider).models.find((model) => model.flag === wanted);
+  const known = providerFor(provider).models.find((model) => sameModelFlag(provider, model.flag, wanted));
   if (known) return known;
+  // A Pi model is always kept with its upstream: a bare id is the Codex one.
+  if (provider === "pi") wanted = piFlag(wanted);
   return {
     id: `${provider}${DYNAMIC_MODEL_ID}${encodeURIComponent(wanted)}`,
     agent: provider,
@@ -435,13 +500,17 @@ export function modelFromReported(provider: Provider, reported: string): ModelCh
   const value = reported.trim();
   if (!value) return providerFor(provider).models.find((model) => !model.flag);
   const offered = providerFor(provider).models.filter((model) => model.flag);
-  const exact = offered.find((model) => model.flag === value);
+  const exact = offered.find((model) => sameModelFlag(provider, model.flag, value));
   return exact ?? modelChoiceForFlag(provider, value);
 }
 
 export function accessFor(provider: Provider, wanted: AccessLevel): AccessLevel {
   const options = providerFor(provider).access;
-  return options.some((option) => option.id === wanted) ? wanted : options[0].id;
+  if (options.some((option) => option.id === wanted)) return wanted;
+  // Auto asked of a provider with none (Pi) runs as Accept edits, as the host
+  // runs it: the nearest level that is narrower, never the widest.
+  if (wanted === "auto" && options.some((option) => option.id === "edits")) return "edits";
+  return options[0].id;
 }
 
 export function accessLabel(provider: Provider, access: AccessLevel): string {

@@ -125,7 +125,8 @@ describe("access levels", () => {
 
   it("asks a provider only for a level its picker offers", () => {
     expect(leastOffered("codex", "edits")).toBe("auto");
-    expect(leastOffered("pi", "edits")).toBe("full");
+    expect(leastOffered("pi", "edits")).toBe("edits");
+    expect(leastOffered("pi", "auto")).toBe("full");
     expect(leastOffered("antigravity", "manual")).toBe("edits");
     expect(leastOffered("claude", "manual")).toBe("manual");
   });

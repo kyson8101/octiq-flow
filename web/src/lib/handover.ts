@@ -2,7 +2,7 @@
 // `handover.rs`). Pure: the cards and their wording read from these, and the
 // store that holds the list (`useHandovers`) is the only part that talks to
 // the server.
-import { AGENT_NAME, accessLabel, claudeModelName, MODELS, type AccessLevel, type Provider } from "./agentProviders";
+import { AGENT_NAME, accessLabel, claudeModelName, modelChoiceForFlag, MODELS, sameModelFlag, type AccessLevel, type Provider } from "./agentProviders";
 import type { Message } from "./chat";
 
 /** `starting`: confirmed, and its new chat is being started or waits for a
@@ -274,8 +274,9 @@ export function chatIdOf(key: string): string {
 export function modelName(settings: Handover["settings"]): string {
   const flag = settings.model?.trim();
   if (!flag) return `${AGENT_NAME[settings.agent] ?? settings.agent} default`;
-  return MODELS.find((m) => m.agent === settings.agent && m.flag === flag)?.model
+  return MODELS.find((m) => m.agent === settings.agent && sameModelFlag(settings.agent, m.flag, flag))?.model
     ?? (settings.agent === "claude" ? claudeModelName(flag) : undefined)
+    ?? (settings.agent === "pi" ? modelChoiceForFlag("pi", flag)?.model : undefined)
     ?? flag;
 }
 
