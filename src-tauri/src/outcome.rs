@@ -302,6 +302,19 @@ pub fn of_provider_event(agent: AgentKind, event: &Value) -> Option<Outcome> {
                 )
             })
         }
+        // A model call that failed: the assistant message says so itself.
+        (AgentKind::Pi, "message_end") => {
+            if event.pointer("/message/role").and_then(Value::as_str) != Some("assistant")
+                || event.pointer("/message/stopReason").and_then(Value::as_str) != Some("error")
+            {
+                return None;
+            }
+            let words = event
+                .pointer("/message/errorMessage")
+                .and_then(Value::as_str);
+            words?;
+            by_words(agent, event, words)
+        }
         (AgentKind::Pi, "agent_end" | "agent_settled") => {
             let words = text_of(event, &["error"])
                 .or_else(|| event.pointer("/error/message").and_then(Value::as_str));

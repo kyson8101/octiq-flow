@@ -75,8 +75,8 @@ release. Someone else's report is dismissed only as a duplicate or as not
 reproducible, with the reason in the note. An agent cannot edit a report's
 evidence or delete a report.
 
-Tools are offered only in OctiqFlow chats. pi.dev and standalone terminal agents
-do not currently receive OctiqFlow's MCP tools. Existing agent processes need
+Tools are offered only in OctiqFlow chats (Claude, Codex, Antigravity and
+pi.dev); standalone terminal agents do not receive OctiqFlow's MCP tools. Existing agent processes need
 to reconnect after release to discover the new tools.
 
 ## Review and fix

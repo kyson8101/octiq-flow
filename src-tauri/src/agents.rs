@@ -121,9 +121,144 @@ pub fn agent_models(agent: AgentKind) -> Result<AgentModelCatalog, String> {
     match agent {
         AgentKind::Claude => Ok(claude_models()),
         AgentKind::Codex => codex_models(),
-        AgentKind::Pi => Err("pi.dev does not expose a model catalog".into()),
+        AgentKind::Pi => pi_models(),
         AgentKind::Antigravity => antigravity_models(),
     }
+}
+
+/// One row of `pi --list-models`: the upstream, the model id, and whether the
+/// model reasons (so `--thinking` means something for it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PiListed {
+    upstream: String,
+    id: String,
+    thinking: bool,
+}
+
+/// The rows of `pi --list-models`, a table headed `provider model context
+/// max-out thinking images`. Anything else (a notice, a blank line) is left
+/// out, and so is an id the command line would refuse.
+fn parse_pi_models(stdout: &str) -> Vec<PiListed> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let columns: Vec<&str> = line.split_whitespace().collect();
+            if columns.len() < 6 || columns[0] == "provider" {
+                return None;
+            }
+            let model = format!("{}/{}", columns[0], columns[1]);
+            crate::agent_provider::safe_model(&model)?;
+            Some(PiListed {
+                upstream: columns[0].to_string(),
+                id: columns[1].to_string(),
+                thinking: columns[4] == "yes",
+            })
+        })
+        .collect()
+}
+
+/// Run `pi` with `args`, answering its stdout, or why not. A hung Pi is
+/// stopped at `limit`.
+fn run_pi(args: &[&str], limit: Duration) -> Result<(bool, String), String> {
+    let executable = probe_cached()
+        .into_iter()
+        .find(|(name, _)| name == AgentKind::Pi.id())
+        .ok_or_else(|| "pi.dev is not installed on this machine".to_string())?
+        .1;
+    let mut command = Command::new(if executable.is_empty() {
+        provider_for(AgentKind::Pi).bin()
+    } else {
+        &executable
+    });
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    no_console(&mut command);
+    let child = command
+        .spawn()
+        .map_err(|e| format!("could not start pi.dev: {e}"))?;
+    let (send, receive) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let _ = send.send(child.wait_with_output());
+    });
+    let output = receive
+        .recv_timeout(limit)
+        .map_err(|_| "pi.dev took too long to answer".to_string())?
+        .map_err(|e| format!("pi.dev could not answer: {e}"))?;
+    let _ = waiter.join();
+    Ok((
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    ))
+}
+
+/// Pi's models, from `pi --list-models`, for the upstreams `pi auth check
+/// --provider <upstream>` says are ready. Each is named `<upstream>/<model>`,
+/// exactly what `--model` takes; the upstream is who bills it (Anthropic's API
+/// key, the ChatGPT login behind `openai-codex`).
+fn pi_models() -> Result<AgentModelCatalog, String> {
+    let (_, listing) = run_pi(&["--list-models"], Duration::from_secs(40))?;
+    let listed = parse_pi_models(&listing);
+    let mut upstreams: Vec<String> = Vec::new();
+    for row in &listed {
+        if !upstreams.contains(&row.upstream) {
+            upstreams.push(row.upstream.clone());
+        }
+    }
+    // One check per upstream, side by side: each starts a pi.
+    let checks: Vec<_> = upstreams
+        .iter()
+        .cloned()
+        .map(|upstream| {
+            std::thread::spawn(move || {
+                let ready = run_pi(
+                    &["auth", "check", "--provider", &upstream, "--json"],
+                    Duration::from_secs(30),
+                )
+                .ok()
+                .and_then(|(_, out)| serde_json::from_str::<Value>(out.trim()).ok())
+                .is_some_and(|answer| answer["status"] == "ready");
+                (upstream, ready)
+            })
+        })
+        .collect();
+    let ready: HashSet<String> = checks
+        .into_iter()
+        .filter_map(|check| check.join().ok())
+        .filter_map(|(upstream, ok)| ok.then_some(upstream))
+        .collect();
+    let models: Vec<AgentModel> = listed
+        .into_iter()
+        .filter(|row| ready.contains(&row.upstream))
+        .map(|row| AgentModel {
+            model: format!("{}/{}", row.upstream, row.id),
+            display_name: format!("{} · {}", row.id, row.upstream),
+            description: Some(format!("through {}", row.upstream)),
+            is_default: false,
+            supported_efforts: if row.thinking {
+                ["low", "medium", "high", "xhigh", "max"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        })
+        .collect();
+    if models.is_empty() {
+        return Err(
+            "pi.dev lists no model with a login that is ready. Run `pi auth login <provider>` in a terminal (for Claude through the API: `pi auth login anthropic --api-key`).".into(),
+        );
+    }
+    Ok(AgentModelCatalog {
+        source: "provider".into(),
+        models,
+        note: Some(
+            "Each model is named <upstream>/<model>. anthropic is Claude through the Anthropic API (billed by the API key, no weekly limit); openai-codex is the ChatGPT login and shares Codex's allowance.".into(),
+        ),
+    })
 }
 
 /// `agy models` prints one `id<TAB>display name` line per model the signed-in
@@ -761,6 +896,34 @@ fn probe_command() -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `pi --list-models` 1.5.2 on 2026-11-18, verbatim (trailing spaces
+    /// included), cut to a few rows of each upstream.
+    const PI_LIST_MODELS: &str = "provider      model                       context  max-out  thinking  images\nanthropic     claude-fable-5-2            1M       128K     yes       yes   \nanthropic     claude-opus-5-5             1M       128K     yes       yes   \nanthropic     claude-sonnet-5-5           1M       128K     yes       yes   \ndeepseek      deepseek-v4-pro             1M       384K     yes       no    \nopenai-codex  gpt-5.6-sol                 272K     128K     yes       yes   \nopenai-codex  gpt-6.1-sol                 500K     128K     yes       yes   \n";
+
+    #[test]
+    fn pi_models_are_named_by_their_upstream_exactly_as_model_takes_them() {
+        let rows = parse_pi_models(PI_LIST_MODELS);
+        assert_eq!(rows.len(), 6, "the header row is not a model");
+        assert_eq!(
+            rows[1],
+            PiListed {
+                upstream: "anthropic".into(),
+                id: "claude-opus-5-5".into(),
+                thinking: true,
+            }
+        );
+        assert!(rows[3].thinking, "deepseek-v4-pro reasons");
+        for row in &rows {
+            let model = format!("{}/{}", row.upstream, row.id);
+            assert_eq!(
+                crate::agent_provider::safe_model(&model).as_deref(),
+                Some(model.as_str())
+            );
+            crate::agent_provider::validate_model(AgentKind::Pi, Some(&model)).unwrap();
+        }
+        assert!(parse_pi_models("pi: update available\n\n").is_empty());
+    }
 
     /// Not a unit test — a hand-run probe against THIS machine's real process
     /// table, so the `ps` parse can be checked against what `ps` actually

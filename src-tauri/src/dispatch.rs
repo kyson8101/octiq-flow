@@ -1762,9 +1762,6 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 .find(|project| project.id == run.workspace_id)
                 .ok_or("The run's project no longer exists.")?;
             let agent: crate::agent_chat::ChatAgent = arg(&args, "agent")?;
-            if agent == crate::agent_chat::ChatAgent::Pi {
-                return Err("Choose Codex, Claude or Antigravity as the main agent.".into());
-            }
             let handoff: Option<String> = arg(&args, "handoff")?;
             // A provider switch always starts a fresh native session, even if
             // an older index save is still in flight in another browser.

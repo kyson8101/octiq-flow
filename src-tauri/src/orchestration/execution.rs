@@ -289,6 +289,9 @@ fn observe(event: &Value, now: i64, interrupted: bool) -> Vec<Observation> {
         return observe_antigravity(kind, event, now);
     }
     let kind = event["type"].as_str().unwrap_or_default();
+    if let Some(observed) = observe_pi(kind, event, now, interrupted) {
+        return observed;
+    }
     if turn_was_cut(kind, event, interrupted) {
         return vec![Observation::TurnCut];
     }
@@ -391,6 +394,106 @@ fn observe(event: &Value, now: i64, interrupted: bool) -> Vec<Observation> {
         }
     }
     vec![Observation::Activity]
+}
+
+/// Pi's stream (`pi --mode rpc`; `web/src/lib/piEvents.ts` reads the same
+/// events). Its names are its own, so none is mistaken for another provider's.
+///
+/// `agent_end` closes one run and may be followed by an automatic retry
+/// (`willRetry`, `auto_retry_start`); only `agent_settled` ends the turn. A
+/// model call that failed is the last assistant message of a run that is not
+/// retried: failing the attempt at the failed message itself would pre-empt
+/// Pi's own retry.
+fn observe_pi(kind: &str, event: &Value, now: i64, interrupted: bool) -> Option<Vec<Observation>> {
+    Some(match kind {
+        "agent_start" | "turn_start" => vec![Observation::Executing],
+        "message_update" => vec![Observation::ModelActivity],
+        "message_start" | "turn_end" | "tool_execution_update" | "queue_update" => {
+            vec![Observation::Activity]
+        }
+        "message_end" => {
+            let message = &event["message"];
+            let text = message["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .rev()
+                .find_map(|block| {
+                    (block["type"] == "text")
+                        .then(|| block["text"].as_str())
+                        .flatten()
+                });
+            match (message["role"].as_str(), text) {
+                (Some("assistant"), Some(text)) if !text.trim().is_empty() => {
+                    vec![Observation::Progress(bounded(text))]
+                }
+                _ => vec![Observation::Activity],
+            }
+        }
+        "tool_execution_start" => vec![Observation::ToolStart(
+            event["toolCallId"].as_str().unwrap_or("tool").into(),
+            bounded(
+                &event["toolName"]
+                    .as_str()
+                    .unwrap_or("tool")
+                    .replace('_', " "),
+            ),
+        )],
+        "tool_execution_end" => vec![Observation::ToolEnd(
+            event["toolCallId"].as_str().unwrap_or("tool").into(),
+            format!(
+                "Finished {}",
+                bounded(
+                    &event["toolName"]
+                        .as_str()
+                        .unwrap_or("tool")
+                        .replace('_', " ")
+                )
+            ),
+        )],
+        "auto_retry_start" => vec![Observation::Error(
+            classify_provider(
+                event["errorMessage"]
+                    .as_str()
+                    .unwrap_or("Provider request failed"),
+                now,
+            ),
+            true,
+        )],
+        "agent_end" => {
+            let failed = (event["willRetry"] != true)
+                .then(|| {
+                    event["messages"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .rev()
+                        .find(|message| message["role"] == "assistant")
+                })
+                .flatten()
+                .filter(|message| message["stopReason"] == "error");
+            match failed {
+                Some(message) => vec![Observation::Error(
+                    classify_provider(
+                        message["errorMessage"]
+                            .as_str()
+                            .unwrap_or("Provider request failed"),
+                        now,
+                    ),
+                    false,
+                )],
+                None => vec![Observation::Activity],
+            }
+        }
+        "agent_settled" => {
+            if interrupted && event["aborted"] == true {
+                vec![Observation::TurnCut]
+            } else {
+                vec![Observation::TurnEnded]
+            }
+        }
+        _ => return None,
+    })
 }
 
 /// Antigravity's stream (`agent_provider::AntigravityProvider`), which names
@@ -1331,6 +1434,77 @@ mod tests {
             )
             .unwrap();
         (run, attempt, child)
+    }
+
+    fn pi_observations(events: &[Value], interrupted: bool) -> Vec<String> {
+        events
+            .iter()
+            .flat_map(|event| observe(event, 1_000, interrupted))
+            .map(|o| match o {
+                Observation::Activity => "activity".into(),
+                Observation::ModelActivity => "model".into(),
+                Observation::Executing => "executing".into(),
+                Observation::Progress(text) => format!("progress:{text}"),
+                Observation::ToolStart(_, name) => format!("tool-start:{name}"),
+                Observation::ToolEnd(_, name) => format!("tool-end:{name}"),
+                Observation::Waiting(_) => "waiting".into(),
+                Observation::TurnEnded => "turn-ended".into(),
+                Observation::TurnCut => "turn-cut".into(),
+                Observation::Error(_, retrying) => format!("error:{retrying}"),
+            })
+            .collect()
+    }
+
+    /// Pi's rpc stream: the turn is over at `agent_settled` alone, and a run
+    /// that Pi will retry is not a failed attempt.
+    #[test]
+    fn a_pi_workers_stream_ends_its_turn_once_and_fails_only_a_final_provider_error() {
+        let ok = pi_observations(
+            &[
+                json!({"type":"agent_start"}),
+                json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}),
+                json!({"type":"tool_execution_start","toolCallId":"t1","toolName":"read"}),
+                json!({"type":"tool_execution_end","toolCallId":"t1","toolName":"read"}),
+                json!({"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"stop"}]}),
+                json!({"type":"agent_settled","aborted":false}),
+            ],
+            false,
+        );
+        assert_eq!(
+            ok,
+            [
+                "executing",
+                "progress:done",
+                "tool-start:read",
+                "tool-end:Finished read",
+                "activity",
+                "turn-ended"
+            ]
+        );
+        let failed = pi_observations(
+            &[
+                json!({"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"error","errorMessage":"429 rate limit"}]}),
+            ],
+            false,
+        );
+        assert_eq!(failed, ["error:false"]);
+        let retried = pi_observations(
+            &[
+                json!({"type":"agent_end","willRetry":true,"messages":[{"role":"assistant","stopReason":"error","errorMessage":"overloaded"}]}),
+                json!({"type":"auto_retry_start","errorMessage":"overloaded"}),
+            ],
+            false,
+        );
+        assert_eq!(retried, ["activity", "error:true"]);
+        // A coordinator's interrupt ends in an aborted full stop: cut, not failed.
+        assert_eq!(
+            pi_observations(&[json!({"type":"agent_settled","aborted":true})], true),
+            ["turn-cut"]
+        );
+        assert_eq!(
+            pi_observations(&[json!({"type":"agent_settled","aborted":true})], false),
+            ["turn-ended"]
+        );
     }
 
     #[test]

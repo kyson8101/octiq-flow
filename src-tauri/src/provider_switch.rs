@@ -182,10 +182,11 @@ pub(super) fn run_provider_switch(
             &entry.start.settings(),
         )?;
     }
-    let target = if manager
-        .failover
-        .blocked(requested.agent, crate::auto_resume::unix_now())
-    {
+    let target = if manager.failover.blocked(
+        requested.agent,
+        requested.model.as_deref(),
+        crate::auto_resume::unix_now(),
+    ) {
         if entry.user_selected {
             return Err(
                 "The selected provider is now at its limit. Choose another provider to continue."

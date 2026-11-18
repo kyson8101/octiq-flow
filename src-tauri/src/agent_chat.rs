@@ -1897,10 +1897,14 @@ impl ChatManager {
         key: &str,
         event: &Value,
     ) -> Result<(), String> {
-        let interrupted = event.get("type").and_then(Value::as_str) == Some("result")
-            && session
-                .lock()
-                .is_ok_and(|session| session.cut_off != CutOff::No);
+        // Claude's failed `result` and Pi's `agent_settled` are the full stop
+        // of the turn the host cut short.
+        let interrupted = matches!(
+            event.get("type").and_then(Value::as_str),
+            Some("result" | "agent_settled")
+        ) && session
+            .lock()
+            .is_ok_and(|session| session.cut_off != CutOff::No);
         self.orchestrations
             .observe_worker_turn_event(key, event, interrupted)
     }
@@ -2003,6 +2007,29 @@ impl ChatManager {
 
     fn start_context(&self, session_key: &str) -> Option<StartContext> {
         self.starts.lock().ok()?.get(session_key).cloned()
+    }
+
+    /// The folders a chat works in, the working directory first: where a Pi
+    /// tool call is judged to be "in the project" (`pi_gate`). Empty for a
+    /// chat the host has no record of.
+    pub(crate) fn launch_folders(&self, session_key: &str) -> Vec<String> {
+        let Some(start) = self.start_context(session_key) else {
+            return Vec::new();
+        };
+        std::iter::once(start.cwd)
+            .chain(start.extra_dirs.into_iter().flatten())
+            .collect()
+    }
+
+    /// A worker is parked on an approval card, not stalled: say so to the
+    /// ledger the way Claude's own `control_request` does.
+    pub(crate) fn note_waiting_for_approval(&self, key: &str) {
+        if let Err(error) = self
+            .orchestrations
+            .observe_worker_event(key, &json!({ "type": "control_request" }))
+        {
+            eprintln!("orchestration: cannot record tool wait: {error}");
+        }
     }
 
     /// The provider's own conversation id for `session_key`, as its process
@@ -3194,15 +3221,20 @@ fn schedule_quota_resume(
     let target = target.or_else(|| {
         asking
             .then(|| {
-                [ChatAgent::Claude, ChatAgent::Codex, ChatAgent::Antigravity]
-                    .into_iter()
-                    .find_map(|agent| {
-                        crate::provider_failover::equivalent_using(
-                            &start.settings(),
-                            &start.default_settings(),
-                            agent,
-                        )
-                    })
+                [
+                    ChatAgent::Claude,
+                    ChatAgent::Codex,
+                    ChatAgent::Antigravity,
+                    ChatAgent::Pi,
+                ]
+                .into_iter()
+                .find_map(|agent| {
+                    crate::provider_failover::equivalent_using(
+                        &start.settings(),
+                        &start.default_settings(),
+                        agent,
+                    )
+                })
             })
             .flatten()
     });
@@ -3532,8 +3564,8 @@ pub(crate) fn record_access_for(key: &str, access: Option<Access>) {
 
 /// What a chat may do at this moment, or None when no chat by that key is known.
 ///
-/// No production reader since asking moved to the agent's own control channel.
-#[allow(dead_code)]
+/// Claude and Codex ask on their own control channels and no longer read this;
+/// Pi's host gate (`pi_gate`) does, on every tool call.
 pub fn access_now(key: &str) -> Option<Access> {
     with_access(|a| a.get(key).copied())
 }
@@ -3854,9 +3886,11 @@ fn chat_start_with_user_turn(
         .flatten();
     if !key.starts_with("chat:orch-")
         && (unavailable.is_some()
-            || manager
-                .failover
-                .blocked(source.agent, crate::auto_resume::unix_now()))
+            || manager.failover.blocked(
+                source.agent,
+                source.model.as_deref(),
+                crate::auto_resume::unix_now(),
+            ))
     {
         let owner = crate::failover_policy::owner(&key)?;
         let (rule, target) =
@@ -3873,11 +3907,16 @@ fn chat_start_with_user_turn(
         if rule.mode == crate::failover_policy::Mode::Ask {
             let target = target
                 .or_else(|| {
-                    [ChatAgent::Claude, ChatAgent::Codex, ChatAgent::Antigravity]
-                        .into_iter()
-                        .find_map(|agent| {
-                            crate::provider_failover::equivalent_using(&source, &defaults, agent)
-                        })
+                    [
+                        ChatAgent::Claude,
+                        ChatAgent::Codex,
+                        ChatAgent::Antigravity,
+                        ChatAgent::Pi,
+                    ]
+                    .into_iter()
+                    .find_map(|agent| {
+                        crate::provider_failover::equivalent_using(&source, &defaults, agent)
+                    })
                 })
                 .ok_or(
                     "No compatible fallback provider is available. The registered model was kept.",
@@ -3916,9 +3955,11 @@ fn chat_start_with_user_turn(
         if let Some(target) = target.filter(|_| {
             rule.mode == crate::failover_policy::Mode::Auto
                 && (unavailable.is_some()
-                    || manager
-                        .failover
-                        .blocked(source.agent, crate::auto_resume::unix_now()))
+                    || manager.failover.blocked(
+                        source.agent,
+                        source.model.as_deref(),
+                        crate::auto_resume::unix_now(),
+                    ))
         }) {
             handoff = Some(provider_history(&key)?);
             agent = target.agent;
@@ -5364,6 +5405,8 @@ fn start_session_with_recovery(
         let rt = answer_runtime();
         // The reader is where a chat learns its own session id.
         let reading = manager.clone();
+        // Pi spends whichever upstream's allowance its model names.
+        let quota_model = model.clone();
         let reader_mcp_ready = mcp_ready.clone();
         let recovery_observation = recovery_observation.clone();
         let mut native_recovery_turn = recovery_fence.is_some();
@@ -5398,6 +5441,10 @@ fn start_session_with_recovery(
                 }
                 match serde_json::from_str::<Value>(trimmed) {
                     Ok(mut event) => {
+                        // A provider whose protocol says a thing the page and
+                        // the record know in another form (Pi's RPC answers)
+                        // is rewritten before anything else reads the line.
+                        stream_provider.adapt_event(&mut event);
                         if let Some(observation) = &recovery_observation {
                             observation.event(&event);
                         }
@@ -5568,6 +5615,7 @@ fn start_session_with_recovery(
                         if quota_failure {
                             reading.failover.limited(
                                 stream_provider.kind(),
+                                quota_model.as_deref(),
                                 quota_reset_hint,
                                 crate::auto_resume::unix_now(),
                             );
@@ -5588,6 +5636,25 @@ fn start_session_with_recovery(
                             }
                         }
                         let observed = stream_provider.observe_event(&event);
+                        if let Some(notice) = observed.host_notice {
+                            emit_status(
+                                stream_provider.kind(),
+                                ChatStatus {
+                                    key: key.clone(),
+                                    kind: "stderr".into(),
+                                    text: notice.to_string(),
+                                    code: None,
+                                },
+                            );
+                        }
+                        if let Some(id) = observed.cancel_ui_request {
+                            cancel_ui_request(&asking, id);
+                        }
+                        // An answer to a command the host sent, or a UI
+                        // record nobody draws: not conversation.
+                        if observed.suppress {
+                            continue;
+                        }
                         if let Ok(mut session) = asking.lock() {
                             if let Err(error) =
                                 reading.background.observe(&key, &session.launch_id, &event)
@@ -8493,6 +8560,23 @@ fn write_control_response(session: &Arc<Mutex<ChatSession>>, request_id: &str, r
     let _ = stdin.flush();
 }
 
+/// Cancel a dialog a Pi extension opened over RPC. Nobody can answer it, and
+/// Pi waits for the answer for as long as the process lives.
+fn cancel_ui_request(session: &Arc<Mutex<ChatSession>>, id: &str) {
+    let Ok(mut guard) = session.lock() else {
+        return;
+    };
+    let Some(stdin) = guard.stdin.as_mut() else {
+        return;
+    };
+    let _ = writeln!(
+        stdin,
+        "{}",
+        json!({ "type": "extension_ui_response", "id": id, "cancelled": true })
+    );
+    let _ = stdin.flush();
+}
+
 /// Change what a RUNNING chat may do, WITHOUT ending it.
 ///
 /// The mode is on the command line, so changing it used to mean killing the
@@ -8575,7 +8659,8 @@ pub fn chat_set_access_impl(
     let relaunch = !thread
         && !live
         && provider.capabilities().input.accepts_stdin()
-        && provider.capabilities().interrupt_ends_process;
+        && (provider.capabilities().interrupt_ends_process
+            || provider.capabilities().access_change_relaunches);
     // Every refusal that changes nothing comes before the record of a raise.
     if relaunch && guard.busy {
         return Err(format!(
@@ -11553,7 +11638,12 @@ mod tests {
     #[test]
     fn only_a_provider_without_an_in_band_stop_relaunches_to_continue() {
         assert!(!relaunches_to_continue(ChatAgent::Claude));
-        assert!(relaunches_to_continue(ChatAgent::Pi));
+        // Pi's rpc process takes an in-band abort, so Stop keeps it.
+        assert!(!relaunches_to_continue(ChatAgent::Pi));
+        {
+            let _exec = crate::agent_provider::tests::CommandLineCodex::on();
+            assert!(relaunches_to_continue(ChatAgent::Codex));
+        }
         assert!(relaunches_to_continue(ChatAgent::Antigravity));
         assert!(provider_for(ChatAgent::Antigravity)
             .capabilities()
@@ -16618,7 +16708,8 @@ mod completion_tests {
     fn a_command_line_agent_takes_the_wrap_up_in_its_next_process() {
         // No stdin to write to: the wrap-up waits in the queue for the
         // reaper to carry into the next command, even with no turn in flight.
-        let chat = Listed::with(session_of(ChatAgent::Pi, false, false));
+        let _exec = crate::agent_provider::tests::CommandLineCodex::on();
+        let chat = Listed::with(session_of(ChatAgent::Codex, false, false));
         let completing = chat.complete();
         assert_eq!(completing.state, "queued");
 
@@ -17461,7 +17552,8 @@ mod completion_tests {
     /// wrap-up.
     #[test]
     fn a_stop_that_ends_the_process_leaves_no_turn_for_a_wrap_up_to_be_taken_for() {
-        for (agent, stdin) in [(ChatAgent::Antigravity, true), (ChatAgent::Pi, false)] {
+        let _exec = crate::agent_provider::tests::CommandLineCodex::on();
+        for (agent, stdin) in [(ChatAgent::Antigravity, true), (ChatAgent::Codex, false)] {
             assert!(relaunches_to_continue(agent), "{agent:?}");
             let chat = Listed::with(session_of(agent, stdin, true));
             chat.manager
@@ -19892,7 +19984,8 @@ mod auto_plan_tests {
     fn auto_plan_live_one_shot_stop_preserves_queued_turn_with_or_without_staged_approval() {
         use std::io::BufRead;
         for in_flight in [false, true] {
-            let lead = Lead::new(ChatAgent::Pi);
+            let _exec = crate::agent_provider::tests::CommandLineCodex::on();
+            let lead = Lead::new(ChatAgent::Codex);
             let ended = lead.finish(true).unwrap();
             let epoch = ended.epoch;
             let counter = ended.stop_epoch.clone();
@@ -19928,7 +20021,7 @@ mod auto_plan_tests {
                     lead.manager.clone(),
                     Voice::host(lead.key.clone()),
                     "/never-started".into(),
-                    ChatAgent::Pi,
+                    ChatAgent::Codex,
                     None,
                     Some(Access::Auto),
                     Some("first".into()),
@@ -20108,8 +20201,9 @@ mod auto_plan_tests {
     #[test]
     fn auto_plan_live_one_shot_stop_revokes_a_successful_buffered_full_stop() {
         for ended_first in [false, true] {
-            let lead = Lead::new(ChatAgent::Pi);
-            assert!(relaunches_to_continue(ChatAgent::Pi));
+            let _exec = crate::agent_provider::tests::CommandLineCodex::on();
+            let lead = Lead::new(ChatAgent::Codex);
+            assert!(relaunches_to_continue(ChatAgent::Codex));
             {
                 let sessions = lead.manager.sessions.lock().unwrap();
                 lead.manager

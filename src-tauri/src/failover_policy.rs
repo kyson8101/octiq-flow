@@ -137,8 +137,7 @@ pub(crate) fn save_rule(owner: Option<String>, rule: Option<Rule>) -> Result<(),
         }
     }
     if let Some(backup) = rule.as_ref().and_then(|r| r.backup.as_ref()) {
-        if backup.agent == AgentKind::Pi
-            || (backup.agent == AgentKind::Antigravity && backup.effort.is_some())
+        if (backup.agent == AgentKind::Antigravity && backup.effort.is_some())
             || backup
                 .effort
                 .as_deref()
@@ -172,7 +171,11 @@ pub(crate) fn available(
     source: &Settings,
 ) -> Result<Settings, String> {
     let target = selection.settings(source)?;
-    if state.blocked(target.agent, crate::auto_resume::unix_now()) {
+    if state.blocked(
+        target.agent,
+        target.model.as_deref(),
+        crate::auto_resume::unix_now(),
+    ) {
         return Err("The selected provider is still at its limit.".into());
     }
     if !crate::agents::agent_installs(None)
@@ -316,14 +319,14 @@ fn options(
     worker: bool,
 ) -> Vec<serde_json::Value> {
     let installs = crate::agents::agent_installs(None);
-    [AgentKind::Claude, AgentKind::Codex, AgentKind::Antigravity].into_iter().filter_map(|agent| {
+    [AgentKind::Claude, AgentKind::Codex, AgentKind::Antigravity, AgentKind::Pi].into_iter().filter_map(|agent| {
         let suggestion = if worker {
             crate::provider_failover::equivalent_for_worker(source, agent)?
         } else {
             crate::provider_failover::equivalent_using(source, source, agent)?
         };
         let installed = installs.iter().any(|a| a.id == agent.id() && a.installed);
-        Some(serde_json::json!({ "agent": agent, "installed": installed, "limited": manager.failover.blocked(agent, crate::auto_resume::unix_now()), "suggestion": suggestion }))
+        Some(serde_json::json!({ "agent": agent, "installed": installed, "limited": manager.failover.blocked(agent, suggestion.model.as_deref(), crate::auto_resume::unix_now()), "suggestion": suggestion }))
     }).collect()
 }
 
@@ -497,8 +500,21 @@ mod tests {
         let mut invalid = selection();
         invalid.agent = AgentKind::Antigravity;
         assert!(invalid.settings(&source()).is_err());
+        // Pi is a valid backup: Codex's bare id, or a model naming an
+        // upstream. A bare Claude id has no upstream to run on.
         invalid.agent = AgentKind::Pi;
+        let codex_on_pi = invalid.settings(&source()).unwrap();
+        assert_eq!(
+            (codex_on_pi.agent, codex_on_pi.access),
+            (AgentKind::Pi, Access::Manual)
+        );
+        invalid.model = "claude-sonnet-5-5".into();
         assert!(invalid.settings(&source()).is_err());
+        invalid.model = "anthropic/claude-sonnet-5-5".into();
+        assert_eq!(
+            invalid.settings(&source()).unwrap().model.as_deref(),
+            Some("anthropic/claude-sonnet-5-5")
+        );
         invalid = selection();
         invalid.effort = Some("invented".into());
         assert!(invalid.settings(&source()).is_err());

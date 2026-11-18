@@ -4119,9 +4119,11 @@ impl OrchestrationStore {
             crate::failover_policy::reopen_worker(&owned.id)?;
         }
         if waiting
-            || chats
-                .failover
-                .blocked(source.agent, crate::auto_resume::unix_now())
+            || chats.failover.blocked(
+                source.agent,
+                source.model.as_deref(),
+                crate::auto_resume::unix_now(),
+            )
         {
             let owner = owned.assignee.as_ref().map(|a| a.id.clone());
             let (rule, target) =

@@ -12,31 +12,49 @@ pub(crate) struct Settings {
     pub access: Access,
 }
 
-fn account(agent: AgentKind) -> &'static str {
-    // Pi's configured upstream is OpenAI Codex, not another allowance.
-    if agent == AgentKind::Pi {
-        "codex"
-    } else {
-        agent.id()
+/// Whose allowance a launch spends. Pi is a harness: what it bills is its
+/// upstream's. OpenAI Codex through Pi is the same ChatGPT allowance Codex's
+/// own CLI spends, so the two share one entry; Anthropic through Pi is an API
+/// key, with no weekly window and nothing to do with the Claude subscription
+/// Claude Code spends, so it is an account of its own.
+pub(crate) fn account_of(agent: AgentKind, model: Option<&str>) -> String {
+    if agent != AgentKind::Pi {
+        return agent.id().to_string();
     }
+    match crate::agent_provider::pi_upstream(model).as_str() {
+        crate::agent_provider::PI_DEFAULT_UPSTREAM => "codex".to_string(),
+        upstream => format!("pi-{upstream}"),
+    }
+}
+
+fn account(settings: &Settings) -> String {
+    account_of(settings.agent, settings.model.as_deref())
 }
 
 #[derive(Default)]
 pub(crate) struct State(Mutex<BTreeMap<String, i64>>);
 
 impl State {
-    pub(crate) fn limited(&self, agent: AgentKind, reset: Option<i64>, now: i64) {
+    /// `model` names Pi's upstream (`account_of`); every other provider has
+    /// one account whatever its model.
+    pub(crate) fn limited(
+        &self,
+        agent: AgentKind,
+        model: Option<&str>,
+        reset: Option<i64>,
+        now: i64,
+    ) {
         let until = reset.filter(|at| *at > now).unwrap_or(now + 15 * 60);
         let mut blocked = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = blocked.entry(account(agent).into()).or_default();
+        let entry = blocked.entry(account_of(agent, model)).or_default();
         *entry = (*entry).max(until);
     }
 
-    pub(crate) fn blocked(&self, agent: AgentKind, now: i64) -> bool {
+    pub(crate) fn blocked(&self, agent: AgentKind, model: Option<&str>, now: i64) -> bool {
         self.0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(account(agent))
+            .get(&account_of(agent, model))
             .is_some_and(|until| *until > now)
     }
 
@@ -62,20 +80,22 @@ impl State {
         installed: impl Fn(AgentKind) -> bool,
     ) -> i64 {
         let blocked = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        [
-            source.agent,
-            AgentKind::Claude,
-            AgentKind::Codex,
-            AgentKind::Antigravity,
-        ]
-        .into_iter()
-        .filter(|agent| {
-            *agent == source.agent || (installed(*agent) && equivalent(source, *agent).is_some())
-        })
-        .filter_map(|agent| blocked.get(account(agent)).copied())
-        .filter(|until| *until > now)
-        .min()
-        .unwrap_or(now + 15 * 60)
+        std::iter::once(source.clone())
+            .chain(
+                [
+                    AgentKind::Claude,
+                    AgentKind::Codex,
+                    AgentKind::Antigravity,
+                    AgentKind::Pi,
+                ]
+                .into_iter()
+                .filter(|agent| installed(*agent))
+                .filter_map(|agent| equivalent(source, agent)),
+            )
+            .filter_map(|settings| blocked.get(&account(&settings)).copied())
+            .filter(|until| *until > now)
+            .min()
+            .unwrap_or(now + 15 * 60)
     }
 
     pub(crate) fn alternative_using(
@@ -84,7 +104,7 @@ impl State {
         defaults: &Settings,
         now: i64,
     ) -> Option<Settings> {
-        if !self.blocked(source.agent, now) {
+        if !self.blocked(source.agent, source.model.as_deref(), now) {
             return None;
         }
         self.unavailable_alternative_using(source, defaults, now)
@@ -121,16 +141,19 @@ impl State {
         now: i64,
         installed: impl Fn(AgentKind) -> bool,
     ) -> Option<Settings> {
+        // The order is the person's default first, then the subscriptions, and
+        // Pi last: it is the one that bills an API key.
         [
             defaults.agent,
             AgentKind::Claude,
             AgentKind::Codex,
             AgentKind::Antigravity,
+            AgentKind::Pi,
         ]
         .into_iter()
-        .filter(|target| account(*target) != account(source.agent))
-        .filter(|target| !self.blocked(*target, now) && installed(*target))
-        .find_map(|target| equivalent_using(source, defaults, target))
+        .filter(|target| installed(*target))
+        .filter_map(|target| equivalent_using(source, defaults, target))
+        .find(|target| !self.blocked(target.agent, target.model.as_deref(), now))
     }
 }
 
@@ -139,36 +162,35 @@ pub(crate) fn equivalent_using(
     defaults: &Settings,
     target: AgentKind,
 ) -> Option<Settings> {
-    if account(current.agent) == account(target) {
-        return None;
-    }
     if target == AgentKind::Antigravity && matches!(current.access, Access::Auto | Access::Manual) {
-        return None;
-    }
-    if target == AgentKind::Pi && !matches!(current.access, Access::Read | Access::Full) {
         return None;
     }
     let mut baseline = defaults.clone();
     baseline.access = current.access;
-    if target == baseline.agent {
+    let next = if target == baseline.agent {
         Some(baseline)
     } else {
         equivalent(&baseline, target)
-    }
+    }?;
+    // The same allowance is no alternative. Asked of what would run, not of
+    // the target's name: Pi on Anthropic is not Pi on Codex.
+    (account(&next) != account(current)).then_some(next)
 }
 
 /// Capability tiers, not a claim that different models give identical results.
 /// Versioned Codex choices are the same bundled choices as the model picker.
 pub(crate) fn equivalent(source: &Settings, target: AgentKind) -> Option<Settings> {
-    if target == AgentKind::Pi || account(source.agent) == account(target) {
-        return None;
-    }
     // Headless Antigravity cannot ask: Auto there bypasses every guard.
     // Never turn a guarded launch into unguarded access during failover.
+    // Pi asks on the normal card through the host gate at every level it
+    // takes (Auto runs there as Accept edits, which is narrower, never wider).
     if target == AgentKind::Antigravity && matches!(source.access, Access::Auto | Access::Manual) {
         return None;
     }
-    let model = source.model.as_deref().unwrap_or("").to_ascii_lowercase();
+    let source_model = source.model.as_deref().unwrap_or("");
+    // Pi's models name their upstream; the tier is what comes after it.
+    let source_model = source_model.rsplit('/').next().unwrap_or(source_model);
+    let model = source_model.to_ascii_lowercase();
     let tier = if model.contains("astra") || model.contains("fable") {
         3
     } else if model.contains("haiku") || model.contains("luna") || model.contains("flash") {
@@ -197,39 +219,59 @@ pub(crate) fn equivalent(source: &Settings, target: AgentKind) -> Option<Setting
         Some(value) => provider_for(target).effort(value),
     }
     .map(str::to_string);
-    let model = match target {
-        AgentKind::Claude => ["haiku", "sonnet", "opus", "fable"][tier],
+    let tier_model: String = match target {
+        AgentKind::Claude => ["haiku", "sonnet", "opus", "fable"][tier].into(),
         AgentKind::Codex => [
             "gpt-5.6-luna",
             "gpt-5.6-terra",
             "gpt-5.6-sol",
             "gpt-6-astra",
-        ][tier],
-        AgentKind::Antigravity => {
-            if tier == 0 {
-                match effort.as_deref() {
-                    Some("low") => "gemini-3.8-flash-low",
-                    Some("medium") => "gemini-3.8-flash-medium",
-                    _ => "gemini-3.8-flash-high",
-                }
-            } else if effort.as_deref() == Some("low") {
-                "gemini-3.1-pro-low"
-            } else {
-                "gemini-3.1-pro-high"
+        ][tier]
+            .into(),
+        AgentKind::Antigravity => if tier == 0 {
+            match effort.as_deref() {
+                Some("low") => "gemini-3.8-flash-low",
+                Some("medium") => "gemini-3.8-flash-medium",
+                _ => "gemini-3.8-flash-high",
             }
+        } else if effort.as_deref() == Some("low") {
+            "gemini-3.1-pro-low"
+        } else {
+            "gemini-3.1-pro-high"
         }
-        AgentKind::Pi => return None,
+        .into(),
+        // Claude through Pi is the Anthropic API: the same Claude model when
+        // the source already names one exactly, else the tier's current one.
+        AgentKind::Pi => {
+            let exact = (source.agent == AgentKind::Claude
+                && model.starts_with("claude-")
+                && model.len() <= 48)
+                .then_some(model.as_str());
+            format!(
+                "anthropic/{}",
+                exact.unwrap_or(
+                    [
+                        "claude-haiku-5-5",
+                        "claude-sonnet-5-5",
+                        "claude-opus-5-5",
+                        "claude-fable-5-2"
+                    ][tier]
+                )
+            )
+        }
     };
-    Some(Settings {
+    let next = Settings {
         agent: target,
-        model: Some(model.into()),
+        model: Some(tier_model),
         effort: if target == AgentKind::Antigravity {
             None
         } else {
             effort
         },
         access: source.access,
-    })
+    };
+    // The same allowance is no alternative.
+    (account(&next) != account(source)).then_some(next)
 }
 
 /// Workers cannot use the ordinary Fable -> Astra tier: Astra only orchestrates.
@@ -319,7 +361,7 @@ mod tests {
             effort: Some("xhigh".into()),
             access: Access::Manual,
         };
-        state.limited(AgentKind::Claude, Some(900), 100);
+        state.limited(AgentKind::Claude, None, Some(900), 100);
         let next = state
             .choose_using(&current, &defaults, 101, |_| true)
             .unwrap();
@@ -389,16 +431,159 @@ mod tests {
             effort: Some("max".into()),
             access: Access::Auto,
         };
-        state.limited(AgentKind::Pi, Some(500), 100);
-        assert!(state.blocked(AgentKind::Codex, 101));
+        // Pi on its default upstream is Codex's own allowance.
+        state.limited(AgentKind::Pi, None, Some(500), 100);
+        assert!(state.blocked(AgentKind::Codex, None, 101));
+        assert!(state.blocked(AgentKind::Pi, Some("gpt-5.6-sol"), 101));
+        assert!(state.blocked(AgentKind::Pi, Some("openai-codex/gpt-5.6-sol"), 101));
         assert_eq!(
             state.choose(&source, 101, |_| true).unwrap().agent,
             AgentKind::Claude
         );
         assert!(state.choose(&source, 101, |_| false).is_none());
-        state.limited(AgentKind::Claude, Some(600), 100);
+        state.limited(AgentKind::Claude, None, Some(600), 100);
+        // Claude's subscription is out, and Codex's: Claude through Pi's
+        // Anthropic API key is the one account left.
+        let next = state.choose(&source, 101, |_| true).unwrap();
+        assert_eq!(next.agent, AgentKind::Pi);
+        assert_eq!(next.model.as_deref(), Some("anthropic/claude-opus-5-5"));
+        assert_eq!(next.effort.as_deref(), Some("max"));
+        assert_eq!(next.access, Access::Auto, "access is preserved");
+        state.limited(
+            AgentKind::Pi,
+            Some("anthropic/claude-opus-5-5"),
+            Some(700),
+            100,
+        );
         assert!(state.choose(&source, 101, |_| true).is_none());
-        assert!(!state.blocked(AgentKind::Codex, 501));
+        assert!(!state.blocked(AgentKind::Codex, None, 501));
+    }
+
+    #[test]
+    fn pi_on_anthropic_is_its_own_account_and_pi_on_codex_is_codexs() {
+        assert_eq!(account_of(AgentKind::Pi, None), "codex");
+        assert_eq!(account_of(AgentKind::Pi, Some("gpt-5.6-sol")), "codex");
+        assert_eq!(
+            account_of(AgentKind::Pi, Some("openai-codex/gpt-6.1-sol")),
+            "codex"
+        );
+        assert_eq!(
+            account_of(AgentKind::Pi, Some("anthropic/claude-opus-5-5")),
+            "pi-anthropic"
+        );
+        assert_eq!(
+            account_of(AgentKind::Pi, Some("deepseek/deepseek-v4-pro")),
+            "pi-deepseek"
+        );
+        assert_eq!(
+            account_of(AgentKind::Claude, Some("anthropic/ignored")),
+            "claude"
+        );
+        // Claude's weekly limit does not touch the API key, and the API
+        // key's rate limit does not touch the subscription.
+        let state = State::default();
+        state.limited(AgentKind::Claude, None, Some(900), 100);
+        assert!(!state.blocked(AgentKind::Pi, Some("anthropic/claude-opus-5-5"), 101));
+        state.limited(
+            AgentKind::Pi,
+            Some("anthropic/claude-opus-5-5"),
+            Some(950),
+            100,
+        );
+        assert!(state.blocked(AgentKind::Pi, Some("anthropic/claude-sonnet-5-5"), 101));
+        assert!(!state.blocked(AgentKind::Codex, None, 101));
+    }
+
+    #[test]
+    fn a_claude_limited_chat_falls_back_to_the_same_claude_model_on_the_api() {
+        for (model, mapped) in [
+            ("opus", "anthropic/claude-opus-5-5"),
+            ("sonnet", "anthropic/claude-sonnet-5-5"),
+            ("haiku", "anthropic/claude-haiku-5-5"),
+            ("fable", "anthropic/claude-fable-5-2"),
+            // An exact id is the same model, not a tier.
+            ("claude-opus-4-6", "anthropic/claude-opus-4-6"),
+        ] {
+            for access in Access::ALL_FOR_TESTS {
+                let source = Settings {
+                    agent: AgentKind::Claude,
+                    model: Some(model.into()),
+                    effort: Some("high".into()),
+                    access,
+                };
+                let next = equivalent(&source, AgentKind::Pi).unwrap();
+                assert_eq!(next.model.as_deref(), Some(mapped), "{model}");
+                assert_eq!(next.effort.as_deref(), Some("high"));
+                // Pi's gate asks on the normal card at every level, so a
+                // guarded level stays guarded (Auto runs as Accept edits).
+                assert_eq!(next.access, access);
+                crate::agent_provider::validate_model(AgentKind::Pi, next.model.as_deref())
+                    .unwrap();
+                // And back: the Claude tier, never a Pi id on Claude.
+                let back = equivalent(&next, AgentKind::Claude).unwrap();
+                assert_eq!(back.agent, AgentKind::Claude);
+                crate::agent_provider::validate_model(AgentKind::Claude, back.model.as_deref())
+                    .unwrap();
+            }
+        }
+        // Codex through Pi is the same allowance as Codex.
+        let codex_pi = Settings {
+            agent: AgentKind::Pi,
+            model: Some("gpt-5.6-sol".into()),
+            effort: None,
+            access: Access::Edits,
+        };
+        let codex = Settings {
+            agent: AgentKind::Codex,
+            ..codex_pi.clone()
+        };
+        assert!(
+            equivalent(&codex, AgentKind::Pi).is_some(),
+            "Anthropic is not Codex's allowance"
+        );
+        assert!(equivalent_using(&codex_pi, &codex_pi, AgentKind::Codex).is_none());
+        assert!(equivalent(&codex_pi, AgentKind::Claude).is_some());
+    }
+
+    #[test]
+    fn the_automatic_order_puts_the_api_last_and_a_policy_backup_can_name_it() {
+        let state = State::default();
+        let source = Settings {
+            agent: AgentKind::Claude,
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+            access: Access::Manual,
+        };
+        state.limited(AgentKind::Claude, None, Some(900), 100);
+        // Codex is next in the order, and wins while it is available.
+        assert_eq!(
+            state.choose(&source, 101, |_| true).unwrap().agent,
+            AgentKind::Codex
+        );
+        // Antigravity cannot ask at Manual; with Codex out too, the API is it.
+        state.limited(AgentKind::Codex, None, Some(900), 100);
+        let next = state.choose(&source, 101, |_| true).unwrap();
+        assert_eq!(next.agent, AgentKind::Pi);
+        assert_eq!(next.access, Access::Manual);
+        // The person's own default may be Pi: it is tried first.
+        let defaults = Settings {
+            agent: AgentKind::Pi,
+            model: Some("anthropic/claude-sonnet-5-5".into()),
+            effort: Some("low".into()),
+            access: Access::Full,
+        };
+        let state = State::default();
+        state.limited(AgentKind::Claude, None, Some(900), 100);
+        let next = state
+            .choose_using(&source, &defaults, 101, |_| true)
+            .unwrap();
+        assert_eq!(next.agent, AgentKind::Pi);
+        assert_eq!(next.model, defaults.model);
+        assert_eq!(
+            next.access,
+            Access::Manual,
+            "the default's own access is not used"
+        );
     }
 }
 #[test]
@@ -410,9 +595,9 @@ fn exhausted_accounts_wait_for_the_first_compatible_reset_or_default() {
         effort: None,
         access: Access::Auto,
     };
-    state.limited(AgentKind::Codex, None, 100);
-    state.limited(AgentKind::Claude, Some(600), 100);
-    state.limited(AgentKind::Antigravity, Some(200), 100);
+    state.limited(AgentKind::Codex, None, None, 100);
+    state.limited(AgentKind::Claude, None, Some(600), 100);
+    state.limited(AgentKind::Antigravity, None, Some(200), 100);
     assert_eq!(state.next_reset_using(&source, 101, |_| true), 600);
     assert_eq!(state.next_reset_using(&source, 101, |_| false), 1000);
     let edits = Settings {

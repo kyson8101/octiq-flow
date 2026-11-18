@@ -1,6 +1,9 @@
 // Real server/socket/queue/recovery, deterministic stub CLI providers. No model
 // calls or account credits. Fixtures and their home are removed on every exit.
 // Usage: node scripts/test-provider-failover.mjs [octiq-server] [evidence-dir]
+//          [claude|codex|claude-pi] [ask]
+// `claude-pi`: only Claude and Pi are installed, so a Claude-limited chat and
+// worker continue on Pi with the same Claude model through the Anthropic API.
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -9,11 +12,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const sourceProvider = process.argv[4] || "claude";
-const targetProvider = sourceProvider === "claude" ? "codex" : "claude";
+const mode = process.argv[4] || "claude";
+const toPi = mode === "claude-pi";
+const sourceProvider = toPi ? "claude" : mode;
+const targetProvider = toPi ? "pi" : sourceProvider === "claude" ? "codex" : "claude";
 const sourceModel = sourceProvider === "claude" ? "opus" : "gpt-5.6-sol";
 const manual = process.argv[5] === "ask";
-const targetModel = manual ? (targetProvider === "claude" ? "sonnet" : "gpt-5.6-terra") : (targetProvider === "claude" ? "opus" : "gpt-5.6-sol");
+const targetModel = toPi
+  ? (manual ? "anthropic/claude-sonnet-5-5" : "anthropic/claude-opus-5-5")
+  : manual ? (targetProvider === "claude" ? "sonnet" : "gpt-5.6-terra") : (targetProvider === "claude" ? "opus" : "gpt-5.6-sol");
 const targetEffort = manual ? "low" : "xhigh";
 const marker = sourceProvider === "claude" ? "TRIGGER_LIMIT" : "TRIGGER_CODEX_LIMIT";
 const binary = process.argv[2] || path.join(root, "src-tauri/target/debug/octiq-server");
@@ -34,6 +41,8 @@ function cli() {
   const log = (data) => fs.appendFileSync(process.env.FAILOVER_TEST_LOG, JSON.stringify({ provider, pid: process.pid, ...data }) + "\n");
   const out = (data) => process.stdout.write(JSON.stringify(data) + "\n");
   if (process.argv.includes("--version")) { console.log("stub 1.0.0"); return; }
+  if (provider === "pi" && process.argv.includes("auth")) { console.log(JSON.stringify({ status: "ready" })); return; }
+  if (provider === "pi" && process.argv.includes("--list-models")) { console.log("provider   model              context  max-out  thinking  images\nanthropic  claude-opus-5-5    1M       64K      yes       yes\nanthropic  claude-sonnet-5-5  1M       64K      yes       yes"); return; }
   if (process.argv.includes("models")) { console.log("[]"); return; }
   // Restricted Codex workers inspect inherited MCP servers before launching.
   if (process.argv.includes("mcp") && process.argv.includes("list")) { console.log("[]"); return; }
@@ -60,6 +69,23 @@ function cli() {
       }
       return;
     }
+    if (provider === "pi") {
+      // `pi --mode rpc`: answers are `response` records, a turn ends at
+      // `agent_settled`, and a refused account is a failed assistant message.
+      if (msg.type === "get_state") return out({ id: msg.id, type: "response", command: "get_state", success: true, data: { sessionId: thread } });
+      if (msg.type === "abort") return out({ id: msg.id, type: "response", command: "abort", success: true });
+      if (msg.type !== "prompt") return;
+      log({ text: msg.message });
+      out({ id: msg.id, type: "response", command: "prompt", success: true });
+      out({ type: "agent_start" });
+      const failed = msg.message.includes("TRIGGER_LIMIT");
+      const message = failed
+        ? { role: "assistant", content: [], stopReason: "error", errorMessage: "429 rate limit exceeded: usage limit reached" }
+        : { role: "assistant", content: [{ type: "text", text: "Continued without repeating previous work." }], stopReason: "stop" };
+      out({ type: "message_end", message });
+      out({ type: "agent_end", willRetry: false, messages: [message] });
+      return out({ type: "agent_settled", aborted: false });
+    }
     if (msg.type === "control_request") return out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id, response: {} } });
     if (msg.type !== "user") return;
     const text = JSON.stringify(msg.message?.content ?? "");
@@ -73,11 +99,11 @@ function cli() {
     }
   });
 }
-for (const provider of ["claude", "codex"]) fs.writeFileSync(path.join(bin, provider), `#!${process.execPath}\n(${cli.toString()})();\n`, { mode: 0o755 });
+for (const provider of toPi ? ["claude", "pi"] : ["claude", "codex"]) fs.writeFileSync(path.join(bin, provider), `#!${process.execPath}\n(${cli.toString()})();\n`, { mode: 0o755 });
 // A non-login shell keeps the fixture CLIs first, independent of local dotfiles.
 const shell = path.join(bin, "fixture-shell");
 fs.writeFileSync(shell, "#!/bin/sh\nif [ \"$1\" = '-lc' ]; then shift; exec /bin/sh -c \"$@\"; fi\nif [ \"$1\" = '-l' ]; then shift; fi\nexec /bin/sh \"$@\"\n", { mode: 0o755 });
-const env = { ...process.env, HOME: taskHome, SHELL: shell, PATH: `${bin}:${process.env.PATH}`, FAILOVER_TEST_LOG: log,
+const env = { ...process.env, HOME: taskHome, SHELL: shell, PATH: toPi ? `${bin}:/usr/bin:/bin:/usr/sbin:/sbin` : `${bin}:${process.env.PATH}`, FAILOVER_TEST_LOG: log,
   OCTIQ_WEB_PORT: String(port), OCTIQ_WEB_TOKEN: token, OCTIQ_CHAT_IDLE_MINS: "0" };
 let server = spawn(binary, [], { env, stdio: ["ignore", "pipe", "pipe"] });
 let serverLog = "", ws, sequence = 0;
@@ -151,7 +177,21 @@ try {
     return starts.length >= 2 && starts;
   });
   assert.equal(starts.length, 2);
-  if (targetProvider === "codex") {
+  if (targetProvider === "pi") {
+    // The same Claude tier through the Anthropic API, in a fresh session: no
+    // Claude session id crosses, and the access level and effort are kept.
+    for (const start of starts) {
+      const argv = start.argv;
+      assert.deepEqual(argv.slice(0, 2), ["--mode", "rpc"]);
+      assert.equal(argv[argv.indexOf("--model") + 1], targetModel);
+      assert(!argv.includes("--provider") && !argv.includes("--session"));
+      assert.equal(argv[argv.indexOf("--thinking") + 1], "xhigh" === targetEffort ? "xhigh" : targetEffort);
+      assert(argv.includes("-e") && argv.includes("--append-system-prompt"));
+      // Manual access: shell and edits are offered, behind the host gate.
+      assert.match(argv[argv.indexOf("--tools") + 1], /bash,edit,write/);
+    }
+    assert(!calls().some((c) => c.provider === "pi" && c.argv?.includes("--no-extensions")));
+  } else if (targetProvider === "codex") {
     assert(!calls().some((c) => c.method === "thread/resume"));
     for (const start of starts) { assert.equal(start.params.sandbox, "workspace-write"); assert.equal(start.params.approvalPolicy, "on-request"); assert.equal(start.params.config.model_reasoning_effort, targetEffort); }
   } else {

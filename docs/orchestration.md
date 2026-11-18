@@ -252,8 +252,9 @@ Current checkout mode serializes workers and never removes the person's folder.
 
 Commit, push, PR creation and merge use the existing Git UI or an explicitly
 authorized external workflow; they are never inferred from worker prose.
-pi.dev remains available for ordinary chats but cannot be a worker until it can
-call the structured completion tools.
+pi.dev can be a worker: its launch carries OctiqFlow's MCP (the structured
+completion tools), its tool calls pass the host gate at the task's access, and
+Auto runs as Edits. Model ids are `<upstream>/<model>`.
 
 
 ## Mixed chat and run UI

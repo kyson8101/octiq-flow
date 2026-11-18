@@ -2128,7 +2128,7 @@ not replaced); never leave it, never route around it. With the
 retries used it says instead to open a decision for the person, stating what
 failed, what was tried and the choices. The master brief states the rule.
 Both travel as a turn's prompt, and the brief in a tool result too. That is
-stdin for Claude, Codex's app-server and Antigravity. For Pi, and for Codex
+stdin for Claude, Codex's app-server, Antigravity and Pi (`--mode rpc`). For Codex
 started as `codex exec`, a turn's prompt is the last argument of a command
 line, as every notice and the brief already were: there the rule adds 876
 characters to a brief of about 7,400 and at most 824 to a notice.

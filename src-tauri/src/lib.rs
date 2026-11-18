@@ -57,6 +57,7 @@ mod outcome;
 mod paths;
 mod permission;
 mod personal_preferences;
+mod pi_gate;
 mod pr_workflow;
 mod proc;
 mod profile;

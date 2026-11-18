@@ -1755,16 +1755,6 @@ mod tests {
             (
                 Kind::Register,
                 Proposal {
-                    name: Some("Pi agent".into()),
-                    provider: Some(ChatAgent::Pi),
-                    model: Some("x".into()),
-                    ..Proposal::default()
-                },
-                "Choose Claude, Codex or Antigravity for a registered agent.",
-            ),
-            (
-                Kind::Register,
-                Proposal {
                     name: Some("Global".into()),
                     provider: Some(ChatAgent::Claude),
                     model: Some("opus".into()),

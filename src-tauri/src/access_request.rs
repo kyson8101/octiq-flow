@@ -63,7 +63,9 @@ pub fn takes(app_server_thread: bool, capabilities: AgentCapabilities) -> Takes 
     if capabilities.supports_live_access_change {
         return Takes::Now;
     }
-    if capabilities.input.accepts_stdin() && capabilities.interrupt_ends_process {
+    if capabilities.input.accepts_stdin()
+        && (capabilities.interrupt_ends_process || capabilities.access_change_relaunches)
+    {
         return Takes::BetweenTurns;
     }
     Takes::NextTurn
@@ -101,7 +103,11 @@ pub const fn offered(agent: AgentKind) -> &'static [Access] {
             Access::Full,
         ],
         AgentKind::Codex => &[Access::Read, Access::Auto, Access::Full],
-        AgentKind::Pi => &[Access::Read, Access::Full],
+        // Pi's host gate (`pi_gate`) enforces Manual and Accept edits. Auto is
+        // not offered: Pi has no automatic safety review, so it would only be
+        // Accept edits under another name. A chat that arrives at Auto (a
+        // failover, a worker) runs as Accept edits and says so.
+        AgentKind::Pi => &[Access::Read, Access::Manual, Access::Edits, Access::Full],
         AgentKind::Antigravity => &[Access::Read, Access::Edits, Access::Auto, Access::Full],
     }
 }
@@ -466,6 +472,7 @@ mod tests {
             supports_lite_mode: false,
             uses_octiq_mcp: true,
             interrupt_ends_process: interrupt_ends,
+            access_change_relaunches: false,
         }
     }
 
@@ -494,7 +501,7 @@ mod tests {
             takes(false, caps(InputTransport::StreamJson, false, true)),
             Takes::BetweenTurns
         );
-        // A command-line provider (Pi, Codex's exec fallback).
+        // A command-line provider (Codex's exec fallback).
         assert_eq!(
             takes(false, caps(InputTransport::CommandLine, false, false)),
             Takes::NextTurn
@@ -506,7 +513,9 @@ mod tests {
             takes(false, provider(AgentKind::Antigravity)),
             Takes::BetweenTurns
         );
-        assert_eq!(takes(false, provider(AgentKind::Pi)), Takes::NextTurn);
+        // Pi keeps one rpc process whose gate reads the launch's level, so a
+        // raise restarts it between turns, as Antigravity's does.
+        assert_eq!(takes(false, provider(AgentKind::Pi)), Takes::BetweenTurns);
     }
 
     #[test]
@@ -527,7 +536,9 @@ mod tests {
             least_offered(AgentKind::Codex, Access::Manual),
             Access::Auto
         );
-        assert_eq!(least_offered(AgentKind::Pi, Access::Edits), Access::Full);
+        assert_eq!(least_offered(AgentKind::Pi, Access::Edits), Access::Edits);
+        // Auto is not offered on Pi, and Edits does not cover it.
+        assert_eq!(least_offered(AgentKind::Pi, Access::Auto), Access::Full);
         assert_eq!(
             least_offered(AgentKind::Antigravity, Access::Manual),
             Access::Edits

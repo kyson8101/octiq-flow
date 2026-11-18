@@ -272,7 +272,7 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 ### Automatic provider failover
 
 `provider_failover.rs` keeps account-limit cooldowns for this server run. A
-structured quota failure marks the account (Pi shares Codex's allowance);
+structured quota failure marks the account (`provider_failover::account_of`: Pi on `openai-codex` shares Codex's allowance, Pi on `anthropic` is its own account, `pi-<upstream>` for any other);
 missing CLIs and accounts already blocked are skipped. The original preset is
 kept across switches (and reread for registered chats after restart), so returning
 to a recovered provider keeps its exact model and effort. Unknown reset times
@@ -286,7 +286,12 @@ use a 15-minute cooldown. Registered agent defaults and identity do not change.
   Effort and the semantic `Access` level are preserved; minimal
   maps to low, ultracode to max. Gemini effort is encoded in its model id.
   A guarded Auto or Manual launch never falls back to Antigravity, whose
-  headless Auto bypasses permission checks. Pi is not an independent fallback.
+  headless Auto bypasses permission checks. Pi is a fallback: a Claude-limited
+  chat or worker continues on Pi with the same tier as `anthropic/claude-<tier>`
+  (the API, a separate quota), and it is last in the automatic order because it
+  bills an API key. Pi enforces every level through its own gate (see **Pi is a
+  full harness**), so Auto and Manual may fall to it; it offers no Auto, so Auto
+  runs there as Edits (narrower, never wider).
 - Ordinary chats use the durable auto-resume queue for an immediate provider
   handoff (`provider_switch.rs`), carrying bounded transcript context into a
   fresh native session. Never pass one provider's session id to another.
@@ -317,6 +322,46 @@ use a 15-minute cooldown. Registered agent defaults and identity do not change.
   isolated home and profile, no paid model calls. Add `claude ask` or
   `codex ask` after the binary/evidence paths to verify manual selections
   across a real server restart.
+
+### Pi is a full harness
+
+Pi (`pi.dev`, `pi` 1.5.x) is launched like Claude and Codex: one long-lived
+`pi --mode rpc` process per chat (`InputTransport::StreamJson`, queue, Stop,
+`CutOff`, idle reaper and resume all unchanged), MCP and host rules included.
+The person uses it when a weekly limit is reached, to keep working on Claude
+through the API.
+
+- **Model ids are `<upstream>/<model>`** (`anthropic/claude-opus-5-5`,
+  `openai-codex/gpt-5.6-sol`), passed to `--model` as-is; there is never a
+  `--provider` pin when a model is named. A bare id means `openai-codex`, and
+  `validate_model(Pi)` accepts a bare id only for the Codex family. Models and
+  efforts come from `pi --list-models` filtered by `pi auth check` (`agents::pi_models`).
+- **OctiqFlow's MCP rides an extension of its own** (`scripts/mcp/octiq-pi.ts`,
+  written to `~/.octiqflow/mcp/pi/` by `prepare_launch` and loaded with `-e`).
+  It calls `pi.registerMcpServer("octiq", { exposure: "direct" })`, so nothing in
+  `~/.pi` or the project is touched. `--tools` is an allowlist and hides MCP tools
+  that no entry names, so launches add `mcp__*` (ordinary) or `mcp__octiq__*` (isolated).
+- **Isolation**: a front desk or a worker below Full runs `-ne -e builtin:mcp`
+  (the person's own extensions off, MCP kept); a front desk also loses skills,
+  prompt templates and context files and has the one tool `mcp__octiq__route_chat`.
+- **Host rules and preferences** go in a content-addressed file
+  (`~/.octiqflow/mcp/pi/prompts/<hash>.md`) named by `--append-system-prompt`,
+  never on the command line.
+- **Access is a `tool_call` gate** in the extension, which asks
+  `/hook/pi-tool` (`pi_gate.rs`) with the launch capability; any failure
+  blocks. Offered levels are Read, Manual, Edits and Full (Auto is accepted at a
+  launch, a failover or a worker and runs as Edits). Read keeps only read tools;
+  Full is unguarded. The host decides by the level the chat was started at
+  (`access_now`); `access_change_relaunches` makes any change end the process
+  between turns and resume it. Front desks allow only `route_chat`.
+- **Stream**: `agent_settled` is the only full stop (`agent_end` precedes it).
+  `adapt_event` turns the `get_state` answer into a `session` and a refused
+  prompt (no login) into a failed `message_end` (`octiq_rejected_prompt`) with the
+  `pi auth login <provider>` hint; `observe_event` suppresses answers, system
+  messages and `turn_end` copies, forwards MCP `notify` warnings as chat status
+  and cancels dialogs nobody can answer.
+- **Not closed**: `ended_cleanly(Pi)` does not read a mid-turn provider error,
+  `handover` read-only copies refuse Pi, and nothing here ran on Windows.
 
 ### Codex approvals and linked worktrees
 
@@ -1070,7 +1115,7 @@ row, title 60 characters, note 120. Icons are a fixed set of 24 names
   now (`scripts/mcp/instructions.test.cjs`). Codex's app-server reads it
   in its developer instructions (a message on stdin), Antigravity in the
   plugin's rules file. `codex exec` takes its instructions as an argument
-  and Pi has no host rules, so neither is told. A front desk is not told.
+  and Pi reads them from its system prompt file (see **Pi is a full harness**). A front desk is not told.
 
 ### A playing video or recording follows the person to another chat
 
@@ -2175,8 +2220,9 @@ leaving it busy and swallowing interrupts. A browser the person configured
 that is left out for an env conflict writes one `browser-skipped` diagnostics
 line with the variable NAMES, never a value. `codex exec` has the
 same race and no clean wait (its stream has no MCP startup state and the prompt
-is a launch argument), so it is not gated. Pi's one-shot/no-MCP path and
-Antigravity's plugin settings remain unchanged.
+is a launch argument), so it is not gated. Pi's rpc process loads OctiqFlow's MCP
+through its own extension (no gate on the first turn); Antigravity's plugin
+settings remain unchanged.
 See [measurements and limits](docs/agent-chat-footprint.md).
 
 - **"Idle" is `!busy`, never "no output lately".** A turn is in flight from the
@@ -3569,8 +3615,8 @@ person stopped did not fail. So:
   to a restart) and in the master brief (`retry::BRIEF`). A new place that
   tells a coordinator of a failure appends it too. Both travel as a turn's
   prompt (and the brief in a tool result): stdin for Claude, Codex's
-  app-server and Antigravity, but the last argument of a command line for Pi
-  and for Codex started as `codex exec`, where Windows' 32,767 characters
+  app-server, Antigravity and Pi (`--mode rpc`), but the last argument of a command
+  line for Codex started as `codex exec`, where Windows' 32,767 characters
   count. `retry_tests` holds what the rule adds to a paragraph (876
   characters in the brief, at most 824 in a notice).
 - A peer request follows the same budget and waits on its run's
