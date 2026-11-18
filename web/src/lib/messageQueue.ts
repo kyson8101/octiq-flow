@@ -104,17 +104,24 @@ export function reclaimedMessage(message: Message, pasted?: ReadonlyMap<string, 
  * unconfirmed, carrying the host's own words: a refusal is written for the
  * person to act on ("The chat's folder … was removed and could not be
  * restored: …"), so it is shown as given rather than replaced with a generic
- * line. A message the agent already has is left alone. */
+ * line. A message the agent already has is left alone. `refused` marks a
+ * refusal that is definite: the message is then Not sent, not unconfirmed. */
 export function unconfirmedSend(
   state: ChatState,
   turnId: string,
   error: unknown,
   running: boolean,
+  refused = false,
 ): ChatState {
+  const queueError = String((error as Error)?.message ?? error);
   return {
     ...state,
     busy: running ? state.busy : false,
     messages: state.messages.map((m) => m.turnId === turnId && !m.echo && !m.takenUp
-      ? { ...m, delivery: "unknown", queueUnconfirmedSend: undefined, queueError: String((error as Error)?.message ?? error) } : m),
+      // A refusal the host made definitely (it recorded nothing) is "Not sent",
+      // restorable to the composer; anything else may still have arrived.
+      ? refused
+        ? { ...m, delivery: "failed", queueLost: true, hostFailed: true, queueUnconfirmedSend: undefined, queueAction: undefined, queueError }
+        : { ...m, delivery: "unknown", queueUnconfirmedSend: undefined, queueError } : m),
   };
 }
