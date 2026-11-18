@@ -2413,6 +2413,7 @@ function foldPi(
                   state: read.state,
                   ...(read.result !== undefined ? { result: read.result } : {}),
                   ...(read.details !== undefined ? { details: read.details } : {}),
+                  ...(read.outcome ? { outcome: read.outcome } : {}),
                 }
               : block,
           ),
@@ -2432,6 +2433,7 @@ function foldPi(
           state: read.state,
           ...(read.result !== undefined ? { result: read.result } : {}),
           ...(read.details !== undefined ? { details: read.details } : {}),
+          ...(read.outcome ? { outcome: read.outcome } : {}),
         },
       ],
     }));

@@ -203,11 +203,18 @@ export default async function (pi: any) {
         async execute(_toolCallId: string, params: unknown, signal?: AbortSignal) {
           const result = await server.request("tools/call", { name: tool.name, arguments: params ?? {} }, CALL_TIMEOUT_MS, signal);
           const content = Array.isArray(result?.content) ? result.content : [{ type: "text", text: JSON.stringify(result ?? {}) }];
+          // A failed MCP call stays a failure for Pi (`isError`, which the model sees as an
+          // error result) and keeps everything a success keeps: the content as sent, the
+          // result's `_meta` (the host's `octiq/outcome`, which the page reads in `details`)
+          // and its structured content. Throwing kept only the text.
+          const kept: Record<string, unknown> = { content, details: { _meta: result?._meta } };
+          if (result?.structuredContent !== undefined) kept.structuredContent = result.structuredContent;
           if (result?.isError) {
-            const words = content.map((block: any) => (block?.type === "text" ? block.text : "")).join("\n").trim();
-            throw new Error(words || "The OctiqFlow tool failed.");
+            const hasWords = content.some((block: any) => block?.type === "text" && String(block.text ?? "").trim());
+            kept.isError = true;
+            if (!hasWords) kept.content = [...content, { type: "text", text: "The OctiqFlow tool failed." }];
           }
-          return { content, details: { _meta: result?._meta } };
+          return kept;
         },
       });
     }

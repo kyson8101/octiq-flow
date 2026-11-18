@@ -300,7 +300,53 @@ pub async fn gate(
         .or_else(|| call.cwd.as_deref().map(PathBuf::from))
         .unwrap_or_default();
     let roots = canonical_roots(&folders);
-    match decide(access, front_desk, &roots, &cwd, &call) {
+    let verdict = decide(access, front_desk, &roots, &cwd, &call);
+    // Where this call stands in the turn, taken before anything is awaited.
+    let turn = chats.pi_call_begin(
+        session_key,
+        call.launch_id.as_deref(),
+        matches!(verdict, Verdict::Ask),
+    );
+    // A request dropped while it waits (the extension went away, the server
+    // stopped listening) is an unanswered call: it refuses.
+    let mut open = OpenCall {
+        chats,
+        session_key,
+        turn,
+    };
+    let answer = answer_for(chats, verdict, chat_key, access, &call).await;
+    open.finish(answer.decision != "allow");
+    answer
+}
+
+struct OpenCall<'a> {
+    chats: &'a crate::agent_chat::ChatManager,
+    session_key: &'a str,
+    turn: Option<crate::agent_chat::PiCallTurn>,
+}
+
+impl OpenCall<'_> {
+    fn finish(&mut self, refused: bool) {
+        if let Some(turn) = self.turn.take() {
+            self.chats.pi_call_end(self.session_key, &turn, refused);
+        }
+    }
+}
+
+impl Drop for OpenCall<'_> {
+    fn drop(&mut self) {
+        self.finish(true);
+    }
+}
+
+async fn answer_for(
+    chats: &crate::agent_chat::ChatManager,
+    verdict: Verdict,
+    chat_key: &str,
+    access: Access,
+    call: &Call,
+) -> Answer {
+    match verdict {
         Verdict::Allow => Answer {
             decision: "allow",
             reason: String::new(),

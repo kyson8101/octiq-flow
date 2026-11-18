@@ -787,6 +787,9 @@ struct AutoPlanTurn {
     request_id: Option<Value>,
     native_id: Option<String>,
     declined: HashSet<String>,
+    /// Pi tool calls of this turn parked on the person's card. The turn
+    /// cannot end cleanly with one of them unanswered.
+    open_asks: usize,
 }
 
 impl Default for AutoPlanTurn {
@@ -796,8 +799,21 @@ impl Default for AutoPlanTurn {
             request_id: None,
             native_id: None,
             declined: HashSet::new(),
+            open_asks: 0,
         }
     }
+}
+
+/// Where one Pi tool call stood when it reached the gate: the launch, the
+/// prompt write and the turn sequence it belongs to. Its answer counts for
+/// plan auto-approval only while all three are still the session's, so a late
+/// answer from an older turn neither latches nor clears the current one.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PiCallTurn {
+    launch_id: String,
+    write_id: uuid::Uuid,
+    sequence: u64,
+    asked: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2007,6 +2023,65 @@ impl ChatManager {
 
     fn start_context(&self, session_key: &str) -> Option<StartContext> {
         self.starts.lock().ok()?.get(session_key).cloned()
+    }
+
+    /// A Pi tool call reached the gate. Takes the session lock for an instant
+    /// (no ledger, no await). `asked` marks a call that will park on the
+    /// person's card. None for a launch that is not the running one: nothing
+    /// of the current turn can depend on it.
+    pub(crate) fn pi_call_begin(
+        &self,
+        session_key: &str,
+        launch_id: Option<&str>,
+        asked: bool,
+    ) -> Option<PiCallTurn> {
+        let session = self.sessions.lock().ok()?.get(session_key).cloned()?;
+        let mut session = session.lock().ok()?;
+        if launch_id.is_some_and(|id| id != session.launch_id) {
+            return None;
+        }
+        if asked {
+            session.auto_plan_turn.open_asks += 1;
+        }
+        Some(PiCallTurn {
+            launch_id: session.launch_id.clone(),
+            write_id: session.auto_plan_turn.write_id,
+            sequence: self
+                .turn_sequence(session_key)
+                .load(std::sync::atomic::Ordering::SeqCst),
+            asked,
+        })
+    }
+
+    /// The gate answered. A refusal (the host's rule, an impostor, the
+    /// person's Deny, a card nobody answered) latches the current turn; an
+    /// allow changes nothing. An answer for another launch, prompt or turn
+    /// touches nothing.
+    pub(crate) fn pi_call_end(&self, session_key: &str, call: &PiCallTurn, refused: bool) {
+        let Some(session) = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|s| s.get(session_key).cloned())
+        else {
+            return;
+        };
+        let mut session = session.lock().unwrap_or_else(|e| e.into_inner());
+        let current = session.launch_id == call.launch_id
+            && session.auto_plan_turn.write_id == call.write_id
+            && self
+                .turn_sequence(session_key)
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == call.sequence;
+        if !current {
+            return;
+        }
+        if call.asked {
+            session.auto_plan_turn.open_asks = session.auto_plan_turn.open_asks.saturating_sub(1);
+        }
+        if refused {
+            session.auto_plan_refused = true;
+        }
     }
 
     /// The folders a chat works in, the working directory first: where a Pi
@@ -6630,6 +6705,7 @@ fn end_turn_for_auto_plan(
         && !refused
         && !session.auto_plan_refused
         && !session.auto_plan_turn.refused()
+        && session.auto_plan_turn.open_asks == 0
         && !session.codex.as_ref().is_some_and(|codex| {
             codex.elicitations.values().any(|p| session.codex_target_is_current(&p.target))
         })
@@ -18967,6 +19043,81 @@ mod auto_plan_tests {
         let ended = recovered.finish(clean).expect("a clean end is evidence");
         recovered.apply(ended);
         assert!(recovered.approved());
+    }
+
+    fn pi_clean_stop() -> bool {
+        *completion_tests::pi_full_stops(completion_tests::PI_ERROR_RECOVERED)
+            .last()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_refused_pi_call_blocks_standing_plan_approval() {
+        // Every kind of refusal the gate answers latches the turn; an
+        // allowed call does not.
+        for (refused, approved) in [(true, false), (false, true)] {
+            let lead = Lead::new(ChatAgent::Pi);
+            lead.session.lock().unwrap().answering = Some("person-turn".into());
+            let call = lead
+                .manager
+                .pi_call_begin(&lead.key, Some("test-launch"), false)
+                .unwrap();
+            lead.manager.pi_call_end(&lead.key, &call, refused);
+            match lead.finish(pi_clean_stop()) {
+                Some(ended) => {
+                    assert!(approved, "a refused call must not leave a clean end");
+                    lead.apply(ended);
+                }
+                None => assert!(!approved),
+            }
+            assert_eq!(lead.approved(), approved);
+        }
+    }
+
+    #[test]
+    fn an_unanswered_or_dropped_pi_card_blocks_standing_plan_approval() {
+        // Still open at the full stop: not clean.
+        let lead = Lead::new(ChatAgent::Pi);
+        lead.session.lock().unwrap().answering = Some("person-turn".into());
+        let open = lead.manager.pi_call_begin(&lead.key, None, true).unwrap();
+        assert!(lead.finish(pi_clean_stop()).is_none());
+        assert!(!lead.approved());
+        lead.manager.pi_call_end(&lead.key, &open, true);
+
+        // A card the person allowed leaves the turn clean again.
+        let lead = Lead::new(ChatAgent::Pi);
+        lead.session.lock().unwrap().answering = Some("person-turn".into());
+        let allowed = lead.manager.pi_call_begin(&lead.key, None, true).unwrap();
+        lead.manager.pi_call_end(&lead.key, &allowed, false);
+        let ended = lead
+            .finish(pi_clean_stop())
+            .expect("an allowed card is no refusal");
+        lead.apply(ended);
+        assert!(lead.approved());
+    }
+
+    #[test]
+    fn a_late_pi_answer_from_an_older_turn_neither_latches_nor_clears() {
+        let lead = Lead::new(ChatAgent::Pi);
+        lead.session.lock().unwrap().answering = Some("person-turn".into());
+        let old = lead.manager.pi_call_begin(&lead.key, None, true).unwrap();
+        // A new turn starts: its state replaces the old one's.
+        lead.prompt("next turn");
+        let fresh = lead.manager.pi_call_begin(&lead.key, None, true).unwrap();
+        // The old turn's refusal arrives late: nothing latches, nothing clears.
+        lead.manager.pi_call_end(&lead.key, &old, true);
+        {
+            let s = lead.session.lock().unwrap();
+            assert!(!s.auto_plan_refused);
+            assert_eq!(s.auto_plan_turn.open_asks, 1);
+        }
+        lead.manager.pi_call_end(&lead.key, &fresh, true);
+        assert!(lead.session.lock().unwrap().auto_plan_refused);
+        // A call of another launch is not this session's at all.
+        assert!(lead
+            .manager
+            .pi_call_begin(&lead.key, Some("another-launch"), true)
+            .is_none());
     }
 
     #[test]

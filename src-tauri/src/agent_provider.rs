@@ -683,29 +683,73 @@ fn pi_sessions_dir() -> Option<std::path::PathBuf> {
     Some(base.join("sessions"))
 }
 
+/// The most of a session file's first line that is read to learn its id. Pi's
+/// header is a couple of hundred bytes; a file whose first line is longer is
+/// not a session header.
+const PI_HEADER_BYTES: u64 = 8 * 1024;
+
+/// Whether `path` is a Pi session file for `id`: a regular file (never a
+/// link, and the opened handle is checked again) whose first line is the
+/// session header, `{"type":"session","id":<id>,...}`. The file NAME is only a
+/// hint: a file of another conversation renamed to `*_<id>.jsonl` has another
+/// id in its header and is not this conversation.
+fn pi_header_names(path: &Path, id: &str) -> bool {
+    use std::io::{BufRead, Read};
+    let Ok(link) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !link.file_type().is_file() {
+        return false;
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let mut line = Vec::new();
+    let read = std::io::BufReader::new(file.take(PI_HEADER_BYTES)).read_until(b'\n', &mut line);
+    if read.is_err() {
+        return false;
+    }
+    let Ok(header) = serde_json::from_slice::<Value>(&line) else {
+        return false;
+    };
+    header.get("type").and_then(Value::as_str) == Some("session")
+        && header.get("id").and_then(Value::as_str) == Some(id)
+}
+
 /// What `pi --session` is given for a conversation. Pi looks an id up in the
 /// folder it runs in, and when the conversation is in another folder it ASKS
 /// whether to fork it into this one, which a headless process can only
 /// refuse. A chat `chat_recover` moved to another folder still has its
 /// conversation in the old one, so the file is named instead: Pi opens a
 /// session file from any folder, with its id and its messages. The newest
-/// file whose name ends `_<id>.jsonl` under any folder is taken; no file (a
-/// conversation Pi has not saved yet) is the id, as it always was.
+/// regular file named `*_<id>.jsonl` under a real (not linked) folder whose
+/// header says that id is taken; a candidate that is a link, unreadable,
+/// corrupt, or headed with another id is skipped. No candidate left (a
+/// conversation Pi has not saved yet) is the id, as it always was; so is an
+/// id that is not a valid session id.
 pub(crate) fn pi_session_ref(sessions: &Path, id: &str) -> String {
+    if safe_session_id(id).as_deref() != Some(id) {
+        return id.to_string();
+    }
     let suffix = format!("_{id}.jsonl");
     let found = std::fs::read_dir(sessions)
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|folder| folder.path().is_dir())
+        .filter(|folder| folder.file_type().is_ok_and(|t| t.is_dir()))
         .filter_map(|folder| std::fs::read_dir(folder.path()).ok())
         .flatten()
         .flatten()
         .filter(|file| file.file_name().to_string_lossy().ends_with(&suffix))
+        .filter(|file| file.file_type().is_ok_and(|t| t.is_file()))
         .filter_map(|file| {
             let modified = file.metadata().and_then(|m| m.modified()).ok()?;
             Some((modified, file.path()))
         })
+        .filter(|(_, path)| pi_header_names(path, id))
         .max_by_key(|(modified, _)| *modified)
         .and_then(|(_, path)| path.to_str().map(str::to_owned));
     found.unwrap_or_else(|| id.to_string())
@@ -4015,17 +4059,18 @@ pub(crate) mod tests {
         let other = sessions.join("--other-folder--");
         crate::profile::make_dir(&old).unwrap();
         crate::profile::make_dir(&other).unwrap();
+        let header = |of: &str| format!("{{\"type\":\"session\",\"version\":3,\"id\":\"{of}\"}}\n");
         let file = old.join(format!("2026-11-18T04-00-00-000Z_{id}.jsonl"));
-        std::fs::write(&file, "{}\n").unwrap();
+        std::fs::write(&file, header(id)).unwrap();
         // Another conversation whose id merely ends the same way, a stray
         // file, and a plain file at the top: none of them is this one.
         std::fs::write(
             other.join(format!("2026-11-18T04-00-00-000Z_x{id}.jsonl")),
-            "{}\n",
+            header(&format!("x{id}")),
         )
         .unwrap();
         std::fs::write(other.join("notes.txt"), "x").unwrap();
-        std::fs::write(sessions.join(format!("a_{id}.jsonl")), "{}\n").unwrap();
+        std::fs::write(sessions.join(format!("a_{id}.jsonl")), header(id)).unwrap();
         assert_eq!(
             pi_session_ref(&sessions, id),
             file.to_str().unwrap(),
@@ -4034,7 +4079,7 @@ pub(crate) mod tests {
         // The newest copy wins when a conversation is saved in two folders.
         std::thread::sleep(std::time::Duration::from_millis(30));
         let newer = other.join(format!("2026-11-18T05-00-00-000Z_{id}.jsonl"));
-        std::fs::write(&newer, "{}\n").unwrap();
+        std::fs::write(&newer, header(id)).unwrap();
         assert_eq!(pi_session_ref(&sessions, id), newer.to_str().unwrap());
         // Nothing saved yet, or no sessions folder at all: the id, as before.
         assert_eq!(
@@ -4051,6 +4096,89 @@ pub(crate) mod tests {
             sh_quote(&pi_session_ref(&sessions, id)),
             format!("'{}'", newer.to_str().unwrap())
         );
+    }
+
+    /// A file NAMED for a conversation is not that conversation: its header's
+    /// id is. Each way a newer candidate can lie is skipped, and the older
+    /// honest file (or the bare id) is what is resumed.
+    #[test]
+    fn a_pi_session_file_counts_only_when_its_header_names_the_id() {
+        let sessions = crate::test_dir::TestDir::new("pi-sessions-identity");
+        let id = "01a1ed61-d818-70c0-83c7-52897fa2ebb3";
+        let other_id = "01a1ed61-ecca-717c-b7d7-c790f8b15aa8";
+        let folder = sessions.join("--f--");
+        crate::profile::make_dir(&folder).unwrap();
+        let header = |of: &str| format!("{{\"type\":\"session\",\"id\":\"{of}\"}}\nmore\n");
+        // Nothing honest yet: every liar below falls back to the bare id.
+        let name = |n: u32| folder.join(format!("2026-11-18T0{n}-00-00-000Z_{id}.jsonl"));
+        let lies: Vec<(&str, Box<dyn Fn(&Path)>)> = vec![
+            (
+                "another conversation's file renamed",
+                Box::new(|p| std::fs::write(p, header(other_id)).unwrap()),
+            ),
+            (
+                "corrupt header",
+                Box::new(|p| std::fs::write(p, "not json\n").unwrap()),
+            ),
+            ("empty file", Box::new(|p| std::fs::write(p, "").unwrap())),
+            (
+                "first line is not a session",
+                Box::new(|p| {
+                    std::fs::write(p, format!("{{\"type\":\"message\",\"id\":\"{id}\"}}\n"))
+                        .unwrap()
+                }),
+            ),
+            (
+                "header past the bound",
+                Box::new(|p| {
+                    let mut text =
+                        format!("{{\"type\":\"session\",\"pad\":\"{}\",", "x".repeat(20_000));
+                    text.push_str(&format!("\"id\":\"{id}\"}}\n"));
+                    std::fs::write(p, text).unwrap()
+                }),
+            ),
+            (
+                "a directory by that name",
+                Box::new(|p| crate::profile::make_dir(p).unwrap()),
+            ),
+        ];
+        for (n, (why, make)) in lies.iter().enumerate() {
+            make(&name(n as u32 + 1));
+            assert_eq!(pi_session_ref(&sessions, id), id, "{why} is not resumed");
+        }
+        #[cfg(unix)]
+        {
+            // A link to a genuine file, a link as a folder: both redirects.
+            let real = sessions.join("elsewhere.jsonl");
+            std::fs::write(&real, header(id)).unwrap();
+            std::os::unix::fs::symlink(&real, name(7)).unwrap();
+            assert_eq!(
+                pi_session_ref(&sessions, id),
+                id,
+                "a symlinked file is skipped"
+            );
+            // The real folder is outside the sessions folder: only the link
+            // inside it leads there.
+            let outside = crate::test_dir::TestDir::new("pi-sessions-outside");
+            let behind = outside.join("behind");
+            crate::profile::make_dir(&behind).unwrap();
+            std::fs::write(behind.join(format!("2026-11-18T08_{id}.jsonl")), header(id)).unwrap();
+            std::os::unix::fs::symlink(&behind, sessions.join("--linked--")).unwrap();
+            assert_eq!(
+                pi_session_ref(&sessions, id),
+                id,
+                "a symlinked folder is skipped"
+            );
+        }
+        // The honest file is chosen over every newer liar.
+        let honest = folder.join(format!("2026-11-17T00-00-00-000Z_{id}.jsonl"));
+        std::fs::write(&honest, header(id)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::fs::write(name(9), header(other_id)).unwrap();
+        assert_eq!(pi_session_ref(&sessions, id), honest.to_str().unwrap());
+        // An id that could reach a path or a command line is not looked up.
+        assert_eq!(pi_session_ref(&sessions, "../x"), "../x");
+        assert_eq!(pi_session_ref(&sessions, ""), "");
     }
 
     #[test]

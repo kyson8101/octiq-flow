@@ -4,6 +4,7 @@
 // protocol belong to Pi.
 
 import type { ToolState } from "./chat";
+import { outcomeOfResult, type ToolOutcome } from "./toolOutcome";
 
 export type PiContent =
   | { kind: "text"; text: string }
@@ -30,6 +31,8 @@ export type PiRead =
       state: ToolState;
       result?: string;
       details?: unknown;
+      /** Whose failure an error was, when the host's MCP said (`details._meta`). */
+      outcome?: ToolOutcome;
     }
   | { kind: "done" };
 
@@ -125,13 +128,19 @@ export function readPiEvent(raw: unknown): PiRead | null {
     const id = str(event.toolCallId);
     if (!id) return null;
     const completed = type === "tool_execution_end";
+    const state: ToolState = completed ? (event.isError === true ? "error" : "done") : "running";
+    // The bridge keeps the MCP result's `_meta` in `details`, so an error says
+    // whose it was the way a Claude or Codex one does.
+    const outcome =
+      state === "error" ? outcomeOfResult(obj(event.result).details) : undefined;
     return {
       kind: "tool",
       id,
       name: toolName(event.toolName),
       args: event.args,
-      state: completed ? (event.isError === true ? "error" : "done") : "running",
+      state,
       ...(completed ? { result: contentText(event.result), details: obj(event.result).details } : {}),
+      ...(outcome ? { outcome } : {}),
     };
   }
 

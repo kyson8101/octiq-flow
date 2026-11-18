@@ -78,7 +78,11 @@ function cli() {
       log({ text: msg.message });
       out({ id: msg.id, type: "response", command: "prompt", success: true });
       out({ type: "agent_start" });
-      const failed = msg.message.includes("TRIGGER_LIMIT");
+      // Pi is only ever the TARGET here. The source's marker (`TRIGGER_LIMIT`)
+      // rides in the carried-over context, so this stub must not fail on it:
+      // it would report a quota failure and block the Anthropic account. Its
+      // own marker is one nothing carries.
+      const failed = msg.message.includes("TRIGGER_PI_LIMIT");
       const message = failed
         ? { role: "assistant", content: [], stopReason: "error", errorMessage: "429 rate limit exceeded: usage limit reached" }
         : { role: "assistant", content: [{ type: "text", text: "Continued without repeating previous work." }], stopReason: "stop" };

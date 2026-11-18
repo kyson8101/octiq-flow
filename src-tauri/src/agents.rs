@@ -182,19 +182,27 @@ fn run_pi(args: &[&str], limit: Duration) -> Result<(bool, String), String> {
 }
 
 /// Spawn `command`, read its stdout as it arrives (a long listing would
-/// otherwise block the process on a full pipe) and wait at most `limit`.
-/// Past the limit the child is killed and reaped before the error returns.
+/// otherwise block the process on a full pipe) and wait at most `limit`, for
+/// the child AND for its output to close. Past the limit the child is killed
+/// and reaped before the error returns. A child that exits while a descendant
+/// keeps the pipe open (a daemon it started) is answered at the same limit
+/// with an error, never by waiting for that descendant; the reader thread is
+/// left to end when the descendant lets go. Bytes already queued in the pipe
+/// when the child exits are read within `DRAIN_GRACE`, even if that is a
+/// moment past the limit.
 fn run_with_limit(mut command: Command, limit: Duration) -> Result<(bool, String), String> {
+    const DRAIN_GRACE: Duration = Duration::from_millis(250);
     let mut child = command
         .spawn()
         .map_err(|e| format!("could not start pi.dev: {e}"))?;
     let mut pipe = child.stdout.take();
-    let reader = std::thread::spawn(move || {
+    let (sent, output) = mpsc::channel();
+    std::thread::spawn(move || {
         let mut out = Vec::new();
         if let Some(pipe) = pipe.as_mut() {
             let _ = std::io::Read::read_to_end(pipe, &mut out);
         }
-        out
+        let _ = sent.send(out);
     });
     let started = std::time::Instant::now();
     let status = loop {
@@ -216,8 +224,17 @@ fn run_with_limit(mut command: Command, limit: Duration) -> Result<(bool, String
             }
         }
     };
-    let out = reader.join().unwrap_or_default();
-    Ok((status.success(), String::from_utf8_lossy(&out).into_owned()))
+    // The child is gone; its output closes with it unless a descendant holds
+    // the pipe. Wait for the close only until the limit (with a short grace
+    // for a long listing still being drained), never unboundedly.
+    let wait = limit.saturating_sub(started.elapsed()).max(DRAIN_GRACE);
+    match output.recv_timeout(wait) {
+        Ok(out) => Ok((status.success(), String::from_utf8_lossy(&out).into_owned())),
+        Err(_) => Err(
+            "pi.dev left a process running that kept its output open, so the answer never ended"
+                .to_string(),
+        ),
+    }
 }
 
 /// Pi's models, from `pi --list-models`, for the upstreams `pi auth check
@@ -848,6 +865,41 @@ mod run_pi_tests {
                 "the hung child was killed"
             );
         }
+    }
+
+    #[test]
+    fn a_pi_that_exits_but_leaves_a_descendant_on_its_output_is_answered_at_the_limit() {
+        #[cfg(unix)]
+        let mut command = {
+            let mut c = Command::new("sh");
+            // The child exits 0 at once; its background `sleep` keeps stdout.
+            c.arg("-c").arg("sleep 8 &");
+            c
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "start /b ping -n 9 127.0.0.1"]);
+            c
+        };
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        no_console(&mut command);
+        let started = Instant::now();
+        let answer = run_with_limit(command, Duration::from_millis(1000));
+        assert!(
+            answer
+                .as_ref()
+                .is_err_and(|e| e.contains("kept its output open")),
+            "{answer:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(2500),
+            "returned by the limit, not when the descendant ended: {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

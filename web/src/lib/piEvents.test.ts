@@ -65,6 +65,41 @@ describe("pi.dev JSON events", () => {
     });
   });
 
+  it("reads whose failure an error result was from the bridge's `_meta`", () => {
+    const outcome = { origin: "octiqflow", reasonClass: "approval-expired", severity: "warning" };
+    const read = readPiEvent({
+      type: "tool_execution_end",
+      toolCallId: "call-2",
+      toolName: "mcp__octiq__request_access",
+      args: {},
+      result: {
+        content: [{ type: "text", text: "The approval expired." }],
+        details: { _meta: { "octiq/outcome": outcome } },
+      },
+      isError: true,
+    });
+    expect(read).toMatchObject({ kind: "tool", state: "error", result: "The approval expired.", outcome });
+    // A success never carries one, and an error with no meta is drawn as before.
+    expect(
+      readPiEvent({
+        type: "tool_execution_end",
+        toolCallId: "call-3",
+        toolName: "x",
+        result: { content: [], details: { _meta: { "octiq/outcome": outcome } } },
+        isError: false,
+      }),
+    ).not.toHaveProperty("outcome");
+    expect(
+      readPiEvent({
+        type: "tool_execution_end",
+        toolCallId: "call-4",
+        toolName: "x",
+        result: { content: [{ type: "text", text: "no" }], details: {} },
+        isError: true,
+      }),
+    ).not.toHaveProperty("outcome");
+  });
+
   it("waits for Pi to settle without breaking legacy agent-end streams", () => {
     expect(readPiEvent({ type: "agent_end", messages: [], willRetry: false })).toBeNull();
     expect(readPiEvent({ type: "agent_end", messages: [], willRetry: true })).toBeNull();

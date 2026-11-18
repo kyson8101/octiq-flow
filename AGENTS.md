@@ -378,6 +378,37 @@ through the API.
   Full is unguarded. The host decides by the level the chat was started at
   (`access_now`); `access_change_relaunches` makes any change end the process
   between turns and resume it. Front desks allow only `route_chat`.
+- **A refused Pi call keeps standing plan approval from firing.** The gate
+  runs in the hook handler, so each call takes `ChatManager::pi_call_begin`
+  before it decides (the session lock for an instant, no await, never the
+  ledger) and `pi_call_end` when it has answered. Every refusal latches the
+  session's `auto_plan_refused`, the latch Codex uses: the host's own deny
+  (`Verdict::Deny`), an impostor's, the person's Deny on a card, and a card
+  nobody answered (the request dropped, the extension gone: `OpenCall`'s
+  drop refuses). A call that is parked on a card is also counted in
+  `auto_plan_turn.open_asks`, and `end_turn_for_auto_plan` approves nothing
+  while one is open. The call carries the launch id, the prompt's write id and
+  the turn sequence it began in; an answer that arrives for another launch,
+  prompt or turn touches nothing, so a late answer from an older turn neither
+  latches nor clears the current one. An allowed call changes nothing.
+  `scripts/test-pi-plan-refusal.mjs` drives the real server with a stub Pi:
+  a Read lead's refused `bash` leaves the plan pending, an allowed `read`
+  approves it (the control).
+- **`run_with_limit` returns by its deadline in every case** (`agents.rs`, the
+  `pi --list-models` and `pi auth check` probes). The reader thread reports
+  over a channel, never a `join`: a child that exits 0 while a descendant keeps
+  its stdout open is answered at the limit with an error (bytes already in the
+  pipe get a 250 ms drain grace), and the reader ends when the descendant lets
+  go. A long listing is still read as it arrives, so a full pipe never blocks
+  the child.
+- **An MCP error result is an error for Pi and keeps what a success keeps**
+  (`octiq-pi.ts`). It is returned with `isError: true`, not thrown: the
+  content as sent (text and non-text blocks), `structuredContent` and
+  `details._meta`, whose `octiq/outcome` is what the page reads
+  (`piEvents.readPiEvent` → `outcomeOfResult`, folded as the tool's
+  `outcome` so a failed Pi call says whose failure it was, like a Claude or
+  Codex one). A failed result with no text gets one sentence so the model is
+  never left with an empty error.
 - **Stream**: `agent_settled` is the only full stop (`agent_end` precedes it).
   `adapt_event` turns the `get_state` answer into a `session` and a refused
   prompt (no login) into a failed `message_end` (`octiq_rejected_prompt`) with the
@@ -400,7 +431,13 @@ through the API.
   file path opens from anywhere with the same id and messages (harness scene 7),
   so `build_command` names the newest `sessions/*/*_<id>.jsonl`
   (`pi_session_ref`, under `$PI_CODING_AGENT_DIR` or `~/.pi/agent`) and falls
-  back to the id when no file exists yet.
+  back to the id when no file exists yet. **The file name is only a hint**: a
+  candidate counts only when it is a regular file (never a symlink, and no
+  linked folder) whose first line, read with an 8 KiB bound, is a `session`
+  header whose `id` is the requested id. A renamed file of another
+  conversation, a corrupt, empty or oversized header and a directory are
+  skipped; none left means the bare id, as does an id `safe_session_id`
+  refuses.
 - **Not closed**: `handover` read-only copies still refuse Pi. `pi --fork` needs
   a session directory of its own (it cannot be `--no-session`), and a forked or
   resumed session brings back the tool set its system prompt was written with:

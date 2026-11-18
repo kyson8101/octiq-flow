@@ -345,6 +345,20 @@ try {
   assert(toolResults(isolatedRun).some((r) => !r.includes("STUB")), "the answer is not the stub's");
   results.mcpIsolated = { tools: toolNames().filter((t) => t.startsWith("mcp__")).length, stubCalls: calledStubs().length, hostServer: isolatedGate.hostServer };
 
+  // 9a'. An MCP error result stays an error for Pi (`isError`) and keeps the
+  //      content as sent; the bridge threw before and kept only the words.
+  requests.length = 0;
+  const errored = await scene("mcp-error-result", async (api) => {
+    api.send({ id: "octiq-hello-1", type: "get_state" });
+    api.send({ id: "octiq-prompt-e", type: "prompt", message: 'TOOL mcp__octiq__ask_user {}' });
+    await settledAfter(api, 1);
+  }, { env: mcpEnv, isolated: true, args: ["--approve"] });
+  const failedCall = errored.find((e) => e.type === "tool_execution_end" && e.toolName === "mcp__octiq__ask_user");
+  assert.equal(failedCall?.isError, true, "an MCP isError result is an error for Pi");
+  assert(failedCall.result.content.some((b) => b.type === "text" && b.text.trim()), "the error keeps its words");
+  assert(failedCall.result.details !== undefined, "details is present, as on a success");
+  results.mcpErrorResult = { isError: failedCall.isError, blocks: failedCall.result.content.length };
+
   // 9b. An ordinary launch keeps the person's own servers. A configured server
   //     named `octiq` shares the host's tool names; whichever Pi runs, the host
   //     is told whether the tool is its own, and an impostor's is not.
