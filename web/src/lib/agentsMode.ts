@@ -8,7 +8,7 @@ import { bridge } from "./bridge";
 import type { LeadRecord } from "./agentsDashboard";
 import { recall, remember } from "./remember";
 import {
-  MODELS, claudeModelName, effortFor, effortSteps, accessFor,
+  MODELS, claudeModelName, effortFor, effortSteps, accessFor, modelChoiceForFlag, sameModelFlag,
   type AccessLevel, type Effort, type ModelChoice, type Provider,
 } from "./agentProviders";
 
@@ -234,7 +234,7 @@ export function frontDeskDefaults(provider: Provider): { model: string; effort: 
   const smallest: Record<Provider, string> = {
     claude: "haiku",
     codex: "gpt-5.6-luna",
-    pi: "gpt-5.6-luna",
+    pi: "openai-codex/gpt-5.6-luna",
     antigravity: "gemini-3.8-flash-low",
   };
   const efforts = effortSteps(provider);
@@ -390,14 +390,17 @@ export function teamModels(provider: Provider): ModelChoice[] {
  *  for it, else a Claude id spelled out ("claude-sonnet-5-5" → "Sonnet 5.5"),
  *  else the id as stored. */
 export function teamModelLabel(agent: Pick<TeamAgent, "agent" | "model">): string {
-  return teamModels(agent.agent).find((m) => m.flag === agent.model)?.model
+  return teamModels(agent.agent).find((m) => sameModelFlag(agent.agent, m.flag, agent.model))?.model
+    ?? (agent.agent === "pi" ? modelChoiceForFlag("pi", agent.model)?.model : undefined)
     ?? (agent.agent === "claude" ? claudeModelName(agent.model) : undefined)
     ?? agent.model;
 }
 
 /** The chat settings a lead starts with. */
 export function leadSettings(agent: TeamAgent): { choice: ModelChoice; effort: Effort; access: AccessLevel } | null {
-  const choice = MODELS.find((m) => m.agent === agent.agent && m.flag === agent.model);
+  const choice = MODELS.find((m) => m.agent === agent.agent && sameModelFlag(agent.agent, m.flag, agent.model))
+    // A Pi model the host's catalog lists is not in the authored rows.
+    ?? (agent.agent === "pi" ? modelChoiceForFlag("pi", agent.model) : undefined);
   if (!choice) return null;
   return {
     choice,

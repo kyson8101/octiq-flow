@@ -13,7 +13,7 @@
 // still has a real keyboard and should still send on Enter.
 import { ActionIcon } from "./ActionIcon";
 import { useCommittedCallback } from "../lib/useCommittedCallback";
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { transitionZen } from "../lib/zenMotion";
 import { bridge } from "../lib/bridge";
 import { Thumb } from "./Thumb";
@@ -46,8 +46,11 @@ import {
   AGENT_NAME,
   effortSteps,
   modelChoiceForFlag,
+  piModelRef,
+  piUpstreamHeading,
   PROVIDERS,
   providerFor,
+  sameModelFlag,
   type AccessLevel,
   type AgentCommand,
   type ComposerStyle,
@@ -130,7 +133,8 @@ type ModelLoadState = {
 
 /** Load catalogs only when a picker is opened. Claude may answer from its
  * Models API or the backend's active-model fallback; Codex answers from the
- * account-aware app-server `model/list`; Antigravity from `agy models`. Existing authored choices paint
+ * account-aware app-server `model/list`; Pi from
+ * `pi --list-models` for the logins that are ready; Antigravity from `agy models`. Existing authored choices paint
  * immediately, so a cold CLI never turns the picker into a spinner. */
 function useProviderModels(open: boolean, installed?: readonly Provider[]) {
   const [choices, setChoices] = useState<Partial<Record<Provider, ModelChoice[]>>>({});
@@ -138,7 +142,7 @@ function useProviderModels(open: boolean, installed?: readonly Provider[]) {
   const loaded = useRef(new Set<Provider>());
 
   const load = useCallback((provider: Provider, refresh = false) => {
-    if (provider === "pi" || (!refresh && loaded.current.has(provider))) return;
+    if (!refresh && loaded.current.has(provider)) return;
     loaded.current.add(provider);
     setStatus((current) => ({
       ...current,
@@ -169,7 +173,7 @@ function useProviderModels(open: boolean, installed?: readonly Provider[]) {
 
   useEffect(() => {
     if (!open) return;
-    for (const provider of ["claude", "codex", "antigravity"] as const) {
+    for (const provider of ["claude", "codex", "pi", "antigravity"] as const) {
       if (installed && !installed.includes(provider)) continue;
       load(provider);
     }
@@ -2248,7 +2252,7 @@ function ModelPicker({
   // Keep CLI defaults in the registry for restored sessions and history, but
   // offer only explicit model choices in both the dropdown and phone sheet.
   const offered = models.filter((model) => model.agent === tab && model.flag);
-  const list = choice.agent === tab && choice.flag && !offered.some((model) => model.flag === choice.flag)
+  const list = choice.agent === tab && choice.flag && !offered.some((model) => sameModelFlag(tab, model.flag, choice.flag))
     ? [choice, ...offered]
     : offered;
   const gone = missing(tab);
@@ -2290,11 +2294,16 @@ function ModelPicker({
           line that says what each model is FOR, and the height to spend on
           targets a thumb can hit. Same choice, same order, same tick. */}
       <div className={rows ? "mp-list" : "mp-grid"} role="tabpanel" aria-label={AGENT_NAME[tab]}>
-        {list.map((m) => {
+        {list.map((m, at) => {
           const on = m.id === choice.id;
+          // A Pi model is billed by its upstream, so the list says whose
+          // account each stretch of it is (the API key, the ChatGPT login).
+          const upstream = tab === "pi" && m.flag ? piModelRef(m.flag).upstream : "";
+          const heading = upstream && (at === 0 || piModelRef(list[at - 1].flag).upstream !== upstream || !list[at - 1].flag);
           return (
+            <Fragment key={m.id}>
+            {heading && <div className="mp-group" role="presentation">{piUpstreamHeading(upstream)}</div>}
             <button
-              key={m.id}
               type="button"
               className={`${rows ? "picker-item has-robot" : "mp-card"} ${on ? "is-on" : ""}`}
               aria-pressed={on}
@@ -2312,6 +2321,7 @@ function ModelPicker({
                 </span>
               )}
             </button>
+            </Fragment>
           );
         })}
       </div>
@@ -2331,7 +2341,7 @@ function ModelPicker({
           spellCheck={false}
           autoCapitalize="none"
           autoCorrect="off"
-          placeholder={tab === "claude" ? "claude-opus-4-6" : tab === "codex" ? "gpt-5.5" : tab === "antigravity" ? "gemini-3.8-flash-high" : "model id"}
+          placeholder={tab === "claude" ? "claude-opus-4-6" : tab === "codex" ? "gpt-5.5" : tab === "antigravity" ? "gemini-3.8-flash-high" : tab === "pi" ? "anthropic/claude-sonnet-5-5" : "model id"}
           onChange={(event) => {
             setExactId(event.target.value);
             setExactError(false);
@@ -2340,13 +2350,16 @@ function ModelPicker({
         <button type="submit" disabled={gone || !exactId.trim()}>Use exact ID</button>
       </form>
       {exactError && (
-        <div className="mp-catalog is-warn">Use 1–64 letters, numbers, dots, dashes, or underscores.</div>
+        <div className="mp-catalog is-warn">{tab === "pi"
+          ? "Use model or upstream/model (for example anthropic/claude-sonnet-5-5): letters, numbers, dots, dashes or underscores, 64 characters at most."
+          : "Use 1–64 letters, numbers, dots, dashes, or underscores."}</div>
       )}
 
       {modelStatus?.loading && <div className="mp-catalog">Refreshing available models…</div>}
       {!modelStatus?.loading && modelStatus?.error && (
         <div className="mp-catalog is-warn" title={modelStatus.error}>
           Could not refresh models. Showing built-in choices.
+          {tab === "pi" && modelStatus.error && <span className="mp-catalog-why"> {modelStatus.error}</span>}
           <button type="button" onClick={() => onReloadModels(tab)} data-icon-action title="Try again" aria-label="Try again">
             <ActionIcon name="retry" label="Try again" />
           </button>

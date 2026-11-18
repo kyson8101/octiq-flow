@@ -80,7 +80,7 @@ describe("pi.dev conversations", () => {
       },
     });
 
-    expect(state.failure?.title).toBe("Your Codex account is out of credits");
+    expect(state.failure?.title).toBe("Pi's model provider is out of credits or quota");
     expect(state.busy).toBe(false);
   });
 });

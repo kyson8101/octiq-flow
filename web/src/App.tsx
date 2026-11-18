@@ -5163,7 +5163,6 @@ export default function App() {
   const ensureCoordinator = async (objective: string): Promise<string> => {
     if (!project) throw new Error("Choose a project before starting a mission.");
     if (workerChat) throw new Error("Start runs from the main chat.");
-    if (choice.agent === "pi") throw new Error("Choose Codex, Claude or Antigravity as the main agent.");
     const id = conversationId ?? crypto.randomUUID();
     const switching = modelSwitches.current.get(id);
     if (switching) await switching;
@@ -5916,8 +5915,7 @@ export default function App() {
                 <label>Main agent<select aria-label="Main agent" value={choice.id} onChange={(event) => {
                   const model = MODELS.find((item) => item.id === event.target.value); if (model) changeModel(model);
                 }}>
-                  {choice.agent === "pi" && <option value={choice.id} disabled>Choose Codex, Claude or Antigravity</option>}
-                  {MODELS.filter((item) => item.agent !== "pi" && (!installed || installed.includes(item.agent))).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}
+                  {MODELS.filter((item) => item.flag && (!installed || installed.includes(item.agent))).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}
                 </select></label>
                 <p>Keep talking in Chat. Worker providers are independent of the main agent.</p>
               </div>} /></RunDetailOnScreen></ChatReadingProvider>}

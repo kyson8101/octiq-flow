@@ -3,7 +3,7 @@ import type { TaskAcceptance, TaskSize } from "./agentLevels";
 
 export type WorkspaceMode = "mission" | "auto" | "worktree" | "direct" | "agent";
 export type RecoveryPolicy = { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; fallbackModel?: string | null; stallAfterMs?: number; toolStallAfterMs?: number };
-export type WorkerSettings = { agent: "codex" | "claude" | "antigravity"; access: string; model?: string; effort?: string; recovery?: RecoveryPolicy | null };
+export type WorkerSettings = { agent: "codex" | "claude" | "pi" | "antigravity"; access: string; model?: string; effort?: string; recovery?: RecoveryPolicy | null };
 /** Omitting agent lets the main agent select workers individually. */
 export type WorkerDefaults = Omit<WorkerSettings, "agent"> & { agent?: WorkerSettings["agent"] };
 export type TaskWorkspace = {

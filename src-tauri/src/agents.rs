@@ -121,9 +121,187 @@ pub fn agent_models(agent: AgentKind) -> Result<AgentModelCatalog, String> {
     match agent {
         AgentKind::Claude => Ok(claude_models()),
         AgentKind::Codex => codex_models(),
-        AgentKind::Pi => Err("pi.dev does not expose a model catalog".into()),
+        AgentKind::Pi => pi_models(),
         AgentKind::Antigravity => antigravity_models(),
     }
+}
+
+/// One row of `pi --list-models`: the upstream, the model id, and whether the
+/// model reasons (so `--thinking` means something for it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PiListed {
+    upstream: String,
+    id: String,
+    thinking: bool,
+}
+
+/// The rows of `pi --list-models`, a table headed `provider model context
+/// max-out thinking images`. Anything else (a notice, a blank line) is left
+/// out, and so is an id the command line would refuse.
+fn parse_pi_models(stdout: &str) -> Vec<PiListed> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let columns: Vec<&str> = line.split_whitespace().collect();
+            if columns.len() < 6 || columns[0] == "provider" {
+                return None;
+            }
+            let model = format!("{}/{}", columns[0], columns[1]);
+            crate::agent_provider::safe_model(&model)?;
+            Some(PiListed {
+                upstream: columns[0].to_string(),
+                id: columns[1].to_string(),
+                thinking: columns[4] == "yes",
+            })
+        })
+        .collect()
+}
+
+/// Run `pi` with `args`, answering its stdout, or why not. A hung Pi is
+/// stopped at `limit`: killed and reaped here, not left to a thread that
+/// would wait for it for ever. `Child::kill` is `TerminateProcess` on Windows,
+/// the same call `orchestration::peer::run_one_shot` makes.
+fn run_pi(args: &[&str], limit: Duration) -> Result<(bool, String), String> {
+    let executable = probe_cached()
+        .into_iter()
+        .find(|(name, _)| name == AgentKind::Pi.id())
+        .ok_or_else(|| "pi.dev is not installed on this machine".to_string())?
+        .1;
+    let mut command = Command::new(if executable.is_empty() {
+        provider_for(AgentKind::Pi).bin()
+    } else {
+        &executable
+    });
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    no_console(&mut command);
+    run_with_limit(command, limit)
+}
+
+/// Spawn `command`, read its stdout as it arrives (a long listing would
+/// otherwise block the process on a full pipe) and wait at most `limit`, for
+/// the child AND for its output to close. Past the limit the child is killed
+/// and reaped before the error returns. A child that exits while a descendant
+/// keeps the pipe open (a daemon it started) is answered at the same limit
+/// with an error, never by waiting for that descendant; the reader thread is
+/// left to end when the descendant lets go. Bytes already queued in the pipe
+/// when the child exits are read within `DRAIN_GRACE`, even if that is a
+/// moment past the limit.
+fn run_with_limit(mut command: Command, limit: Duration) -> Result<(bool, String), String> {
+    const DRAIN_GRACE: Duration = Duration::from_millis(250);
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("could not start pi.dev: {e}"))?;
+    let mut pipe = child.stdout.take();
+    let (sent, output) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        if let Some(pipe) = pipe.as_mut() {
+            let _ = std::io::Read::read_to_end(pipe, &mut out);
+        }
+        let _ = sent.send(out);
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() >= limit => {
+                // Stopped and reaped. The reader ends when the pipe closes with
+                // the process; it is not joined here, because a grandchild that
+                // inherited the pipe would hold the join for as long as it lives.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("pi.dev took too long to answer".to_string());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("pi.dev could not answer: {e}"));
+            }
+        }
+    };
+    // The child is gone; its output closes with it unless a descendant holds
+    // the pipe. Wait for the close only until the limit (with a short grace
+    // for a long listing still being drained), never unboundedly.
+    let wait = limit.saturating_sub(started.elapsed()).max(DRAIN_GRACE);
+    match output.recv_timeout(wait) {
+        Ok(out) => Ok((status.success(), String::from_utf8_lossy(&out).into_owned())),
+        Err(_) => Err(
+            "pi.dev left a process running that kept its output open, so the answer never ended"
+                .to_string(),
+        ),
+    }
+}
+
+/// Pi's models, from `pi --list-models`, for the upstreams `pi auth check
+/// --provider <upstream>` says are ready. Each is named `<upstream>/<model>`,
+/// exactly what `--model` takes; the upstream is who bills it (Anthropic's API
+/// key, the ChatGPT login behind `openai-codex`).
+fn pi_models() -> Result<AgentModelCatalog, String> {
+    let (_, listing) = run_pi(&["--list-models"], Duration::from_secs(40))?;
+    let listed = parse_pi_models(&listing);
+    let mut upstreams: Vec<String> = Vec::new();
+    for row in &listed {
+        if !upstreams.contains(&row.upstream) {
+            upstreams.push(row.upstream.clone());
+        }
+    }
+    // One check per upstream, side by side: each starts a pi.
+    let checks: Vec<_> = upstreams
+        .iter()
+        .cloned()
+        .map(|upstream| {
+            std::thread::spawn(move || {
+                let ready = run_pi(
+                    &["auth", "check", "--provider", &upstream, "--json"],
+                    Duration::from_secs(30),
+                )
+                .ok()
+                .and_then(|(_, out)| serde_json::from_str::<Value>(out.trim()).ok())
+                .is_some_and(|answer| answer["status"] == "ready");
+                (upstream, ready)
+            })
+        })
+        .collect();
+    let ready: HashSet<String> = checks
+        .into_iter()
+        .filter_map(|check| check.join().ok())
+        .filter_map(|(upstream, ok)| ok.then_some(upstream))
+        .collect();
+    let models: Vec<AgentModel> = listed
+        .into_iter()
+        .filter(|row| ready.contains(&row.upstream))
+        .map(|row| AgentModel {
+            model: format!("{}/{}", row.upstream, row.id),
+            display_name: format!("{} · {}", row.id, row.upstream),
+            description: Some(format!("through {}", row.upstream)),
+            is_default: false,
+            supported_efforts: if row.thinking {
+                ["low", "medium", "high", "xhigh", "max"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        })
+        .collect();
+    if models.is_empty() {
+        return Err(
+            "pi.dev lists no model with a login that is ready. Run `pi auth login <provider>` in a terminal (for Claude through the API: `pi auth login anthropic --api-key`).".into(),
+        );
+    }
+    Ok(AgentModelCatalog {
+        source: "provider".into(),
+        models,
+        note: Some(
+            "Each model is named <upstream>/<model>. anthropic is Claude through the Anthropic API (billed by the API key, no weekly limit); openai-codex is the ChatGPT login and shares Codex's allowance.".into(),
+        ),
+    })
 }
 
 /// `agy models` prints one `id<TAB>display name` line per model the signed-in
@@ -625,6 +803,135 @@ fn forget_probe() {
 /// starting a login shell — which would make the test slow, machine-dependent,
 /// and dependent on whatever the user's rc files do.
 #[cfg(test)]
+mod run_pi_tests {
+    use super::*;
+
+    #[test]
+    fn a_pi_that_never_answers_is_stopped_and_reaped_at_the_limit() {
+        let dir = crate::test_dir::TestDir::new("run-pi-hang");
+        let pid_file = dir.join("pid");
+        #[cfg(unix)]
+        let command = {
+            let mut c = Command::new("sh");
+            c.arg("-c")
+                .arg(format!("echo $$ > '{}'; exec sleep 60", pid_file.display()));
+            c
+        };
+        #[cfg(windows)]
+        let command = {
+            let mut c = Command::new("powershell");
+            c.args(["-NoProfile", "-Command"]).arg(format!(
+                "$PID | Out-File -Encoding ascii '{}'; Start-Sleep 60",
+                pid_file.display()
+            ));
+            c
+        };
+        let mut command = command;
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        no_console(&mut command);
+        let started = Instant::now();
+        let answer = run_with_limit(command, Duration::from_millis(1500));
+        assert_eq!(answer, Err("pi.dev took too long to answer".to_string()));
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "it returned at the limit, not when the child ended"
+        );
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .expect("the stub ran")
+            .trim()
+            .trim_start_matches('\u{feff}')
+            .parse()
+            .expect("a pid");
+        #[cfg(unix)]
+        {
+            // SAFETY: signal 0 only asks whether the process exists.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            assert!(
+                !alive,
+                "the hung child was killed and reaped, not left running"
+            );
+        }
+        #[cfg(windows)]
+        {
+            let listed = Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+                .output()
+                .expect("tasklist");
+            assert!(
+                !String::from_utf8_lossy(&listed.stdout).contains(&pid.to_string()),
+                "the hung child was killed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pi_that_exits_but_leaves_a_descendant_on_its_output_is_answered_at_the_limit() {
+        #[cfg(unix)]
+        let mut command = {
+            let mut c = Command::new("sh");
+            // The child exits 0 at once; its background `sleep` keeps stdout.
+            c.arg("-c").arg("sleep 8 &");
+            c
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "start /b ping -n 9 127.0.0.1"]);
+            c
+        };
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        no_console(&mut command);
+        let started = Instant::now();
+        let answer = run_with_limit(command, Duration::from_millis(1000));
+        assert!(
+            answer
+                .as_ref()
+                .is_err_and(|e| e.contains("kept its output open")),
+            "{answer:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(2500),
+            "returned by the limit, not when the descendant ended: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_pi_that_answers_returns_all_of_its_output() {
+        #[cfg(unix)]
+        let mut command = {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg("seq 1 20000");
+            c
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut c = Command::new("powershell");
+            c.args(["-NoProfile", "-Command", "1..20000"]);
+            c
+        };
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        no_console(&mut command);
+        let (ok, out) = run_with_limit(command, Duration::from_secs(30)).unwrap();
+        assert!(ok);
+        assert_eq!(
+            out.lines().count(),
+            20000,
+            "a long listing does not block on the pipe"
+        );
+    }
+}
+
+#[cfg(test)]
 pub fn seed_probe_for_test(found: Vec<(String, String)>) {
     if let Ok(mut cache) = AGENT_PROBE.lock() {
         *cache = Some((Instant::now(), found));
@@ -761,6 +1068,34 @@ fn probe_command() -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `pi --list-models` 1.5.2 on 2026-11-18, verbatim (trailing spaces
+    /// included), cut to a few rows of each upstream.
+    const PI_LIST_MODELS: &str = "provider      model                       context  max-out  thinking  images\nanthropic     claude-fable-5-2            1M       128K     yes       yes   \nanthropic     claude-opus-5-5             1M       128K     yes       yes   \nanthropic     claude-sonnet-5-5           1M       128K     yes       yes   \ndeepseek      deepseek-v4-pro             1M       384K     yes       no    \nopenai-codex  gpt-5.6-sol                 272K     128K     yes       yes   \nopenai-codex  gpt-6.1-sol                 500K     128K     yes       yes   \n";
+
+    #[test]
+    fn pi_models_are_named_by_their_upstream_exactly_as_model_takes_them() {
+        let rows = parse_pi_models(PI_LIST_MODELS);
+        assert_eq!(rows.len(), 6, "the header row is not a model");
+        assert_eq!(
+            rows[1],
+            PiListed {
+                upstream: "anthropic".into(),
+                id: "claude-opus-5-5".into(),
+                thinking: true,
+            }
+        );
+        assert!(rows[3].thinking, "deepseek-v4-pro reasons");
+        for row in &rows {
+            let model = format!("{}/{}", row.upstream, row.id);
+            assert_eq!(
+                crate::agent_provider::safe_model(&model).as_deref(),
+                Some(model.as_str())
+            );
+            crate::agent_provider::validate_model(AgentKind::Pi, Some(&model)).unwrap();
+        }
+        assert!(parse_pi_models("pi: update available\n\n").is_empty());
+    }
 
     /// Not a unit test — a hand-run probe against THIS machine's real process
     /// table, so the `ps` parse can be checked against what `ps` actually

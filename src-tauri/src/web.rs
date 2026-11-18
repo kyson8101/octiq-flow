@@ -629,6 +629,7 @@ fn router(ctx: Ctx) -> Router {
         .route("/token", get(token_handler))
         .route("/file", get(file_handler).post(file_post_handler))
         .route("/hook/permission", post(permission_handler))
+        .route("/hook/pi-tool", post(pi_tool_handler))
         .route("/hook/ask", post(ask_handler))
         .route("/hook/question-media", post(question_media_handler))
         .route(
@@ -1317,6 +1318,36 @@ async fn permission_handler(
     };
     request.chat_key = Some(caller.chat_key);
     let answer = crate::permission::ask(request).await;
+    axum::Json(json!({ "decision": answer.decision, "reason": answer.reason })).into_response()
+}
+
+/// Pi's extension asking whether one tool call may run (`pi_gate`). The caller
+/// is its capability; the answer is `allow` or `deny`, and the extension
+/// blocks the call on anything else, or on no answer.
+async fn pi_tool_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Json(call): Json<crate::pi_gate::Call>,
+) -> Response {
+    let claim = HookClaim {
+        chat_key: call.chat_key.as_deref(),
+        session_key: call.session_key.as_deref(),
+        launch_id: call.launch_id.as_deref(),
+    };
+    let caller = match hook_caller(&ctx.services.chats, &headers, claim) {
+        Ok(caller) => caller,
+        Err(refused) => return hook_refusal(refused),
+    };
+    let front_desk =
+        crate::team::is_front_desk_chat(&ctx.services.handovers.team, &caller.chat_key);
+    let answer = crate::pi_gate::gate(
+        &ctx.services.chats,
+        front_desk,
+        &caller.chat_key,
+        &caller.session_key,
+        call,
+    )
+    .await;
     axum::Json(json!({ "decision": answer.decision, "reason": answer.reason })).into_response()
 }
 

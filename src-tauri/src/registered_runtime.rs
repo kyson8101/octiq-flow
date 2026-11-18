@@ -339,9 +339,12 @@ mod tests {
         .unwrap();
         let path = home.join("questions.json");
         let manager = Arc::new(ChatManager::with_saved_questions(path.clone()));
-        manager
-            .failover
-            .limited(ChatAgent::Claude, None, crate::auto_resume::unix_now());
+        manager.failover.limited(
+            ChatAgent::Claude,
+            None,
+            None,
+            crate::auto_resume::unix_now(),
+        );
         let result = chat_start_user_impl(
             manager.clone(),
             key.clone(),

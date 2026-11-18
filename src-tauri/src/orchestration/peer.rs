@@ -363,7 +363,22 @@ pub fn helper_command(turn: &HelperTurn) -> Result<String, String> {
                 sh_quote(&model)
             ))
         }
-        ChatAgent::Pi => Err("A registered agent runs on Claude, Codex or Antigravity.".into()),
+        ChatAgent::Pi => {
+            // JSON mode is one run and exits. Read tools only, none of the
+            // person's extensions or OctiqFlow's MCP, and no session kept.
+            let reference = crate::agent_provider::pi_model_ref(&model)
+                .map(|(upstream, id)| format!("{upstream}/{id}"))
+                .ok_or("The teammate's model is not valid.")?;
+            let mut cmd = format!(
+                "exec pi --mode json --no-session -ne --no-skills --no-prompt-templates --no-context-files --tools read,grep,find,ls --model {}",
+                sh_quote(&reference)
+            );
+            if let Some(effort) = effort {
+                cmd.push_str(&format!(" --thinking {effort}"));
+            }
+            cmd.push_str(&format!(" -- {}", sh_quote(&turn.prompt)));
+            Ok(cmd)
+        }
     }
 }
 
@@ -447,6 +462,62 @@ pub fn parse_codex(stdout: &str) -> Result<HelperAnswer, String> {
     }
     match text.filter(|t| !t.is_empty()) {
         Some(text) => Ok(HelperAnswer { text, usage }),
+        None => Err(failure.unwrap_or_else(|| "No answer came back.".into())),
+    }
+}
+
+/// Pi's `--mode json`: the last assistant message's words, the usage of every
+/// model call of the run, and the error of a call that failed.
+pub fn parse_pi(stdout: &str) -> Result<HelperAnswer, String> {
+    let mut text = None;
+    let mut failure = None;
+    let mut input = 0;
+    let mut output = 0;
+    for event in stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+    {
+        if event.get("type").and_then(Value::as_str) != Some("message_end")
+            || event.pointer("/message/role").and_then(Value::as_str) != Some("assistant")
+        {
+            continue;
+        }
+        let message = &event["message"];
+        if let Some(usage) = message.get("usage") {
+            input += number(usage.get("input")) + number(usage.get("cacheRead"));
+            output += number(usage.get("output"));
+        }
+        if message.get("stopReason").and_then(Value::as_str) == Some("error") {
+            failure = message
+                .get("errorMessage")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            continue;
+        }
+        let said = message
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|block| block.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        if !said.trim().is_empty() {
+            text = Some(said.trim().to_owned());
+        }
+    }
+    match text {
+        Some(text) => Ok(HelperAnswer {
+            text,
+            usage: Some(PeerUsage {
+                input_tokens: input,
+                output_tokens: output,
+            }),
+        }),
         None => Err(failure.unwrap_or_else(|| "No answer came back.".into())),
     }
 }
@@ -641,6 +712,7 @@ pub fn run_one_shot(
     let parsed = match agent {
         ChatAgent::Codex => parse_codex(&stdout),
         ChatAgent::Antigravity => parse_antigravity(&stdout),
+        ChatAgent::Pi => parse_pi(&stdout),
         _ => parse_claude(&stdout),
     };
     match parsed {
@@ -1072,11 +1144,42 @@ mod tests {
             ..turn.clone()
         })
         .is_err());
-        assert!(helper_command(&HelperTurn {
+        let pi = helper_command(&HelperTurn {
             agent: ChatAgent::Pi,
+            model: "anthropic/claude-sonnet-5-5".into(),
             ..turn
         })
-        .is_err());
+        .unwrap();
+        // Read tools only, none of the person's extensions, no session saved.
+        assert!(pi.contains("pi --mode json --no-session -ne"), "{pi}");
+        assert!(pi.contains("--tools read,grep,find,ls"), "{pi}");
+        assert!(pi.contains("--model 'anthropic/claude-sonnet-5-5'"), "{pi}");
+        assert!(!pi.contains("bash") && !pi.contains("mcp"), "{pi}");
+    }
+
+    #[test]
+    fn pi_output_is_read_for_the_last_answer_its_tokens_and_a_failed_call() {
+        let answer = parse_pi(concat!(
+            "{\"type\":\"session\",\"id\":\"s\"}\n",
+            "{\"type\":\"message_end\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"ask\"}]}}\n",
+            "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"toolUse\",\"usage\":{\"input\":10,\"cacheRead\":5,\"output\":2},\"content\":[{\"type\":\"text\",\"text\":\"looking\"}]}}\n",
+            "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\",\"usage\":{\"input\":3,\"output\":4},\"content\":[{\"type\":\"text\",\"text\":\" Use the lock. \"}]}}\n",
+        ))
+        .unwrap();
+        assert_eq!(answer.text, "Use the lock.");
+        assert_eq!(
+            answer.usage,
+            Some(PeerUsage {
+                input_tokens: 18,
+                output_tokens: 6
+            })
+        );
+        assert_eq!(
+            parse_pi("{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"error\",\"errorMessage\":\"No API key found for anthropic.\",\"content\":[]}}")
+                .unwrap_err(),
+            "No API key found for anthropic."
+        );
+        assert!(parse_pi("garbage").is_err());
     }
 
     #[test]

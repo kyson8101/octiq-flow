@@ -35,8 +35,9 @@ enum Path {
     /// Antigravity between turns: its process is ended and the next one
     /// starts at the new level.
     Antigravity,
-    /// A command-line agent: the next command's flags.
-    CommandLine,
+    /// Pi: one rpc process whose gate reads the level it started at, so a
+    /// change ends it between turns and the next message resumes it.
+    Pi,
 }
 
 impl Path {
@@ -44,7 +45,7 @@ impl Path {
         Self::ClaudeLive,
         Self::CodexThread,
         Self::Antigravity,
-        Self::CommandLine,
+        Self::Pi,
     ];
 
     fn agent(self) -> ChatAgent {
@@ -52,7 +53,7 @@ impl Path {
             Self::ClaudeLive => ChatAgent::Claude,
             Self::CodexThread => ChatAgent::Codex,
             Self::Antigravity => ChatAgent::Antigravity,
-            Self::CommandLine => ChatAgent::Pi,
+            Self::Pi => ChatAgent::Pi,
         }
     }
 }
@@ -235,10 +236,10 @@ fn a_lowering_takes_hold_at_once_while_the_profile_is_away_and_is_recorded_later
         );
         world.runs_at(Access::Read);
         assert_eq!(settle_owed(&world.svc), ["the ledger"], "{path:?}");
-        // Antigravity takes a level in its next process, so this one ends.
+        // Antigravity and Pi take a level in their next process, so this one ends.
         assert_eq!(
             world.agent.gone_soon(),
-            path == Path::Antigravity,
+            matches!(path, Path::Antigravity | Path::Pi),
             "{path:?}"
         );
 

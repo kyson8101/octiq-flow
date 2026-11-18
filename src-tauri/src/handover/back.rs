@@ -131,6 +131,8 @@ pub fn fork_command(turn: &AnswerTurn) -> Result<String, String> {
             ));
             Ok(cmd)
         }
+        // `pi --fork` brings back the forked session's own tool set whatever
+        // `--tools` says, so a copy cannot be made read-only (AGENTS.md, Pi).
         ChatAgent::Pi => Err(
             "The original chat runs on pi, which cannot answer from a read-only copy of its conversation. Read it with read_conversation instead."
                 .into(),

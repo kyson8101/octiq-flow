@@ -1,0 +1,1 @@
+{"id":"octiq-prompt-n","type":"response","command":"prompt","success":false,"error":"No API key found for anthropic.\n\nUse /login to log into a provider via OAuth or API key. See:\n  /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/providers.md\n  /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md"}

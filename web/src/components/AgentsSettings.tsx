@@ -22,11 +22,12 @@ import { AgentAvatar } from "./AgentAvatar";
 import { AgentAvatarEditor } from "./AgentAvatarEditor";
 import { rolePreview } from "./AgentRole";
 import { sharedProject } from "../lib/frontDesk";
+import { useTeamModels } from "../lib/useTeamModels";
+import { modelOptions, selectedModel } from "./modelOptions";
 
 type ProjectRef = { id: string; name: string };
 
-/** Pi is left out: it cannot carry OctiqFlow's tools, so it cannot report. */
-const PROVIDERS: Provider[] = ["claude", "codex", "antigravity"];
+const PROVIDERS: Provider[] = ["claude", "codex", "pi", "antigravity"];
 
 function blank(projectId: string | null): TeamDraft {
   return { name: "", role: "", agent: "claude", model: "sonnet", effort: "medium", access: "auto", projectId, reportsTo: null, teamId: null };
@@ -629,6 +630,7 @@ export function ModelFields({ agent, model, effort, onProvider, onModel, onEffor
   onEffort: (effort: Effort) => void;
   disabled?: boolean;
 }) {
+  const models = useTeamModels(agent);
   return (
     <>
       <label>
@@ -639,8 +641,8 @@ export function ModelFields({ agent, model, effort, onProvider, onModel, onEffor
       </label>
       <label>
         <span>Model</span>
-        <select aria-label="Model" value={model} disabled={disabled} onChange={(event) => onModel(event.target.value)}>
-          {teamModels(agent).map((m) => <option key={m.id} value={m.flag}>{m.model}</option>)}
+        <select aria-label="Model" value={selectedModel(agent, model, models)} disabled={disabled} onChange={(event) => onModel(event.target.value)}>
+          {modelOptions(agent, model, models)}
         </select>
       </label>
       <label>
@@ -736,7 +738,10 @@ export function teamDraftFields(draft: TeamDraft, team: TeamAgent[], teams: Agen
   const pickProvider = (agent: Provider) => {
     const model = teamModels(agent)[0]?.flag ?? "";
     const effort = EFFORTS[agent].some((e) => e.id === draft.effort) ? draft.effort : EFFORTS[agent][0]?.id;
-    const level = ACCESS[agent].some((a) => a.id === draft.access) ? draft.access : "auto";
+    // A level the provider does not offer (Pi has no Auto) moves to the
+    // nearest one it does: Auto if it has it, else Accept edits.
+    const level = ACCESS[agent].some((a) => a.id === draft.access) ? draft.access
+      : ACCESS[agent].some((a) => a.id === "auto") ? "auto" : "edits";
     // Browser and computer use for workers is Codex's; leaving Codex ends it.
     onChange({ ...draft, agent, model, effort, access: level, ...(agent === "codex" ? {} : { desktopTools: false }) });
   };

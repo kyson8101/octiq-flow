@@ -787,6 +787,9 @@ struct AutoPlanTurn {
     request_id: Option<Value>,
     native_id: Option<String>,
     declined: HashSet<String>,
+    /// Pi tool calls of this turn parked on the person's card. The turn
+    /// cannot end cleanly with one of them unanswered.
+    open_asks: usize,
 }
 
 impl Default for AutoPlanTurn {
@@ -796,8 +799,21 @@ impl Default for AutoPlanTurn {
             request_id: None,
             native_id: None,
             declined: HashSet::new(),
+            open_asks: 0,
         }
     }
+}
+
+/// Where one Pi tool call stood when it reached the gate: the launch, the
+/// prompt write and the turn sequence it belongs to. Its answer counts for
+/// plan auto-approval only while all three are still the session's, so a late
+/// answer from an older turn neither latches nor clears the current one.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PiCallTurn {
+    launch_id: String,
+    write_id: uuid::Uuid,
+    sequence: u64,
+    asked: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1902,10 +1918,14 @@ impl ChatManager {
         key: &str,
         event: &Value,
     ) -> Result<(), String> {
-        let interrupted = event.get("type").and_then(Value::as_str) == Some("result")
-            && session
-                .lock()
-                .is_ok_and(|session| session.cut_off != CutOff::No);
+        // Claude's failed `result` and Pi's `agent_settled` are the full stop
+        // of the turn the host cut short.
+        let interrupted = matches!(
+            event.get("type").and_then(Value::as_str),
+            Some("result" | "agent_settled")
+        ) && session
+            .lock()
+            .is_ok_and(|session| session.cut_off != CutOff::No);
         self.orchestrations
             .observe_worker_turn_event(key, event, interrupted)
     }
@@ -2008,6 +2028,88 @@ impl ChatManager {
 
     fn start_context(&self, session_key: &str) -> Option<StartContext> {
         self.starts.lock().ok()?.get(session_key).cloned()
+    }
+
+    /// A Pi tool call reached the gate. Takes the session lock for an instant
+    /// (no ledger, no await). `asked` marks a call that will park on the
+    /// person's card. None for a launch that is not the running one: nothing
+    /// of the current turn can depend on it.
+    pub(crate) fn pi_call_begin(
+        &self,
+        session_key: &str,
+        launch_id: Option<&str>,
+        asked: bool,
+    ) -> Option<PiCallTurn> {
+        let session = self.sessions.lock().ok()?.get(session_key).cloned()?;
+        let mut session = session.lock().ok()?;
+        if launch_id.is_some_and(|id| id != session.launch_id) {
+            return None;
+        }
+        if asked {
+            session.auto_plan_turn.open_asks += 1;
+        }
+        Some(PiCallTurn {
+            launch_id: session.launch_id.clone(),
+            write_id: session.auto_plan_turn.write_id,
+            sequence: self
+                .turn_sequence(session_key)
+                .load(std::sync::atomic::Ordering::SeqCst),
+            asked,
+        })
+    }
+
+    /// The gate answered. A refusal (the host's rule, an impostor, the
+    /// person's Deny, a card nobody answered) latches the current turn; an
+    /// allow changes nothing. An answer for another launch, prompt or turn
+    /// touches nothing.
+    pub(crate) fn pi_call_end(&self, session_key: &str, call: &PiCallTurn, refused: bool) {
+        let Some(session) = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|s| s.get(session_key).cloned())
+        else {
+            return;
+        };
+        let mut session = session.lock().unwrap_or_else(|e| e.into_inner());
+        let current = session.launch_id == call.launch_id
+            && session.auto_plan_turn.write_id == call.write_id
+            && self
+                .turn_sequence(session_key)
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == call.sequence;
+        if !current {
+            return;
+        }
+        if call.asked {
+            session.auto_plan_turn.open_asks = session.auto_plan_turn.open_asks.saturating_sub(1);
+        }
+        if refused {
+            session.auto_plan_refused = true;
+        }
+    }
+
+    /// The folders a chat works in, the working directory first: where a Pi
+    /// tool call is judged to be "in the project" (`pi_gate`). Empty for a
+    /// chat the host has no record of.
+    pub(crate) fn launch_folders(&self, session_key: &str) -> Vec<String> {
+        let Some(start) = self.start_context(session_key) else {
+            return Vec::new();
+        };
+        std::iter::once(start.cwd)
+            .chain(start.extra_dirs.into_iter().flatten())
+            .collect()
+    }
+
+    /// A worker is parked on an approval card, not stalled: say so to the
+    /// ledger the way Claude's own `control_request` does.
+    pub(crate) fn note_waiting_for_approval(&self, key: &str) {
+        if let Err(error) = self
+            .orchestrations
+            .observe_worker_event(key, &json!({ "type": "control_request" }))
+        {
+            eprintln!("orchestration: cannot record tool wait: {error}");
+        }
     }
 
     /// The provider's own conversation id for `session_key`, as its process
@@ -3229,15 +3331,20 @@ fn schedule_quota_resume(
     let target = target.or_else(|| {
         asking
             .then(|| {
-                [ChatAgent::Claude, ChatAgent::Codex, ChatAgent::Antigravity]
-                    .into_iter()
-                    .find_map(|agent| {
-                        crate::provider_failover::equivalent_using(
-                            &start.settings(),
-                            &start.default_settings(),
-                            agent,
-                        )
-                    })
+                [
+                    ChatAgent::Claude,
+                    ChatAgent::Codex,
+                    ChatAgent::Antigravity,
+                    ChatAgent::Pi,
+                ]
+                .into_iter()
+                .find_map(|agent| {
+                    crate::provider_failover::equivalent_using(
+                        &start.settings(),
+                        &start.default_settings(),
+                        agent,
+                    )
+                })
             })
             .flatten()
     });
@@ -3567,8 +3674,8 @@ pub(crate) fn record_access_for(key: &str, access: Option<Access>) {
 
 /// What a chat may do at this moment, or None when no chat by that key is known.
 ///
-/// No production reader since asking moved to the agent's own control channel.
-#[allow(dead_code)]
+/// Claude and Codex ask on their own control channels and no longer read this;
+/// Pi's host gate (`pi_gate`) does, on every tool call.
 pub fn access_now(key: &str) -> Option<Access> {
     with_access(|a| a.get(key).copied())
 }
@@ -3889,9 +3996,11 @@ fn chat_start_with_user_turn(
         .flatten();
     if !key.starts_with("chat:orch-")
         && (unavailable.is_some()
-            || manager
-                .failover
-                .blocked(source.agent, crate::auto_resume::unix_now()))
+            || manager.failover.blocked(
+                source.agent,
+                source.model.as_deref(),
+                crate::auto_resume::unix_now(),
+            ))
     {
         let owner = crate::failover_policy::owner(&key)?;
         let (rule, target) =
@@ -3908,11 +4017,16 @@ fn chat_start_with_user_turn(
         if rule.mode == crate::failover_policy::Mode::Ask {
             let target = target
                 .or_else(|| {
-                    [ChatAgent::Claude, ChatAgent::Codex, ChatAgent::Antigravity]
-                        .into_iter()
-                        .find_map(|agent| {
-                            crate::provider_failover::equivalent_using(&source, &defaults, agent)
-                        })
+                    [
+                        ChatAgent::Claude,
+                        ChatAgent::Codex,
+                        ChatAgent::Antigravity,
+                        ChatAgent::Pi,
+                    ]
+                    .into_iter()
+                    .find_map(|agent| {
+                        crate::provider_failover::equivalent_using(&source, &defaults, agent)
+                    })
                 })
                 .ok_or(
                     "No compatible fallback provider is available. The registered model was kept.",
@@ -3951,9 +4065,11 @@ fn chat_start_with_user_turn(
         if let Some(target) = target.filter(|_| {
             rule.mode == crate::failover_policy::Mode::Auto
                 && (unavailable.is_some()
-                    || manager
-                        .failover
-                        .blocked(source.agent, crate::auto_resume::unix_now()))
+                    || manager.failover.blocked(
+                        source.agent,
+                        source.model.as_deref(),
+                        crate::auto_resume::unix_now(),
+                    ))
         }) {
             handoff = Some(provider_history(&key)?);
             agent = target.agent;
@@ -5399,6 +5515,8 @@ fn start_session_with_recovery(
         let rt = answer_runtime();
         // The reader is where a chat learns its own session id.
         let reading = manager.clone();
+        // Pi spends whichever upstream's allowance its model names.
+        let quota_model = model.clone();
         let reader_mcp_ready = mcp_ready.clone();
         let recovery_observation = recovery_observation.clone();
         let mut native_recovery_turn = recovery_fence.is_some();
@@ -5421,6 +5539,7 @@ fn start_session_with_recovery(
             // and so does this.
             let mut usage_meter = crate::agent_usage::Meter::default();
             let mut denied_actions = DeniedActions::default();
+            let mut pi_turn = PiTurn::default();
             let mut auto_plan_refused = false;
             let prelude = app_server_prelude
                 .into_iter()
@@ -5433,6 +5552,13 @@ fn start_session_with_recovery(
                 }
                 match serde_json::from_str::<Value>(trimmed) {
                     Ok(mut event) => {
+                        // A provider whose protocol says a thing the page and
+                        // the record know in another form (Pi's RPC answers)
+                        // is rewritten before anything else reads the line.
+                        stream_provider.adapt_event(&mut event);
+                        if stream_provider.kind() == ChatAgent::Pi {
+                            pi_turn.observe(&event);
+                        }
                         if let Some(observation) = &recovery_observation {
                             observation.event(&event);
                         }
@@ -5603,6 +5729,7 @@ fn start_session_with_recovery(
                         if quota_failure {
                             reading.failover.limited(
                                 stream_provider.kind(),
+                                quota_model.as_deref(),
                                 quota_reset_hint,
                                 crate::auto_resume::unix_now(),
                             );
@@ -5623,6 +5750,25 @@ fn start_session_with_recovery(
                             }
                         }
                         let observed = stream_provider.observe_event(&event);
+                        if let Some(notice) = observed.host_notice {
+                            emit_status(
+                                stream_provider.kind(),
+                                ChatStatus {
+                                    key: key.clone(),
+                                    kind: "stderr".into(),
+                                    text: notice.to_string(),
+                                    code: None,
+                                },
+                            );
+                        }
+                        if let Some(id) = observed.cancel_ui_request {
+                            cancel_ui_request(&asking, id);
+                        }
+                        // An answer to a command the host sent, or a UI
+                        // record nobody draws: not conversation.
+                        if observed.suppress {
+                            continue;
+                        }
                         if let Ok(mut session) = asking.lock() {
                             if let Err(error) =
                                 reading.background.observe(&key, &session.launch_id, &event)
@@ -5778,11 +5924,11 @@ fn start_session_with_recovery(
                             // its process is about to exit and its reaper
                             // carries the next turn into a fresh command.
                             let mut refused = None;
-                            let clean = ended_cleanly(
-                                stream_provider.kind(),
-                                &event,
-                                denied_actions.newly_refused(&event),
-                            );
+                            let went_badly = match stream_provider.kind() {
+                                ChatAgent::Pi => pi_turn.ended_badly(&event),
+                                _ => denied_actions.newly_refused(&event),
+                            };
+                            let clean = ended_cleanly(stream_provider.kind(), &event, went_badly);
                             if let Ok(mut s) = asking.lock() {
                                 reading.questions.detach_launch(&s.launch_id);
                                 ((wrap_up, refused), auto_plan_end) = end_turn_for_auto_plan(
@@ -6594,6 +6740,7 @@ fn end_turn_for_auto_plan(
         && !refused
         && !session.auto_plan_refused
         && !session.auto_plan_turn.refused()
+        && session.auto_plan_turn.open_asks == 0
         && !session.codex.as_ref().is_some_and(|codex| {
             codex.elicitations.values().any(|p| session.codex_target_is_current(&p.target))
         })
@@ -8562,6 +8709,23 @@ fn write_control_response(session: &Arc<Mutex<ChatSession>>, request_id: &str, r
     let _ = stdin.flush();
 }
 
+/// Cancel a dialog a Pi extension opened over RPC. Nobody can answer it, and
+/// Pi waits for the answer for as long as the process lives.
+fn cancel_ui_request(session: &Arc<Mutex<ChatSession>>, id: &str) {
+    let Ok(mut guard) = session.lock() else {
+        return;
+    };
+    let Some(stdin) = guard.stdin.as_mut() else {
+        return;
+    };
+    let _ = writeln!(
+        stdin,
+        "{}",
+        json!({ "type": "extension_ui_response", "id": id, "cancelled": true })
+    );
+    let _ = stdin.flush();
+}
+
 /// Change what a RUNNING chat may do, WITHOUT ending it.
 ///
 /// The mode is on the command line, so changing it used to mean killing the
@@ -8644,7 +8808,8 @@ pub fn chat_set_access_impl(
     let relaunch = !thread
         && !live
         && provider.capabilities().input.accepts_stdin()
-        && provider.capabilities().interrupt_ends_process;
+        && (provider.capabilities().interrupt_ends_process
+            || provider.capabilities().access_change_relaunches);
     // Every refusal that changes nothing comes before the record of a raise.
     if relaunch && guard.busy {
         return Err(format!(
@@ -8992,15 +9157,65 @@ impl DeniedActions {
     }
 }
 
+/// How a Pi turn ended, kept by the reader while the turn runs.
+///
+/// Pi's full stop (`agent_settled`) says only whether the run was aborted: a
+/// model call that failed for good is in the assistant message before it
+/// (`stopReason: "error"`), and one that failed and was retried is followed by
+/// more messages. So the LAST assistant message of the turn decides: only
+/// `stop` is a turn that finished what it was asked. No assistant message at
+/// all, an aborted run and a prompt Pi refused (`octiq_rejected_prompt`, said
+/// as a failed message) are not clean. The state is the turn's own and is
+/// cleared by its full stop, so one turn's failure is never the next one's.
+#[derive(Default)]
+struct PiTurn {
+    /// `stopReason` of the last assistant message so far.
+    last_stop: Option<String>,
+}
+
+impl PiTurn {
+    /// Every event of the stream, adapted. Only a finished assistant message
+    /// says anything; a system or user message and a streaming update do not.
+    fn observe(&mut self, event: &Value) {
+        if event.get("type").and_then(Value::as_str) != Some("message_end") {
+            return;
+        }
+        let Some(message) = event.get("message") else {
+            return;
+        };
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            return;
+        }
+        self.last_stop = Some(
+            message
+                .get("stopReason")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        );
+    }
+
+    /// Asked of the event that ends a turn, after `observe`: whether the turn
+    /// ended badly. Takes the turn's state with it.
+    fn ended_badly(&mut self, event: &Value) -> bool {
+        let last = self.last_stop.take();
+        event.get("aborted").and_then(Value::as_bool) == Some(true)
+            || last.as_deref() != Some("stop")
+    }
+}
+
 /// Whether a full stop is the agent finishing what it was asked, rather than
 /// a failure, a refusal or a turn that was cut short. A completion ticks its
 /// chat only on this.
-fn ended_cleanly(agent: ChatAgent, event: &Value, newly_refused: bool) -> bool {
+///
+/// `refused` is evidence the full stop does not carry itself: Antigravity's
+/// refusals past the previous `result`'s count, and Pi's last assistant
+/// message not having ended normally (`PiTurn`).
+fn ended_cleanly(agent: ChatAgent, event: &Value, refused: bool) -> bool {
     let text = |name: &str| event.get(name).and_then(Value::as_str);
     match agent {
         ChatAgent::Antigravity => {
-            !newly_refused
-                && event.pointer("/result/status").and_then(Value::as_str) == Some("SUCCESS")
+            !refused && event.pointer("/result/status").and_then(Value::as_str) == Some("SUCCESS")
         }
         _ if crate::outcome::of_provider_event(agent, event).is_some() => false,
         ChatAgent::Claude => {
@@ -9011,7 +9226,7 @@ fn ended_cleanly(agent: ChatAgent, event: &Value, newly_refused: bool) -> bool {
             text("type") == Some("turn.completed")
                 && matches!(text("status"), None | Some("completed"))
         }
-        ChatAgent::Pi => true,
+        ChatAgent::Pi => !refused,
     }
 }
 
@@ -11622,7 +11837,12 @@ mod tests {
     #[test]
     fn only_a_provider_without_an_in_band_stop_relaunches_to_continue() {
         assert!(!relaunches_to_continue(ChatAgent::Claude));
-        assert!(relaunches_to_continue(ChatAgent::Pi));
+        // Pi's rpc process takes an in-band abort, so Stop keeps it.
+        assert!(!relaunches_to_continue(ChatAgent::Pi));
+        {
+            let _exec = crate::agent_provider::tests::CommandLineCodex::on();
+            assert!(relaunches_to_continue(ChatAgent::Codex));
+        }
         assert!(relaunches_to_continue(ChatAgent::Antigravity));
         assert!(provider_for(ChatAgent::Antigravity)
             .capabilities()
@@ -16780,7 +17000,8 @@ mod completion_tests {
     fn a_command_line_agent_takes_the_wrap_up_in_its_next_process() {
         // No stdin to write to: the wrap-up waits in the queue for the
         // reaper to carry into the next command, even with no turn in flight.
-        let chat = Listed::with(session_of(ChatAgent::Pi, false, false));
+        let _exec = crate::agent_provider::tests::CommandLineCodex::on();
+        let chat = Listed::with(session_of(ChatAgent::Codex, false, false));
         let completing = chat.complete();
         assert_eq!(completing.state, "queued");
 
@@ -16957,6 +17178,132 @@ mod completion_tests {
             &json!({ "event": "result", "result": { "status": "ERROR", "error": "interrupted" } }),
             false
         ));
+    }
+
+    const PI_TURN: &str = include_str!("../../web/src/lib/__fixtures__/pi-rpc-turn.jsonl");
+    const PI_ABORT: &str = include_str!("../../web/src/lib/__fixtures__/pi-rpc-abort.jsonl");
+    const PI_NO_LOGIN: &str = include_str!("../../web/src/lib/__fixtures__/pi-rpc-no-login.jsonl");
+    pub(super) const PI_ERROR_EXHAUSTED: &str =
+        include_str!("../../web/src/lib/__fixtures__/pi-rpc-error-exhausted.jsonl");
+    pub(super) const PI_ERROR_RECOVERED: &str =
+        include_str!("../../web/src/lib/__fixtures__/pi-rpc-error-recovered.jsonl");
+
+    /// What the reader decides at each full stop of a recorded Pi stream:
+    /// the same steps, in the same order (`adapt_event`, `PiTurn::observe`,
+    /// then `ended_badly` and `ended_cleanly` at the event that ends a turn).
+    pub(super) fn pi_full_stops(stream: &str) -> Vec<bool> {
+        let pi = provider_for(ChatAgent::Pi);
+        let mut turn = PiTurn::default();
+        let mut stops = Vec::new();
+        for line in stream.lines().filter(|l| !l.trim().is_empty()) {
+            let mut event: Value = serde_json::from_str(line).expect("a recorded line");
+            pi.adapt_event(&mut event);
+            turn.observe(&event);
+            if pi.observe_event(&event).turn_finished {
+                let refused = turn.ended_badly(&event);
+                stops.push(ended_cleanly(ChatAgent::Pi, &event, refused));
+            }
+        }
+        stops
+    }
+
+    /// Real `pi --mode rpc` 1.5.2 streams. The full stop (`agent_settled`)
+    /// says nothing of a model call that failed for good: the last assistant
+    /// message does.
+    #[test]
+    fn a_pi_turn_is_clean_only_when_its_last_message_stopped_normally() {
+        // Three prompts that ended on `stop` (two of them after a tool call,
+        // whose own message said `toolUse`), and a fourth whose last model
+        // call failed (`stopReason: "error"`, after an MCP tool call) while
+        // `agent_settled` still said `aborted: false`.
+        assert_eq!(pi_full_stops(PI_TURN), [true, true, true, false]);
+        // The cut-off turn's own full stop is not clean; the next prompt's is.
+        assert_eq!(pi_full_stops(PI_ABORT), [false, true]);
+        // A prompt Pi refused has no run and no assistant message of its own.
+        assert_eq!(pi_full_stops(PI_NO_LOGIN), [false]);
+        // Every retry failed: `agent_settled.aborted` is false and the turn failed.
+        let exhausted: Value = serde_json::from_str(
+            PI_ERROR_EXHAUSTED
+                .lines()
+                .rfind(|l| l.contains("agent_settled"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            exhausted["aborted"], false,
+            "the full stop alone says clean"
+        );
+        assert_eq!(pi_full_stops(PI_ERROR_EXHAUSTED), [false]);
+        // An error Pi retried and recovered from: the last message decides.
+        assert_eq!(pi_full_stops(PI_ERROR_RECOVERED), [true]);
+    }
+
+    #[test]
+    fn a_pi_turns_evidence_is_its_own() {
+        let message = |stop: Option<&str>| {
+            let mut event =
+                json!({ "type": "message_end", "message": { "role": "assistant", "content": [] } });
+            if let Some(stop) = stop {
+                event["message"]["stopReason"] = json!(stop);
+            }
+            event
+        };
+        let settled = json!({ "type": "agent_settled", "aborted": false });
+        let mut turn = PiTurn::default();
+        // No assistant message at all.
+        assert!(turn.ended_badly(&settled));
+        // Streaming updates, users and the system prompt say nothing.
+        for event in [
+            json!({ "type": "message_update" }),
+            json!({ "type": "message_end", "message": { "role": "user" } }),
+            json!({ "type": "message_end", "message": { "role": "system" } }),
+        ] {
+            turn.observe(&event);
+        }
+        assert!(turn.ended_badly(&settled));
+        // Only `stop` is normal; a length cut, a tool call left open, an
+        // aborted call and an error are not, and a message with no reason is not.
+        for (stop, bad) in [
+            (Some("stop"), false),
+            (Some("length"), true),
+            (Some("toolUse"), true),
+            (Some("aborted"), true),
+            (Some("error"), true),
+            (None, true),
+        ] {
+            turn.observe(&message(stop));
+            assert_eq!(turn.ended_badly(&settled), bad, "{stop:?}");
+        }
+        // One turn's failure is never the next one's.
+        turn.observe(&message(Some("error")));
+        assert!(turn.ended_badly(&settled));
+        turn.observe(&message(Some("stop")));
+        assert!(!turn.ended_badly(&settled));
+        // An aborted run is not clean however its last message ended.
+        turn.observe(&message(Some("stop")));
+        assert!(turn.ended_badly(&json!({ "type": "agent_settled", "aborted": true })));
+        // The last message decides: failed first, recovered after.
+        turn.observe(&message(Some("error")));
+        turn.observe(&message(Some("stop")));
+        assert!(!turn.ended_badly(&settled));
+    }
+
+    #[test]
+    fn a_failed_pi_wrap_up_ticks_nothing_and_a_recovered_one_does() {
+        let failed = Listed::new(false);
+        failed.session.lock().unwrap().agent = ChatAgent::Pi;
+        failed.complete();
+        let clean = *pi_full_stops(PI_ERROR_EXHAUSTED).last().unwrap();
+        assert_eq!(failed.full_stop(clean), Some(false));
+        assert!(!failed.row().is_done());
+        assert!(failed.live(), "the process is left running");
+
+        let recovered = Listed::new(false);
+        recovered.session.lock().unwrap().agent = ChatAgent::Pi;
+        recovered.complete();
+        let clean = *pi_full_stops(PI_ERROR_RECOVERED).last().unwrap();
+        assert_eq!(recovered.full_stop(clean), Some(true));
+        assert!(recovered.row().is_done());
     }
 
     #[test]
@@ -17623,7 +17970,8 @@ mod completion_tests {
     /// wrap-up.
     #[test]
     fn a_stop_that_ends_the_process_leaves_no_turn_for_a_wrap_up_to_be_taken_for() {
-        for (agent, stdin) in [(ChatAgent::Antigravity, true), (ChatAgent::Pi, false)] {
+        let _exec = crate::agent_provider::tests::CommandLineCodex::on();
+        for (agent, stdin) in [(ChatAgent::Antigravity, true), (ChatAgent::Codex, false)] {
             assert!(relaunches_to_continue(agent), "{agent:?}");
             let chat = Listed::with(session_of(agent, stdin, true));
             chat.manager
@@ -18840,6 +19188,101 @@ mod auto_plan_tests {
     }
 
     #[test]
+    fn a_failed_pi_coordinator_turn_does_not_approve_a_pending_plan() {
+        let failed = Lead::new(ChatAgent::Pi);
+        failed.session.lock().unwrap().answering = Some("person-turn".into());
+        let clean = *completion_tests::pi_full_stops(completion_tests::PI_ERROR_EXHAUSTED)
+            .last()
+            .unwrap();
+        assert!(failed.finish(clean).is_none());
+        assert!(!failed.approved());
+
+        let recovered = Lead::new(ChatAgent::Pi);
+        recovered.session.lock().unwrap().answering = Some("person-turn".into());
+        let clean = *completion_tests::pi_full_stops(completion_tests::PI_ERROR_RECOVERED)
+            .last()
+            .unwrap();
+        let ended = recovered.finish(clean).expect("a clean end is evidence");
+        recovered.apply(ended);
+        assert!(recovered.approved());
+    }
+
+    fn pi_clean_stop() -> bool {
+        *completion_tests::pi_full_stops(completion_tests::PI_ERROR_RECOVERED)
+            .last()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_refused_pi_call_blocks_standing_plan_approval() {
+        // Every kind of refusal the gate answers latches the turn; an
+        // allowed call does not.
+        for (refused, approved) in [(true, false), (false, true)] {
+            let lead = Lead::new(ChatAgent::Pi);
+            lead.session.lock().unwrap().answering = Some("person-turn".into());
+            let call = lead
+                .manager
+                .pi_call_begin(&lead.key, Some("test-launch"), false)
+                .unwrap();
+            lead.manager.pi_call_end(&lead.key, &call, refused);
+            match lead.finish(pi_clean_stop()) {
+                Some(ended) => {
+                    assert!(approved, "a refused call must not leave a clean end");
+                    lead.apply(ended);
+                }
+                None => assert!(!approved),
+            }
+            assert_eq!(lead.approved(), approved);
+        }
+    }
+
+    #[test]
+    fn an_unanswered_or_dropped_pi_card_blocks_standing_plan_approval() {
+        // Still open at the full stop: not clean.
+        let lead = Lead::new(ChatAgent::Pi);
+        lead.session.lock().unwrap().answering = Some("person-turn".into());
+        let open = lead.manager.pi_call_begin(&lead.key, None, true).unwrap();
+        assert!(lead.finish(pi_clean_stop()).is_none());
+        assert!(!lead.approved());
+        lead.manager.pi_call_end(&lead.key, &open, true);
+
+        // A card the person allowed leaves the turn clean again.
+        let lead = Lead::new(ChatAgent::Pi);
+        lead.session.lock().unwrap().answering = Some("person-turn".into());
+        let allowed = lead.manager.pi_call_begin(&lead.key, None, true).unwrap();
+        lead.manager.pi_call_end(&lead.key, &allowed, false);
+        let ended = lead
+            .finish(pi_clean_stop())
+            .expect("an allowed card is no refusal");
+        lead.apply(ended);
+        assert!(lead.approved());
+    }
+
+    #[test]
+    fn a_late_pi_answer_from_an_older_turn_neither_latches_nor_clears() {
+        let lead = Lead::new(ChatAgent::Pi);
+        lead.session.lock().unwrap().answering = Some("person-turn".into());
+        let old = lead.manager.pi_call_begin(&lead.key, None, true).unwrap();
+        // A new turn starts: its state replaces the old one's.
+        lead.prompt("next turn");
+        let fresh = lead.manager.pi_call_begin(&lead.key, None, true).unwrap();
+        // The old turn's refusal arrives late: nothing latches, nothing clears.
+        lead.manager.pi_call_end(&lead.key, &old, true);
+        {
+            let s = lead.session.lock().unwrap();
+            assert!(!s.auto_plan_refused);
+            assert_eq!(s.auto_plan_turn.open_asks, 1);
+        }
+        lead.manager.pi_call_end(&lead.key, &fresh, true);
+        assert!(lead.session.lock().unwrap().auto_plan_refused);
+        // A call of another launch is not this session's at all.
+        assert!(lead
+            .manager
+            .pi_call_begin(&lead.key, Some("another-launch"), true)
+            .is_none());
+    }
+
+    #[test]
     fn auto_plan_only_clean_own_full_stops_trigger_including_host_notifications() {
         for (agent, good, bad) in [
             (
@@ -18856,6 +19299,11 @@ mod auto_plan_tests {
                 ChatAgent::Antigravity,
                 json!({"event":"result","result":{"status":"SUCCESS"}}),
                 json!({"event":"result","result":{"status":"ERROR"}}),
+            ),
+            (
+                ChatAgent::Pi,
+                json!({"type":"agent_settled","aborted":false}),
+                json!({"type":"agent_settled","aborted":true,"error":"aborted"}),
             ),
         ] {
             for notification in [false, true] {
@@ -20054,7 +20502,8 @@ mod auto_plan_tests {
     fn auto_plan_live_one_shot_stop_preserves_queued_turn_with_or_without_staged_approval() {
         use std::io::BufRead;
         for in_flight in [false, true] {
-            let lead = Lead::new(ChatAgent::Pi);
+            let _exec = crate::agent_provider::tests::CommandLineCodex::on();
+            let lead = Lead::new(ChatAgent::Codex);
             let ended = lead.finish(true).unwrap();
             let epoch = ended.epoch;
             let counter = ended.stop_epoch.clone();
@@ -20090,7 +20539,7 @@ mod auto_plan_tests {
                     lead.manager.clone(),
                     Voice::host(lead.key.clone()),
                     "/never-started".into(),
-                    ChatAgent::Pi,
+                    ChatAgent::Codex,
                     None,
                     Some(Access::Auto),
                     Some("first".into()),
@@ -20270,8 +20719,9 @@ mod auto_plan_tests {
     #[test]
     fn auto_plan_live_one_shot_stop_revokes_a_successful_buffered_full_stop() {
         for ended_first in [false, true] {
-            let lead = Lead::new(ChatAgent::Pi);
-            assert!(relaunches_to_continue(ChatAgent::Pi));
+            let _exec = crate::agent_provider::tests::CommandLineCodex::on();
+            let lead = Lead::new(ChatAgent::Codex);
+            assert!(relaunches_to_continue(ChatAgent::Codex));
             {
                 let sessions = lead.manager.sessions.lock().unwrap();
                 lead.manager

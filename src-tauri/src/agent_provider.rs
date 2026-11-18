@@ -3,10 +3,11 @@
 //! A chat is deliberately provider-agnostic: it has a selected `AgentKind`, a
 //! model, a prompt, folders, and an access level. Claude Code, Codex, Pi and
 //! Antigravity turn that shared request into different processes, however.
-//! Claude and Antigravity keep a JSON conversation on stdin; Codex uses its
-//! long-lived app-server JSON-RPC protocol; Pi starts one JSON process per
-//! turn. Claude and Codex both have control channels, but with different
-//! framing; Antigravity has none, so stopping it ends its process. Keeping those distinctions in
+//! Claude, Antigravity and Pi keep one process per chat with a JSON
+//! conversation on stdin (Pi's is `--mode rpc`, with an in-band `abort`); Codex
+//! uses its long-lived app-server JSON-RPC protocol. Claude, Codex and Pi have
+//! control channels, but with different framing; Antigravity has none, so
+//! stopping it ends its process. Keeping those distinctions in
 //! the chat manager spread provider checks through session startup, input,
 //! completion, and settings.
 //!
@@ -105,6 +106,11 @@ pub struct AgentCapabilities {
     /// A running turn is stopped by ending the process, which the next turn
     /// resumes, because the provider's stdin takes no control message.
     pub interrupt_ends_process: bool,
+    /// A running process cannot change its access level, and the host does
+    /// not tell it one: a new level takes hold in the process that resumes
+    /// the conversation, between turns (Pi's tool list and its host gate are
+    /// fixed at launch). Antigravity gets the same from `interrupt_ends_process`.
+    pub access_change_relaunches: bool,
 }
 
 /// How much the user has allowed an agent to do without an intervention.
@@ -448,6 +454,15 @@ pub struct AgentEvent<'a> {
     pub permission: Option<PermissionRequest<'a>>,
     pub is_initialize_response: bool,
     pub access_refusal: Option<&'a str>,
+    /// Not conversation: an answer to a command the host sent, or a UI
+    /// record nobody draws. It goes no further than the reader.
+    pub suppress: bool,
+    /// Words the provider itself raised about its startup (an MCP server that
+    /// did not connect). Shown in the chat as a notice, never recorded.
+    pub host_notice: Option<&'a str>,
+    /// The id of a dialog the provider is waiting on, which nobody can
+    /// answer and which the host must cancel.
+    pub cancel_ui_request: Option<&'a str>,
 }
 
 /// The contract each CLI runtime implements.
@@ -507,6 +522,12 @@ pub trait AgentProvider: Send + Sync {
     /// (`octiq_user_turn_id`). Process startup is not one.
     fn acknowledges_user_turn(&self, event: &Value) -> bool;
 
+    /// Rewrite a raw event into the form the page and the record know it by,
+    /// before anything else sees it. Pi's RPC mode answers `get_state` with a
+    /// response where its JSON mode had a `session` header, and says a refused
+    /// prompt as a response too.
+    fn adapt_event(&self, _event: &mut Value) {}
+
     /// Extract lifecycle metadata from one untouched raw stream event.
     fn observe_event<'a>(&self, event: &'a Value) -> AgentEvent<'a>;
 
@@ -561,24 +582,68 @@ pub(crate) fn toml_string(s: &str) -> String {
 }
 
 /// Model aliases reach a command line, so reject anything that is not a short
-/// model-shaped token rather than merely escaping it.
+/// model-shaped token rather than merely escaping it. One `/` is allowed, for
+/// Pi's `<upstream>/<model>` (`pi_model_ref`); `validate_model` says which
+/// providers may take it.
 pub(crate) fn safe_model(model: &str) -> Option<String> {
-    let ok = model
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_');
-    if ok && !model.is_empty() && model.len() <= 64 {
+    let token = |part: &str| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
+    };
+    let ok = match model.split_once('/') {
+        Some((upstream, id)) => token(upstream) && token(id),
+        None => token(model),
+    };
+    if ok && model.len() <= 64 {
         Some(model.to_string())
     } else {
         None
     }
 }
 
+/// The upstream a bare Pi model id means, kept for chats and agents saved
+/// before Pi could name one: Pi was always started on OpenAI Codex.
+pub(crate) const PI_DEFAULT_UPSTREAM: &str = "openai-codex";
+
+/// Pi's `--model` value, split into its upstream (the provider Pi bills) and
+/// the model id. `anthropic/claude-sonnet-5-5` is Claude through the
+/// Anthropic API; a bare `gpt-5.6-sol` is `openai-codex/gpt-5.6-sol`.
+pub(crate) fn pi_model_ref(model: &str) -> Option<(String, String)> {
+    let model = safe_model(model)?;
+    Some(match model.split_once('/') {
+        Some((upstream, id)) => (upstream.to_ascii_lowercase(), id.to_string()),
+        None => (PI_DEFAULT_UPSTREAM.to_string(), model),
+    })
+}
+
+/// The upstream a Pi chat on `model` runs against: its quota identity
+/// (`provider_failover::account_of`) and the login `pi auth check` asks about.
+/// No model means Pi's historical default, Codex.
+pub(crate) fn pi_upstream(model: Option<&str>) -> String {
+    model
+        .and_then(pi_model_ref)
+        .map(|(upstream, _)| upstream)
+        .unwrap_or_else(|| PI_DEFAULT_UPSTREAM.to_string())
+}
+
 /// Keep exact/custom model ids, but refuse known foreign-provider families.
-/// Antigravity intentionally also offers Claude models; Pi uses Codex models.
+/// Antigravity intentionally also offers Claude models. Pi takes a bare id
+/// from the Codex family, or any `<upstream>/<model>`: Claude through the
+/// Anthropic API is `anthropic/claude-…`.
 pub(crate) fn validate_model(agent: AgentKind, model: Option<&str>) -> Result<(), String> {
     let Some(model) = model else { return Ok(()) };
     if safe_model(model).is_none() {
         return Err("Choose a valid explicit model; no default model was substituted.".into());
+    }
+    if model.contains('/') {
+        // `<upstream>/<model>` is Pi's alone: no other CLI reads it.
+        return if agent == AgentKind::Pi {
+            Ok(())
+        } else {
+            Err(format!("Model {model} does not belong to provider {}. Choose its provider or an explicit compatible model; nothing was started.", agent.id()))
+        };
     }
     let name = model.to_ascii_lowercase();
     let claude = name.starts_with("claude-")
@@ -589,6 +654,8 @@ pub(crate) fn validate_model(agent: AgentKind, model: Option<&str>) -> Result<()
     let gemini = name.starts_with("gemini-");
     let foreign = match agent {
         AgentKind::Claude => codex || gemini,
+        // A bare Pi id means the Codex upstream. Claude's models reach Pi
+        // only with their upstream named (`anthropic/claude-…`).
         AgentKind::Codex | AgentKind::Pi => claude || gemini,
         AgentKind::Antigravity => false,
     };
@@ -604,6 +671,88 @@ pub(crate) fn safe_session_id(id: &str) -> Option<String> {
         && !id.is_empty()
         && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
     ok.then(|| id.to_string())
+}
+
+/// Where Pi keeps its conversations: `$PI_CODING_AGENT_DIR/sessions`, else
+/// `~/.pi/agent/sessions`, one folder per working folder.
+fn pi_sessions_dir() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("PI_CODING_AGENT_DIR")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| crate::paths::home_dir().map(|home| home.join(".pi").join("agent")))?;
+    Some(base.join("sessions"))
+}
+
+/// The most of a session file's first line that is read to learn its id. Pi's
+/// header is a couple of hundred bytes; a file whose first line is longer is
+/// not a session header.
+const PI_HEADER_BYTES: u64 = 8 * 1024;
+
+/// Whether `path` is a Pi session file for `id`: a regular file (never a
+/// link, and the opened handle is checked again) whose first line is the
+/// session header, `{"type":"session","id":<id>,...}`. The file NAME is only a
+/// hint: a file of another conversation renamed to `*_<id>.jsonl` has another
+/// id in its header and is not this conversation.
+fn pi_header_names(path: &Path, id: &str) -> bool {
+    use std::io::{BufRead, Read};
+    let Ok(link) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !link.file_type().is_file() {
+        return false;
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let mut line = Vec::new();
+    let read = std::io::BufReader::new(file.take(PI_HEADER_BYTES)).read_until(b'\n', &mut line);
+    if read.is_err() {
+        return false;
+    }
+    let Ok(header) = serde_json::from_slice::<Value>(&line) else {
+        return false;
+    };
+    header.get("type").and_then(Value::as_str) == Some("session")
+        && header.get("id").and_then(Value::as_str) == Some(id)
+}
+
+/// What `pi --session` is given for a conversation. Pi looks an id up in the
+/// folder it runs in, and when the conversation is in another folder it ASKS
+/// whether to fork it into this one, which a headless process can only
+/// refuse. A chat `chat_recover` moved to another folder still has its
+/// conversation in the old one, so the file is named instead: Pi opens a
+/// session file from any folder, with its id and its messages. The newest
+/// regular file named `*_<id>.jsonl` under a real (not linked) folder whose
+/// header says that id is taken; a candidate that is a link, unreadable,
+/// corrupt, or headed with another id is skipped. No candidate left (a
+/// conversation Pi has not saved yet) is the id, as it always was; so is an
+/// id that is not a valid session id.
+pub(crate) fn pi_session_ref(sessions: &Path, id: &str) -> String {
+    if safe_session_id(id).as_deref() != Some(id) {
+        return id.to_string();
+    }
+    let suffix = format!("_{id}.jsonl");
+    let found = std::fs::read_dir(sessions)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|folder| folder.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|folder| std::fs::read_dir(folder.path()).ok())
+        .flatten()
+        .flatten()
+        .filter(|file| file.file_name().to_string_lossy().ends_with(&suffix))
+        .filter(|file| file.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|file| {
+            let modified = file.metadata().and_then(|m| m.modified()).ok()?;
+            Some((modified, file.path()))
+        })
+        .filter(|(_, path)| pi_header_names(path, id))
+        .max_by_key(|(modified, _)| *modified)
+        .and_then(|(_, path)| path.to_str().map(str::to_owned));
+    found.unwrap_or_else(|| id.to_string())
 }
 
 /// The media type for an image that Claude accepts as a content block.
@@ -675,6 +824,7 @@ impl AgentProvider for ClaudeProvider {
             supports_lite_mode: true,
             uses_octiq_mcp: true,
             interrupt_ends_process: false,
+            access_change_relaunches: false,
         }
     }
 
@@ -916,6 +1066,10 @@ impl AgentProvider for ClaudeProvider {
 /// `exec` restores the previous one-process-per-turn transport without a code
 /// rollback.
 fn codex_exec_fallback() -> bool {
+    #[cfg(test)]
+    if tests::FORCE_EXEC.with(|f| f.get()) {
+        return true;
+    }
     std::env::var("OCTIQ_CODEX_TRANSPORT")
         .ok()
         .is_some_and(|value| value.eq_ignore_ascii_case("exec"))
@@ -1106,6 +1260,7 @@ impl AgentProvider for CodexProvider {
             supports_lite_mode: false,
             uses_octiq_mcp: true,
             interrupt_ends_process: false,
+            access_change_relaunches: false,
         }
     }
 
@@ -1255,6 +1410,173 @@ fn without_ansi_sgr(line: &str) -> Cow<'_, str> {
     Cow::Owned(clean)
 }
 
+/// Where Pi's per-launch files are written, beside OctiqFlow's MCP config:
+/// `~/.octiqflow/mcp/pi/`. Nothing is ever written to the person's `~/.pi`
+/// or to the project's `.pi`.
+const PI_DIR: &str = "pi";
+
+/// OctiqFlow's Pi extension (`scripts/mcp/octiq-pi.ts`): registers the host's
+/// MCP server for the session and sends every tool call to the host's gate.
+const PI_EXTENSION: &str = include_str!("../../scripts/mcp/octiq-pi.ts");
+
+/// `<mcp dir>/pi`, from the path of `octiq-ask.json`.
+fn pi_dir(mcp_config: &Path) -> std::path::PathBuf {
+    mcp_config.with_file_name(PI_DIR)
+}
+
+fn pi_extension_path(mcp_config: &Path) -> std::path::PathBuf {
+    pi_dir(mcp_config).join("octiq-pi.ts")
+}
+
+/// What Pi's model is told at the end of its system prompt. Its words are the
+/// whole content of one file, content-addressed: a prompt that keeps growing
+/// belongs in a file, not on a command line Windows stops at 32,767
+/// characters, and the file keeps the person's preferences out of `ps`.
+fn pi_prompt_path(mcp_config: &Path, text: &str) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(text.as_bytes());
+    let name: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    pi_dir(mcp_config)
+        .join("prompts")
+        .join(format!("{name}.md"))
+}
+
+/// What a Pi chat may do at `access`, as the host gate enforces it
+/// (`pi_gate::decide`). Said to the model so a refusal is never a surprise.
+fn pi_access_prompt(access: Access, worker: bool) -> String {
+    let level = match access {
+        Access::Read => "This chat runs at Read-only access: you can read and search the project. Every tool that changes anything is refused by OctiqFlow before it runs.",
+        Access::Manual => "This chat runs at Manual access: reading and searching inside the project runs freely. Every file change, shell command and other tool call asks the person on an OctiqFlow approval card first.",
+        Access::Edits => "This chat runs at Accept edits access: reading and searching, and writing or editing files inside the project, run freely. Every shell command, and any file outside the project, asks the person on an OctiqFlow approval card first.",
+        Access::Auto => "This chat runs at Auto access, which on Pi is the same as Accept edits: Pi has no automatic safety review, so every shell command and any file outside the project asks the person on an OctiqFlow approval card first, unless they answered Always for it in this chat.",
+        Access::Full => "This chat runs at Full access: every tool call runs without asking. Nothing reviews them first, so take care with anything that cannot be undone.",
+    };
+    let way = match access {
+        Access::Full => "",
+        _ if worker => " A denied or refused call comes back to you as a blocked tool call: do not retry it or reword it to get past the refusal. If the task needs it, record the exact need with `orchestration_gate_create` and end the turn; your access comes with your task and `request_access` cannot change it.",
+        _ => " A denied or refused call comes back to you as a blocked tool call: do not retry it or reword it to get past the refusal. If a task needs more, call `request_access` with the least level that lets it through and why, then end the turn; the person decides on a card, and a raise applies from their next message.",
+    };
+    format!("{level}{way}")
+}
+
+/// The system prompt appended to Pi's own: everything OctiqFlow's MCP
+/// instructions and Claude's `--append-system-prompt` carry, in one file.
+/// Pi does not show a direct MCP server's instructions to the model, so the
+/// paragraphs Claude reads from them (the card diagram, the media block) are
+/// here too.
+fn pi_system_prompt(request: &AgentCommand<'_>) -> String {
+    if request.front_desk {
+        return with_preferences(FRONT_DESK_PROMPT, request.preferences);
+    }
+    let access = request.access.unwrap_or(Access::Read);
+    let (upstream, id) = request
+        .model
+        .and_then(pi_model_ref)
+        .map(|(upstream, id)| (upstream, Some(id)))
+        .unwrap_or_else(|| (PI_DEFAULT_UPSTREAM.to_string(), None));
+    let effort = request.effort.and_then(|e| PI.effort(e));
+    let runtime = format!(
+        "Runtime metadata, authoritative: harness pi.dev; upstream provider {upstream}; model {}; effort {}; access {}.{}",
+        id.as_deref().unwrap_or("Pi's default for this upstream"),
+        effort.unwrap_or("default"),
+        access.as_env(),
+        if request.extra_dirs.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " Besides the working directory, these folders are part of the project: {}.",
+                request.extra_dirs.join(", ")
+            )
+        },
+    );
+    let worker = if request.orchestration_worker {
+        format!("\n\n{}", orchestration_worker_prompt())
+    } else {
+        String::new()
+    };
+    // The second paragraph of the question rule explains Claude's own safety
+    // check; Pi's gate has no such blind spot, so only the first is told.
+    let ask = ASK_PROMPT
+        .split("\n\nNever use")
+        .next()
+        .unwrap_or(ASK_PROMPT);
+    with_preferences(
+        &format!(
+            "{PI_HOST_PROMPT}\n\n{runtime}\n\n{}\n\n{ask}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{DIAGRAM_PROMPT}\n\n{MEDIA_PROMPT}\n\n{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}{worker}",
+            pi_access_prompt(access, request.orchestration_worker),
+        ),
+        request.preferences,
+    )
+}
+
+const PI_HOST_PROMPT: &str = "You are running inside OctiqFlow, which owns this conversation and works through the pi.dev harness. OctiqFlow's host tools are your `mcp__octiq__*` tools: call each one by its full name. The question tool is `mcp__octiq__ask_user`; the tool names in the paragraphs below are written without the `mcp__octiq__` prefix. Pi's other tools (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) work in the project, which is your current working directory. Every tool call goes through OctiqFlow before it runs.";
+
+/// Pi's `--tools` allowlist for a launch. Read gets only the tools that
+/// cannot change anything; the host gate refuses the rest in any case. A
+/// front desk gets one MCP tool and a worker below Full only OctiqFlow's own
+/// MCP tools beside the built-ins.
+fn pi_tools(request: &AgentCommand<'_>, access: Access) -> String {
+    if request.front_desk {
+        return "mcp__octiq__route_chat".into();
+    }
+    let mut tools = match access {
+        Access::Read => String::from("read,grep,find,ls"),
+        _ => String::from("read,bash,edit,write,grep,find,ls"),
+    };
+    // A plain list hides every MCP tool no entry names (docs/cli.md), so the
+    // list says which MCP tools stay: all of them for an ordinary chat, which
+    // keeps the person's own servers like Claude and Codex chats do, and
+    // OctiqFlow's own for a worker below Full.
+    if pi_isolated(request) {
+        tools.push_str(",mcp__octiq__*");
+    } else {
+        tools.push_str(",mcp__*");
+    }
+    tools
+}
+
+/// Whether a launch keeps the person's own Pi extensions, skills and prompt
+/// templates, and their MCP servers. A front desk and a worker below Full do
+/// not (as Claude's `--strict-mcp-config` and Codex's `--disable plugins`):
+/// Pi's own MCP support is off too (`--no-mcp`), so nothing from the person's
+/// or the project's `mcp.json` connects; OctiqFlow's extension reaches the
+/// host's server itself.
+fn pi_isolated(request: &AgentCommand<'_>) -> bool {
+    request.front_desk || (request.orchestration_worker && !request.worker_full_tools)
+}
+
+/// Pi's image content block for a `prompt` command.
+fn pi_image(path: &str) -> Option<Value> {
+    use base64::Engine;
+    let mime = image_media_type(path)?;
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.is_empty() || bytes.len() > 12 * 1024 * 1024 {
+        return None;
+    }
+    Some(json!({
+        "type": "image",
+        "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+        "mimeType": mime,
+    }))
+}
+
+const PI_HELLO_ID: &str = "octiq-hello-";
+const PI_PROMPT_ID: &str = "octiq-prompt-";
+
+/// What a refused prompt means to a person, with the way out when Pi's own
+/// words are about credentials.
+fn pi_rejection_words(error: &str, upstream: Option<&str>) -> String {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("no api key") || lower.contains("not logged in") || lower.contains("/login") {
+        let provider = upstream.unwrap_or("the provider");
+        return format!(
+            "pi.dev has no login for {provider}, so the turn did not start. In a terminal run `pi auth login {provider}` (add `--api-key` to save an API key), then send the message again. Pi said: {}",
+            error.lines().next().unwrap_or(error).trim()
+        );
+    }
+    format!("pi.dev did not take the turn: {}", error.trim())
+}
+
 impl AgentProvider for PiProvider {
     fn kind(&self) -> AgentKind {
         AgentKind::Pi
@@ -1270,13 +1592,18 @@ impl AgentProvider for PiProvider {
 
     fn capabilities(&self) -> AgentCapabilities {
         AgentCapabilities {
-            // JSON mode is intentionally one process per turn. Pi persists the
-            // session itself, and `--session` continues it on the next launch.
-            input: InputTransport::CommandLine,
+            // One long-lived `pi --mode rpc` process per chat: prompts are JSON
+            // on stdin (so a long prompt never meets Windows' 32,767-character
+            // command line), Stop is Pi's own `abort`, and the conversation
+            // resumes by session id.
+            input: InputTransport::StreamJson,
+            // The tool list and the host gate are fixed at launch, so a new
+            // access level takes hold in the process that resumes the chat.
             supports_live_access_change: false,
             supports_lite_mode: false,
-            uses_octiq_mcp: false,
+            uses_octiq_mcp: true,
             interrupt_ends_process: false,
+            access_change_relaunches: true,
         }
     }
 
@@ -1293,47 +1620,167 @@ impl AgentProvider for PiProvider {
     }
 
     fn build_command(&self, request: &AgentCommand<'_>) -> String {
-        let mut cmd = String::from("pi --mode json --provider openai-codex");
+        let access = if request.front_desk {
+            Access::Read
+        } else {
+            request.access.unwrap_or(Access::Read)
+        };
+        let mut cmd = String::from("pi --mode rpc");
         if let Some(id) = request.resume.and_then(safe_session_id) {
-            cmd.push_str(&format!(" --session {}", sh_quote(&id)));
+            let reference = pi_sessions_dir()
+                .map(|sessions| pi_session_ref(&sessions, &id))
+                .unwrap_or(id);
+            cmd.push_str(&format!(" --session {}", sh_quote(&reference)));
         }
-        if let Some(model) = request.model.and_then(safe_model) {
-            cmd.push_str(&format!(" --model {}", sh_quote(&model)));
+        // The model is `<upstream>/<model>` and is passed as-is: no
+        // `--provider` pin. A bare id is Codex's, as it always was, and with
+        // no model at all Pi keeps picking Codex's default.
+        match request.model.and_then(pi_model_ref) {
+            Some((upstream, id)) => cmd.push_str(&format!(
+                " --model {}",
+                sh_quote(&format!("{upstream}/{id}"))
+            )),
+            None => cmd.push_str(&format!(" --provider {PI_DEFAULT_UPSTREAM}")),
         }
         if let Some(effort) = request.effort.and_then(|e| self.effort(e)) {
             cmd.push_str(&format!(" --thinking {effort}"));
         }
-
-        // Pi's non-interactive modes do not have a permission prompt. Keep the
-        // safe choice genuinely read-only by exposing only its read tools;
-        // every other access value explicitly opts into the complete built-in
-        // tool set. The UI offers only Read-only and Full access for Pi.
-        match request.access.unwrap_or(Access::Read) {
-            Access::Read => cmd.push_str(" --tools read,grep,find,ls"),
-            _ => cmd.push_str(" --tools read,bash,edit,write,grep,find,ls"),
+        cmd.push_str(&format!(
+            " --tools {}",
+            sh_quote(&pi_tools(request, access))
+        ));
+        if pi_isolated(request) {
+            // No extensions of the person's, and no built-in MCP support at all:
+            // it would read their `~/.pi/agent/mcp.json` and a trusted project's
+            // `.pi/mcp.json`. OctiqFlow's extension connects the host's own server.
+            cmd.push_str(" -ne --no-mcp");
         }
-        if let Some(preferences) = request.preferences {
+        if request.front_desk {
+            cmd.push_str(" --no-skills --no-prompt-templates --no-context-files");
+        }
+        if let Some(mcp) = request.mcp_config {
+            cmd.push_str(&format!(
+                " -e {}",
+                sh_quote(&pi_extension_path(mcp).to_string_lossy())
+            ));
+            let prompt = pi_system_prompt(request);
             cmd.push_str(&format!(
                 " --append-system-prompt {}",
-                sh_quote(preferences)
+                sh_quote(&pi_prompt_path(mcp, &prompt).to_string_lossy())
             ));
         }
-
-        cmd.push_str(" --");
-        for path in request.images {
-            cmd.push(' ');
-            cmd.push_str(&sh_quote(&format!("@{path}")));
-        }
-        let prompt = if request.prompt.trim().is_empty() && !request.images.is_empty() {
-            "Please inspect the attached image."
-        } else {
-            request.prompt
-        };
-        if !prompt.is_empty() {
-            cmd.push(' ');
-            cmd.push_str(&sh_quote(prompt));
-        }
         cmd
+    }
+
+    /// Write the extension and this launch's system prompt. A launch that
+    /// cannot have them is refused: without the extension there is no gate and
+    /// no OctiqFlow tools.
+    fn prepare_launch(&self, request: &AgentCommand<'_>) -> Result<Option<String>, String> {
+        let mcp = request.mcp_config.ok_or_else(|| {
+            "OctiqFlow's MCP files could not be written, and without them pi.dev would run with no approval gate".to_string()
+        })?;
+        let dir = pi_dir(mcp);
+        let prompts = dir.join("prompts");
+        crate::profile::create_dir_all(&prompts)
+            .map_err(|e| format!("could not make {}: {e}", prompts.display()))?;
+        let extension = pi_extension_path(mcp);
+        if std::fs::read_to_string(&extension).ok().as_deref() != Some(PI_EXTENSION) {
+            std::fs::write(&extension, PI_EXTENSION)
+                .map_err(|e| format!("could not write {}: {e}", extension.display()))?;
+        }
+        let text = pi_system_prompt(request);
+        let path = pi_prompt_path(mcp, &text);
+        if !path.exists() {
+            std::fs::write(&path, &text)
+                .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        }
+        Ok(None)
+    }
+
+    fn initialize_payload(&self, request_id: &str) -> Option<Value> {
+        // Pi's RPC mode has no session header; its id is in the state.
+        Some(json!({ "id": request_id, "type": "get_state" }))
+    }
+
+    fn user_message_payload(&self, text: &str, images: &[String]) -> Option<Value> {
+        let mut payload = json!({
+            "id": format!("{PI_PROMPT_ID}{}", uuid::Uuid::new_v4()),
+            "type": "prompt",
+            "message": text,
+        });
+        let images: Vec<Value> = images.iter().filter_map(|path| pi_image(path)).collect();
+        if !images.is_empty() {
+            payload["images"] = Value::Array(images);
+        }
+        Some(payload)
+    }
+
+    fn interrupt_payload(&self) -> Option<Value> {
+        // Pi aborts the run, then emits `agent_end` and `agent_settled` with
+        // `aborted: true`: the cut-off turn's own full stop.
+        Some(json!({ "type": "abort" }))
+    }
+
+    fn adapt_event(&self, event: &mut Value) {
+        // `agent_end` carries every message of the run, system prompt and
+        // tool output included: second copies of what the events before it
+        // already said. What is read from it is whether the last model call
+        // failed.
+        if event.get("type").and_then(Value::as_str) == Some("agent_end") {
+            let last = event
+                .get("messages")
+                .and_then(Value::as_array)
+                .and_then(|messages| {
+                    messages
+                        .iter()
+                        .rev()
+                        .find(|m| m.get("role").and_then(Value::as_str) == Some("assistant"))
+                })
+                .map(|m| {
+                    json!({
+                        "role": "assistant",
+                        "stopReason": m.get("stopReason").cloned().unwrap_or(Value::Null),
+                        "errorMessage": m.get("errorMessage").cloned().unwrap_or(Value::Null),
+                    })
+                });
+            event["messages"] = Value::Array(last.into_iter().collect());
+            return;
+        }
+        if event.get("type").and_then(Value::as_str) != Some("response") {
+            return;
+        }
+        let command = event.get("command").and_then(Value::as_str);
+        let ok = event.get("success").and_then(Value::as_bool) == Some(true);
+        match (command, ok) {
+            // The session id, in the form `--mode json` would have said it:
+            // the first line of every Pi conversation.
+            (Some("get_state"), true) => {
+                if let Some(id) = event.pointer("/data/sessionId").and_then(Value::as_str) {
+                    *event = json!({ "type": "session", "id": id, "octiq_synthetic": true });
+                }
+            }
+            // A prompt Pi refused starts no run and emits no `agent_settled`.
+            // Said as the assistant message that failed, which the page
+            // already draws as the turn's failure.
+            (Some("prompt"), false) => {
+                let error = event
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("The prompt was not accepted.");
+                *event = json!({
+                    "type": "message_end",
+                    "octiq_synthetic": true,
+                    "octiq_rejected_prompt": true,
+                    "message": {
+                        "role": "assistant",
+                        "content": [],
+                        "stopReason": "error",
+                        "errorMessage": error,
+                    }
+                });
+            }
+            _ => {}
+        }
     }
 
     fn acknowledges_user_turn(&self, event: &Value) -> bool {
@@ -1345,6 +1792,39 @@ impl AgentProvider for PiProvider {
         match event.get("type").and_then(Value::as_str) {
             Some("session") => {
                 observed.session_id = event.get("id").and_then(Value::as_str);
+            }
+            // Answers to commands OctiqFlow sent (`get_state`, `abort`, and a
+            // `prompt` that was accepted) are not conversation.
+            Some("response") => {
+                observed.suppress = true;
+            }
+            Some("extension_ui_request") => {
+                observed.suppress = true;
+                let id = event.get("id").and_then(Value::as_str);
+                match event.get("method").and_then(Value::as_str) {
+                    // Pi says what needs attention at startup this way: an MCP
+                    // server that did not connect, a bad configuration.
+                    Some("notify") => {
+                        observed.host_notice = event.get("message").and_then(Value::as_str);
+                    }
+                    // A dialog nobody can answer: a person's own extension
+                    // asking. Cancel it, or the run waits for ever.
+                    Some("select" | "confirm" | "input" | "editor") => {
+                        observed.cancel_ui_request = id;
+                    }
+                    _ => {}
+                }
+            }
+            // Pi opens every run by announcing its system prompt, tools and
+            // all, as a message; and closes every turn with the assistant
+            // message and the tool results it just said. Neither is shown.
+            Some("turn_end") => {
+                observed.suppress = true;
+            }
+            Some("message_start") | Some("message_end")
+                if event.pointer("/message/role").and_then(Value::as_str) == Some("system") =>
+            {
+                observed.suppress = true;
             }
             Some("message_end") => {
                 let message = event.get("message");
@@ -1361,20 +1841,36 @@ impl AgentProvider for PiProvider {
                             })
                         });
                 }
+                if event.get("octiq_rejected_prompt").and_then(Value::as_bool) == Some(true) {
+                    observed.turn_finished = true;
+                }
             }
+            // Pi announces every run with `agent_start`, including one it
+            // starts by itself (a person's extension sending a message, a
+            // retry after a failed call). The reader opens the host's turn on
+            // it only when the session reads idle, so a run the host wrote the
+            // prompt for (already busy) and a retry inside one turn open
+            // nothing twice.
+            Some("agent_start") => {
+                observed.turn_opened = true;
+            }
+            // `agent_end` closes one low-level run; retries, compaction and
+            // queued work can still follow. `agent_settled` is the full stop,
+            // and the only one: a persistent process that counted both would
+            // end the NEXT turn when the second arrived.
             Some("agent_settled") => {
-                observed.turn_finished = true;
-            }
-            Some("agent_end") if event.get("willRetry").is_none() => {
-                // Pi 0.85+ follows `agent_end` with `agent_settled`, after any
-                // awaited listeners and retry decision have completed. Older
-                // JSON streams had no `willRetry` field or settled event, so
-                // their bare `agent_end` remains the compatibility full stop.
                 observed.turn_finished = true;
             }
             _ => {}
         }
         observed
+    }
+}
+
+impl PiProvider {
+    /// The words a refused prompt carries, for the chat. `error` is Pi's own.
+    pub(crate) fn rejection_words(error: &str, model: Option<&str>) -> String {
+        pi_rejection_words(error, Some(pi_upstream(model).as_str()))
     }
 }
 
@@ -1637,6 +2133,7 @@ impl AgentProvider for AntigravityProvider {
             supports_lite_mode: false,
             uses_octiq_mcp: true,
             interrupt_ends_process: true,
+            access_change_relaunches: false,
         }
     }
 
@@ -2056,9 +2553,9 @@ const FEEDBACK_PROMPT: &str = "When you observe a bug or hiccup in OctiqFlow its
 /// there, `DIAGRAM_INSTRUCTIONS`, placed first because Claude Code keeps
 /// only the first 4,096 characters of a server's instructions); Codex's
 /// app-server from its developer instructions, a message on stdin;
-/// Antigravity from the plugin's rules file. Pi has no host rules and no
-/// MCP server, and `codex exec` takes its instructions as an argument, so
-/// neither is told.
+/// Antigravity from the plugin's rules file, Pi from the system prompt file its
+/// launch writes (`pi_system_prompt`). `codex exec` takes its instructions as an
+/// argument, so it is not told.
 pub(crate) const DIAGRAM_PROMPT: &str = r#"A reply can hold one card diagram: a fenced code block with the info string octiq-diagram whose body is JSON {"rows":[[{"title":"...","note":"...","icon":"...","plain":true}]]}. Rows run top to bottom with an arrow between them, the nodes of a row sit side by side, and plain draws a node with no frame (a conclusion); only title is required. Limits: 8 rows, 4 nodes a row, title 60 characters, note 120. Icons: moon, coffee, screen, user, users, server, database, file, folder, code, terminal, branch, check, cross, alert, clock, lock, key, globe, cloud, bolt, search, message, box. Draw one only when a relation or a flow is clearer as a picture than as a sentence, never by default, and at most one per reply."#;
 
 /// One media file beside its explanation, identical to the MCP paragraph.
@@ -2098,6 +2595,28 @@ pub(crate) fn ask_mcp_config() -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    thread_local! {
+        /// Makes Codex the one-process-per-turn, command-line provider on this
+        /// thread only, so a test of that path needs no process-wide variable.
+        pub(crate) static FORCE_EXEC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Codex as a command-line agent for the life of the guard, on this thread.
+    pub(crate) struct CommandLineCodex;
+
+    impl CommandLineCodex {
+        pub(crate) fn on() -> Self {
+            FORCE_EXEC.with(|f| f.set(true));
+            Self
+        }
+    }
+
+    impl Drop for CommandLineCodex {
+        fn drop(&mut self) {
+            FORCE_EXEC.with(|f| f.set(false));
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -2194,7 +2713,12 @@ pub(crate) mod tests {
         let pi = provider_for(AgentKind::Pi);
         assert_eq!(pi.kind(), AgentKind::Pi);
         assert_eq!(pi.display_name(), "pi.dev");
-        assert_eq!(pi.capabilities().input, InputTransport::CommandLine);
+        // One long-lived `pi --mode rpc` process, framed like Claude's stream.
+        assert_eq!(pi.capabilities().input, InputTransport::StreamJson);
+        assert!(pi.capabilities().uses_octiq_mcp);
+        assert!(!pi.capabilities().interrupt_ends_process);
+        assert!(pi.capabilities().access_change_relaunches);
+        assert!(!pi.capabilities().supports_live_access_change);
 
         let agy = provider_for(AgentKind::Antigravity);
         assert_eq!(agy.kind(), AgentKind::Antigravity);
@@ -2323,12 +2847,19 @@ pub(crate) mod tests {
         assert!(instructions.contains("Do not browse official documentation"));
         assert!(instructions.contains("fewest useful tool or retrieval loops"));
 
-        let pi = command(AgentKind::Pi, Some(Path::new("octiq-ask.json")));
-        assert!(pi.starts_with("pi --mode json --provider openai-codex"));
-        assert!(pi.contains("--model 'model-x'"));
+        let pi = command(AgentKind::Pi, Some(Path::new("/m/octiq-ask.json")));
+        assert!(pi.starts_with("pi --mode rpc"), "{pi}");
+        // A bare id is Codex's upstream, named in the model, never pinned
+        // with `--provider`.
+        assert!(pi.contains("--model 'openai-codex/model-x'"), "{pi}");
+        assert!(!pi.contains("--provider"), "{pi}");
         assert!(pi.contains("--thinking high"));
-        assert!(pi.contains("--tools read,bash,edit,write,grep,find,ls"));
-        assert!(!pi.contains("octiq-ask"));
+        assert!(pi.contains("--tools 'read,bash,edit,write,grep,find,ls,mcp__*'"));
+        assert!(pi.contains("-e '/m/pi/octiq-pi.ts'"));
+        assert!(pi.contains("--append-system-prompt '/m/pi/prompts/"));
+        // The prompt goes on stdin, never on the command line.
+        assert!(!pi.contains("hello"));
+        assert!(!pi.contains(" -- "));
     }
 
     #[test]
@@ -2382,8 +2913,17 @@ pub(crate) mod tests {
             assert!(!codex.contains(rule));
             assert!(!codex.contains(typed));
         }
-        let pi = command(AgentKind::Pi, Some(Path::new("octiq-ask.json")));
-        assert!(!pi.contains(rule));
+        // Pi's host gate reads the person's card, so the Claude-only reason
+        // is not told to it: the question tool's first paragraph is.
+        let dir = crate::test_dir::TestDir::new("pi-ask-rule");
+        let mcp = dir.join("octiq-ask.json");
+        let (_, prompt) = pi_launch(&AgentCommand {
+            mcp_config: Some(&mcp),
+            ..codex_request(false, &[])
+        });
+        assert!(!prompt.contains(rule), "{prompt}");
+        assert!(!prompt.contains(typed));
+        assert!(prompt.contains("call the `ask_user` tool"));
     }
 
     #[test]
@@ -3478,37 +4018,746 @@ pub(crate) mod tests {
         assert!(instructions.contains("OctiqFlow did not select explicit access"));
     }
 
-    #[test]
-    fn pi_uses_codex_upstream_and_keeps_read_only_strict() {
-        let pi = provider_for(AgentKind::Pi).build_command(&AgentCommand {
+    /// Prepare a Pi launch in a scratch folder and read back what it wrote:
+    /// the command line, and the system prompt file it names.
+    pub(crate) fn pi_launch(request: &AgentCommand<'_>) -> (String, String) {
+        let line = provider_for(AgentKind::Pi).build_command(request);
+        provider_for(AgentKind::Pi)
+            .prepare_launch(request)
+            .expect("a Pi launch with MCP files can be prepared");
+        let marker = "--append-system-prompt '";
+        let from = line.find(marker).expect("a system prompt file") + marker.len();
+        let path = &line[from..from + line[from..].find('\'').unwrap()];
+        (
+            line.clone(),
+            std::fs::read_to_string(path).expect("the prompt file is written"),
+        )
+    }
+
+    fn pi_request<'a>(mcp: &'a Path) -> AgentCommand<'a> {
+        AgentCommand {
             model: Some("gpt-5.6-terra"),
             access: Some(Access::Read),
             prompt: "inspect it",
-            resume: Some("pi-session-123"),
-            extra_dirs: &[],
-            sandbox_roots: &[],
             effort: Some("minimal"),
-            images: &["/tmp/screen shot.png".into()],
             lite: false,
-            mcp_config: None,
-            persistent_authorizations: None,
-            orchestration_worker: false,
-            front_desk: false,
-            codex_user_mcp: &[],
-            codex_worker_playwright: None,
-            codex_worker_desktop: false,
-            worker_full_tools: false,
-            claude_worker_mcp: None,
-            preferences: None,
-        });
+            mcp_config: Some(mcp),
+            ..codex_request(false, &[])
+        }
+    }
 
-        assert!(pi.starts_with("pi --mode json --provider openai-codex"));
-        assert!(pi.contains("--session 'pi-session-123'"));
-        assert!(pi.contains("--model 'gpt-5.6-terra'"));
-        assert!(pi.contains("--thinking minimal"));
-        assert!(pi.contains("--tools read,grep,find,ls"));
-        assert!(!pi.contains("bash,edit,write"));
-        assert!(pi.ends_with("'@/tmp/screen shot.png' 'inspect it'"));
+    /// A chat `chat_recover` moved to another folder: its conversation is in
+    /// the old folder's session directory, and real pi 1.5.2 asks to fork it
+    /// when `--session <id>` is run from the new one (headless: it gives up).
+    /// The session FILE opens from anywhere with the same id and messages
+    /// (`scripts/test-pi-harness.mjs`, scenes 7), so that is what is named.
+    #[test]
+    fn a_pi_conversation_in_another_folder_is_resumed_by_its_file() {
+        let sessions = crate::test_dir::TestDir::new("pi-sessions");
+        let id = "01a1ecd7-77d1-778b-a182-7332c4831657";
+        let old = sessions.join("--old-folder--");
+        let other = sessions.join("--other-folder--");
+        crate::profile::make_dir(&old).unwrap();
+        crate::profile::make_dir(&other).unwrap();
+        let header = |of: &str| format!("{{\"type\":\"session\",\"version\":3,\"id\":\"{of}\"}}\n");
+        let file = old.join(format!("2026-11-18T04-00-00-000Z_{id}.jsonl"));
+        std::fs::write(&file, header(id)).unwrap();
+        // Another conversation whose id merely ends the same way, a stray
+        // file, and a plain file at the top: none of them is this one.
+        std::fs::write(
+            other.join(format!("2026-11-18T04-00-00-000Z_x{id}.jsonl")),
+            header(&format!("x{id}")),
+        )
+        .unwrap();
+        std::fs::write(other.join("notes.txt"), "x").unwrap();
+        std::fs::write(sessions.join(format!("a_{id}.jsonl")), header(id)).unwrap();
+        assert_eq!(
+            pi_session_ref(&sessions, id),
+            file.to_str().unwrap(),
+            "the file, wherever Pi saved it"
+        );
+        // The newest copy wins when a conversation is saved in two folders.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let newer = other.join(format!("2026-11-18T05-00-00-000Z_{id}.jsonl"));
+        std::fs::write(&newer, header(id)).unwrap();
+        assert_eq!(pi_session_ref(&sessions, id), newer.to_str().unwrap());
+        // Nothing saved yet, or no sessions folder at all: the id, as before.
+        assert_eq!(
+            pi_session_ref(&sessions, "no-such-session"),
+            "no-such-session"
+        );
+        assert_eq!(
+            pi_session_ref(&sessions.join("missing"), id),
+            id,
+            "an unreadable folder falls back to the id"
+        );
+        // And it is quoted onto the command line like the id was.
+        assert_eq!(
+            sh_quote(&pi_session_ref(&sessions, id)),
+            format!("'{}'", newer.to_str().unwrap())
+        );
+    }
+
+    /// A file NAMED for a conversation is not that conversation: its header's
+    /// id is. Each way a newer candidate can lie is skipped, and the older
+    /// honest file (or the bare id) is what is resumed.
+    #[test]
+    fn a_pi_session_file_counts_only_when_its_header_names_the_id() {
+        let sessions = crate::test_dir::TestDir::new("pi-sessions-identity");
+        let id = "01a1ed61-d818-70c0-83c7-52897fa2ebb3";
+        let other_id = "01a1ed61-ecca-717c-b7d7-c790f8b15aa8";
+        let folder = sessions.join("--f--");
+        crate::profile::make_dir(&folder).unwrap();
+        let header = |of: &str| format!("{{\"type\":\"session\",\"id\":\"{of}\"}}\nmore\n");
+        // Nothing honest yet: every liar below falls back to the bare id.
+        let name = |n: u32| folder.join(format!("2026-11-18T0{n}-00-00-000Z_{id}.jsonl"));
+        let lies: Vec<(&str, Box<dyn Fn(&Path)>)> = vec![
+            (
+                "another conversation's file renamed",
+                Box::new(|p| std::fs::write(p, header(other_id)).unwrap()),
+            ),
+            (
+                "corrupt header",
+                Box::new(|p| std::fs::write(p, "not json\n").unwrap()),
+            ),
+            ("empty file", Box::new(|p| std::fs::write(p, "").unwrap())),
+            (
+                "first line is not a session",
+                Box::new(|p| {
+                    std::fs::write(p, format!("{{\"type\":\"message\",\"id\":\"{id}\"}}\n"))
+                        .unwrap()
+                }),
+            ),
+            (
+                "header past the bound",
+                Box::new(|p| {
+                    let mut text =
+                        format!("{{\"type\":\"session\",\"pad\":\"{}\",", "x".repeat(20_000));
+                    text.push_str(&format!("\"id\":\"{id}\"}}\n"));
+                    std::fs::write(p, text).unwrap()
+                }),
+            ),
+            (
+                "a directory by that name",
+                Box::new(|p| crate::profile::make_dir(p).unwrap()),
+            ),
+        ];
+        for (n, (why, make)) in lies.iter().enumerate() {
+            make(&name(n as u32 + 1));
+            assert_eq!(pi_session_ref(&sessions, id), id, "{why} is not resumed");
+        }
+        #[cfg(unix)]
+        {
+            // A link to a genuine file, a link as a folder: both redirects.
+            let real = sessions.join("elsewhere.jsonl");
+            std::fs::write(&real, header(id)).unwrap();
+            std::os::unix::fs::symlink(&real, name(7)).unwrap();
+            assert_eq!(
+                pi_session_ref(&sessions, id),
+                id,
+                "a symlinked file is skipped"
+            );
+            // The real folder is outside the sessions folder: only the link
+            // inside it leads there.
+            let outside = crate::test_dir::TestDir::new("pi-sessions-outside");
+            let behind = outside.join("behind");
+            crate::profile::make_dir(&behind).unwrap();
+            std::fs::write(behind.join(format!("2026-11-18T08_{id}.jsonl")), header(id)).unwrap();
+            std::os::unix::fs::symlink(&behind, sessions.join("--linked--")).unwrap();
+            assert_eq!(
+                pi_session_ref(&sessions, id),
+                id,
+                "a symlinked folder is skipped"
+            );
+        }
+        // The honest file is chosen over every newer liar.
+        let honest = folder.join(format!("2026-11-17T00-00-00-000Z_{id}.jsonl"));
+        std::fs::write(&honest, header(id)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::fs::write(name(9), header(other_id)).unwrap();
+        assert_eq!(pi_session_ref(&sessions, id), honest.to_str().unwrap());
+        // An id that could reach a path or a command line is not looked up.
+        assert_eq!(pi_session_ref(&sessions, "../x"), "../x");
+        assert_eq!(pi_session_ref(&sessions, ""), "");
+    }
+
+    #[test]
+    fn pi_names_its_upstream_in_the_model_and_resumes_by_session() {
+        let dir = crate::test_dir::TestDir::new("pi-command");
+        let mcp = dir.join("octiq-ask.json");
+        let line = |request: AgentCommand<'_>| provider_for(AgentKind::Pi).build_command(&request);
+
+        let bare = line(AgentCommand {
+            resume: Some("pi-session-123"),
+            ..pi_request(&mcp)
+        });
+        assert!(bare.starts_with("pi --mode rpc --session 'pi-session-123' --model 'openai-codex/gpt-5.6-terra' --thinking minimal"), "{bare}");
+        assert!(!bare.contains("--provider"));
+
+        // Claude through the Anthropic API: the model says so, as-is.
+        let api = line(AgentCommand {
+            model: Some("anthropic/claude-sonnet-5-5"),
+            ..pi_request(&mcp)
+        });
+        assert!(
+            api.contains("--model 'anthropic/claude-sonnet-5-5'"),
+            "{api}"
+        );
+        assert!(!api.contains("--provider"));
+        // An upstream is lower-cased; nothing else about the model changes.
+        let upper = line(AgentCommand {
+            model: Some("Anthropic/claude-opus-5-5"),
+            ..pi_request(&mcp)
+        });
+        assert!(
+            upper.contains("--model 'anthropic/claude-opus-5-5'"),
+            "{upper}"
+        );
+
+        // No model: Pi keeps picking Codex's default, as it always did.
+        let none = line(AgentCommand {
+            model: None,
+            ..pi_request(&mcp)
+        });
+        assert!(none.contains("--provider openai-codex"), "{none}");
+        assert!(!none.contains("--model"));
+
+        // A model that is not model-shaped never reaches the command line.
+        for bad in ["x; id", "a/b/c", "/x", "x/", "$(id)", "a b"] {
+            let refused = line(AgentCommand {
+                model: Some(bad),
+                ..pi_request(&mcp)
+            });
+            assert!(!refused.contains("--model"), "{bad}: {refused}");
+            assert!(!refused.contains(bad), "{bad}: {refused}");
+        }
+        // The prompt and images ride stdin: a long prompt never meets
+        // Windows' 32,767-character command line.
+        let long = "x".repeat(100_000);
+        let heavy = line(AgentCommand {
+            prompt: &long,
+            images: &["/tmp/screen shot.png".into()],
+            ..pi_request(&mcp)
+        });
+        assert!(heavy.len() < 2_000, "{}", heavy.len());
+        assert!(!heavy.contains("screen shot"));
+    }
+
+    #[test]
+    fn pi_tool_lists_follow_access_and_role() {
+        let dir = crate::test_dir::TestDir::new("pi-tools");
+        let mcp = dir.join("octiq-ask.json");
+        let line = |request: AgentCommand<'_>| provider_for(AgentKind::Pi).build_command(&request);
+        let read = line(pi_request(&mcp));
+        assert!(
+            read.contains("--tools 'read,grep,find,ls,mcp__*'"),
+            "{read}"
+        );
+        assert!(!read.contains("bash,edit,write"));
+        for access in [Access::Manual, Access::Edits, Access::Auto, Access::Full] {
+            let chat = line(AgentCommand {
+                access: Some(access),
+                ..pi_request(&mcp)
+            });
+            assert!(
+                chat.contains("--tools 'read,bash,edit,write,grep,find,ls,mcp__*'"),
+                "{access:?}: {chat}"
+            );
+            // An ordinary chat keeps the person's own extensions and servers.
+            assert!(!chat.contains(" -ne "), "{chat}");
+        }
+        // A worker below Full gets OctiqFlow's MCP tools and none of the
+        // person's extensions; at Full it gets the whole set, as Claude's and
+        // Codex's workers do.
+        let worker = line(AgentCommand {
+            access: Some(Access::Edits),
+            orchestration_worker: true,
+            ..pi_request(&mcp)
+        });
+        assert!(
+            worker.contains("--tools 'read,bash,edit,write,grep,find,ls,mcp__octiq__*'"),
+            "{worker}"
+        );
+        assert!(worker.contains(" -ne --no-mcp "), "{worker}");
+        assert!(!worker.contains("builtin:mcp"), "{worker}");
+        let full_worker = line(AgentCommand {
+            access: Some(Access::Full),
+            orchestration_worker: true,
+            worker_full_tools: true,
+            ..pi_request(&mcp)
+        });
+        assert!(full_worker.contains("mcp__*'"), "{full_worker}");
+        assert!(!full_worker.contains(" -ne "), "{full_worker}");
+        // A front desk is read-only whatever it was asked for, with one tool.
+        let desk = line(AgentCommand {
+            access: Some(Access::Full),
+            front_desk: true,
+            ..pi_request(&mcp)
+        });
+        assert!(desk.contains("--tools 'mcp__octiq__route_chat'"), "{desk}");
+        assert!(desk.contains("-ne --no-mcp"));
+        assert!(!desk.contains("builtin:mcp"), "{desk}");
+        assert!(desk.contains("--no-skills --no-prompt-templates --no-context-files"));
+    }
+
+    #[test]
+    fn a_pi_launch_writes_its_extension_and_its_whole_system_prompt() {
+        let dir = crate::test_dir::TestDir::new("pi-prepare");
+        let mcp = dir.join("octiq-ask.json");
+        let words = crate::personal_preferences::prompt("Reply in Malay.").unwrap();
+        let (line, prompt) = pi_launch(&AgentCommand {
+            access: Some(Access::Edits),
+            extra_dirs: &["/repo/docs".to_string()],
+            preferences: Some(&words),
+            ..pi_request(&mcp)
+        });
+        // The extension is the one in the repository, next to the MCP files.
+        let extension = std::fs::read_to_string(dir.join("pi").join("octiq-pi.ts")).unwrap();
+        assert_eq!(extension, PI_EXTENSION);
+        // The host's server is reached by the extension itself, never through
+        // Pi's MCP registry (a configured `octiq` entry would replace it), and
+        // every call says whether the tool is the extension's own.
+        assert!(!extension.contains("pi.registerMcpServer("));
+        assert!(extension.contains("pi.registerTool("));
+        assert!(extension.contains("/hook/pi-tool"));
+        assert!(extension.contains("hostServer"));
+        // What Claude reads from MCP instructions and its system prompt.
+        for part in [
+            PI_HOST_PROMPT,
+            DIAGRAM_PROMPT,
+            MEDIA_PROMPT,
+            READ_CONVERSATION_PROMPT,
+            HISTORY_PROMPT,
+            CHAT_TITLE_PROMPT,
+            FEEDBACK_PROMPT,
+            ORCHESTRATION_PROMPT,
+            MEMORY_VAULT_PROMPT,
+            DOCSPACE_PROMPT,
+        ] {
+            assert!(prompt.contains(part), "{part}");
+        }
+        assert!(prompt.contains(
+            "upstream provider openai-codex; model gpt-5.6-terra; effort minimal; access edits."
+        ));
+        assert!(prompt.contains("/repo/docs"));
+        assert!(prompt.contains("Accept edits access"));
+        // The person has the last word.
+        assert!(
+            prompt.find("Docspace may contain").unwrap() < prompt.find("Reply in Malay.").unwrap()
+        );
+        // Content-addressed: the same launch names the same file, a different
+        // access another.
+        assert!(line.contains(&format!(
+            "--append-system-prompt '{}",
+            dir.join("pi").join("prompts").display()
+        )));
+        let (again, _) = pi_launch(&AgentCommand {
+            access: Some(Access::Edits),
+            extra_dirs: &["/repo/docs".to_string()],
+            preferences: Some(&words),
+            ..pi_request(&mcp)
+        });
+        assert_eq!(line, again);
+        let (other, _) = pi_launch(&AgentCommand {
+            access: Some(Access::Manual),
+            ..pi_request(&mcp)
+        });
+        assert_ne!(line, other);
+        // The preferences are in a file, never on the command line.
+        assert!(!line.contains("Reply in Malay."));
+    }
+
+    #[test]
+    fn a_pi_launch_says_what_each_access_level_does_and_never_widens_auto() {
+        let dir = crate::test_dir::TestDir::new("pi-access-words");
+        let mcp = dir.join("octiq-ask.json");
+        for (access, words) in [
+            (Access::Read, "Read-only access"),
+            (Access::Manual, "Manual access"),
+            (Access::Edits, "Accept edits access"),
+            (Access::Auto, "Pi has no automatic safety review"),
+            (Access::Full, "Full access"),
+        ] {
+            for worker in [false, true] {
+                let (_, prompt) = pi_launch(&AgentCommand {
+                    access: Some(access),
+                    orchestration_worker: worker,
+                    ..pi_request(&mcp)
+                });
+                assert!(prompt.contains(words), "{access:?}: {prompt}");
+                let can_ask = prompt.contains("call `request_access`");
+                let gates = prompt.contains("`orchestration_gate_create`");
+                assert_eq!(
+                    (can_ask, gates),
+                    match (access, worker) {
+                        (Access::Full, _) => (false, worker),
+                        (_, false) => (true, false),
+                        (_, true) => (false, true),
+                    },
+                    "{access:?} worker={worker}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_front_desk_pi_is_told_only_what_it_is() {
+        let dir = crate::test_dir::TestDir::new("pi-front-desk");
+        let mcp = dir.join("octiq-ask.json");
+        let (_, prompt) = pi_launch(&AgentCommand {
+            front_desk: true,
+            ..pi_request(&mcp)
+        });
+        assert!(
+            prompt.starts_with("You are an OctiqFlow front desk."),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("octiq-diagram"));
+        assert!(!prompt.contains("mcp__octiq__"));
+    }
+
+    #[test]
+    fn a_pi_launch_without_its_mcp_files_is_refused_not_run_ungated() {
+        let refused = provider_for(AgentKind::Pi)
+            .prepare_launch(&AgentCommand {
+                mcp_config: None,
+                ..codex_request(false, &[])
+            })
+            .unwrap_err();
+        assert!(refused.contains("no approval gate"), "{refused}");
+    }
+
+    #[test]
+    fn pi_takes_prompts_images_and_stop_as_rpc_commands() {
+        let pi = provider_for(AgentKind::Pi);
+        let hello = pi.initialize_payload("octiq-hello-1").unwrap();
+        assert_eq!(hello, json!({ "id": "octiq-hello-1", "type": "get_state" }));
+        let prompt = pi.user_message_payload("hi there", &[]).unwrap();
+        assert_eq!(prompt["type"], "prompt");
+        assert_eq!(prompt["message"], "hi there");
+        assert!(prompt["id"].as_str().unwrap().starts_with("octiq-prompt-"));
+        assert!(prompt.get("images").is_none());
+        let dir = crate::test_dir::TestDir::new("pi-image");
+        let picture = dir.join("dot.png");
+        std::fs::write(&picture, [0x89, b'P', b'N', b'G', 1, 2, 3]).unwrap();
+        let with = pi
+            .user_message_payload(
+                "look",
+                &[
+                    picture.to_string_lossy().into_owned(),
+                    "/no/such/file.png".into(),
+                    "/not/an/image.txt".into(),
+                ],
+            )
+            .unwrap();
+        let images = with["images"].as_array().unwrap();
+        assert_eq!(images.len(), 1, "an unreadable or foreign file is left out");
+        assert_eq!(images[0]["type"], "image");
+        assert_eq!(images[0]["mimeType"], "image/png");
+        assert!(!images[0]["data"].as_str().unwrap().is_empty());
+        assert_eq!(pi.interrupt_payload().unwrap(), json!({ "type": "abort" }));
+        assert!(pi.access_change_payload(Access::Auto).is_none());
+    }
+
+    #[test]
+    fn pi_rpc_answers_become_a_session_a_failed_turn_or_nothing() {
+        let pi = provider_for(AgentKind::Pi);
+        // The session id, spoken as JSON mode's `session` header.
+        let mut state = json!({ "id": "octiq-hello-1", "type": "response", "command": "get_state", "success": true,
+            "data": { "sessionId": "01a1ec71-d92b", "model": { "baseUrl": "http://x" } } });
+        pi.adapt_event(&mut state);
+        assert_eq!(state["type"], "session");
+        assert_eq!(pi.observe_event(&state).session_id, Some("01a1ec71-d92b"));
+        assert!(
+            state.get("data").is_none(),
+            "nothing else of the state is kept"
+        );
+        // A prompt Pi refused is a failed assistant message and a full stop.
+        let mut refused = json!({ "id": "octiq-prompt-1", "type": "response", "command": "prompt", "success": false,
+            "error": "No API key found for anthropic.\n\nUse /login" });
+        pi.adapt_event(&mut refused);
+        let observed = pi.observe_event(&refused);
+        assert!(observed.turn_finished);
+        assert_eq!(refused["message"]["stopReason"], "error");
+        assert!(refused["message"]["errorMessage"]
+            .as_str()
+            .unwrap()
+            .starts_with("No API key found for anthropic."));
+        assert!(crate::outcome::of_provider_event(AgentKind::Pi, &refused).is_some());
+        // Every other answer is not conversation.
+        for answer in [
+            json!({ "type": "response", "command": "abort", "success": true }),
+            json!({ "type": "response", "command": "prompt", "success": true, "data": { "disposition": "started" } }),
+        ] {
+            let mut answer = answer;
+            pi.adapt_event(&mut answer);
+            let observed = pi.observe_event(&answer);
+            assert!(observed.suppress && !observed.turn_finished && observed.session_id.is_none());
+        }
+    }
+
+    #[test]
+    fn pi_says_what_needs_attention_and_cancels_dialogs_nobody_can_answer() {
+        let pi = provider_for(AgentKind::Pi);
+        let notice = json!({ "type": "extension_ui_request", "id": "n1", "method": "notify",
+            "message": "MCP servers need attention:\n  octiq: failed: MCP connection closed\nRun /mcp to fix.", "notifyType": "warning" });
+        let observed = pi.observe_event(&notice);
+        assert!(observed.suppress);
+        assert!(observed.host_notice.unwrap().contains("octiq: failed"));
+        assert!(observed.cancel_ui_request.is_none());
+        for method in ["select", "confirm", "input", "editor"] {
+            let dialog = json!({ "type": "extension_ui_request", "id": "d1", "method": method });
+            let observed = pi.observe_event(&dialog);
+            assert!(observed.suppress, "{method}");
+            assert_eq!(observed.cancel_ui_request, Some("d1"), "{method}");
+        }
+        let status = json!({ "type": "extension_ui_request", "id": "s1", "method": "setStatus" });
+        let observed = pi.observe_event(&status);
+        assert!(
+            observed.suppress
+                && observed.cancel_ui_request.is_none()
+                && observed.host_notice.is_none()
+        );
+    }
+
+    #[test]
+    fn a_pi_turn_ends_once_on_agent_settled_and_nothing_else_ends_it() {
+        let pi = provider_for(AgentKind::Pi);
+        for (name, event) in [
+            (
+                "agent_end",
+                json!({ "type": "agent_end", "willRetry": false, "messages": [] }),
+            ),
+            (
+                "agent_end with no willRetry",
+                json!({ "type": "agent_end" }),
+            ),
+            ("turn_end", json!({ "type": "turn_end" })),
+            (
+                "message_end",
+                json!({ "type": "message_end", "message": { "role": "assistant", "content": [] } }),
+            ),
+        ] {
+            assert!(!pi.observe_event(&event).turn_finished, "{name}");
+        }
+        for aborted in [false, true] {
+            assert!(
+                pi.observe_event(&json!({ "type": "agent_settled", "aborted": aborted }))
+                    .turn_finished
+            );
+        }
+        // The system prompt Pi announces and the turn's closing copy are not shown.
+        let system =
+            json!({ "type": "message_start", "message": { "role": "system", "content": "" } });
+        assert!(pi.observe_event(&system).suppress);
+        let user = json!({ "type": "message_start", "message": { "role": "user", "content": [] } });
+        assert!(!pi.observe_event(&user).suppress);
+        // `agent_end` keeps only what says whether the last call failed.
+        let mut end = json!({ "type": "agent_end", "willRetry": false, "messages": [
+            { "role": "system", "content": "huge" },
+            { "role": "assistant", "stopReason": "error", "errorMessage": "429 rate limit", "content": [{"type":"text","text":"big"}] },
+        ]});
+        pi.adapt_event(&mut end);
+        assert_eq!(end["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(end["messages"][0]["stopReason"], "error");
+        assert!(end["messages"][0].get("content").is_none());
+        assert!(crate::auto_resume::is_quota_failure(
+            AgentKind::Pi,
+            &json!({ "type": "message_end", "message": { "role": "assistant", "stopReason": "error", "errorMessage": "429 rate limit" } })
+        ));
+    }
+
+    const PI_RPC_TURN: &str = include_str!("../../web/src/lib/__fixtures__/pi-rpc-turn.jsonl");
+    const PI_RPC_ABORT: &str = include_str!("../../web/src/lib/__fixtures__/pi-rpc-abort.jsonl");
+    const PI_RPC_NO_LOGIN: &str =
+        include_str!("../../web/src/lib/__fixtures__/pi-rpc-no-login.jsonl");
+    const PI_RPC_MCP_FAILURE: &str =
+        include_str!("../../web/src/lib/__fixtures__/pi-rpc-mcp-failure.jsonl");
+
+    /// What the reader does with each line of a recorded stream: adapt, then
+    /// observe. Answers the stream as it is shown, and what each line meant.
+    fn through_the_reader(
+        stream: &str,
+    ) -> Vec<(Value, bool, bool, Option<String>, Option<String>)> {
+        let pi = provider_for(AgentKind::Pi);
+        stream
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let mut event: Value = serde_json::from_str(line).expect("a recorded line");
+                pi.adapt_event(&mut event);
+                let seen = pi.observe_event(&event);
+                (
+                    event.clone(),
+                    seen.suppress,
+                    seen.turn_finished,
+                    seen.session_id.map(str::to_string),
+                    seen.host_notice.map(str::to_string),
+                )
+            })
+            .collect()
+    }
+
+    /// Real `pi --mode rpc` 1.5.2 streams from `scripts/test-pi-harness.mjs`,
+    /// verbatim; the web tests read the same files. Four prompts and four full
+    /// stops, whatever `agent_end`, `turn_end` and the answers say.
+    #[test]
+    fn recorded_pi_rpc_streams_end_each_prompt_exactly_once() {
+        let turn = through_the_reader(PI_RPC_TURN);
+        assert_eq!(turn.iter().filter(|(_, _, done, ..)| *done).count(), 4);
+        assert_eq!(
+            turn.iter()
+                .filter_map(|(.., session, _)| session.clone())
+                .count(),
+            1,
+            "the session id comes from the get_state answer"
+        );
+        // Answers, the system prompt's messages and the turn copies are not shown.
+        for (event, suppressed, ..) in &turn {
+            let kind = event["type"].as_str().unwrap_or("");
+            let system = event.pointer("/message/role").and_then(Value::as_str) == Some("system");
+            let hidden = matches!(kind, "response" | "turn_end" | "extension_ui_request")
+                || (system && matches!(kind, "message_start" | "message_end"));
+            assert_eq!(*suppressed, hidden, "{kind}: {event}");
+        }
+        // The last agent_end carries no message bodies, only the stop reasons.
+        for (event, ..) in turn.iter().filter(|(e, ..)| e["type"] == "agent_end") {
+            for message in event["messages"].as_array().unwrap() {
+                assert!(message.get("content").is_none(), "{message}");
+            }
+        }
+        // A full stop is `agent_settled` and nothing before it.
+        for (event, _, done, ..) in &turn {
+            assert_eq!(*done, event["type"] == "agent_settled", "{event}");
+        }
+
+        let abort = through_the_reader(PI_RPC_ABORT);
+        let stops: Vec<_> = abort.iter().filter(|(_, _, done, ..)| *done).collect();
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[0].0["aborted"], true);
+        let types: Vec<&str> = abort
+            .iter()
+            .filter_map(|(e, ..)| e["type"].as_str())
+            .collect();
+        assert!(
+            types.iter().position(|t| *t == "agent_end")
+                < types.iter().position(|t| *t == "agent_settled"),
+            "agent_end precedes the full stop"
+        );
+    }
+
+    #[test]
+    fn a_recorded_pi_prompt_with_no_login_is_a_failed_turn_and_a_recorded_mcp_failure_a_notice() {
+        let refused = through_the_reader(PI_RPC_NO_LOGIN);
+        assert_eq!(refused.len(), 1);
+        let (event, suppressed, done, ..) = &refused[0];
+        assert!(!suppressed && *done, "{event}");
+        assert_eq!(event["octiq_rejected_prompt"], true);
+        assert_eq!(event["message"]["stopReason"], "error");
+        assert!(event["message"]["errorMessage"]
+            .as_str()
+            .unwrap()
+            .starts_with("No API key found for anthropic."));
+        assert!(crate::outcome::of_provider_event(AgentKind::Pi, event).is_some());
+
+        let broken = through_the_reader(PI_RPC_MCP_FAILURE);
+        let notices: Vec<_> = broken
+            .iter()
+            .filter_map(|(.., notice)| notice.clone())
+            .collect();
+        assert_eq!(notices.len(), 1, "{broken:?}");
+        assert!(
+            notices[0].contains("MCP servers need attention"),
+            "{}",
+            notices[0]
+        );
+        assert!(notices[0].contains("octiq"), "{}", notices[0]);
+    }
+
+    #[test]
+    fn a_pi_login_that_is_missing_is_said_with_the_way_out() {
+        let words = PiProvider::rejection_words(
+            "No API key found for anthropic.\n\nUse /login to log into a provider",
+            Some("anthropic/claude-opus-5-5"),
+        );
+        assert!(words.contains("pi auth login anthropic"), "{words}");
+        assert!(words.contains("--api-key"));
+        let codex = PiProvider::rejection_words("No API key found for openai-codex.", None);
+        assert!(codex.contains("pi auth login openai-codex"), "{codex}");
+        let other = PiProvider::rejection_words("Model not found: nope/x", None);
+        assert!(
+            other.starts_with("pi.dev did not take the turn:"),
+            "{other}"
+        );
+    }
+
+    const PI_RPC_ERROR_RECOVERED: &str =
+        include_str!("../../web/src/lib/__fixtures__/pi-rpc-error-recovered.jsonl");
+
+    /// What the reader does with `turn_opened` and `turn_finished`: a turn
+    /// opens only when the session reads idle (`agent_chat`:
+    /// `observed.turn_opened && !busy`). With `host_writes_prompts` the host
+    /// marks the session busy at each recorded `prompt` command, as writing
+    /// one does; without it nobody wrote a prompt and Pi started every run.
+    fn pi_turns_opened(stream: &str, host_writes_prompts: bool) -> usize {
+        let mut busy = false;
+        let pi = provider_for(AgentKind::Pi);
+        let mut opened = 0;
+        for line in stream.lines().filter(|l| !l.trim().is_empty()) {
+            let mut event: Value = serde_json::from_str(line).expect("a recorded line");
+            // The host marks the session busy when it WRITES a prompt, which
+            // is before Pi's answer to that command and before its first run.
+            if host_writes_prompts
+                && event.get("type").and_then(Value::as_str) == Some("response")
+                && event.get("command").and_then(Value::as_str) == Some("prompt")
+            {
+                busy = true;
+            }
+            pi.adapt_event(&mut event);
+            let seen = pi.observe_event(&event);
+            if seen.turn_opened && !busy {
+                opened += 1;
+                busy = true;
+            }
+            if seen.turn_finished {
+                busy = false;
+            }
+        }
+        opened
+    }
+
+    /// M4: a run Pi starts by itself after a settled turn (a person's own
+    /// extension sending a message) must read as a turn in flight, or a send
+    /// goes straight to a Pi that refuses it and the idle reaper ends the chat.
+    #[test]
+    fn pi_agent_start_opens_a_turn_and_the_host_never_opens_one_twice() {
+        let pi = provider_for(AgentKind::Pi);
+        assert!(
+            pi.observe_event(&json!({ "type": "agent_start" }))
+                .turn_opened
+        );
+        for other in [
+            json!({ "type": "turn_start" }),
+            json!({ "type": "turn_end" }),
+            json!({ "type": "agent_end", "messages": [] }),
+            json!({ "type": "agent_settled", "aborted": false }),
+            json!({ "type": "message_start", "message": { "role": "user", "content": [] } }),
+            json!({ "type": "auto_retry_start", "attempt": 1 }),
+        ] {
+            assert!(!pi.observe_event(&other).turn_opened, "{other}");
+        }
+        // A turn the host wrote the prompt for: the session is busy already,
+        // so nothing opens, retries inside the turn included (real pi 1.5.2).
+        for stream in [PI_RPC_TURN, PI_RPC_ABORT, PI_RPC_ERROR_RECOVERED] {
+            assert_eq!(pi_turns_opened(stream, true), 0);
+        }
+        // The same streams with nobody having written a prompt: Pi started
+        // every turn itself and each opens exactly once, however many runs it
+        // took (the recovered one has two runs, a retry, and is one turn; the
+        // other streams hold four and two turns).
+        assert_eq!(pi_turns_opened(PI_RPC_ERROR_RECOVERED, false), 1);
+        assert_eq!(pi_turns_opened(PI_RPC_ABORT, false), 2);
+        assert_eq!(pi_turns_opened(PI_RPC_TURN, false), 4);
     }
 
     /// Feedback 5fd9b781 / 4c7f5647: the turn Claude opens by itself after a
@@ -3563,22 +4812,9 @@ pub(crate) mod tests {
         });
         let carried = provider_for(AgentKind::Pi).observe_event(&pi_message);
         assert_eq!(carried.spoken_text, Some("done through Pi"));
-        let pi_end = json!({ "type": "agent_end", "willRetry": false });
-        assert!(
-            !provider_for(AgentKind::Pi)
-                .observe_event(&pi_end)
-                .turn_finished
-        );
         let pi_settled = json!({ "type": "agent_settled" });
         let pi_completed = provider_for(AgentKind::Pi).observe_event(&pi_settled);
         assert!(pi_completed.turn_finished);
-
-        let legacy_end = json!({ "type": "agent_end" });
-        assert!(
-            provider_for(AgentKind::Pi)
-                .observe_event(&legacy_end)
-                .turn_finished
-        );
     }
 
     /// The person's preferences end every provider's system prompt — the
@@ -3620,15 +4856,29 @@ pub(crate) mod tests {
             "{bare}"
         );
 
-        let pi = provider_for(AgentKind::Pi).build_command(&AgentCommand {
+        // Pi reads them from the file its launch writes, last in the prompt.
+        let dir = crate::test_dir::TestDir::new("pi-preferences");
+        let pi_mcp = dir.join("octiq-ask.json");
+        let (line, prompt) = pi_launch(&AgentCommand {
             preferences: prefs,
+            mcp_config: Some(&pi_mcp),
             ..codex_request(false, &[])
         });
-        // An option, so before the `--` that starts the prompt.
-        let flag = pi
-            .find(&format!("--append-system-prompt {quoted}"))
-            .unwrap();
-        assert!(flag < pi.find(" -- ").unwrap(), "{pi}");
+        assert!(prompt.contains("Reply in Malay."));
+        assert!(
+            prompt.find("Docspace may contain").unwrap() < prompt.find("Reply in Malay.").unwrap()
+        );
+        assert!(!line.contains("Reply in Malay."), "{line}");
+        let (_, desk) = pi_launch(&AgentCommand {
+            preferences: prefs,
+            mcp_config: Some(&pi_mcp),
+            ..codex_request(true, &[])
+        });
+        assert!(
+            desk.starts_with("You are an OctiqFlow front desk."),
+            "{desk}"
+        );
+        assert!(desk.contains("Reply in Malay."), "{desk}");
 
         let exec = codex_exec_command(
             &AgentCommand {

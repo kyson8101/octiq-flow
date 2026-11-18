@@ -388,7 +388,8 @@ fn a_stop_that_is_not_honoured_keeps_the_queue_when_the_next_process_cannot_star
 fn a_start_that_fails_for_its_own_reason_once_the_folder_is_back_fails_as_before() {
     let world = World::new();
     let key = fresh("real-failure");
-    let agent = world.working(&key, ChatAgent::Pi);
+    // Antigravity: Stop ends the process, as a command-line agent's does.
+    let agent = world.working(&key, ChatAgent::Antigravity);
     let ids = world.queue(&key, &["first thing", "/second"]);
 
     let why = world.folder_goes();

@@ -5733,6 +5733,16 @@ body.is-ultra .eff {
   scrollbar-gutter: stable;
 }
 
+/* A heading over a stretch of one upstream's models (Pi), as wide as the grid. */
+.mp-group {
+  grid-column: 1 / -1;
+  padding: 6px 2px 0;
+  font-size: 11px;
+  color: var(--fg-2);
+}
+.mp-group:first-child { padding-top: 0; }
+.mp-catalog-why { color: var(--fg-1); }
+
 .mp-card {
   display: flex;
   align-items: center;

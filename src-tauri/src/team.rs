@@ -433,9 +433,6 @@ fn apply(
         .as_deref()
         .map(|text| clean(text, "persistent prompt", PERSISTENT_PROMPT_MAX, false))
         .transpose()?;
-    if draft.agent == ChatAgent::Pi {
-        return Err("Choose Claude, Codex or Antigravity for a registered agent.".into());
-    }
     let model = draft.model.trim().to_owned();
     if model.is_empty() || model == "default" || crate::agent_provider::safe_model(&model).is_none()
     {
@@ -3999,11 +3996,23 @@ mod tests {
     }
 
     #[test]
-    fn rejects_pi_and_default_models() {
+    fn registers_pi_with_a_named_upstream_and_rejects_default_models() {
         let path = temp();
+        // The draft's own model is Claude's alias: a bare Claude id is not a
+        // Pi model (a bare id means Codex's upstream), so it is refused.
         let mut pi = draft("Pi", None);
         pi.agent = ChatAgent::Pi;
         assert!(save(&path, pi).is_err());
+        let mut api = draft("Pi API", None);
+        api.agent = ChatAgent::Pi;
+        api.model = "anthropic/claude-sonnet-5-5".into();
+        let saved = save(&path, api).unwrap();
+        assert_eq!(saved.agent, ChatAgent::Pi);
+        assert_eq!(saved.model, "anthropic/claude-sonnet-5-5");
+        let mut codex = draft("Pi Codex", None);
+        codex.agent = ChatAgent::Pi;
+        codex.model = "gpt-5.6-sol".into();
+        assert!(save(&path, codex).is_ok());
         let mut default = draft("D", None);
         default.model = "default".into();
         assert!(save(&path, default).is_err());

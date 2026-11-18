@@ -38,7 +38,10 @@ pub(super) fn worker_model(agent: ChatAgent, model: Option<&str>) -> Result<Stri
         ChatAgent::Codex => "gpt-5.6-sol",
         ChatAgent::Claude => "sonnet",
         ChatAgent::Antigravity => "gemini-3.1-pro-high",
-        ChatAgent::Pi => return Err("Choose Claude, Codex or Antigravity for workers.".into()),
+        // Codex through Pi, as a bare id has always meant. Claude through the
+        // Anthropic API is named, `anthropic/claude-sonnet-5-5`: it bills an
+        // API key, so it is never the default.
+        ChatAgent::Pi => "gpt-5.6-sol",
     };
     let model = model
         .map(str::trim)
@@ -765,7 +768,8 @@ mod tests {
         ] {
             assert_eq!(worker_model(agent, Some(model)).unwrap(), model);
         }
-        assert!(worker_model(ChatAgent::Pi, None).is_err());
+        // Pi has a default: a bare id is Codex's upstream.
+        assert_eq!(worker_model(ChatAgent::Pi, None).unwrap(), "gpt-5.6-sol");
     }
 
     #[test]

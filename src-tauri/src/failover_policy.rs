@@ -1,5 +1,5 @@
 //! Browser-owned quota preferences and worker choices. Agents cannot write these.
-use crate::agent_provider::{provider_for, safe_model, AgentKind};
+use crate::agent_provider::{provider_for, safe_model, Access, AgentKind};
 use crate::provider_failover::Settings;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Mutex};
@@ -23,7 +23,15 @@ pub(crate) struct Selection {
 
 impl Selection {
     pub(crate) fn settings(&self, source: &Settings) -> Result<Settings, String> {
-        if crate::provider_failover::equivalent_using(source, source, self.agent).is_none() {
+        // Independence is a fact about the account the CHOSEN model spends, not
+        // about a model suggested for the harness (`equivalent_using` picks one
+        // by tier, with the default upstream): Codex to Pi on `openai-codex` is
+        // the same allowance, Pi on `anthropic` to Pi on `openai-codex` is not.
+        if crate::provider_failover::account_of(self.agent, Some(&self.model))
+            == crate::provider_failover::account_of(source.agent, source.model.as_deref())
+            || (self.agent == AgentKind::Antigravity
+                && matches!(source.access, Access::Auto | Access::Manual))
+        {
             return Err(
                 "Choose an independent provider that preserves the current access level.".into(),
             );
@@ -137,8 +145,7 @@ pub(crate) fn save_rule(owner: Option<String>, rule: Option<Rule>) -> Result<(),
         }
     }
     if let Some(backup) = rule.as_ref().and_then(|r| r.backup.as_ref()) {
-        if backup.agent == AgentKind::Pi
-            || (backup.agent == AgentKind::Antigravity && backup.effort.is_some())
+        if (backup.agent == AgentKind::Antigravity && backup.effort.is_some())
             || backup
                 .effort
                 .as_deref()
@@ -172,7 +179,11 @@ pub(crate) fn available(
     source: &Settings,
 ) -> Result<Settings, String> {
     let target = selection.settings(source)?;
-    if state.blocked(target.agent, crate::auto_resume::unix_now()) {
+    if state.blocked(
+        target.agent,
+        target.model.as_deref(),
+        crate::auto_resume::unix_now(),
+    ) {
         return Err("The selected provider is still at its limit.".into());
     }
     if !crate::agents::agent_installs(None)
@@ -316,14 +327,14 @@ fn options(
     worker: bool,
 ) -> Vec<serde_json::Value> {
     let installs = crate::agents::agent_installs(None);
-    [AgentKind::Claude, AgentKind::Codex, AgentKind::Antigravity].into_iter().filter_map(|agent| {
+    [AgentKind::Claude, AgentKind::Codex, AgentKind::Antigravity, AgentKind::Pi].into_iter().filter_map(|agent| {
         let suggestion = if worker {
             crate::provider_failover::equivalent_for_worker(source, agent)?
         } else {
             crate::provider_failover::equivalent_using(source, source, agent)?
         };
         let installed = installs.iter().any(|a| a.id == agent.id() && a.installed);
-        Some(serde_json::json!({ "agent": agent, "installed": installed, "limited": manager.failover.blocked(agent, crate::auto_resume::unix_now()), "suggestion": suggestion }))
+        Some(serde_json::json!({ "agent": agent, "installed": installed, "limited": manager.failover.blocked(agent, suggestion.model.as_deref(), crate::auto_resume::unix_now()), "suggestion": suggestion }))
     }).collect()
 }
 
@@ -376,6 +387,70 @@ mod tests {
             model: "gpt-5.6-terra".into(),
             effort: Some("low".into()),
         }
+    }
+
+    fn pi_selection(model: &str) -> Selection {
+        Selection {
+            agent: AgentKind::Pi,
+            model: model.into(),
+            effort: None,
+        }
+    }
+
+    /// Independence is the account of the model actually chosen (`account_of`),
+    /// not of a model suggested for the harness.
+    #[test]
+    fn a_selection_is_independent_by_the_account_its_own_model_spends() {
+        let codex = Settings {
+            agent: AgentKind::Codex,
+            model: Some("gpt-5.6-terra".into()),
+            effort: None,
+            access: Access::Edits,
+        };
+        let pi_on = |model: &str| Settings {
+            agent: AgentKind::Pi,
+            model: Some(model.into()),
+            effort: None,
+            access: Access::Edits,
+        };
+        // Pi through the ChatGPT login is Codex's allowance: no alternative to Codex.
+        assert!(pi_selection("openai-codex/gpt-5.6-terra")
+            .settings(&codex)
+            .is_err());
+        // And the other way round.
+        let selected = Selection {
+            agent: AgentKind::Codex,
+            model: "gpt-5.6-terra".into(),
+            effort: None,
+        };
+        assert!(selected
+            .settings(&pi_on("openai-codex/gpt-5.6-sol"))
+            .is_err());
+        // Pi through the Anthropic API is an account of its own, from Codex,
+        // from Claude, and from Pi on the ChatGPT login.
+        for from in [codex.clone(), source(), pi_on("openai-codex/gpt-5.6-terra")] {
+            let chosen = pi_selection("anthropic/claude-sonnet-5-5")
+                .settings(&from)
+                .expect("an independent account");
+            assert_eq!(chosen.agent, AgentKind::Pi);
+            assert_eq!(chosen.model.as_deref(), Some("anthropic/claude-sonnet-5-5"));
+            assert_eq!(chosen.access, from.access, "the level is never changed");
+        }
+        // Pi on Anthropic to Pi on the ChatGPT login is a different account too.
+        assert!(pi_selection("openai-codex/gpt-5.6-terra")
+            .settings(&pi_on("anthropic/claude-sonnet-5-5"))
+            .is_ok());
+        // The same Pi upstream is the same account.
+        assert!(pi_selection("anthropic/claude-opus-5-5")
+            .settings(&pi_on("anthropic/claude-sonnet-5-5"))
+            .is_err());
+        // Antigravity still never takes a guarded level.
+        let agy = Selection {
+            agent: AgentKind::Antigravity,
+            model: "gemini-3-pro-high".into(),
+            effort: None,
+        };
+        assert!(agy.settings(&source()).is_err());
     }
 
     #[test]
@@ -497,8 +572,21 @@ mod tests {
         let mut invalid = selection();
         invalid.agent = AgentKind::Antigravity;
         assert!(invalid.settings(&source()).is_err());
+        // Pi is a valid backup: Codex's bare id, or a model naming an
+        // upstream. A bare Claude id has no upstream to run on.
         invalid.agent = AgentKind::Pi;
+        let codex_on_pi = invalid.settings(&source()).unwrap();
+        assert_eq!(
+            (codex_on_pi.agent, codex_on_pi.access),
+            (AgentKind::Pi, Access::Manual)
+        );
+        invalid.model = "claude-sonnet-5-5".into();
         assert!(invalid.settings(&source()).is_err());
+        invalid.model = "anthropic/claude-sonnet-5-5".into();
+        assert_eq!(
+            invalid.settings(&source()).unwrap().model.as_deref(),
+            Some("anthropic/claude-sonnet-5-5")
+        );
         invalid = selection();
         invalid.effort = Some("invented".into());
         assert!(invalid.settings(&source()).is_err());

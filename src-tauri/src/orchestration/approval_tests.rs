@@ -252,7 +252,7 @@ fn all_limited_providers_hold_before_reservation_without_spending_retries() {
     let chats = Arc::new(ChatManager::default());
     let now = crate::auto_resume::unix_now();
     for agent in [ChatAgent::Codex, ChatAgent::Claude, ChatAgent::Antigravity] {
-        chats.failover.limited(agent, Some(now + 600), now);
+        chats.failover.limited(agent, None, Some(now + 600), now);
     }
     let before = task_now(&store, &task.id);
     let count = attempts_of(&store, &task.id)[0].execution.retry_count;

@@ -472,7 +472,7 @@ export type ChatState = {
 
 export type AutoResume = {
   id: string;
-  fallbackAgent?: "claude" | "codex" | "antigravity";
+  fallbackAgent?: "claude" | "codex" | "pi" | "antigravity";
   awaitingChoice?: boolean;
   agent: "claude" | "codex" | "pi" | "antigravity";
   resetAt: number;
@@ -574,9 +574,11 @@ export function describeFailure(agent: "claude" | "codex" | "pi" | "antigravity"
       /resets\s+([^.·]+)/i.exec(text)?.[1]?.trim();
     return {
       title:
-        agent === "codex" || agent === "pi"
+        agent === "codex"
           ? "Your Codex account is out of credits"
-          : agent === "antigravity"
+          : agent === "pi"
+            ? "Pi's model provider is out of credits or quota"
+            : agent === "antigravity"
             ? "You have used up your Antigravity quota"
             : "You have hit your Claude usage limit",
       detail: when ? `It comes back at ${when}.` : text,
@@ -1135,7 +1137,7 @@ function reduceEvent(state: ChatState, raw: unknown, now: number, source: "live"
       return state;
     return {
       ...state,
-      autoResume: { id, agent: agent as AutoResume["agent"], resetAt, runAt, ...(e.awaiting_choice === true ? { awaitingChoice: true } : {}), ...(["claude", "codex", "antigravity"].includes(asStr(e.fallback_agent)) ? { fallbackAgent: asStr(e.fallback_agent) as AutoResume["fallbackAgent"] } : {}) },
+      autoResume: { id, agent: agent as AutoResume["agent"], resetAt, runAt, ...(e.awaiting_choice === true ? { awaitingChoice: true } : {}), ...(["claude", "codex", "pi", "antigravity"].includes(asStr(e.fallback_agent)) ? { fallbackAgent: asStr(e.fallback_agent) as AutoResume["fallbackAgent"] } : {}) },
     };
   }
 
@@ -2413,6 +2415,7 @@ function foldPi(
                   state: read.state,
                   ...(read.result !== undefined ? { result: read.result } : {}),
                   ...(read.details !== undefined ? { details: read.details } : {}),
+                  ...(read.outcome ? { outcome: read.outcome } : {}),
                 }
               : block,
           ),
@@ -2432,6 +2435,7 @@ function foldPi(
           state: read.state,
           ...(read.result !== undefined ? { result: read.result } : {}),
           ...(read.details !== undefined ? { details: read.details } : {}),
+          ...(read.outcome ? { outcome: read.outcome } : {}),
         },
       ],
     }));

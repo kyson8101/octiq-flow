@@ -25,7 +25,7 @@ function MascotStudio() {
       </nav>
       <section className="crew" aria-label="Mascot cast">
         {shown && MODELS.filter(m => pi ? m.agent === "pi" : m.agent !== "pi").map(m => <article key={m.id}>
-          <div className="model-label"><span>{m.agent === "pi" ? "PI / CODEX" : m.agent.toUpperCase()}</span><span className="state">{asleep ? "RESTING" : mood === "idle" ? "OFF DUTY" : mood === "work" ? "AT WORK" : mood === "think" ? "THINKING" : "ON DISPLAY"}</span></div>
+          <div className="model-label"><span>{m.agent === "pi" ? "PI" : m.agent.toUpperCase()}</span><span className="state">{asleep ? "RESTING" : mood === "idle" ? "OFF DUTY" : mood === "work" ? "AT WORK" : mood === "think" ? "THINKING" : "ON DISPLAY"}</span></div>
           <div className="stage"><Mascot robot={m.composerStyle} size={170} mood={mood} asleep={asleep} alert={alert} /></div>
           <h2>{m.model === "Default" ? m.name : m.model}</h2><p>{m.hint}</p>
           <div className="sizes"><span><Mascot robot={m.composerStyle} size={28} mood={mood} asleep={asleep} alert={alert} />Chat · 28</span><span><Mascot robot={m.composerStyle} size={44} mood={mood} asleep={asleep} alert={alert} />Picker · 44</span></div>
