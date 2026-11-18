@@ -4030,8 +4030,8 @@ export default function App() {
         ),
       );
       sendingTurns.current.add(turnId);
-      const fail = (err: unknown, refused = false) =>
-        patch(id, (s) => unconfirmedSend(s, turnId, err, runningRef.current.has(id), refused));
+      const fail = (err: unknown, refused = false, live?: boolean) =>
+        patch(id, (s) => unconfirmedSend(s, turnId, err, live ?? runningRef.current.has(id), refused));
       try {
         const held = conversationsRef.current.find((c) => c.id === id);
         const recordedCwd = held?.cwd ?? chatsRef.current[id]?.cwd;
@@ -4193,6 +4193,9 @@ export default function App() {
         }
 
         if (leadSendCurrent && !leadSendCurrent()) { fail("Checking with the server. Send again in a moment."); return false; }
+        // Whether a real turn was there before this send marked the chat
+        // running: only that one may keep the composer busy if the send fails.
+        const wasRunning = runningRef.current.has(id);
         setRunning((prev) => new Set(prev).add(id));
         // Already running (another tab, a session that outlived a crash, or
         // another start of this chat still in progress): talk to it rather
@@ -4233,7 +4236,7 @@ export default function App() {
           if (switchingModel) pendingModelHandoffs.current.delete(id);
           return true;
         }
-        fail(outcome.error, outcome.refused);
+        fail(outcome.error, outcome.refused, wasRunning);
         setRunning((prev) => {
           const next = new Set(prev);
           next.delete(id);
