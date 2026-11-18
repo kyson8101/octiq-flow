@@ -1399,6 +1399,11 @@ impl Drop for StartClaim<'_> {
     }
 }
 
+/// How long a send waits for another thread's start of the same chat to
+/// finish (`ChatManager::wait_out_start`) before it answers "no such chat".
+const START_WAIT: Duration = Duration::from_secs(10);
+const START_WAIT_POLL: Duration = Duration::from_millis(25);
+
 /// How long an interrupted turn may take to send its own full stop before
 /// its process is ended (`grace_ran_out`). Claude and Codex answer an
 /// interrupt in well under a second; this only covers one that never does.
@@ -2469,6 +2474,36 @@ impl ChatManager {
             key: key.to_string(),
             _storage: None,
         }))
+    }
+
+    /// Whether a start of this chat is under way on another thread: its own
+    /// start claim, or a claim on the transcript record it shares. In that
+    /// window `sessions` has no entry yet and `start_session` refuses with
+    /// "already running", so a send finds neither a process nor a start.
+    fn start_in_progress(&self, key: &str) -> bool {
+        self.start_claims
+            .lock()
+            .map(|claims| {
+                claims
+                    .get(key)
+                    .is_some_and(|owner| *owner != thread::current().id())
+                    || crate::transcript::key_record_claim(key)
+                        .is_some_and(|record| claims.contains_key(&record))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Wait, holding no lock between looks, until no start of this chat is
+    /// under way or `limit` has passed. Returns whether the claim dropped.
+    fn wait_out_start(&self, key: &str, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        while self.start_in_progress(key) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(START_WAIT_POLL);
+        }
+        true
     }
 
     /// Whether another thread holds this chat for its own start.
@@ -7426,7 +7461,41 @@ pub(crate) fn host_turns(
         .collect::<Result<_, _>>()?)
 }
 
+/// Send one turn. A chat with no process while another thread's start of it
+/// is under way (a second tab, `chat_recover`'s claim, an auto-resume, a
+/// queued start) is neither running nor startable: the start refuses with
+/// "already running" and the plain send used to refuse with "no such chat".
+/// So the send waits for that start to end, holding no lock, and looks once
+/// more: the session is there (written or queued as usual) or it is not and
+/// the answer is the same "no such chat". Nothing is queued for a start that
+/// may fail, and a retry is safe: the user turn id's durable envelope makes
+/// the second look return `Sent::Already` if the first got through.
 fn send_turn(
+    manager: Arc<ChatManager>,
+    key: String,
+    text: String,
+    images: Option<Vec<String>>,
+    to: Option<String>,
+    user_turn_id: Option<String>,
+) -> Result<Sent, String> {
+    let first = send_turn_once(
+        manager.clone(),
+        key.clone(),
+        text.clone(),
+        images.clone(),
+        to.clone(),
+        user_turn_id.clone(),
+    );
+    match first {
+        Err(why) if why == "no such chat" && manager.start_in_progress(&key) => {
+            manager.wait_out_start(&key, START_WAIT);
+            send_turn_once(manager, key, text, images, to, user_turn_id)
+        }
+        other => other,
+    }
+}
+
+fn send_turn_once(
     manager: Arc<ChatManager>,
     key: String,
     text: String,
@@ -12989,6 +13058,99 @@ mod tests {
             .lock()
             .unwrap()
             .insert(key.to_string(), session);
+    }
+
+    /// The send race behind "Delivery unconfirmed · no such chat": another
+    /// thread holds the chat's start claim and has not put its session in the
+    /// table yet. The send used to refuse at once, and so did the start.
+    #[test]
+    fn a_send_waits_out_a_start_in_progress_and_is_delivered_once() {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("chat:send-race-{}", uuid::Uuid::new_v4().simple());
+        let (claimed_tx, claimed_rx) = std::sync::mpsc::channel();
+        let starter = {
+            let manager = manager.clone();
+            let key = key.clone();
+            thread::spawn(move || {
+                let claim = manager.claim_start(&key).expect("the start claim");
+                claimed_tx.send(()).unwrap();
+                thread::sleep(Duration::from_millis(300));
+                // The start's last step: the process goes into the table
+                // while the claim is still held, the claim drops after.
+                hold(&manager, &key, claude_session(false));
+                drop(claim);
+            })
+        };
+        claimed_rx.recv().unwrap();
+        assert!(manager.start_in_progress(&key));
+        let began = Instant::now();
+        let sent = send_turn(
+            manager.clone(),
+            key.clone(),
+            "while the start runs".into(),
+            None,
+            None,
+            Some("user-send-race-1".into()),
+        );
+        assert_eq!(sent, Ok(Sent::Written));
+        assert!(began.elapsed() >= Duration::from_millis(200), "it waited");
+        starter.join().unwrap();
+        // The page's retry of the same turn does not send it again.
+        assert_eq!(
+            send_turn(
+                manager.clone(),
+                key.clone(),
+                "while the start runs".into(),
+                None,
+                None,
+                Some("user-send-race-1".into()),
+            ),
+            Ok(Sent::Already)
+        );
+    }
+
+    #[test]
+    fn a_send_after_a_start_that_failed_is_still_no_such_chat_and_queues_nothing() {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("chat:send-race-fail-{}", uuid::Uuid::new_v4().simple());
+        let (claimed_tx, claimed_rx) = std::sync::mpsc::channel();
+        let starter = {
+            let manager = manager.clone();
+            let key = key.clone();
+            thread::spawn(move || {
+                let claim = manager.claim_start(&key).expect("the start claim");
+                claimed_tx.send(()).unwrap();
+                thread::sleep(Duration::from_millis(300));
+                drop(claim); // the start failed: no session
+            })
+        };
+        claimed_rx.recv().unwrap();
+        let sent = send_turn(
+            manager.clone(),
+            key.clone(),
+            "while the start fails".into(),
+            None,
+            None,
+            Some("user-send-race-2".into()),
+        );
+        assert_eq!(sent, Err("no such chat".into()));
+        starter.join().unwrap();
+        assert!(!manager.has_queued_turns(&key), "nothing is queued");
+        assert!(!manager.sessions.lock().unwrap().contains_key(&key));
+        // With no start in progress the refusal is immediate.
+        let began = Instant::now();
+        assert_eq!(
+            send_turn(
+                manager.clone(),
+                key,
+                "again".into(),
+                None,
+                None,
+                Some("user-send-race-3".into()),
+            ),
+            Err("no such chat".into())
+        );
+        assert!(began.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
