@@ -158,7 +158,9 @@ fn parse_pi_models(stdout: &str) -> Vec<PiListed> {
 }
 
 /// Run `pi` with `args`, answering its stdout, or why not. A hung Pi is
-/// stopped at `limit`.
+/// stopped at `limit`: killed and reaped here, not left to a thread that
+/// would wait for it for ever. `Child::kill` is `TerminateProcess` on Windows,
+/// the same call `orchestration::peer::run_one_shot` makes.
 fn run_pi(args: &[&str], limit: Duration) -> Result<(bool, String), String> {
     let executable = probe_cached()
         .into_iter()
@@ -176,22 +178,46 @@ fn run_pi(args: &[&str], limit: Duration) -> Result<(bool, String), String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     no_console(&mut command);
-    let child = command
+    run_with_limit(command, limit)
+}
+
+/// Spawn `command`, read its stdout as it arrives (a long listing would
+/// otherwise block the process on a full pipe) and wait at most `limit`.
+/// Past the limit the child is killed and reaped before the error returns.
+fn run_with_limit(mut command: Command, limit: Duration) -> Result<(bool, String), String> {
+    let mut child = command
         .spawn()
         .map_err(|e| format!("could not start pi.dev: {e}"))?;
-    let (send, receive) = mpsc::channel();
-    let waiter = std::thread::spawn(move || {
-        let _ = send.send(child.wait_with_output());
+    let mut pipe = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        if let Some(pipe) = pipe.as_mut() {
+            let _ = std::io::Read::read_to_end(pipe, &mut out);
+        }
+        out
     });
-    let output = receive
-        .recv_timeout(limit)
-        .map_err(|_| "pi.dev took too long to answer".to_string())?
-        .map_err(|e| format!("pi.dev could not answer: {e}"))?;
-    let _ = waiter.join();
-    Ok((
-        output.status.success(),
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-    ))
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() >= limit => {
+                // Stopped and reaped. The reader ends when the pipe closes with
+                // the process; it is not joined here, because a grandchild that
+                // inherited the pipe would hold the join for as long as it lives.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("pi.dev took too long to answer".to_string());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("pi.dev could not answer: {e}"));
+            }
+        }
+    };
+    let out = reader.join().unwrap_or_default();
+    Ok((status.success(), String::from_utf8_lossy(&out).into_owned()))
 }
 
 /// Pi's models, from `pi --list-models`, for the upstreams `pi auth check
@@ -759,6 +785,100 @@ fn forget_probe() {
 /// Put a known answer in the cache so a test can call the command without
 /// starting a login shell — which would make the test slow, machine-dependent,
 /// and dependent on whatever the user's rc files do.
+#[cfg(test)]
+mod run_pi_tests {
+    use super::*;
+
+    #[test]
+    fn a_pi_that_never_answers_is_stopped_and_reaped_at_the_limit() {
+        let dir = crate::test_dir::TestDir::new("run-pi-hang");
+        let pid_file = dir.join("pid");
+        #[cfg(unix)]
+        let command = {
+            let mut c = Command::new("sh");
+            c.arg("-c")
+                .arg(format!("echo $$ > '{}'; exec sleep 60", pid_file.display()));
+            c
+        };
+        #[cfg(windows)]
+        let command = {
+            let mut c = Command::new("powershell");
+            c.args(["-NoProfile", "-Command"]).arg(format!(
+                "$PID | Out-File -Encoding ascii '{}'; Start-Sleep 60",
+                pid_file.display()
+            ));
+            c
+        };
+        let mut command = command;
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        no_console(&mut command);
+        let started = Instant::now();
+        let answer = run_with_limit(command, Duration::from_millis(1500));
+        assert_eq!(answer, Err("pi.dev took too long to answer".to_string()));
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "it returned at the limit, not when the child ended"
+        );
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .expect("the stub ran")
+            .trim()
+            .trim_start_matches('\u{feff}')
+            .parse()
+            .expect("a pid");
+        #[cfg(unix)]
+        {
+            // SAFETY: signal 0 only asks whether the process exists.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            assert!(
+                !alive,
+                "the hung child was killed and reaped, not left running"
+            );
+        }
+        #[cfg(windows)]
+        {
+            let listed = Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+                .output()
+                .expect("tasklist");
+            assert!(
+                !String::from_utf8_lossy(&listed.stdout).contains(&pid.to_string()),
+                "the hung child was killed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pi_that_answers_returns_all_of_its_output() {
+        #[cfg(unix)]
+        let mut command = {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg("seq 1 20000");
+            c
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut c = Command::new("powershell");
+            c.args(["-NoProfile", "-Command", "1..20000"]);
+            c
+        };
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        no_console(&mut command);
+        let (ok, out) = run_with_limit(command, Duration::from_secs(30)).unwrap();
+        assert!(ok);
+        assert_eq!(
+            out.lines().count(),
+            20000,
+            "a long listing does not block on the pipe"
+        );
+    }
+}
+
 #[cfg(test)]
 pub fn seed_probe_for_test(found: Vec<(String, String)>) {
     if let Ok(mut cache) = AGENT_PROBE.lock() {

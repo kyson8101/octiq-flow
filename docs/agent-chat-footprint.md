@@ -126,8 +126,9 @@ orchestration operations, so workers do not need another copy of those servers.
   public page and screenshotted it through `playwright` (5 turns, 14 s, $0.20 on
   Sonnet).
 - Pi runs one `pi --mode rpc` process per chat, with OctiqFlow's MCP loaded
-  through its own extension (`exposure: direct`); a worker below Full runs
-  `-ne -e builtin:mcp`, so the person's own extensions and servers stay off.
+  through its own extension (the extension speaks MCP to OctiqFlow's server itself);
+  a worker below Full runs `-ne --no-mcp`, so the person's own extensions and
+  servers stay off.
   Antigravity's
   installed CLI has no per-launch strict MCP flag; its personal settings are
   not rewritten to imitate one. Its existing plugin/access rules are unchanged.

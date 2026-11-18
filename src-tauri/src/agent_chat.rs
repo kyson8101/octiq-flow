@@ -5429,6 +5429,7 @@ fn start_session_with_recovery(
             // and so does this.
             let mut usage_meter = crate::agent_usage::Meter::default();
             let mut denied_actions = DeniedActions::default();
+            let mut pi_turn = PiTurn::default();
             let mut auto_plan_refused = false;
             let prelude = app_server_prelude
                 .into_iter()
@@ -5445,6 +5446,9 @@ fn start_session_with_recovery(
                         // the record know in another form (Pi's RPC answers)
                         // is rewritten before anything else reads the line.
                         stream_provider.adapt_event(&mut event);
+                        if stream_provider.kind() == ChatAgent::Pi {
+                            pi_turn.observe(&event);
+                        }
                         if let Some(observation) = &recovery_observation {
                             observation.event(&event);
                         }
@@ -5810,11 +5814,11 @@ fn start_session_with_recovery(
                             // its process is about to exit and its reaper
                             // carries the next turn into a fresh command.
                             let mut refused = None;
-                            let clean = ended_cleanly(
-                                stream_provider.kind(),
-                                &event,
-                                denied_actions.newly_refused(&event),
-                            );
+                            let went_badly = match stream_provider.kind() {
+                                ChatAgent::Pi => pi_turn.ended_badly(&event),
+                                _ => denied_actions.newly_refused(&event),
+                            };
+                            let clean = ended_cleanly(stream_provider.kind(), &event, went_badly);
                             if let Ok(mut s) = asking.lock() {
                                 reading.questions.detach_launch(&s.launch_id);
                                 ((wrap_up, refused), auto_plan_end) = end_turn_for_auto_plan(
@@ -9008,15 +9012,65 @@ impl DeniedActions {
     }
 }
 
+/// How a Pi turn ended, kept by the reader while the turn runs.
+///
+/// Pi's full stop (`agent_settled`) says only whether the run was aborted: a
+/// model call that failed for good is in the assistant message before it
+/// (`stopReason: "error"`), and one that failed and was retried is followed by
+/// more messages. So the LAST assistant message of the turn decides: only
+/// `stop` is a turn that finished what it was asked. No assistant message at
+/// all, an aborted run and a prompt Pi refused (`octiq_rejected_prompt`, said
+/// as a failed message) are not clean. The state is the turn's own and is
+/// cleared by its full stop, so one turn's failure is never the next one's.
+#[derive(Default)]
+struct PiTurn {
+    /// `stopReason` of the last assistant message so far.
+    last_stop: Option<String>,
+}
+
+impl PiTurn {
+    /// Every event of the stream, adapted. Only a finished assistant message
+    /// says anything; a system or user message and a streaming update do not.
+    fn observe(&mut self, event: &Value) {
+        if event.get("type").and_then(Value::as_str) != Some("message_end") {
+            return;
+        }
+        let Some(message) = event.get("message") else {
+            return;
+        };
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            return;
+        }
+        self.last_stop = Some(
+            message
+                .get("stopReason")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        );
+    }
+
+    /// Asked of the event that ends a turn, after `observe`: whether the turn
+    /// ended badly. Takes the turn's state with it.
+    fn ended_badly(&mut self, event: &Value) -> bool {
+        let last = self.last_stop.take();
+        event.get("aborted").and_then(Value::as_bool) == Some(true)
+            || last.as_deref() != Some("stop")
+    }
+}
+
 /// Whether a full stop is the agent finishing what it was asked, rather than
 /// a failure, a refusal or a turn that was cut short. A completion ticks its
 /// chat only on this.
-fn ended_cleanly(agent: ChatAgent, event: &Value, newly_refused: bool) -> bool {
+///
+/// `refused` is evidence the full stop does not carry itself: Antigravity's
+/// refusals past the previous `result`'s count, and Pi's last assistant
+/// message not having ended normally (`PiTurn`).
+fn ended_cleanly(agent: ChatAgent, event: &Value, refused: bool) -> bool {
     let text = |name: &str| event.get(name).and_then(Value::as_str);
     match agent {
         ChatAgent::Antigravity => {
-            !newly_refused
-                && event.pointer("/result/status").and_then(Value::as_str) == Some("SUCCESS")
+            !refused && event.pointer("/result/status").and_then(Value::as_str) == Some("SUCCESS")
         }
         _ if crate::outcome::of_provider_event(agent, event).is_some() => false,
         ChatAgent::Claude => {
@@ -9027,7 +9081,7 @@ fn ended_cleanly(agent: ChatAgent, event: &Value, newly_refused: bool) -> bool {
             text("type") == Some("turn.completed")
                 && matches!(text("status"), None | Some("completed"))
         }
-        ChatAgent::Pi => true,
+        ChatAgent::Pi => !refused,
     }
 }
 
@@ -16888,6 +16942,132 @@ mod completion_tests {
         ));
     }
 
+    const PI_TURN: &str = include_str!("../../web/src/lib/__fixtures__/pi-rpc-turn.jsonl");
+    const PI_ABORT: &str = include_str!("../../web/src/lib/__fixtures__/pi-rpc-abort.jsonl");
+    const PI_NO_LOGIN: &str = include_str!("../../web/src/lib/__fixtures__/pi-rpc-no-login.jsonl");
+    pub(super) const PI_ERROR_EXHAUSTED: &str =
+        include_str!("../../web/src/lib/__fixtures__/pi-rpc-error-exhausted.jsonl");
+    pub(super) const PI_ERROR_RECOVERED: &str =
+        include_str!("../../web/src/lib/__fixtures__/pi-rpc-error-recovered.jsonl");
+
+    /// What the reader decides at each full stop of a recorded Pi stream:
+    /// the same steps, in the same order (`adapt_event`, `PiTurn::observe`,
+    /// then `ended_badly` and `ended_cleanly` at the event that ends a turn).
+    pub(super) fn pi_full_stops(stream: &str) -> Vec<bool> {
+        let pi = provider_for(ChatAgent::Pi);
+        let mut turn = PiTurn::default();
+        let mut stops = Vec::new();
+        for line in stream.lines().filter(|l| !l.trim().is_empty()) {
+            let mut event: Value = serde_json::from_str(line).expect("a recorded line");
+            pi.adapt_event(&mut event);
+            turn.observe(&event);
+            if pi.observe_event(&event).turn_finished {
+                let refused = turn.ended_badly(&event);
+                stops.push(ended_cleanly(ChatAgent::Pi, &event, refused));
+            }
+        }
+        stops
+    }
+
+    /// Real `pi --mode rpc` 1.5.2 streams. The full stop (`agent_settled`)
+    /// says nothing of a model call that failed for good: the last assistant
+    /// message does.
+    #[test]
+    fn a_pi_turn_is_clean_only_when_its_last_message_stopped_normally() {
+        // Three prompts that ended on `stop` (two of them after a tool call,
+        // whose own message said `toolUse`), and a fourth whose last model
+        // call failed (`stopReason: "error"`, after an MCP tool call) while
+        // `agent_settled` still said `aborted: false`.
+        assert_eq!(pi_full_stops(PI_TURN), [true, true, true, false]);
+        // The cut-off turn's own full stop is not clean; the next prompt's is.
+        assert_eq!(pi_full_stops(PI_ABORT), [false, true]);
+        // A prompt Pi refused has no run and no assistant message of its own.
+        assert_eq!(pi_full_stops(PI_NO_LOGIN), [false]);
+        // Every retry failed: `agent_settled.aborted` is false and the turn failed.
+        let exhausted: Value = serde_json::from_str(
+            PI_ERROR_EXHAUSTED
+                .lines()
+                .rfind(|l| l.contains("agent_settled"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            exhausted["aborted"], false,
+            "the full stop alone says clean"
+        );
+        assert_eq!(pi_full_stops(PI_ERROR_EXHAUSTED), [false]);
+        // An error Pi retried and recovered from: the last message decides.
+        assert_eq!(pi_full_stops(PI_ERROR_RECOVERED), [true]);
+    }
+
+    #[test]
+    fn a_pi_turns_evidence_is_its_own() {
+        let message = |stop: Option<&str>| {
+            let mut event =
+                json!({ "type": "message_end", "message": { "role": "assistant", "content": [] } });
+            if let Some(stop) = stop {
+                event["message"]["stopReason"] = json!(stop);
+            }
+            event
+        };
+        let settled = json!({ "type": "agent_settled", "aborted": false });
+        let mut turn = PiTurn::default();
+        // No assistant message at all.
+        assert!(turn.ended_badly(&settled));
+        // Streaming updates, users and the system prompt say nothing.
+        for event in [
+            json!({ "type": "message_update" }),
+            json!({ "type": "message_end", "message": { "role": "user" } }),
+            json!({ "type": "message_end", "message": { "role": "system" } }),
+        ] {
+            turn.observe(&event);
+        }
+        assert!(turn.ended_badly(&settled));
+        // Only `stop` is normal; a length cut, a tool call left open, an
+        // aborted call and an error are not, and a message with no reason is not.
+        for (stop, bad) in [
+            (Some("stop"), false),
+            (Some("length"), true),
+            (Some("toolUse"), true),
+            (Some("aborted"), true),
+            (Some("error"), true),
+            (None, true),
+        ] {
+            turn.observe(&message(stop));
+            assert_eq!(turn.ended_badly(&settled), bad, "{stop:?}");
+        }
+        // One turn's failure is never the next one's.
+        turn.observe(&message(Some("error")));
+        assert!(turn.ended_badly(&settled));
+        turn.observe(&message(Some("stop")));
+        assert!(!turn.ended_badly(&settled));
+        // An aborted run is not clean however its last message ended.
+        turn.observe(&message(Some("stop")));
+        assert!(turn.ended_badly(&json!({ "type": "agent_settled", "aborted": true })));
+        // The last message decides: failed first, recovered after.
+        turn.observe(&message(Some("error")));
+        turn.observe(&message(Some("stop")));
+        assert!(!turn.ended_badly(&settled));
+    }
+
+    #[test]
+    fn a_failed_pi_wrap_up_ticks_nothing_and_a_recovered_one_does() {
+        let failed = Listed::new(false);
+        failed.session.lock().unwrap().agent = ChatAgent::Pi;
+        failed.complete();
+        let clean = *pi_full_stops(PI_ERROR_EXHAUSTED).last().unwrap();
+        assert_eq!(failed.full_stop(clean), Some(false));
+        assert!(!failed.row().is_done());
+        assert!(failed.live(), "the process is left running");
+
+        let recovered = Listed::new(false);
+        recovered.session.lock().unwrap().agent = ChatAgent::Pi;
+        recovered.complete();
+        let clean = *pi_full_stops(PI_ERROR_RECOVERED).last().unwrap();
+        assert_eq!(recovered.full_stop(clean), Some(true));
+        assert!(recovered.row().is_done());
+    }
+
     #[test]
     fn an_antigravity_refusal_is_this_turns_only_when_the_count_grew() {
         let result = |denied: usize| {
@@ -18770,6 +18950,26 @@ mod auto_plan_tests {
     }
 
     #[test]
+    fn a_failed_pi_coordinator_turn_does_not_approve_a_pending_plan() {
+        let failed = Lead::new(ChatAgent::Pi);
+        failed.session.lock().unwrap().answering = Some("person-turn".into());
+        let clean = *completion_tests::pi_full_stops(completion_tests::PI_ERROR_EXHAUSTED)
+            .last()
+            .unwrap();
+        assert!(failed.finish(clean).is_none());
+        assert!(!failed.approved());
+
+        let recovered = Lead::new(ChatAgent::Pi);
+        recovered.session.lock().unwrap().answering = Some("person-turn".into());
+        let clean = *completion_tests::pi_full_stops(completion_tests::PI_ERROR_RECOVERED)
+            .last()
+            .unwrap();
+        let ended = recovered.finish(clean).expect("a clean end is evidence");
+        recovered.apply(ended);
+        assert!(recovered.approved());
+    }
+
+    #[test]
     fn auto_plan_only_clean_own_full_stops_trigger_including_host_notifications() {
         for (agent, good, bad) in [
             (
@@ -18786,6 +18986,11 @@ mod auto_plan_tests {
                 ChatAgent::Antigravity,
                 json!({"event":"result","result":{"status":"SUCCESS"}}),
                 json!({"event":"result","result":{"status":"ERROR"}}),
+            ),
+            (
+                ChatAgent::Pi,
+                json!({"type":"agent_settled","aborted":false}),
+                json!({"type":"agent_settled","aborted":true,"error":"aborted"}),
             ),
         ] {
             for notification in [false, true] {

@@ -57,6 +57,12 @@ pub struct Call {
     /// What the tool's own server declared (MCP annotations); unverified.
     #[serde(default)]
     pub read_only_hint: Option<bool>,
+    /// Whether the extension itself registered this tool from OctiqFlow's own
+    /// MCP server. The name alone proves nothing: a person's or a project's
+    /// `mcp.json` can define a server called `octiq`, so a `mcp__octiq__*` tool
+    /// gets the host's trust only when this is true. Absent means no.
+    #[serde(default)]
+    pub host_server: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,9 +93,16 @@ enum Kind {
     HostTool,
     /// Everything else: another MCP server's tool, a person's own extension's.
     Other,
+    /// Named like one of OctiqFlow's tools (`mcp__octiq__*`) but not registered
+    /// by the host's own extension: a configured server that took the name. It
+    /// has none of the host's trust, whatever it says of itself.
+    Impostor,
 }
 
-fn kind_of(tool: &str) -> Kind {
+fn kind_of(tool: &str, host_server: bool) -> Kind {
+    if tool.starts_with("mcp__octiq__") && !host_server {
+        return Kind::Impostor;
+    }
     match tool {
         "read" | "grep" | "find" | "ls" => Kind::Read,
         "edit" | "write" => Kind::Edit,
@@ -155,7 +168,7 @@ pub fn decide(
 ) -> Verdict {
     let tool = call.tool_name.as_str();
     if front_desk {
-        return if tool == "mcp__octiq__route_chat" {
+        return if tool == "mcp__octiq__route_chat" && call.host_server {
             Verdict::Allow
         } else {
             Verdict::Deny(
@@ -163,7 +176,7 @@ pub fn decide(
             )
         };
     }
-    let kind = kind_of(tool);
+    let kind = kind_of(tool, call.host_server);
     if kind == Kind::Bookkeeping || access == Access::Full {
         return Verdict::Allow;
     }
@@ -193,6 +206,14 @@ pub fn decide(
         // the vault, publishing) have their own cards and gates; they ask at
         // every guarded level, as they do for Claude.
         Kind::HostTool => Verdict::Ask,
+        // Not the host's, so not read-only on its own say-so either: refused
+        // where the chat can only read, asked everywhere else short of Full.
+        Kind::Impostor => match access {
+            Access::Read => Verdict::Deny(format!(
+                "{tool} is not OctiqFlow's tool: a configured MCP server took that name, so it is not trusted. Nothing runs under it at Read-only access."
+            )),
+            _ => Verdict::Ask,
+        },
         Kind::Other => {
             if call.read_only_hint == Some(true) {
                 Verdict::Allow
@@ -345,6 +366,19 @@ mod tests {
             tool_use_id: None,
             cwd: None,
             read_only_hint: None,
+            // OctiqFlow's own tools come from the host's server unless a test
+            // says otherwise (`impostor`).
+            host_server: tool.starts_with("mcp__octiq__"),
+        }
+    }
+
+    /// A tool named like OctiqFlow's, from a server the person or the project
+    /// configured as `octiq`: the extension does not attest it.
+    fn impostor(tool: &str) -> Call {
+        Call {
+            host_server: false,
+            read_only_hint: Some(true),
+            ..call(tool, json!({}))
         }
     }
 
@@ -479,6 +513,60 @@ mod tests {
             let c = call("mcp__octiq__orchestration_run_create", json!({}));
             assert_eq!(decide_at(&p, access, &c), Verdict::Ask, "{access:?}");
         }
+    }
+
+    #[test]
+    fn a_server_that_took_the_name_octiq_gets_none_of_the_hosts_trust() {
+        let p = project();
+        // Bookkeeping runs at every level for the host's own tool; for a
+        // tool the extension did not register it is judged like a stranger,
+        // and its own claim to be read-only counts for nothing.
+        for tool in [
+            "mcp__octiq__task_status",
+            "mcp__octiq__orchestration_worker_report",
+            "mcp__octiq__ask_user",
+            "mcp__octiq__anything",
+        ] {
+            let c = impostor(tool);
+            assert!(
+                matches!(decide_at(&p, Access::Read, &c), Verdict::Deny(_)),
+                "{tool} at Read"
+            );
+            for access in [Access::Manual, Access::Edits, Access::Auto] {
+                assert_eq!(
+                    decide_at(&p, access, &c),
+                    Verdict::Ask,
+                    "{tool} at {access:?}"
+                );
+            }
+            // Full is unguarded for every tool, as it always was.
+            assert_eq!(decide_at(&p, Access::Full, &c), Verdict::Allow);
+        }
+        // A front desk routes only through the host's own route_chat.
+        let fake_route = impostor("mcp__octiq__route_chat");
+        for access in Access::ALL_FOR_TESTS {
+            assert!(
+                matches!(
+                    decide(access, true, &p.roots, &p.cwd, &fake_route),
+                    Verdict::Deny(_)
+                ),
+                "{access:?}"
+            );
+        }
+        // The extension that sent nothing (an older one) is not trusted either.
+        let body: Call =
+            serde_json::from_value(json!({ "toolName": "mcp__octiq__task_status" })).unwrap();
+        assert!(!body.host_server);
+        assert!(matches!(
+            decide_at(&p, Access::Read, &body),
+            Verdict::Deny(_)
+        ));
+        // And `hostServer: true` is read from the request body.
+        let body: Call = serde_json::from_value(
+            json!({ "toolName": "mcp__octiq__task_status", "hostServer": true }),
+        )
+        .unwrap();
+        assert_eq!(decide_at(&p, Access::Read, &body), Verdict::Allow);
     }
 
     #[test]

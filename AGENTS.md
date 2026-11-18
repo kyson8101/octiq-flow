@@ -338,12 +338,36 @@ through the API.
   efforts come from `pi --list-models` filtered by `pi auth check` (`agents::pi_models`).
 - **OctiqFlow's MCP rides an extension of its own** (`scripts/mcp/octiq-pi.ts`,
   written to `~/.octiqflow/mcp/pi/` by `prepare_launch` and loaded with `-e`).
-  It calls `pi.registerMcpServer("octiq", { exposure: "direct" })`, so nothing in
-  `~/.pi` or the project is touched. `--tools` is an allowlist and hides MCP tools
-  that no entry names, so launches add `mcp__*` (ordinary) or `mcp__octiq__*` (isolated).
-- **Isolation**: a front desk or a worker below Full runs `-ne -e builtin:mcp`
-  (the person's own extensions off, MCP kept); a front desk also loses skills,
-  prompt templates and context files and has the one tool `mcp__octiq__route_chat`.
+  The extension starts `octiq-ask.cjs` and speaks MCP to it ITSELF, registering
+  its tools as `mcp__octiq__*` extension tools. It does not use
+  `pi.registerMcpServer`: Pi merges `~/.pi/agent/mcp.json` and a trusted
+  project's `.pi/mcp.json` into the same registry, and an entry there named
+  `octiq` (or a `-`/`_` variant) replaces a registered server of that name
+  (docs/mcp.md), which would hand a stranger the host's trust. `--tools` is an
+  allowlist and hides MCP tools that no entry names, so launches add `mcp__*`
+  (ordinary) or `mcp__octiq__*` (isolated).
+- **The gate trusts a tool the extension registered, not a name.** Every
+  `/hook/pi-tool` call carries `hostServer`: true only when the tool is one of
+  the extension's own (its `sourceInfo.path` is the extension file, resolved).
+  `pi_gate` treats a `mcp__octiq__*` call without it as an impostor (`Kind::Impostor`):
+  refused at Read, asked at every guarded level, never allowed on its own
+  `readOnlyHint`, and a front desk's `route_chat` needs it too. Absent means no.
+  A host tool shadowed by a configured server is said in a startup notice
+  (`MCP servers need attention`). A host server that cannot start is said the
+  same way and leaves the tools unregistered.
+- **Isolation**: a front desk or a worker below Full runs `-ne --no-mcp` (the
+  person's own extensions and Pi's whole MCP support off; the host's server is
+  reached by the extension alone, so no `mcp.json` server connects); a front
+  desk also loses skills, prompt templates and context files and has the one
+  tool `mcp__octiq__route_chat`. An ordinary chat keeps the person's own
+  servers; OctiqFlow's tools win their names there (harness scene 9b).
+- **What Pi itself writes under `~/.pi`**, which OctiqFlow does not control:
+  production launches pass no `--session-dir`, so Pi saves each conversation as
+  `~/.pi/agent/sessions/--<folder>--/<time>_<id>.jsonl` (what the moved-chat
+  resume below reads), refreshes `auth.json` when a login token renews, and
+  keeps its own `models-store.json`, `settings.json` and `mcp.log` there.
+  OctiqFlow itself writes nothing in `~/.pi` or in the project's `.pi`: its
+  files are under `~/.octiqflow/mcp/pi/`.
 - **Host rules and preferences** go in a content-addressed file
   (`~/.octiqflow/mcp/pi/prompts/<hash>.md`) named by `--append-system-prompt`,
   never on the command line.
@@ -360,8 +384,30 @@ through the API.
   `pi auth login <provider>` hint; `observe_event` suppresses answers, system
   messages and `turn_end` copies, forwards MCP `notify` warnings as chat status
   and cancels dialogs nobody can answer.
-- **Not closed**: `ended_cleanly(Pi)` does not read a mid-turn provider error,
-  `handover` read-only copies refuse Pi, and nothing here ran on Windows.
+- **A turn is clean only when its last assistant message stopped** (`PiTurn` in
+  `agent_chat.rs`). `agent_settled` says only `aborted`; a model call that failed
+  for good is the assistant message before it (`stopReason: "error"`), so the
+  reader keeps the last assistant message's `stopReason` per turn and clears it
+  at the full stop. Clean = not aborted AND last `stopReason` is `stop`; an error
+  Pi retried and recovered from is clean, no assistant message at all is not, a
+  refused prompt (`octiq_rejected_prompt`, a failed message) is not. That verdict
+  is what a completion ticks on and what standing plan approval takes as
+  evidence. Fixtures `pi-rpc-error-exhausted` / `pi-rpc-error-recovered` are real
+  pi 1.5.2 streams (`scripts/test-pi-harness.mjs`, scenes 5 and 6).
+- **A chat moved to another folder resumes by the session FILE.** Pi keys
+  sessions by folder; real pi 1.5.2 given `--session <id>` from another folder
+  asks "Fork this session into current directory?" and, headless, gives up. The
+  file path opens from anywhere with the same id and messages (harness scene 7),
+  so `build_command` names the newest `sessions/*/*_<id>.jsonl`
+  (`pi_session_ref`, under `$PI_CODING_AGENT_DIR` or `~/.pi/agent`) and falls
+  back to the id when no file exists yet.
+- **Not closed**: `handover` read-only copies still refuse Pi. `pi --fork` needs
+  a session directory of its own (it cannot be `--no-session`), and a forked or
+  resumed session brings back the tool set its system prompt was written with:
+  real pi ignores `--tools`, `--exclude-tools`, `--no-tools`, `-ne` and `--no-mcp`
+  on it (harness scene 8), so a copy cannot be made read-only by flags; it would
+  take rewriting the copied session file. A resumed Pi chat is guarded by the
+  access gate extension, not by its tool list. And nothing here ran on Windows.
 
 ### Codex approvals and linked worktrees
 

@@ -673,6 +673,44 @@ pub(crate) fn safe_session_id(id: &str) -> Option<String> {
     ok.then(|| id.to_string())
 }
 
+/// Where Pi keeps its conversations: `$PI_CODING_AGENT_DIR/sessions`, else
+/// `~/.pi/agent/sessions`, one folder per working folder.
+fn pi_sessions_dir() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("PI_CODING_AGENT_DIR")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| crate::paths::home_dir().map(|home| home.join(".pi").join("agent")))?;
+    Some(base.join("sessions"))
+}
+
+/// What `pi --session` is given for a conversation. Pi looks an id up in the
+/// folder it runs in, and when the conversation is in another folder it ASKS
+/// whether to fork it into this one, which a headless process can only
+/// refuse. A chat `chat_recover` moved to another folder still has its
+/// conversation in the old one, so the file is named instead: Pi opens a
+/// session file from any folder, with its id and its messages. The newest
+/// file whose name ends `_<id>.jsonl` under any folder is taken; no file (a
+/// conversation Pi has not saved yet) is the id, as it always was.
+pub(crate) fn pi_session_ref(sessions: &Path, id: &str) -> String {
+    let suffix = format!("_{id}.jsonl");
+    let found = std::fs::read_dir(sessions)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|folder| folder.path().is_dir())
+        .filter_map(|folder| std::fs::read_dir(folder.path()).ok())
+        .flatten()
+        .flatten()
+        .filter(|file| file.file_name().to_string_lossy().ends_with(&suffix))
+        .filter_map(|file| {
+            let modified = file.metadata().and_then(|m| m.modified()).ok()?;
+            Some((modified, file.path()))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .and_then(|(_, path)| path.to_str().map(str::to_owned));
+    found.unwrap_or_else(|| id.to_string())
+}
+
 /// The media type for an image that Claude accepts as a content block.
 fn image_media_type(path: &str) -> Option<&'static str> {
     let ext = path.rsplit('.').next()?.to_ascii_lowercase();
@@ -1454,9 +1492,11 @@ fn pi_tools(request: &AgentCommand<'_>, access: Access) -> String {
 }
 
 /// Whether a launch keeps the person's own Pi extensions, skills and prompt
-/// templates. A front desk and a worker below Full do not (as Claude's
-/// `--strict-mcp-config` and Codex's `--disable plugins`): Pi's own MCP
-/// support stays on, because OctiqFlow's server is registered through it.
+/// templates, and their MCP servers. A front desk and a worker below Full do
+/// not (as Claude's `--strict-mcp-config` and Codex's `--disable plugins`):
+/// Pi's own MCP support is off too (`--no-mcp`), so nothing from the person's
+/// or the project's `mcp.json` connects; OctiqFlow's extension reaches the
+/// host's server itself.
 fn pi_isolated(request: &AgentCommand<'_>) -> bool {
     request.front_desk || (request.orchestration_worker && !request.worker_full_tools)
 }
@@ -1543,7 +1583,10 @@ impl AgentProvider for PiProvider {
         };
         let mut cmd = String::from("pi --mode rpc");
         if let Some(id) = request.resume.and_then(safe_session_id) {
-            cmd.push_str(&format!(" --session {}", sh_quote(&id)));
+            let reference = pi_sessions_dir()
+                .map(|sessions| pi_session_ref(&sessions, &id))
+                .unwrap_or(id);
+            cmd.push_str(&format!(" --session {}", sh_quote(&reference)));
         }
         // The model is `<upstream>/<model>` and is passed as-is: no
         // `--provider` pin. A bare id is Codex's, as it always was, and with
@@ -1563,7 +1606,10 @@ impl AgentProvider for PiProvider {
             sh_quote(&pi_tools(request, access))
         ));
         if pi_isolated(request) {
-            cmd.push_str(" -ne -e builtin:mcp");
+            // No extensions of the person's, and no built-in MCP support at all:
+            // it would read their `~/.pi/agent/mcp.json` and a trusted project's
+            // `.pi/mcp.json`. OctiqFlow's extension connects the host's own server.
+            cmd.push_str(" -ne --no-mcp");
         }
         if request.front_desk {
             cmd.push_str(" --no-skills --no-prompt-templates --no-context-files");
@@ -1754,6 +1800,15 @@ impl AgentProvider for PiProvider {
                 if event.get("octiq_rejected_prompt").and_then(Value::as_bool) == Some(true) {
                     observed.turn_finished = true;
                 }
+            }
+            // Pi announces every run with `agent_start`, including one it
+            // starts by itself (a person's extension sending a message, a
+            // retry after a failed call). The reader opens the host's turn on
+            // it only when the session reads idle, so a run the host wrote the
+            // prompt for (already busy) and a retry inside one turn open
+            // nothing twice.
+            Some("agent_start") => {
+                observed.turn_opened = true;
             }
             // `agent_end` closes one low-level run; retries, compaction and
             // queued work can still follow. `agent_settled` is the full stop,
@@ -3947,6 +4002,57 @@ pub(crate) mod tests {
         }
     }
 
+    /// A chat `chat_recover` moved to another folder: its conversation is in
+    /// the old folder's session directory, and real pi 1.5.2 asks to fork it
+    /// when `--session <id>` is run from the new one (headless: it gives up).
+    /// The session FILE opens from anywhere with the same id and messages
+    /// (`scripts/test-pi-harness.mjs`, scenes 7), so that is what is named.
+    #[test]
+    fn a_pi_conversation_in_another_folder_is_resumed_by_its_file() {
+        let sessions = crate::test_dir::TestDir::new("pi-sessions");
+        let id = "01a1ecd7-77d1-778b-a182-7332c4831657";
+        let old = sessions.join("--old-folder--");
+        let other = sessions.join("--other-folder--");
+        crate::profile::make_dir(&old).unwrap();
+        crate::profile::make_dir(&other).unwrap();
+        let file = old.join(format!("2026-11-18T04-00-00-000Z_{id}.jsonl"));
+        std::fs::write(&file, "{}\n").unwrap();
+        // Another conversation whose id merely ends the same way, a stray
+        // file, and a plain file at the top: none of them is this one.
+        std::fs::write(
+            other.join(format!("2026-11-18T04-00-00-000Z_x{id}.jsonl")),
+            "{}\n",
+        )
+        .unwrap();
+        std::fs::write(other.join("notes.txt"), "x").unwrap();
+        std::fs::write(sessions.join(format!("a_{id}.jsonl")), "{}\n").unwrap();
+        assert_eq!(
+            pi_session_ref(&sessions, id),
+            file.to_str().unwrap(),
+            "the file, wherever Pi saved it"
+        );
+        // The newest copy wins when a conversation is saved in two folders.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let newer = other.join(format!("2026-11-18T05-00-00-000Z_{id}.jsonl"));
+        std::fs::write(&newer, "{}\n").unwrap();
+        assert_eq!(pi_session_ref(&sessions, id), newer.to_str().unwrap());
+        // Nothing saved yet, or no sessions folder at all: the id, as before.
+        assert_eq!(
+            pi_session_ref(&sessions, "no-such-session"),
+            "no-such-session"
+        );
+        assert_eq!(
+            pi_session_ref(&sessions.join("missing"), id),
+            id,
+            "an unreadable folder falls back to the id"
+        );
+        // And it is quoted onto the command line like the id was.
+        assert_eq!(
+            sh_quote(&pi_session_ref(&sessions, id)),
+            format!("'{}'", newer.to_str().unwrap())
+        );
+    }
+
     #[test]
     fn pi_names_its_upstream_in_the_model_and_resumes_by_session() {
         let dir = crate::test_dir::TestDir::new("pi-command");
@@ -4044,7 +4150,8 @@ pub(crate) mod tests {
             worker.contains("--tools 'read,bash,edit,write,grep,find,ls,mcp__octiq__*'"),
             "{worker}"
         );
-        assert!(worker.contains(" -ne -e builtin:mcp "), "{worker}");
+        assert!(worker.contains(" -ne --no-mcp "), "{worker}");
+        assert!(!worker.contains("builtin:mcp"), "{worker}");
         let full_worker = line(AgentCommand {
             access: Some(Access::Full),
             orchestration_worker: true,
@@ -4060,7 +4167,8 @@ pub(crate) mod tests {
             ..pi_request(&mcp)
         });
         assert!(desk.contains("--tools 'mcp__octiq__route_chat'"), "{desk}");
-        assert!(desk.contains("-ne -e builtin:mcp"));
+        assert!(desk.contains("-ne --no-mcp"));
+        assert!(!desk.contains("builtin:mcp"), "{desk}");
         assert!(desk.contains("--no-skills --no-prompt-templates --no-context-files"));
     }
 
@@ -4078,9 +4186,13 @@ pub(crate) mod tests {
         // The extension is the one in the repository, next to the MCP files.
         let extension = std::fs::read_to_string(dir.join("pi").join("octiq-pi.ts")).unwrap();
         assert_eq!(extension, PI_EXTENSION);
-        assert!(extension.contains("registerMcpServer(\"octiq\""));
+        // The host's server is reached by the extension itself, never through
+        // Pi's MCP registry (a configured `octiq` entry would replace it), and
+        // every call says whether the tool is the extension's own.
+        assert!(!extension.contains("pi.registerMcpServer("));
+        assert!(extension.contains("pi.registerTool("));
         assert!(extension.contains("/hook/pi-tool"));
-        assert!(extension.contains("exposure: \"direct\""));
+        assert!(extension.contains("hostServer"));
         // What Claude reads from MCP instructions and its system prompt.
         for part in [
             PI_HOST_PROMPT,
@@ -4449,6 +4561,75 @@ pub(crate) mod tests {
             other.starts_with("pi.dev did not take the turn:"),
             "{other}"
         );
+    }
+
+    const PI_RPC_ERROR_RECOVERED: &str =
+        include_str!("../../web/src/lib/__fixtures__/pi-rpc-error-recovered.jsonl");
+
+    /// What the reader does with `turn_opened` and `turn_finished`: a turn
+    /// opens only when the session reads idle (`agent_chat`:
+    /// `observed.turn_opened && !busy`). With `host_writes_prompts` the host
+    /// marks the session busy at each recorded `prompt` command, as writing
+    /// one does; without it nobody wrote a prompt and Pi started every run.
+    fn pi_turns_opened(stream: &str, host_writes_prompts: bool) -> usize {
+        let mut busy = false;
+        let pi = provider_for(AgentKind::Pi);
+        let mut opened = 0;
+        for line in stream.lines().filter(|l| !l.trim().is_empty()) {
+            let mut event: Value = serde_json::from_str(line).expect("a recorded line");
+            // The host marks the session busy when it WRITES a prompt, which
+            // is before Pi's answer to that command and before its first run.
+            if host_writes_prompts
+                && event.get("type").and_then(Value::as_str) == Some("response")
+                && event.get("command").and_then(Value::as_str) == Some("prompt")
+            {
+                busy = true;
+            }
+            pi.adapt_event(&mut event);
+            let seen = pi.observe_event(&event);
+            if seen.turn_opened && !busy {
+                opened += 1;
+                busy = true;
+            }
+            if seen.turn_finished {
+                busy = false;
+            }
+        }
+        opened
+    }
+
+    /// M4: a run Pi starts by itself after a settled turn (a person's own
+    /// extension sending a message) must read as a turn in flight, or a send
+    /// goes straight to a Pi that refuses it and the idle reaper ends the chat.
+    #[test]
+    fn pi_agent_start_opens_a_turn_and_the_host_never_opens_one_twice() {
+        let pi = provider_for(AgentKind::Pi);
+        assert!(
+            pi.observe_event(&json!({ "type": "agent_start" }))
+                .turn_opened
+        );
+        for other in [
+            json!({ "type": "turn_start" }),
+            json!({ "type": "turn_end" }),
+            json!({ "type": "agent_end", "messages": [] }),
+            json!({ "type": "agent_settled", "aborted": false }),
+            json!({ "type": "message_start", "message": { "role": "user", "content": [] } }),
+            json!({ "type": "auto_retry_start", "attempt": 1 }),
+        ] {
+            assert!(!pi.observe_event(&other).turn_opened, "{other}");
+        }
+        // A turn the host wrote the prompt for: the session is busy already,
+        // so nothing opens, retries inside the turn included (real pi 1.5.2).
+        for stream in [PI_RPC_TURN, PI_RPC_ABORT, PI_RPC_ERROR_RECOVERED] {
+            assert_eq!(pi_turns_opened(stream, true), 0);
+        }
+        // The same streams with nobody having written a prompt: Pi started
+        // every turn itself and each opens exactly once, however many runs it
+        // took (the recovered one has two runs, a retry, and is one turn; the
+        // other streams hold four and two turns).
+        assert_eq!(pi_turns_opened(PI_RPC_ERROR_RECOVERED, false), 1);
+        assert_eq!(pi_turns_opened(PI_RPC_ABORT, false), 2);
+        assert_eq!(pi_turns_opened(PI_RPC_TURN, false), 4);
     }
 
     /// Feedback 5fd9b781 / 4c7f5647: the turn Claude opens by itself after a
