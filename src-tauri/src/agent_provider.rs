@@ -2855,8 +2855,19 @@ pub(crate) mod tests {
         assert!(!pi.contains("--provider"), "{pi}");
         assert!(pi.contains("--thinking high"));
         assert!(pi.contains("--tools 'read,bash,edit,write,grep,find,ls,mcp__*'"));
-        assert!(pi.contains("-e '/m/pi/octiq-pi.ts'"));
-        assert!(pi.contains("--append-system-prompt '/m/pi/prompts/"));
+        // Built with the platform's separator, as the launch builds it: on
+        // Windows `/m/octiq-ask.json` gives `/m\pi\octiq-pi.ts`.
+        let pi_dir = Path::new("/m").join("pi");
+        let extension = pi_dir.join("octiq-pi.ts");
+        assert!(
+            pi.contains(&format!("-e '{}'", extension.display())),
+            "{pi}"
+        );
+        let prompts = format!("{}", pi_dir.join("prompts").join("").display());
+        assert!(
+            pi.contains(&format!("--append-system-prompt '{prompts}")),
+            "{pi}"
+        );
         // The prompt goes on stdin, never on the command line.
         assert!(!pi.contains("hello"));
         assert!(!pi.contains(" -- "));
