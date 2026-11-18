@@ -262,6 +262,7 @@ import {
   provesLiveTurn,
   type ChatQueueState,
 } from "./lib/recovery";
+import { startOrSend } from "./lib/startOrSend";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage, unconfirmedSend } from "./lib/messageQueue";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { readChatRoute, replaceChatRoute, type ChatRoute } from "./lib/chatRoute";
@@ -4029,8 +4030,8 @@ export default function App() {
         ),
       );
       sendingTurns.current.add(turnId);
-      const fail = (err: unknown) =>
-        patch(id, (s) => unconfirmedSend(s, turnId, err, runningRef.current.has(id)));
+      const fail = (err: unknown, refused = false, live?: boolean) =>
+        patch(id, (s) => unconfirmedSend(s, turnId, err, live ?? runningRef.current.has(id), refused));
       try {
         const held = conversationsRef.current.find((c) => c.id === id);
         const recordedCwd = held?.cwd ?? chatsRef.current[id]?.cwd;
@@ -4192,58 +4193,59 @@ export default function App() {
         }
 
         if (leadSendCurrent && !leadSendCurrent()) { fail("Checking with the server. Send again in a moment."); return false; }
+        // Whether a real turn was there before this send marked the chat
+        // running: only that one may keep the composer busy if the send fails.
+        const wasRunning = runningRef.current.has(id);
         setRunning((prev) => new Set(prev).add(id));
-        try {
-          await bridge.invoke("chat_start", {
-            key: keyFor(id),
-            cwd: launchCwd,
-            // Where the host may continue this chat when `cwd` has been removed
-            // and cannot be rebuilt (`chat_recover.rs`).
-            fallbackCwd: targetProject.primary_path ?? null,
-            // A project can group several folders, and the chat starts in only
-            // one of them. The rest are named here so the agent can reach the
-            // whole project, the same way a terminal in it can.
-            extraDirs: targetProject.paths ?? [],
-            env: targetProject.env ?? {},
-            agent: choice.agent,
-            model: choice.flag || null,
-            access,
-            effort,
-            lite,
-            images,
-            prompt: text,
-            handoff: handoff ?? null,
-            turnId,
-            seenPlans: seen,
-            safetyBlock,
-            // Continuing an earlier conversation: the agent picks its own
-            // context back up instead of being handed a transcript to read.
-            resume,
-          });
+        // Already running (another tab, a session that outlived a crash, or
+        // another start of this chat still in progress): talk to it rather
+        // than reporting a collision as a failure. A model switch never does.
+        const outcome = await startOrSend({
+          start: () => bridge.invoke("chat_start", {
+              key: keyFor(id),
+              cwd: launchCwd,
+              // Where the host may continue this chat when `cwd` has been removed
+              // and cannot be rebuilt (`chat_recover.rs`).
+              fallbackCwd: targetProject.primary_path ?? null,
+              // A project can group several folders, and the chat starts in only
+              // one of them. The rest are named here so the agent can reach the
+              // whole project, the same way a terminal in it can.
+              extraDirs: targetProject.paths ?? [],
+              env: targetProject.env ?? {},
+              agent: choice.agent,
+              model: choice.flag || null,
+              access,
+              effort,
+              lite,
+              images,
+              prompt: text,
+              handoff: handoff ?? null,
+              turnId,
+              seenPlans: seen,
+              safetyBlock,
+              // Continuing an earlier conversation: the agent picks its own
+              // context back up instead of being handed a transcript to read.
+              resume,
+          }),
+          send: switchingModel
+            ? undefined
+            : () => bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId, seenPlans: seen, safetyBlock }),
+          current: leadSendCurrent ?? undefined,
+        });
+        if (outcome.ok) {
           if (switchingModel) pendingModelHandoffs.current.delete(id);
           return true;
-        } catch (err) {
-          // The process is already up — this browser simply did not know about
-          // it (another tab, or a session that outlived a crash). Talk to it
-          // rather than reporting a collision as a failure.
-          if (!switchingModel && String((err as Error).message ?? err).includes("already running")) {
-            try {
-              if (leadSendCurrent && !leadSendCurrent()) { fail("Checking with the server. Send again in a moment."); return false; }
-              await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId, seenPlans: seen, safetyBlock });
-              return true;
-            } catch (second) {
-              fail(second);
-            }
-          } else {
-            fail(err);
-          }
-          setRunning((prev) => {
-            const next = new Set(prev);
-            next.delete(id);
-            return next;
-          });
-          return false;
         }
+        // A refusal is definite: the host has no session for this chat, so no
+        // live turn exists whatever the page believed. Only an ambiguous error
+        // may leave a real turn's busy standing.
+        fail(outcome.error, outcome.refused, outcome.refused ? false : wasRunning);
+        setRunning((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        return false;
       } finally {
         sendingTurns.current.delete(turnId);
         void syncQueue(id).catch(() => {});
