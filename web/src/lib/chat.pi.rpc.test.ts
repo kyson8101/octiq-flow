@@ -46,7 +46,7 @@ function asTheHostSendsIt(stream: string, prompt: string): Json[] {
   ];
 }
 
-const replay = (events: Json[]): ChatState => events.reduce((state, event) => reduceChat(state, event), emptyChat());
+const replay = (events: Json[]): ChatState => events.reduce<ChatState>((state, event) => reduceChat(state, event), emptyChat());
 const everything = (state: ChatState): string => JSON.stringify(state.messages);
 
 describe("pi --mode rpc, recorded", () => {

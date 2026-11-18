@@ -3,6 +3,8 @@ import { ActionIcon } from "./ActionIcon";
 import { bridge } from "../lib/bridge";
 import { effortSteps, providerFor, type AccessLevel, type Provider } from "../lib/agentProviders";
 import { loadTeam, teamModels, type TeamAgent } from "../lib/agentsMode";
+import { useTeamModels } from "../lib/useTeamModels";
+import { modelOptions, selectedModel } from "./modelOptions";
 import "./ProviderFallback.css";
 
 type Selection = { agent: Provider; model: string; effort: string | null };
@@ -10,18 +12,20 @@ type Rule = { mode: "auto" | "ask"; backup: Selection | null };
 type Policy = { global: Rule; agents: Record<string, Rule> };
 type Settings = { agent: Provider; model: string | null; effort: string | null; access: AccessLevel };
 type Choice = { id: string; key: string; label: string; source: Settings; preferred?: Settings; rememberLabel?: string; worker?: boolean; options: { agent: Provider; installed: boolean; limited: boolean; suggestion: Settings }[] };
-const providers: Provider[] = ["claude", "codex", "antigravity"];
+const providers: Provider[] = ["claude", "codex", "pi", "antigravity"];
 
 export function FallbackFields({ value, onChange, disabled = false, allowed = providers, worker = false }: { value: Selection; onChange: (value: Selection) => void; disabled?: boolean; allowed?: Provider[]; worker?: boolean }) {
-  const models = (agent: Provider) => teamModels(agent).filter(m => !worker || !/astra/i.test(m.flag));
+  // Astra only leads: the host refuses it as a worker, on Pi as on Codex.
+  const pool = useTeamModels(value.agent);
+  const usable = (list: typeof pool) => list.filter(m => !worker || !/astra/i.test(m.flag));
+  const models = (_agent: Provider) => usable(pool);
   return <div className="fallback-fields">
     <label>Provider<select value={value.agent} disabled={disabled} onChange={e => {
       const agent = e.target.value as Provider;
-      onChange({ agent, model: models(agent)[0]?.flag ?? "", effort: null });
+      onChange({ agent, model: usable(teamModels(agent))[0]?.flag ?? "", effort: null });
     }}>{allowed.map(agent => <option key={agent} value={agent}>{providerFor(agent).name}</option>)}</select></label>
-    <label>Model<select value={value.model} disabled={disabled} onChange={e => onChange({ ...value, model: e.target.value })}>
-      {!models(value.agent).some(m => m.flag === value.model) && <option value={value.model}>{value.model || "Choose a model"}</option>}
-      {models(value.agent).map(model => <option key={model.id} value={model.flag}>{model.model}</option>)}
+    <label>Model<select value={selectedModel(value.agent, value.model, models(value.agent))} disabled={disabled} onChange={e => onChange({ ...value, model: e.target.value })}>
+      {modelOptions(value.agent, value.model, models(value.agent), "Choose a model")}
     </select></label>
     <label>Effort<select value={value.effort ?? ""} disabled={disabled || value.agent === "antigravity"} onChange={e => onChange({ ...value, effort: e.target.value || null })}>
       <option value="">{value.agent === "antigravity" ? "Included in model" : "Model default"}</option>
