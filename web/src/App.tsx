@@ -4236,7 +4236,10 @@ export default function App() {
           if (switchingModel) pendingModelHandoffs.current.delete(id);
           return true;
         }
-        fail(outcome.error, outcome.refused, wasRunning);
+        // A refusal is definite: the host has no session for this chat, so no
+        // live turn exists whatever the page believed. Only an ambiguous error
+        // may leave a real turn's busy standing.
+        fail(outcome.error, outcome.refused, outcome.refused ? false : wasRunning);
         setRunning((prev) => {
           const next = new Set(prev);
           next.delete(id);

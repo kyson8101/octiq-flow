@@ -109,18 +109,23 @@ describe("what the page shows", () => {
     }
   });
 
-  it("a refusal clears the busy this send made, but keeps a real live turn's", async () => {
+  it("a refusal clears busy whether or not the page believed a turn was running", async () => {
     const { start, send } = host(Infinity);
     const out = await startOrSend({ start, send, wait: async () => {} });
     if (out.ok) throw new Error("expected refusal");
-    // wasRunning=false: only the optimistic mark held busy.
-    const none = unconfirmedSend(sent(), "turn", out.error, false, out.refused);
-    expect(none.busy).toBe(false);
-    expect(none.messages[0]).toMatchObject({ delivery: "failed", queueLost: true });
-    // wasRunning=true: a real turn exists; busy stays.
-    const live = unconfirmedSend(sent(), "turn", out.error, true, out.refused);
-    expect(live.busy).toBe(true);
-    expect(live.messages[0]).toMatchObject({ delivery: "failed", queueLost: true });
+    expect(out.refused).toBe(true);
+    // App passes running=false for every refused outcome (the host has no session).
+    const refusedLive = out.refused ? false : true;
+    const state = unconfirmedSend(sent(), "turn", out.error, refusedLive, out.refused);
+    expect(state.busy).toBe(false);
+    expect(state.messages[0]).toMatchObject({ delivery: "failed", queueLost: true });
+  });
+
+  it("a non-refused error keeps a real live turn's busy", () => {
+    const state = unconfirmedSend(sent(), "turn", new Error("connection closed"), true, false);
+    expect(state.busy).toBe(true);
+    expect(state.messages[0]).toMatchObject({ delivery: "unknown" });
+    expect(unconfirmedSend(sent(), "turn", new Error("connection closed"), false, false).busy).toBe(false);
   });
 
   it("an unknown error is still unconfirmed", () => {
@@ -134,7 +139,7 @@ describe("App hand-off", () => {
   const app = lf(appSource);
   it("sends through startOrSend and passes the refusal on", () => {
     expect(app).toContain("await startOrSend({");
-    expect(app).toContain("fail(outcome.error, outcome.refused, wasRunning);");
+    expect(app).toContain("fail(outcome.error, outcome.refused, outcome.refused ? false : wasRunning);");
     expect(app).toContain("unconfirmedSend(s, turnId, err, live ?? runningRef.current.has(id), refused)");
     expect(app).toContain("const wasRunning = runningRef.current.has(id);");
   });
