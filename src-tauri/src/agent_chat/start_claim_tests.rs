@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn start(manager: Arc<ChatManager>, key: &str) -> Result<(), String> {

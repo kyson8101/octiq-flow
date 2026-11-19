@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::agent_provider::{
     test_image_media_type as image_media_type, test_sh_quote as sh_quote,
