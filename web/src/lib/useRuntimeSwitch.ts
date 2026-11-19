@@ -8,12 +8,13 @@
 //
 // Nothing here moves the chat's own settings. A `switched` answer is handed
 // to `onSwitched` and the events are the host's word; the page's `choice`
-// and `effort` follow those, never the press.
+// and `effort` follow those, never the press. An answer the revision guard
+// rejected is older than an event and is not applied either.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "./bridge";
 import { once, IN_FLIGHT } from "./inFlight";
 import {
-  NO_RUNTIMES, readAnswer, readHome, readRuntime, reduceRuntime, runtimeFlight,
+  NO_RUNTIMES, readAnswer, readHome, readRuntime, reduceRuntime, runtimeFlight, takeAnswer,
   type ChatRuntime, type RuntimeAction, type RuntimeRef, type RuntimeState, type SwitchAnswer,
 } from "./runtimeSwitch";
 
@@ -122,8 +123,16 @@ export function useRuntimeSwitch(
       }
     });
     if (done === IN_FLIGHT || !done) return undefined;
-    dispatch({ type: "answer", chatId, rev, answer: done });
-    if (done.state === "switched") switched.current(chatId, done);
+    // The page takes the answer's runtime only when the answer is the newest
+    // word it has. An event that came after the press (a newer host switch)
+    // moved the chat's rev: this answer is then older than it, and applying
+    // it would put the old runtime back over the newer one.
+    const taken = takeAnswer(held.current, chatId, rev, done);
+    if (taken.state !== held.current) {
+      held.current = taken.state;
+      setState(taken.state);
+    }
+    if (taken.apply) switched.current(chatId, done);
     return done;
   }, [dispatch]);
 

@@ -22,6 +22,9 @@
 //   6  Not offered: a worker's chat draws neither a row nor a picker.
 //   7  Antigravity at guarded Auto: its tiles are off (`aria-disabled`) with
 //      the reason in words, and nothing is sent.
+//   8  An older reply is not applied over a newer host event: the reply to a
+//      Sol switch is held in transit, a newer host switch back to Opus
+//      arrives, then the older reply is released. The chip stays on Opus.
 //
 // At 1280 (with the git column, so the chat is a narrow column) and 390, with
 // screenshots in the theme named by OCTIQ_THEME (dark by default).
@@ -136,6 +139,8 @@ async function switchRuntime(socketRef, request) {
     if (host.home && host.home.agent === agent && host.home.model === model) host.home = null;
     emit("chat-provider-switch", { key: request.args.key, agent, model, effort, access: host.access, sessionId: null, home: host.home, byPerson: true });
   }
+  // A reply held in transit: the events have gone, the answer has not.
+  if (host.holdReply) await new Promise((done) => { host.release = done; });
   socketRef.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: { state: "switched", agent, model, effort, access: host.access } }));
 }
 
@@ -367,6 +372,29 @@ async function scenes(browser, size) {
     await page.waitForTimeout(300);
     assert.equal(host.calls.length, 0, `${at}: nothing is sent`);
     await shot(page, `${at}-7-antigravity-held`);
+    await context.close();
+  }
+
+  // 8  An older reply cannot undo a newer host event.
+  {
+    host = fresh({ holdReply: true });
+    const { context, page } = await open(browser, { ...size });
+    await openSheet(page, phone);
+    const sheet = page.locator(".runtime-sheet");
+    await sheet.getByRole("tab", { name: /Codex/ }).click();
+    await sheet.locator(".picker-item, .mp-card", { hasText: "Sol" }).first().click();
+    // The host switched and said so; its reply is still in transit.
+    await page.waitForFunction(() => /^sol/.test(document.querySelector(".composer-identity-runs")?.textContent ?? ""), null, { timeout: 10_000 });
+    for (let wait = 0; wait < 100 && !host.release; wait += 1) await sleep(50);
+    assert(host.release, `${at}: the reply is held`);
+    // A newer host switch, back to Opus, arrives before the older reply.
+    host.modelId = "claude:opus"; host.effort = "high";
+    emit("chat-provider-switch", { key: `chat:${host.chatId}`, agent: "claude", model: "opus", effort: "high", access: host.access, sessionId: null, home: null, byPerson: true });
+    await page.waitForFunction(() => /^opus/.test(document.querySelector(".composer-identity-runs")?.textContent ?? ""), null, { timeout: 10_000 });
+    host.release();
+    await page.waitForTimeout(1500);
+    assert.match(await runsText(page), /^opus latest · high · Plan$/, `${at}: the older reply did not put Sol back (${await runsText(page)})`);
+    await shot(page, `${at}-8-older-reply`);
     await context.close();
   }
 }

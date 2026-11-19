@@ -74,11 +74,11 @@ pub(crate) struct Recorded {
 }
 
 impl Recorded {
-    /// The runtime the person's last change decided, if that is the last
-    /// change there was. A page that still names an older runtime does not
-    /// undo it.
-    pub(crate) fn persons_runtime(&self) -> Option<&Settings> {
-        self.current.as_ref().filter(|_| self.last_by_person)
+    /// The runtime the host's record holds: where the last runtime change,
+    /// the person's or an automatic failover's, put the chat. A page that
+    /// still names an older runtime does not undo it.
+    pub(crate) fn current_runtime(&self) -> Option<&Settings> {
+        self.current.as_ref()
     }
 }
 
@@ -93,7 +93,9 @@ fn fold(found: &mut Recorded, event: &Value) {
                 return;
             };
             let by_person = event["byPerson"].as_bool() == Some(true);
-            if by_person || kind == "octiq_registered_recovered" {
+            if event["keepsBaseline"].as_bool() == Some(true) {
+                // A session was dropped on the runtime already held.
+            } else if by_person || kind == "octiq_registered_recovered" {
                 found.baseline = Some(to.clone());
             } else if found.baseline.is_none() {
                 found.baseline = event
@@ -138,6 +140,14 @@ pub(crate) fn recorded(key: &str) -> Result<Recorded, String> {
 
 fn same_runtime(a: &Settings, b: &Settings) -> bool {
     a.agent == b.agent && a.model == b.model && a.effort == b.effort
+}
+
+/// The same provider, model and effort, a model spelt as its id or not.
+pub(crate) fn same_choice(a: &Settings, b: &Settings) -> bool {
+    a.agent == b.agent
+        && a.effort == b.effort
+        && crate::orchestration::model_id(a.agent, a.model.as_deref())
+            == crate::orchestration::model_id(b.agent, b.model.as_deref())
 }
 
 /// What `chat_switch_runtime` asks for.

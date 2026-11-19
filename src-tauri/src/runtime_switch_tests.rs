@@ -212,17 +212,18 @@ fn an_automatic_chain_never_moves_the_baseline_and_a_person_pick_becomes_it() {
     );
     let found = recorded(&chat.key).unwrap();
     assert_eq!(found.baseline.as_ref(), Some(&codex));
-    assert_eq!(found.persons_runtime(), Some(&codex));
+    assert_eq!(found.current_runtime(), Some(&codex));
     assert!(found.handoff_owed);
     // An automatic switch after it leaves that baseline alone and pays no debt.
     auto_switch(&chat, &codex, &opus);
     let found = recorded(&chat.key).unwrap();
     assert_eq!(found.baseline.as_ref(), Some(&codex));
     assert_eq!(
-        found.persons_runtime(),
-        None,
-        "the last change was automatic"
+        found.current_runtime(),
+        Some(&opus),
+        "the host's current runtime is the automatic one"
     );
+    assert!(!found.last_by_person, "the last change was automatic");
     assert!(
         !found.handoff_owed,
         "a change that builds its own handoff pays the debt"
@@ -930,7 +931,7 @@ fn the_automatic_paths_carry_the_brief_too() {
     let start = start.split("fn model_handoff_prompt(").next().unwrap();
     assert!(start.contains("runtime_switch::with_identity_brief"));
     assert!(start.contains("runtime_switch::adopt_pending"));
-    assert!(start.contains("persons_runtime()"));
+    assert!(start.contains("current_runtime()"));
 }
 
 // ---- home runtime ------------------------------------------------------------
@@ -1085,26 +1086,251 @@ fn a_cooldown_is_cleared_by_the_person_and_marked_again_by_the_provider() {
 }
 
 #[test]
-fn a_stale_pages_older_runtime_does_not_undo_the_persons_switch() {
+fn the_hosts_current_runtime_is_what_a_page_cannot_undo() {
     let w = World::new();
     let chat = w.chat();
     w.switch(&chat, ChatAgent::Codex, "gpt-5.6-sol", Some("low"))
         .unwrap();
     let found = recorded(&chat.key).unwrap();
-    let wins = found
-        .persons_runtime()
-        .expect("the person's last change decides");
+    let wins = found.current_runtime().expect("the record holds it");
     assert_eq!(
         (wins.agent, wins.model.as_deref(), wins.effort.as_deref()),
         (ChatAgent::Codex, Some("gpt-5.6-sol"), Some("low"))
     );
-    // An automatic change after it is the host's own and decides nothing here.
-    auto_switch(
-        &chat,
-        wins,
-        &settings(ChatAgent::Claude, "claude-opus-5-5", None),
+    // An automatic change after it is the host's own, and decides the same way.
+    let opus = settings(ChatAgent::Claude, "claude-opus-5-5", None);
+    auto_switch(&chat, wins, &opus);
+    assert_eq!(recorded(&chat.key).unwrap().current_runtime(), Some(&opus));
+}
+
+/// A stale tab's start, the way a page that never heard of the change sends it.
+fn stale_start(
+    w: &World,
+    chat: &Chat,
+    agent: ChatAgent,
+    model: &str,
+    handoff: Option<&str>,
+    resume: Option<&str>,
+) -> Result<(), String> {
+    chat_start_user_impl(
+        w.manager.clone(),
+        chat.key.clone(),
+        std::env::temp_dir().to_string_lossy().into_owned(),
+        agent,
+        Some(model.into()),
+        Some(Access::Full),
+        Some("stale tab message".into()),
+        handoff.map(str::to_string),
+        resume.map(str::to_string),
+        None,
+        None,
+        Some("high".into()),
+        None,
+        None,
+        None,
+    )
+}
+
+/// Provider CLIs that start, read stdin and say nothing (a Codex that also
+/// lists no MCP servers): a start succeeds without a model, so what a
+/// successful start records can be read. The folder holds the scripts.
+fn clis_that_start(dir: &crate::test_dir::TestDir) {
+    use std::os::unix::fs::PermissionsExt;
+    let found = ChatAgent::ALL
+        .into_iter()
+        .map(|agent| {
+            let script = dir.join(agent.id());
+            std::fs::write(
+                &script,
+                "#!/bin/sh\ncase \"$*\" in *\"mcp list\"*|*--version*) echo '[]'; exit 0;; esac\nexec cat > /dev/null\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            (agent.id().to_string(), script.to_string_lossy().into_owned())
+        })
+        .collect();
+    crate::agents::seed_probe_for_test(found);
+}
+
+fn started_as(w: &World, chat: &Chat) -> (ChatAgent, Option<String>) {
+    let start = w.start(chat);
+    (start.agent, start.model)
+}
+
+/// End what the start began: the stand-in reads stdin until it is told to go.
+fn wait_idle(w: &World, chat: &Chat) {
+    let _ = end_process(&w.manager, &chat.key);
+}
+
+#[test]
+fn a_stale_start_after_an_automatic_failover_stays_on_the_host_runtime() {
+    let w = World::new();
+    let stub = crate::test_dir::TestDir::new("runtime-stale-clis");
+    clis_that_start(&stub);
+    let chat = w.chat();
+    let opus = settings(ChatAgent::Claude, "claude-opus-5-5", Some("high"));
+    let codex = settings(ChatAgent::Codex, "gpt-5.6-sol", Some("high"));
+    auto_switch(&chat, &opus, &codex);
+    // The server restarted: no cooldown, no start context. The tab still says Opus.
+    w.manager.starts.lock().unwrap().remove(&chat.key);
+    let _ = stale_start(&w, &chat, ChatAgent::Claude, "claude-opus-5-5", None, None);
+    wait_idle(&w, &chat);
+    assert_eq!(
+        started_as(&w, &chat),
+        (ChatAgent::Codex, Some("gpt-5.6-sol".into())),
+        "the host's runtime, not the page's"
     );
-    assert!(recorded(&chat.key).unwrap().persons_runtime().is_none());
+    let found = recorded(&chat.key).unwrap();
+    assert_eq!(
+        found.baseline.as_ref(),
+        Some(&opus),
+        "going back stays an explicit choice"
+    );
+    assert_eq!(
+        found.current.as_ref().map(|c| c.agent),
+        Some(ChatAgent::Codex)
+    );
+}
+
+#[test]
+fn a_stale_start_after_a_persons_switch_stays_on_it_and_a_foreign_session_is_dropped() {
+    let w = World::new();
+    let stub = crate::test_dir::TestDir::new("runtime-stale-clis");
+    clis_that_start(&stub);
+    let chat = w.chat();
+    w.switch(&chat, ChatAgent::Codex, "gpt-5.6-sol", Some("low"))
+        .unwrap();
+    let _ = stale_start(
+        &w,
+        &chat,
+        ChatAgent::Claude,
+        "claude-opus-5-5",
+        None,
+        Some("claude-session-1"),
+    );
+    wait_idle(&w, &chat);
+    let (agent, model) = started_as(&w, &chat);
+    assert_eq!(
+        (agent, model.as_deref()),
+        (ChatAgent::Codex, Some("gpt-5.6-sol"))
+    );
+    assert_eq!(w.start(&chat).effort.as_deref(), Some("low"));
+    assert_ne!(
+        w.start(&chat).session_id.as_deref(),
+        Some("claude-session-1"),
+        "a session of another provider is never resumed"
+    );
+    // The chat's own runtime (what Back to Opus returns to) did not move.
+    let found = recorded(&chat.key).unwrap();
+    assert_eq!(
+        found.baseline.as_ref().map(|b| b.agent),
+        Some(ChatAgent::Codex)
+    );
+}
+
+#[test]
+fn a_dropped_session_on_the_held_runtime_keeps_the_chats_own_baseline() {
+    let w = World::new();
+    let chat = w.chat();
+    let opus = settings(ChatAgent::Claude, "claude-opus-5-5", Some("high"));
+    let codex = settings(ChatAgent::Codex, "gpt-5.6-sol", Some("high"));
+    auto_switch(&chat, &opus, &codex);
+    // The line a stale tab's start writes when only its foreign session was
+    // dropped on the runtime the record already holds.
+    record_event(
+        &chat,
+        json!({ "type": "octiq_registered_recovered", "keepsBaseline": true,
+            "agent": "codex", "model": "gpt-5.6-sol", "effort": "high", "access": "full" }),
+    );
+    let found = recorded(&chat.key).unwrap();
+    assert_eq!(
+        found.baseline.as_ref(),
+        Some(&opus),
+        "a recovered line for a dropped session must not make the fallback the baseline"
+    );
+    assert_eq!(found.current.as_ref(), Some(&codex));
+    // The preset recovery of an invalid tuple still restores the registration.
+    record_event(
+        &chat,
+        json!({ "type": "octiq_registered_recovered",
+            "agent": "claude", "model": "claude-opus-5-5", "effort": "high", "access": "full" }),
+    );
+    assert_eq!(recorded(&chat.key).unwrap().baseline.as_ref(), Some(&opus));
+}
+
+#[test]
+fn the_ordinary_pickers_start_with_a_page_handoff_is_the_persons_choice_and_is_recorded() {
+    let w = World::new();
+    let stub = crate::test_dir::TestDir::new("runtime-picker-claude");
+    clis_that_start(&stub);
+    let chat = w.chat();
+    w.switch(&chat, ChatAgent::Codex, "gpt-5.6-sol", Some("high"))
+        .unwrap();
+    // changeModel: chat_retarget, then a start with the page's own handoff.
+    let started = stale_start(
+        &w,
+        &chat,
+        ChatAgent::Claude,
+        "claude-opus-5-5",
+        Some("[{\"role\":\"user\",\"text\":\"earlier\"}]"),
+        None,
+    );
+    assert_eq!(started, Ok(()));
+    assert_eq!(
+        started_as(&w, &chat),
+        (ChatAgent::Claude, Some("claude-opus-5-5".into())),
+        "an explicit choice is not overridden"
+    );
+    let found = recorded(&chat.key).unwrap();
+    assert!(found.last_by_person, "recorded as the person's");
+    assert_eq!(
+        found.current.as_ref().map(|c| c.agent),
+        Some(ChatAgent::Claude)
+    );
+    assert_eq!(
+        found.baseline.as_ref().map(|c| c.agent),
+        Some(ChatAgent::Claude)
+    );
+    // A later stale tab that still says Codex cannot undo it.
+    end_process(&w.manager, &chat.key).unwrap();
+    w.manager.starts.lock().unwrap().remove(&chat.key);
+    let _ = stale_start(&w, &chat, ChatAgent::Codex, "gpt-5.6-sol", None, None);
+    assert_eq!(started_as(&w, &chat).0, ChatAgent::Claude);
+    end_process(&w.manager, &chat.key).unwrap();
+}
+
+#[test]
+fn a_recorded_runtime_that_is_limited_or_invalid_is_not_forced() {
+    let w = World::new();
+    let stub = crate::test_dir::TestDir::new("runtime-stale-clis");
+    clis_that_start(&stub);
+    // Limited: normal failover routing decides, never the limited provider.
+    let chat = w.chat();
+    w.switch(&chat, ChatAgent::Codex, "gpt-5.6-sol", Some("high"))
+        .unwrap();
+    w.manager.failover.limited(
+        ChatAgent::Codex,
+        Some("gpt-5.6-sol"),
+        Some(crate::auto_resume::unix_now() + 600),
+        crate::auto_resume::unix_now(),
+    );
+    let _ = stale_start(&w, &chat, ChatAgent::Claude, "claude-opus-5-5", None, None);
+    wait_idle(&w, &chat);
+    assert_ne!(
+        started_as(&w, &chat).0,
+        ChatAgent::Codex,
+        "the limited recorded runtime is routed around"
+    );
+    // Invalid: the preset recovery decides.
+    let chat = w.chat();
+    record_event(
+        &chat,
+        json!({ "type": "octiq_provider_switched", "byPerson": true, "handoffOwed": false,
+            "agent": "codex", "model": "claude-opus-5-5", "effort": "high", "access": "full" }),
+    );
+    let _ = stale_start(&w, &chat, ChatAgent::Claude, "claude-opus-5-5", None, None);
+    wait_idle(&w, &chat);
+    assert_eq!(started_as(&w, &chat).0, ChatAgent::Claude);
 }
 
 #[test]

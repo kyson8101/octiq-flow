@@ -131,6 +131,18 @@ export function reduceRuntime(state: RuntimeState, action: RuntimeAction): Runti
   }
 }
 
+/** The answer to this page's own press, folded in, and whether the page takes
+ *  the runtime it names. Only the newest word is taken: an event that came
+ *  after the press (a newer switch) moved the chat's rev, the reducer then
+ *  rejects the answer, and applying it would put the older runtime back over
+ *  the newer one. */
+export function takeAnswer(
+  state: RuntimeState, chatId: string, rev: number, answer: SwitchAnswer,
+): { state: RuntimeState; apply: boolean } {
+  const next = reduceRuntime(state, { type: "answer", chatId, rev, answer });
+  return { state: next, apply: next !== state && answer.state === "switched" };
+}
+
 /* ---- Words ------------------------------------------------------------- */
 
 /** A runtime's model as the person reads it ("Opus latest", "Sol"). */

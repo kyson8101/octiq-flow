@@ -3943,18 +3943,32 @@ fn chat_start_with_user_turn(
         None
     };
     let registered_chat = registered.is_some();
-    // What the host recorded of this chat's runtime. When the person's last
-    // change decided it, a page that still names an older runtime (a stale
-    // tab, a cache) does not undo the switch.
+    // What the host recorded of this chat's runtime. For a registered chat
+    // the record wins over the page: a stale tab or a cache that still names
+    // an older runtime must not undo the person's switch or an automatic
+    // failover. Going back is an explicit choice (`chat_switch_runtime`).
+    // The exception is a start that carries the page's own `handoff`: that
+    // is the ordinary model picker's explicit choice (`chat_retarget`, then
+    // this start), recorded below as the person's. A runtime the record
+    // holds that is itself invalid or limited is not forced: the preset
+    // recovery and the failover routing below decide.
+    let explicit_choice = handoff.as_deref().is_some_and(|h| !h.trim().is_empty());
     let recorded_runtime = if registered_chat {
         runtime_switch::recorded(&key)?
     } else {
         runtime_switch::Recorded::default()
     };
-    if let Some(runtime) = recorded_runtime.persons_runtime() {
-        agent = runtime.agent;
-        model = runtime.model.clone();
-        effort = runtime.effort.clone();
+    let page_runtime = (agent, model.clone(), effort.clone());
+    let mut host_runtime_won = false;
+    if !explicit_choice {
+        if let Some(runtime) = recorded_runtime.current_runtime().filter(|runtime| {
+            crate::agent_provider::validate_model(runtime.agent, runtime.model.as_deref()).is_ok()
+        }) {
+            agent = runtime.agent;
+            model = runtime.model.clone();
+            effort = runtime.effort.clone();
+            host_runtime_won = page_runtime != (agent, model.clone(), effort.clone());
+        }
     }
     let source = crate::provider_failover::Settings {
         agent,
@@ -3969,6 +3983,15 @@ fn chat_start_with_user_turn(
     {
         return Ok(());
     }
+    let preset_runtime = registered
+        .as_ref()
+        .map(|preset| crate::provider_failover::Settings {
+            agent: preset.agent,
+            model: Some(preset.model.clone()),
+            effort: preset.effort.clone(),
+            access: source.access,
+        })
+        .unwrap_or_else(|| source.clone());
     let mut defaults = registered
         .map(|preset| crate::provider_failover::Settings {
             agent: preset.agent,
@@ -4008,6 +4031,14 @@ fn chat_start_with_user_turn(
         }
         if recovered && resume.is_none() {
             handoff = Some(provider_history(&key)?);
+        } else if host_runtime_won && resume.is_none() {
+            // The record put this start on another provider than the page
+            // asked for, and the page had no session of that provider: a
+            // fresh session owes the history and the agent's brief.
+            let history = provider_history(&key)?;
+            if history != "[]" {
+                handoff = Some(history);
+            }
         }
     }
     crate::agent_provider::validate_model(agent, model.as_deref())?;
@@ -4194,8 +4225,35 @@ fn chat_start_with_user_turn(
                 announce_provider_switch(&manager, &key, &source, &target)?;
             }
         } else if recovered {
-            provider_switch::announce_runtime_change(&manager, &key, &requested_source, &source,
-                "octiq_registered_recovered", "Recovered this chat's compatible provider and exact model in a fresh session. Earlier transcript and settings remain in the record.", previous_resume.as_deref())?;
+            // Only a session was dropped, on the runtime the record already
+            // holds: the chat's own runtime (what failover returns to) stays.
+            let keeps_baseline = recorded_runtime
+                .current_runtime()
+                .is_some_and(|current| runtime_switch::same_choice(current, &source));
+            provider_switch::announce_runtime_change_with(&manager, &key, &requested_source, &source,
+                "octiq_registered_recovered", "Recovered this chat's compatible provider and exact model in a fresh session. Earlier transcript and settings remain in the record.", previous_resume.as_deref(),
+                if keeps_baseline { json!({ "keepsBaseline": true }) } else { Value::Null }, None)?;
+        } else if explicit_choice && registered_chat {
+            // The ordinary picker's choice is the person's own: record it, so a
+            // later stale tab cannot undo it.
+            let current = recorded_runtime.current_runtime();
+            let changed = match current {
+                Some(current) => !runtime_switch::same_choice(current, &source),
+                None => !runtime_switch::same_choice(&source, &preset_runtime),
+            };
+            if changed {
+                provider_switch::announce_runtime_change_with(
+                    &manager,
+                    &key,
+                    current.unwrap_or(&preset_runtime),
+                    &source,
+                    "octiq_provider_switched",
+                    "Switched with the model picker by your choice. The registration is unchanged.",
+                    previous_resume.as_deref(),
+                    json!({ "byPerson": true, "handoffOwed": false, "sessionKept": false }),
+                    None,
+                )?;
+            }
         }
     } else if recovered {
         if let Some(start) = previous_start {

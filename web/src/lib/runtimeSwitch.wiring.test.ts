@@ -33,6 +33,8 @@ function missing(sources: { app: string; hook: string; sheet: string; rows: stri
   // The command is asked in one place.
   if (!/bridge\.invoke\([^)]*"chat_switch_runtime"/.test(h)) out.push("the hook asks the host");
   if (/"chat_switch_runtime"/.test(a)) out.push("only the hook sends it");
+  if (!/takeAnswer\(held\.current/.test(h) || !/if \(taken\.apply\) switched\.current/.test(h)) out.push("a switched answer is applied only when the revision guard took it");
+  if (/if \(done\.state === "switched"\) switched\.current/.test(h)) out.push("never apply an answer unconditionally");
   if (/once\(runtimeFlight\(chatId\)/.test(h) === false) out.push("one request per chat, through lib/inFlight");
   // The two controls ask the host and never `changeModel`.
   const pick = body(a, "const pickRuntime = useCallback(") + body(a, "const pickRuntimeEffort = useCallback(");
@@ -76,6 +78,12 @@ describe("changing a chat's runtime goes through the host", () => {
     const mutated = hook.replace("const rev = held.current[chatId]?.rev ?? 0;\n    const done", "setChoice(runtime);\n    const rev = held.current[chatId]?.rev ?? 0;\n    const done");
     expect(mutated).not.toBe(hook);
     expect(missing({ ...ALL, hook: mutated })).toContain("the hook never moves the settings");
+  });
+
+  it("fails when a switched answer is applied without the revision guard (M1)", () => {
+    const mutated = hook.replace("if (taken.apply) switched.current(chatId, done);", "if (done.state === \"switched\") switched.current(chatId, done);");
+    expect(mutated).not.toBe(hook);
+    expect(missing({ ...ALL, hook: mutated })).toContain("never apply an answer unconditionally");
   });
 
   it("fails when the request is not held by chat", () => {

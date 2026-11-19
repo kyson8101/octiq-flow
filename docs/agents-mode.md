@@ -168,9 +168,24 @@ original first message is past the window.
 
 ### Stale pages, baseline, cooldown
 
-* For a registered chat whose last runtime change was the person's, the
-  host's recorded runtime wins over `agent/model/effort` in a stale tab's
-  `chat_start`. (`chat_send` names no runtime.)
+* For a registered chat with a recorded runtime, the host's current recorded
+  runtime wins over `agent/model/effort` in a stale tab's `chat_start`, after
+  the person's switch AND after an automatic failover (a server restart with
+  empty cooldowns included). Returning to the chat's own runtime takes an
+  explicit choice (`chat_switch_runtime`). A resume id that belongs to another
+  provider is dropped, and any fresh session gets the history and the agent's
+  full brief. If the recorded runtime is itself invalid or limited, preset
+  recovery and the normal failover routing decide. A recovered line written
+  only because a session was dropped on the runtime already held
+  (`keepsBaseline`) does not move the chat's baseline. (`chat_send` names no
+  runtime.)
+* **The ordinary picker is the exception, and it is the person's choice.** A
+  registered chat opened with agents mode off changes model with `chat_retarget`
+  and then a `chat_start` that carries the page's own `handoff`. A start with a
+  non-empty page `handoff` is not overridden: it is recorded as the person's
+  switch (`octiq_provider_switched` with `byPerson`) when it differs from the
+  recorded runtime, so a later stale tab cannot undo it. (Before this, the
+  person's earlier switch overrode the picker's start.)
 * **Baseline.** Automatic failover leaves the baseline alone. A person's pick
   becomes the chat's new baseline, so a later failover returns to it; picking
   the home runtime therefore ends the fallback (`homeRuntime` disappears).

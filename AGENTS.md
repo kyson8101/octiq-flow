@@ -326,7 +326,10 @@ use a 15-minute cooldown. Registered agent defaults and identity do not change.
   under `end_turn_locked`); every fact that must survive a restart is a line in
   the chat's record (`octiq_runtime_pending`, `octiq_provider_switched` with
   `byPerson`/`handoffOwed`, `octiq_runtime_handoff_taken`); `homeRuntime` is
-  derived from that record, never from cooldowns. The first prompt of any
+  derived from that record, never from cooldowns. The host's recorded
+  runtime beats a stale tab's `chat_start` after a person's switch and after
+  automatic failover; a start carrying a page `handoff` (the ordinary picker)
+  is the person's own choice and is recorded as such. The first prompt of any
   fresh session after a provider change, automatic or not, carries the
   agent's full brief (`team::identity_brief`) outside the JSON history. Check
   it with `node scripts/test-runtime-switch.mjs`.
@@ -1786,7 +1789,8 @@ failover with one press (below); the registration is never touched.
   again control cannot send twice). Never `changeModel`: it ends the chat's
   process itself, which would stall a turn. `choice`, `effort` and `access`
   change only through `applyHostRuntime`, called by the `chat-provider-switch`
-  event and by a `switched` answer, never by the press
+  event and by a `switched` answer the revision guard took (`takeAnswer`: an
+  answer older than a host event is not applied), never by the press
   (`runtimeSwitch.wiring.test.ts` reads `App.tsx` for it). A `pending`
   answer, the `chat-runtime-pending` events and `chat_queue_state`'s
   `pendingRuntime` and `homeRuntime` (read on every connect and chat open, so

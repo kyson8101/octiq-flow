@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MODELS } from "./agentProviders";
 import {
   NO_RUNTIMES, antigravityHold, clockWords, homeWords, msToReset, pendingLine, readAnswer, readHome, readRuntime,
-  reduceRuntime, refOf, runtimeSwitchable, sameRuntime, shortModelName, type HomeRuntime, type RuntimeState,
+  reduceRuntime, refOf, runtimeSwitchable, sameRuntime, shortModelName, takeAnswer, type HomeRuntime, type RuntimeState,
 } from "./runtimeSwitch";
 
 const opusHome: HomeRuntime = { agent: "claude", model: "opus", effort: "high", limited: true, resetsAt: Math.floor(Date.UTC(2026, 10, 19, 7, 40) / 1000) };
@@ -92,6 +92,20 @@ describe("folding what the host says", () => {
   it("an answer after the events for the same switch changes nothing", () => {
     const events = fold({ type: "pending", chatId: "c", runtime: codex }, { type: "cleared", chatId: "c" });
     expect(reduceRuntime(events, { type: "answer", chatId: "c", rev: 0, answer: { ...codex, state: "pending" } })).toBe(events);
+  });
+
+  it("a delayed older answer is not applied over a newer host event (M1)", () => {
+    const sol = { ...codex, state: "switched" as const };
+    // The press was made at rev 0; a newer host switch to Opus arrived while the reply was held.
+    const newer = fold({ type: "switched", chatId: "c" });
+    const late = takeAnswer(newer, "c", 0, sol);
+    expect(late.apply).toBe(false);
+    expect(late.state).toBe(newer);
+    // With no event in between, the answer is the newest word and is applied.
+    const quiet = takeAnswer(NO_RUNTIMES, "c", 0, sol);
+    expect(quiet.apply).toBe(true);
+    // A pending answer applies nothing to the page's settings, accepted or not.
+    expect(takeAnswer(NO_RUNTIMES, "c", 0, { ...codex, state: "pending" }).apply).toBe(false);
   });
 
   it("a pending answer says what waits; a switched one says nothing waits", () => {

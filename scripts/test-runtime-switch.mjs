@@ -23,6 +23,12 @@
 //      new runtime.
 //   8  Same provider: the native session is kept and resumed with the new model.
 //   9  A restart on a fallback, and a restart with a switch waiting.
+//   10 A stale tab after an automatic failover and a restart (the cooldowns
+//      are empty, the tab still names Opus): the host's recorded runtime
+//      wins, the fresh Codex session gets the history and the brief, and
+//      Claude is never started. The ordinary picker's start (a page handoff)
+//      is the person's own choice and is recorded, so a stale tab after it
+//      cannot undo it. Asserted on the actual CLI launches and prompts.
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -325,6 +331,50 @@ try {
   assert.match(messages("codex").at(-1), /You are Ada/);
   assert.equal((await state()).pendingRuntime, undefined);
   await registrationUnchanged();
+
+  // ---- 10: a stale tab after a failover and a restart ---------------------------
+  await wait("Codex idle", idle);
+  const indexRow = async () => (await invoke("chat_index_list", {})).find((row) => row.id === lead.id);
+  assert.equal((await invoke("chat_switch_runtime", { key, agent: "claude", model: "opus", effort: "high" })).state, "switched");
+  const autoBefore = events.filter((e) => e.event === "chat-provider-switch" && e.payload.key === key && e.payload.agent === "codex" && !e.payload.byPerson).length;
+  await send("TRIGGER_LIMIT: fail over before the stale tab.", "t12");
+  await wait("automatic failover to Codex", () => events.filter((e) => e.event === "chat-provider-switch" && e.payload.key === key && e.payload.agent === "codex" && !e.payload.byPerson).length > autoBefore, 60_000);
+  await wait("Codex idle", idle);
+  await restart();
+  assert.equal((await indexRow()).modelId.startsWith("codex:"), true, "the host's runtime is Codex");
+  const claudeWritesBefore = messages("claude").length;
+  await send("STALE_TAB_AFTER_RESTART", "t13", { agent: "claude", model: "opus" });
+  const stale = await wait("Codex got the stale tab's message", () => messages("codex").find((m) => m.includes("STALE_TAB_AFTER_RESTART")), 60_000);
+  assert.equal(messages("claude").length, claudeWritesBefore, "Claude was not started or written to by the stale tab");
+  assert.ok(!messages("claude").some((m) => m.includes("STALE_TAB_AFTER_RESTART")));
+  assert.match(stale, /fail over before the stale tab/, "the fresh Codex session carries the history");
+  assert.match(stale, /You are Ada/, "and the agent's full brief");
+  assert.ok(stale.indexOf("STALE_TAB_AFTER_RESTART") < stale.lastIndexOf("You are Ada"), "the new message is in the data, the brief is outside it");
+  assert.equal((await indexRow()).modelId.startsWith("codex:"), true, "the index still says Codex, and so does the launch");
+  const home = (await state()).homeRuntime;
+  assert.equal(home?.agent, "claude", "the way back to Opus is still offered: the stale start did not make Codex the baseline");
+  await wait("Codex idle", idle);
+  // Back to Opus is an explicit choice; a stale tab then cannot undo it.
+  assert.equal((await invoke("chat_switch_runtime", { key, agent: "claude", model: "opus", effort: "high" })).state, "switched");
+  // The ordinary picker (agents mode off): retarget, then a start carrying the page's own handoff.
+  await invoke("chat_switch_runtime", { key, agent: "codex", model: "gpt-5.6-sol", effort: "high" });
+  await send("CODEX_AGAIN to run on Codex first.", "t14", { agent: "codex", model: "gpt-5.6-sol" });
+  await wait("Codex answered", idle);
+  await invoke("chat_retarget", { key });
+  const claudeStarts = providerCalls("claude").filter((c) => c.argv).length;
+  await invoke("chat_start", { key, cwd, agent: "claude", model: "opus", effort: "high", access: "auto", prompt: "PICKER_CHOICE", turnId: "t15",
+    handoff: JSON.stringify([{ role: "user", text: "earlier turn from the page" }]) });
+  const picked = await wait("the picker's choice started Claude", () => providerCalls("claude").filter((c) => c.argv).length > claudeStarts && messages("claude").find((m) => m.includes("PICKER_CHOICE")));
+  assert.match(picked, /earlier turn from the page/, "the page's own handoff is used");
+  assert.equal((await indexRow()).modelId, "claude:opus", "recorded as the person's choice");
+  await wait("Claude idle", idle);
+  await restart();
+  const codexTurnsBefore = providerCalls("codex").filter((c) => c.method === "turn/start").length;
+  await send("STALE_AFTER_PICKER", "t16", { agent: "codex", model: "gpt-5.6-sol" });
+  await wait("Claude got the stale tab's message", () => messages("claude").some((m) => m.includes("STALE_AFTER_PICKER")), 60_000);
+  assert.equal(providerCalls("codex").filter((c) => c.method === "turn/start").length, codexTurnsBefore, "the picker's choice was not undone");
+  assert.equal((await indexRow()).modelId, "claude:opus");
+  results.scene10 = { stale: stale.length, picked: picked.length };
   results.pass = true;
 } catch (error) {
   results.pass = false; results.error = String(error.stack ?? error);
