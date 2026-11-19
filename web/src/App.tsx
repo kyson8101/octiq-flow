@@ -137,11 +137,9 @@ import {
   MODELS,
   modelFromId,
   modelFromReported,
-  parseCommandCache,
   providerCommands,
   providerFor,
   type AccessLevel,
-  type CommandCache,
   type Effort,
   type ModelChoice,
   type Provider,
@@ -275,6 +273,7 @@ import type { WorkLocationBranches } from "./components/WorkLocation";
 import { modelHandoff } from "./lib/modelHandoff";
 import { filterVisibleChatNotices, shouldShowChatStatus } from "./lib/chatStatus";
 import { useProjectBranches } from "./lib/useProjectBranches";
+import { useCommandCatalog } from "./lib/useCommandCatalog";
 import { FocusFontSizeControl, FocusModeButton, focusFontStyle, useFocusFontSize, useFocusMode } from "./components/FocusMode";
 import {
   PullRequestsDashboard,
@@ -356,7 +355,6 @@ const EMPTY: ChatState = emptyChat();
 
 const CHOICE_KEY = "octiq.v2.model";
 const ACCESS_KEY = "octiq.v2.access";
-const CMDS_KEY = "octiq.v2.commands";
 const EFFORT_KEY = "octiq.v2.effort";
 /** Whether new chats start clean. Kept here rather than per project: it is a
  *  way of working, not a property of the code you are working on. */
@@ -1849,47 +1847,6 @@ export default function App() {
     if (visibleRef.current === id) { setChoice(next); setEffort(payload.effort ?? "auto"); setAccess(payload.access); }
   }), []);
 
-  // The commands a session reports at startup, kept per PROJECT AND PROVIDER.
-  // A provider owns its command syntax: Claude's `/compact` must not show up
-  // after the same project is switched to Codex (or a future provider).
-  const [commands, setCommands] = useState<CommandCache>(() => {
-    try {
-      return parseCommandCache(JSON.parse(localStorage.getItem(CMDS_KEY) || "{}"));
-    } catch {
-      return {};
-    }
-  });
-  /** Codex has no command catalog in its exec stream. Remember which projects
-   * this page has already asked its app-server about, while still refreshing
-   * once after a browser reload even when localStorage can draw an old list. */
-  const codexSkillsLoaded = useRef(new Set<string>());
-  const codexSkillsPending = useRef(new Set<string>());
-  const [codexSkillsStatus, setCodexSkillsStatus] = useState<Record<string, string>>({});
-
-  // Claude's command list comes from the session's startup announcement and is
-  // cached per provider from then on. Codex has no corresponding exec event;
-  // `loadCodexSkills` below fills its side lazily from the app-server instead.
-  // Read startup lists from every loaded chat, not only the visible one — a
-  // chat working in the background is just as good a source.
-  useEffect(() => {
-    setCommands((prev) => {
-      let next = prev;
-      for (const [id, s] of Object.entries(chats)) {
-        const pid = meta.current[id]?.projectId;
-        const agent = modelFromId(meta.current[id]?.modelId ?? null)?.agent;
-        if (!pid || !agent || !s.commands?.length) continue;
-        const before = prev[pid]?.[agent];
-        if (before?.length === s.commands.length && before.every((command, i) => command === s.commands![i])) {
-          continue;
-        }
-        next = { ...next, [pid]: { ...next[pid], [agent]: s.commands } };
-      }
-      if (next === prev) return prev;
-      remember(CMDS_KEY, JSON.stringify(next));
-      return next;
-    });
-  }, [chats]);
-
   // Save every loaded conversation as it grows, the background ones included:
   // an answer that arrived while you were elsewhere has to survive a reload the
   // same as one you watched. Storing on every delta would serialise the whole
@@ -2041,40 +1998,7 @@ export default function App() {
     () => workspaces.find((w) => w.id === projectId) ?? null,
     [workspaces, projectId],
   );
-  const loadCodexSkills = useCallback((force = false) => {
-    if (choice.agent !== "codex" || !projectId || !project?.primary_path) return;
-    const key = `${projectId}:codex`;
-    if (codexSkillsPending.current.has(key) || (!force && codexSkillsLoaded.current.has(key))) return;
-    codexSkillsLoaded.current.add(key);
-    codexSkillsPending.current.add(key);
-    setCodexSkillsStatus((previous) => ({ ...previous, [key]: "loading" }));
-
-    bridge
-      .invoke<unknown>("codex_skills", { cwd: project.primary_path })
-      .then((value) => {
-        const skills = Array.isArray(value)
-          ? value.filter((skill): skill is string => typeof skill === "string")
-          : [];
-        setCommands((previous) => {
-          const next = {
-            ...previous,
-            [projectId]: { ...previous[projectId], codex: skills },
-          };
-          remember(CMDS_KEY, JSON.stringify(next));
-          return next;
-        });
-      })
-      .then(() => {
-        setCodexSkillsStatus((previous) => ({ ...previous, [key]: "" }));
-      })
-      .catch(() => {
-        setCodexSkillsStatus((previous) => ({ ...previous, [key]: "Could not load skills. Try again." }));
-        // A reconnect or a newly installed Codex should get another chance the
-        // next time the slash menu is opened.
-        codexSkillsLoaded.current.delete(key);
-      })
-      .finally(() => codexSkillsPending.current.delete(key));
-  }, [choice.agent, project, projectId]);
+  const { commands, codexSkillsStatus, loadCodexSkills } = useCommandCatalog({ chats, meta, agent: choice.agent, projectId, project });
   const taskList = useMemo(() => byTask(conversations), [conversations]);
   const searchChats = useCallback(
     (query: string) => bridge.invoke<ChatSearchHit[]>("chat_search", { query, limit: 50 }),
