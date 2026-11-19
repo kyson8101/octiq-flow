@@ -1008,30 +1008,30 @@ mod tests {
     }
 
     /// A throwaway git repo with two subfolders and one changed file.
-    /// Returns None when `git` is unavailable, so the test simply skips.
-    fn temp_repo(name: &str) -> Option<crate::test_dir::TestDir> {
+    /// A setup failure panics, so a test never passes without having run.
+    fn temp_repo(name: &str) -> crate::test_dir::TestDir {
         let dir = crate::test_dir::TestDir::new(&format!("git-test-{name}"));
-        std::fs::create_dir_all(dir.join("sub-a")).ok()?;
-        std::fs::create_dir_all(dir.join("sub-b")).ok()?;
-        let ok = Command::new("git")
+        std::fs::create_dir_all(dir.join("sub-a")).expect("temp_repo: create sub-a");
+        std::fs::create_dir_all(dir.join("sub-b")).expect("temp_repo: create sub-b");
+        let out = Command::new("git")
             .arg("-C")
             .arg(&dir)
             .args(["init", "-q"])
-            .status()
-            .ok()?
-            .success();
-        if !ok {
-            return None;
-        }
-        std::fs::write(dir.join("sub-a").join("f.txt"), "hello\n").ok()?;
-        Some(dir)
+            .output()
+            .expect("temp_repo: git init could not run");
+        assert!(
+            out.status.success(),
+            "temp_repo: git init failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::write(dir.join("sub-a").join("f.txt"), "hello\n")
+            .expect("temp_repo: write sub-a/f.txt");
+        dir
     }
 
     #[test]
     fn two_folders_of_one_repo_get_the_same_root_and_numbers() {
-        let Some(dir) = temp_repo("dedupe") else {
-            return; // no git on this machine
-        };
+        let dir = temp_repo("dedupe");
         let a = dir.join("sub-a").to_string_lossy().into_owned();
         let b = dir.join("sub-b").to_string_lossy().into_owned();
 
@@ -1059,9 +1059,7 @@ mod tests {
 
     #[test]
     fn a_non_repo_path_still_yields_an_entry_in_order() {
-        let Some(dir) = temp_repo("mixed") else {
-            return;
-        };
+        let dir = temp_repo("mixed");
         let a = dir.join("sub-a").to_string_lossy().into_owned();
         let outside = std::env::temp_dir()
             .join("octiq-git-test-not-a-repo-at-all")

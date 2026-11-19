@@ -36,12 +36,6 @@ export function useMedia(query: string): boolean {
  *  step with the `700px` media queries in styles.css. */
 export const WIDE = "(min-width: 701px)";
 
-/** Enough room for the ordinary chat actions beside centred navigation.
- *  Below this they stay behind one disclosure. This deliberately starts well
- *  above the 860px desktop-layout boundary: an 878px window can hold the three
- *  app columns, but it cannot also hold every chat action across one row. */
-export const TOPBAR_ACTIONS = "(min-width: 1180px)";
-
 /** Below this the project list occupies its own screen; at and above it,
  *  projects remain a column beside the workspace. Matches styles.css. */
 export const MOBILE = "(max-width: 859.98px)";

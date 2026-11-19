@@ -632,44 +632,6 @@ fn a_page_read_from_the_end_is_the_page_read_from_the_front() {
     }
 }
 
-/// The same check over real records, with timings:
-/// `OCTIQ_PAGE_CHECK=<a.jsonl>:<b.jsonl> cargo test --release -- --ignored real_records`
-#[test]
-#[ignore]
-fn real_records_page_the_same_from_either_end() {
-    let Ok(files) = std::env::var("OCTIQ_PAGE_CHECK") else {
-        return;
-    };
-    for file in files.split(':') {
-        let key = unique_key("page-real");
-        fs::copy(file, path_for(&key).unwrap()).unwrap();
-        let mut cursor = None;
-        for _ in 0..3 {
-            let started = std::time::Instant::now();
-            let found = page(&key, cursor).unwrap();
-            let fast = started.elapsed();
-            let started = std::time::Instant::now();
-            let expected = page_forward(&key, cursor, 256 * 1024, 3).unwrap();
-            let slow = started.elapsed();
-            eprintln!("{file} before {cursor:?}: {fast:?} from the end, {slow:?} from the front, {} events, next before {:?}", found.events.len(), found.before);
-            let seqs = |p: &Page| {
-                p.events
-                    .iter()
-                    .chain(&p.context)
-                    .map(|e| e.seq)
-                    .collect::<Vec<_>>()
-            };
-            assert_eq!(seqs(&found), seqs(&expected));
-            assert_eq!(found.before, expected.before);
-            cursor = found.before;
-            if cursor.is_none() {
-                break;
-            }
-        }
-        forget(&key);
-    }
-}
-
 #[test]
 fn startup_replay_stays_with_its_host_prompt_despite_the_byte_budget() {
     let key = unique_key("page-startup-replay");

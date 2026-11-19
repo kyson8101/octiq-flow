@@ -898,6 +898,7 @@ impl OrchestrationStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn monitor_workers(&self, now: i64) -> Result<(), String> {
         self.monitor_workers_with(now, &|_| Vec::new())
     }

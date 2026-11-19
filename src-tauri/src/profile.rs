@@ -236,18 +236,6 @@ impl Drop for Started {
     }
 }
 
-/// This machine's own profile folder, read from its real config and made by
-/// nothing. For the one ignored, manual test that has to name a real chat
-/// (`push::tests::send_a_real_push`); every other test reads `profile_dir`.
-#[cfg(test)]
-pub(crate) fn this_machines_profile() -> Option<PathBuf> {
-    // The real home, on purpose: the manual test names a real chat.
-    let root = crate::paths::machines_home_dir()?.join(".octiqflow");
-    let raw = fs::read_to_string(root.join("config.json")).ok()?;
-    let cfg: ProfileConfig = serde_json::from_str(&raw).ok()?;
-    Some(PathBuf::from(cfg.base).join(cfg.active))
-}
-
 /// The pin of the process this thread stands in for, or the test binary's
 /// shared one.
 #[cfg(test)]

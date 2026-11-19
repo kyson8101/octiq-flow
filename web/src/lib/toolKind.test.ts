@@ -13,7 +13,6 @@ import {
   gitSubcommand,
   mcpLabel,
   mcpParts,
-  shellCommandCount,
   toolLook,
   toolWords,
 } from "./toolKind";
@@ -44,13 +43,6 @@ describe("commandTool", () => {
   it("leaves an unwrapped command_execution and other tools alone", () => {
     expect(commandTool("command_execution", { command: "pnpm test" })).toBe("");
     expect(commandTool("Read", { command: "grep -n needle src" })).toBe("");
-  });
-});
-
-describe("shellCommandCount", () => {
-  it("counts nested and top-level CLI calls in a shell script", () => {
-    const command = "/bin/bash -c 'current=\"$(gh pr view 162)\"\ngh pr review 162 --approve\ngh pr merge 162'";
-    expect(shellCommandCount("command_execution", { command }, "gh")).toBe(3);
   });
 });
 

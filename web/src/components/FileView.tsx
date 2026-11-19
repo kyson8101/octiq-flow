@@ -1,10 +1,10 @@
 // Card 89 — one file, drawn one way, wherever it is docked.
 //
 // Showing a file was written twice. `FilePanel` drew it for the chat dock and
-// `EditorMode` drew it for the editor, and the two had drifted in the place it
-// showed most: the real editor — CodeMirror, with syntax colouring, search and
-// undo — was wired into the editor mode ONLY, so the same file had highlighting
-// in one half of this app and a bare `<textarea>` in the other. Nobody decided
+// an editor mode (since removed) drew it for the editor, and the two had drifted
+// in the place it showed most: the real editor — CodeMirror, with syntax
+// colouring, search and undo — was wired into the editor mode ONLY, so the same
+// file had highlighting in one half of this app and a bare `<textarea>` in the other. Nobody decided
 // that; it is what two implementations become.
 //
 // This is the BODY of a file view and nothing else. What it deliberately does

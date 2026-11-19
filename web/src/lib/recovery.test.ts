@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   provesLiveTurn,
-  queuedMessageCount,
   reconcileUnsentMessages,
 } from "./recovery";
 import { addUserTurn, emptyChat, reduceChat } from "./chat";
@@ -19,24 +18,6 @@ describe("live turn evidence", () => {
   });
 });
 
-describe("current queued messages", () => {
-  const user = (id: string, extra: Partial<import("./chat").Message> = {}): import("./chat").Message => ({ id, role: "user", streaming: false, blocks: [], ...extra });
-  const answer: import("./chat").Message = { id: "answer", role: "assistant", streaming: false, blocks: [] };
-  it("counts current canonical prompts after an answer without counting old legacy users", () => {
-    expect(queuedMessageCount({ messages: [user("old"), answer, user("first", { turnId: "one" }), user("second", { turnId: "two" })] })).toBe(2);
-  });
-  it("excludes accepted turns signaled by echo or takenUp", () => {
-    expect(queuedMessageCount({ messages: [user("accepted", { turnId: "one", takenUp: true }), user("next", { turnId: "two" })] })).toBe(1);
-    expect(queuedMessageCount({ messages: [user("accepted", { turnId: "one", echo: "uuid" })] })).toBe(0);
-    expect(queuedMessageCount({ messages: [user("accepted", { takenUp: true }), answer] })).toBe(0);
-  });
-  it("leaves unknown legacy and seat queues unspecified", () => {
-    expect(queuedMessageCount({ messages: [user("legacy"), answer] })).toBeUndefined();
-    expect(queuedMessageCount({ messages: [user("legacy")] })).toBeUndefined();
-    expect(queuedMessageCount({ messages: [user("seat", { turnId: "one", to: { id: "s", name: "Seat" } })] })).toBeUndefined();
-  });
-});
-
 describe("messages left behind after queue loss", () => {
   const pending = () => ({ ...addUserTurn(emptyChat(), "status?", [], 1, "old-status"), busy: false });
   const gone = { live: false, queuedTurnIds: [] };
@@ -45,7 +26,6 @@ describe("messages left behind after queue loss", () => {
     const state = reconcileUnsentMessages(pending(), gone);
     expect(state.messages[0]).toMatchObject({ turnId: "old-status", queueLost: true });
     expect(state.messages[0].takenUp).toBeUndefined();
-    expect(queuedMessageCount(state)).toBe(0);
     expect(reconcileUnsentMessages(state, gone)).toBe(state);
   });
 

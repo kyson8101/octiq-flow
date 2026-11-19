@@ -755,12 +755,6 @@ The MCP server's instructions and each tool description stay under 4,096
 characters (`scripts/mcp/instructions.test.cjs`): Claude Code drops text past
 that limit. Put tool-specific guidance in that tool's description.
 
-Saved state from the retired chat Plan, Preview panel and Settings Sandbox is
-removed once at server startup (`retired_features.rs`): `chats/plan_*.json`,
-`previews/` and `sandboxes/` beneath the pinned profile. Cleanup uses
-`profile::available`, skips redirected chat folders, never follows store
-symlinks or invokes Docker, and logs failures without stopping startup.
-
 ### A chat whose folder was removed is recovered before it starts
 
 A chat remembers the exact folder it ran in, and a task chat's is a linked
@@ -2779,8 +2773,7 @@ are read by `lib/runProgress` off the ledger this tab already holds.
   the worker's process is doing. A task something holds leads with the
   hold, `Task: Reopened · notice not yet saved · ledger status: Ready`,
   `Task: Stopped by you · ledger status: Failed`: never `Task: Ready` of a
-  task that cannot start. `AgentTaskBoard` and `TaskMeter` still print the
-  raw word and are mounted by nothing (only their tests import them).
+  task that cannot start.
 - **"Completed" is not "done", and how a task ended has one reader.** The
   host calls a task `completed` when its worker settled it, and a review
   that completed with a failing verdict still holds what depends on it
@@ -3235,8 +3228,7 @@ starts or decides something takes the ones that apply:
 
 Who asks through the shared `Confirm` is listed in `Confirm.test.tsx`,
 which fails when a caller is added without it: closing a mission after its
-chat was completed (`App`), discarding or overwriting a file (`EditorMode`,
-`FilePanel`), deleting a project (`ProjectSettings`) or a saved command
+chat was completed (`App`), discarding or overwriting a file (`FilePanel`), deleting a project (`ProjectSettings`) or a saved command
 (`TerminalDrawer`), and stopping a task's worker (`ReopenedNote`). Not
 through it: deleting a chat has its own countdown, the run panel's Stop,
 Close, Abandon and Archive are its own inline questions, whose safe answer

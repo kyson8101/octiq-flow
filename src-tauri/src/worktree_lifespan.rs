@@ -62,6 +62,7 @@ pub(crate) fn require_no_at_stake_ignored(path: &str) -> Result<(), String> {
 /// 60 seconds an inspection before the lock may take: `FinalBudget` bounds
 /// Git calls only, so the walk is given its own limit. `clock` is how a test
 /// says how long the walk has run.
+#[cfg(any(windows, test))]
 fn final_reparse_scan(
     path: &str,
     budget: Duration,

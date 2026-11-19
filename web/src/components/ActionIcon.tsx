@@ -48,7 +48,6 @@ const glyphs = {
 } satisfies Record<string, ReactNode>;
 
 export type ActionName = keyof typeof glyphs;
-export const ACTION_NAMES = Object.keys(glyphs) as ActionName[];
 
 /** The containing button owns its full accessible name and tooltip.
  * Decisions and panel actions pass a short visible label; utilities and the

@@ -24,9 +24,9 @@ pub fn route(view: &mut Value, scope: &Scope) {
 /// within their visible scope; full run detail remains unchanged.
 ///
 /// The server no longer narrows a built snapshot with this (it chooses runs
-/// first: `Scope`); it stays as the reference the scope's test compares
+/// first: `Scope`); it exists only as the oracle the scope's tests compare
 /// against.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub fn select(
     view: &mut Value,
     include_ended: bool,

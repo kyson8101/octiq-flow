@@ -189,6 +189,7 @@ pub(crate) fn git_command(root: &str, args: &[&str]) -> Command {
 pub(crate) fn git_bounded(root: &str, args: &[&str], timeout: Duration) -> Result<Vec<u8>, String> {
     command(&mut git_command(root, args), timeout)
 }
+#[cfg(test)]
 pub(crate) fn git_io(
     root: &str,
     args: &[&str],

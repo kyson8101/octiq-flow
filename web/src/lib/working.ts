@@ -16,17 +16,6 @@ export function elapsedLabel(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
-/** 16543 → "16.5k". One place finer than the context meter's rounding, and for
- *  a reason: this number is watched while it moves. Rounded to whole thousands
- *  it sits still for seconds at a time, and a counter that does not move is
- *  worse than no counter — it reads as a stall. */
-export function tokenLabel(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 100_000) return `${Math.round(n / 1000)}k`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(Math.max(0, Math.round(n)));
-}
-
 /** The current activity; elapsed time is also used by the composer's clock. */
 export function workingLine({ elapsedMs, activity, thinking }: {
   elapsedMs?: number;

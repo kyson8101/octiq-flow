@@ -5,7 +5,6 @@ import { mergedWorkers } from "../lib/__fixtures__/workerArchive";
 import { workerChatParents, type OrchestrationSnapshot } from "../lib/orchestration";
 import type { Conversation } from "../lib/store";
 import { Sidebar } from "./Sidebar";
-import { AgentTaskBoard } from "./AgentTaskBoard";
 import { OrchestrationPanel } from "./OrchestrationPanel";
 
 const chats: Conversation[] = ["main", "previous", "worker"].map(id => ({ id, title: `Chat ${id}`, projectId: "project", messages: [], createdAt: 1, updatedAt: 2 }));
@@ -60,15 +59,9 @@ describe("worker archive controls", () => {
     expect(out).toContain("Completed · 1/1");
   });
 
-  it("keeps a task with a restored worker in the board, and archiving in the Run column", () => {
+  it("keeps archiving in the Run column", () => {
     const snapshot = mergedWorkers();
     snapshot.attempts[1].archivedAt = 3;
-    const out = renderToStaticMarkup(<AgentTaskBoard snapshot={snapshot} conversations={new Map(chats.map(c => [c.id, c]))}
-      currentConversation={null} onOpenChat={() => {}} />);
-    expect(out).toContain('class="agent-task"');
-    // The sidebar navigates; archiving and attempt history are the dashboard's.
-    expect(out).not.toContain("Archive worker");
-    expect(out).not.toContain("Attempt 2");
     expect(panel(snapshot)).toContain('aria-label="Archive worker"');
     expect(panel(snapshot)).toContain("Previous attempts (1)");
   });

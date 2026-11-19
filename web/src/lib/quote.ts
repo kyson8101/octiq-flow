@@ -10,7 +10,7 @@
 // below is only how the file panel reaches a composer it does not own — they
 // are cousins in the tree, not parent and child, and threading a callback down
 // through the whole app to join them would be a wire nothing else uses.
-import { baseName, fileExt } from "./files";
+import { fileExt } from "./files";
 
 export type Quote = {
   /** The file the text came from, absolute. */
@@ -104,10 +104,6 @@ function tagFor(path: string): string {
   if (!ext) return "";
   return TAG[ext] ?? ext;
 }
-
-/** A name for the quote, for anything that has to say what it is about. */
-export const quoteLabel = (quote: Quote): string =>
-  quote.from > 0 ? `${baseName(quote.path)}:${quote.from}` : baseName(quote.path);
 
 // ---- Handing it over -----------------------------------------------------
 

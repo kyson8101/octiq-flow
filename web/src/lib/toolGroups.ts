@@ -56,7 +56,6 @@
 // to arrive as eight lone cards with "thought for a moment" between each pair —
 // the wall this whole file exists to prevent.
 import type { Block } from "./chat";
-import { fileDiff } from "./diff";
 import { toolDetail, toolLook, toolPicture, type ToolKind } from "./toolKind";
 
 export type Tool = Extract<Block, { kind: "tool" }>;
@@ -257,24 +256,6 @@ export function groupLook(tools: Tool[]): GroupLook {
  *  lands in it. */
 export type Tally = { label: string; count: number; kind: ToolKind };
 
-export function groupTally(tools: Tool[]): Tally[] {
-  const counts = new Map<string, Tally>();
-  for (const tool of tools) {
-    const { label, kind } = verb(tool);
-    const seen = counts.get(label);
-    if (!seen) {
-      counts.set(label, { label, count: 1, kind });
-      continue;
-    }
-    seen.count += 1;
-    // A file that was CHANGED is not the same news as a file that was read.
-    if (kind === "edit") seen.kind = "edit";
-  }
-  // Biggest first: a summary is read for its shape, and the long pole is the
-  // shape. Ties keep the order they ran in, which is the order on screen.
-  return [...counts.values()].sort((a, b) => b.count - a.count);
-}
-
 /** A short, human sentence for the collapsed group row.
  *
  * The files in a summary are distinct files, not tool invocations: reading and
@@ -345,21 +326,6 @@ export function groupSummary(tools: Tool[]): GroupSummary {
   return { kind: shown[0] ?? "other", label: phrases.join(", ") || "Used tools" };
 }
 
-function verb(tool: Tool): { label: string; kind: ToolKind } {
-  const look = toolLook(tool.name, tool.args);
-  if (look.kind === "run") {
-    const command = (tool.args as { command?: unknown } | undefined)?.command;
-    if (typeof command === "string" && command.trim()) {
-      return { label: commandHead(command), kind: look.kind };
-    }
-  }
-  if (look.kind === "read" || look.kind === "edit") {
-    const name = fileName(tool.args);
-    if (name) return { label: name, kind: look.kind };
-  }
-  return { label: look.label, kind: look.kind };
-}
-
 /** The file a call went to, by the name a reader would say out loud.
  *
  *  The last segment, not the path: a tally is a strip of chips a few words
@@ -387,24 +353,6 @@ function fileName(args: unknown): string {
  *  contain a rewrite of the file the reader is here about. Null when the run
  *  only looked at things. */
 export type GroupDiff = { added: number; removed: number; files: number };
-
-export function groupDiff(tools: Tool[]): GroupDiff | null {
-  let added = 0;
-  let removed = 0;
-  const files = new Set<string>();
-  for (const tool of tools) {
-    // A call still in flight has not changed anything yet, and a failed one
-    // never will; neither belongs in a total that claims the work happened.
-    if (tool.state !== "done") continue;
-    const diff = fileDiff(tool.name, tool.args, tool.details);
-    if (!diff) continue;
-    added += diff.added;
-    removed += diff.removed;
-    files.add(diff.path);
-  }
-  if (!added && !removed) return null;
-  return { added, removed, files: files.size };
-}
 
 /** The name of the program a shell line runs.
  *

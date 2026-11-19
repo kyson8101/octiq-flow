@@ -680,6 +680,7 @@ impl OrchestrationStore {
                 .any(|n| n.source == source && n.state == DeliveryState::Pending)
         })
     }
+    #[cfg(test)]
     pub(crate) fn acknowledge_notification(&self, key: &str, id: &str) -> Result<(), String> {
         self.acknowledge_notifications(key, &[id.to_string()])
     }

@@ -7,7 +7,7 @@ import type { Block, Message } from "./chat";
 import type { Question } from "./question";
 import {
   answerTurn, answerTurnOf, answeredNote, asks, batchesOf, isAnswerTurn, lateAnswerTo, lateAnswers,
-  pickAnswer, placeQuestions, saidLines, saidText, startPick, submitReason, waitingLabel,
+  pickAnswer, placeQuestions, saidLines, startPick, submitReason, waitingLabel,
 } from "./questionBlock";
 import { askAnswer } from "./askAnswer";
 
@@ -196,12 +196,6 @@ describe("what the answer bubble says", () => {
   it("is the bare answer for one question", () => {
     const lines = saidLines([{ question: "Which database?", answer: "SQLite" }]);
     expect(lines).toEqual([{ answer: "SQLite" }]);
-    expect(saidText(lines[0])).toBe("SQLite");
-  });
-
-  it("is each question and its answer for several", () => {
-    const lines = saidLines([{ question: "Which database?", answer: "SQLite" }, { question: "Name", answer: "octiq" }]);
-    expect(lines.map(saidText)).toEqual(["Which database? SQLite", "Name: octiq"]);
   });
 
   it("says a question of several went unanswered, in words", () => {

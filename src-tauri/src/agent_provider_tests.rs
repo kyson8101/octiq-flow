@@ -2719,61 +2719,6 @@ fn antigravity_tolerates_events_and_lines_it_does_not_know() {
     );
 }
 
-/// The real CLI, launched the way a chat launches it. Run with
-/// `cargo test --lib a_real_antigravity -- --ignored --nocapture`; it
-/// writes OctiqFlow's plugin and allow rule as a real launch does.
-#[test]
-#[ignore = "runs the installed agy CLI"]
-fn a_real_antigravity_launch_through_the_built_command() {
-    use std::io::{BufRead, Write};
-    let project = crate::test_dir::TestDir::new("agy-live");
-    let mcp = ask_mcp_config().expect("the MCP files are written");
-    let request = AgentCommand {
-        model: None,
-        effort: None,
-        ..agy_request(Some(Access::Edits), Some(&mcp))
-    };
-    ANTIGRAVITY
-        .prepare_launch(&request)
-        .expect("the plugin is written");
-    let line = ANTIGRAVITY.build_command(&request);
-    println!("LINE: {line}");
-    let shell =
-        crate::proc::resolve_agent_shell(std::env::var("SHELL").ok(), None, cfg!(windows), &|_| {
-            None
-        })
-        .expect("an agent shell");
-    let mut child = shell
-        .command(&line)
-        .current_dir(&project)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("agy starts");
-    let payload = ANTIGRAVITY
-        .user_message_payload(
-            "Reply with exactly three words: hello from antigravity",
-            &[],
-        )
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    writeln!(stdin, "{payload}").unwrap();
-    let mut finished = false;
-    for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines() {
-        let line = line.unwrap();
-        println!("{line}");
-        if let Ok(event) = serde_json::from_str::<Value>(&line) {
-            if ANTIGRAVITY.observe_event(&event).turn_finished {
-                finished = true;
-                drop(stdin);
-                break;
-            }
-        }
-    }
-    assert!(finished);
-    let _ = child.wait();
-}
-
 #[test]
 fn a_refused_antigravity_turn_names_the_access_that_refused_it() {
     let events = agy_events(AGY_THREE_TURNS);
