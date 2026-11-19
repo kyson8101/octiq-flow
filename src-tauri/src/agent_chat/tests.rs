@@ -1171,6 +1171,12 @@ fn one_access_level_becomes_each_agents_own_flag() {
             false,
         );
         assert!(c.contains(claude_flag), "claude {level:?}");
+        // `bypassPermissions` is accepted only when the process was launched
+        // for it, so Full never names it as a permission mode.
+        assert!(
+            !c.contains("--permission-mode bypassPermissions"),
+            "claude {level:?}"
+        );
         assert!(
             !c.contains("--sandbox"),
             "claude must not get a sandbox flag"

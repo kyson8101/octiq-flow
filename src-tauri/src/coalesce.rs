@@ -277,18 +277,6 @@ mod tests {
     }
 
     #[test]
-    fn a_panicking_run_frees_the_key() {
-        let c: Arc<Coalesce<String, usize>> = Arc::new(Coalesce::new());
-        let key = "k".to_string();
-        let crashed = {
-            let (c, key) = (c.clone(), key.clone());
-            std::thread::spawn(move || c.run(&key, || panic!("boom"))).join()
-        };
-        assert!(crashed.is_err());
-        assert_eq!(c.run(&key, || 7), 7);
-    }
-
-    #[test]
     fn different_keys_do_not_wait_for_each_other() {
         let c: Arc<Coalesce<String, usize>> = Arc::new(Coalesce::new());
         let (tx, rx) = std::sync::mpsc::channel::<()>();

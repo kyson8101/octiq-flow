@@ -12,34 +12,12 @@ pub(super) fn build_command(
     images: &[String],
     lite: bool,
 ) -> String {
-    build_command_for_project(
-        agent, model, access, prompt, resume, extra_dirs, effort, images, lite, None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn build_command_for_project(
-    agent: ChatAgent,
-    model: Option<&str>,
-    access: Option<Access>,
-    prompt: &str,
-    resume: Option<&str>,
-    extra_dirs: &[String],
-    effort: Option<&str>,
-    images: &[String],
-    lite: bool,
-    project_cwd: Option<&str>,
-) -> String {
-    let provider = provider_for(agent);
-    let mcp = provider
+    let mcp = provider_for(agent)
         .capabilities()
         .uses_octiq_mcp
         .then(ask_mcp_config)
         .flatten();
-    let authorizations = (agent == ChatAgent::Codex)
-        .then(|| project_cwd.and_then(crate::safety_block::project_authorizations))
-        .flatten();
-    build_command_with_context(
+    build_command_with_mcp(
         agent,
         model,
         access,
@@ -50,7 +28,6 @@ pub(super) fn build_command_for_project(
         images,
         lite,
         mcp.as_deref(),
-        authorizations.as_deref(),
     )
 }
 
@@ -69,25 +46,6 @@ pub(super) fn build_command_with_mcp(
     lite: bool,
     mcp_config: Option<&std::path::Path>,
 ) -> String {
-    build_command_with_context(
-        agent, model, access, prompt, resume, extra_dirs, effort, images, lite, mcp_config, None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn build_command_with_context(
-    agent: ChatAgent,
-    model: Option<&str>,
-    access: Option<Access>,
-    prompt: &str,
-    resume: Option<&str>,
-    extra_dirs: &[String],
-    effort: Option<&str>,
-    images: &[String],
-    lite: bool,
-    mcp_config: Option<&std::path::Path>,
-    persistent_authorizations: Option<&str>,
-) -> String {
     let prompt = if mcp_config.is_some() {
         routed_prompt(agent, prompt)
     } else {
@@ -104,7 +62,7 @@ pub(super) fn build_command_with_context(
         images,
         lite,
         mcp_config,
-        persistent_authorizations,
+        persistent_authorizations: None,
         orchestration_worker: false,
         front_desk: false,
         codex_user_mcp: &[],

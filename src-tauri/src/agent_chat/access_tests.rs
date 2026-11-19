@@ -43,28 +43,3 @@ fn nothing_else_on_the_wire_is_mistaken_for_one() {
         .is_none());
     assert!(provider.observe_event(&a_message).access_refusal.is_none());
 }
-
-#[test]
-fn each_level_names_a_mode_claude_will_actually_take() {
-    // Verified against the CLI's own control channel: `plan` and `auto` are
-    // accepted mid-session, `bypassPermissions` only when the process was
-    // launched for it — which is why a switch UP to Full still restarts.
-    let command = |access| {
-        build_command(
-            ChatAgent::Claude,
-            None,
-            Some(access),
-            "",
-            None,
-            &[],
-            None,
-            &[],
-            false,
-        )
-    };
-    assert!(command(Access::Read).contains("--permission-mode plan"));
-    assert!(command(Access::Auto).contains("--permission-mode auto"));
-    let full = command(Access::Full);
-    assert!(full.contains("--dangerously-skip-permissions"));
-    assert!(!full.contains("--permission-mode bypassPermissions"));
-}
