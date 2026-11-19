@@ -290,6 +290,6 @@ export function setRunArchived(invoke: Invoke, run: OrchestrationRun, archived: 
   return invoke("orchestration_run_archive", { actorChatKey: run.coordinatorChatKey, runId: run.id, archived });
 }
 
-function messageOf(problem: unknown): string {
+export function messageOf(problem: unknown): string {
   return String((problem as Error)?.message ?? problem);
 }
