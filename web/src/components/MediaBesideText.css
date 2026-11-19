@@ -30,6 +30,13 @@
 .media-beside-file .media-slot { display: contents; }
 .media-beside-file .qa-media-box audio { max-width: 100%; }
 
+/* A sound's player needs its width for the seek bar: it takes the whole row,
+   above the words, at any container width. */
+.media-beside-grid:has(.qa-media-item.is-audio) { grid-template-columns: minmax(0, 1fr); }
+.media-beside-grid:has(.qa-media-item.is-audio) .media-beside-file { width: 100%; }
+.media-beside .media-beside-file .qa-media-box.is-audio { height: 56px; border-color: transparent; background: none; }
+.media-beside .media-beside-file .qa-media-box.is-audio audio { width: 100%; max-width: 100%; }
+
 .media-reply {
   min-width: 0;
   margin: 0 0 10px;
