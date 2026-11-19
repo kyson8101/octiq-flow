@@ -181,7 +181,7 @@ fn plan_after_a_settled_json() {
 
 ## Per-task workspace approval
 
-Recorded from the host tests in `orchestration/workspaces.rs`, using the same
+Recorded from the host tests in `orchestration/workspaces/tests.rs`, using the same
 `OCTIQ_RECORD_FACTS=1` / `FACT <name> {…}` capture above. These are complete
 `orchestration_snapshot { runId }` answers, including the derived
 `task.workspaceChoice` and the approved allocation mode.

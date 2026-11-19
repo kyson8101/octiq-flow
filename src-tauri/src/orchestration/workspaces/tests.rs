@@ -1,0 +1,4146 @@
+
+use super::*;
+use crate::git_ops::workflow::tests::Repo;
+fn setup(repo: &Repo, mode: WorkspaceMode) -> (OrchestrationStore, Run, Task) {
+    // The coordinator is a chat the person can open: a reopen is told
+    // there, and refused without it.
+    crate::chat_index::upsert(
+        serde_json::from_value(json!({
+            "id": "master", "projectId": "project", "title": "Lead chat", "updatedAt": 100,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let store = OrchestrationStore::default();
+    let run = store
+        .create_run_with_mode(
+            "chat:master".into(),
+            "Build feature".into(),
+            "project".into(),
+            repo.root.clone(),
+            Some(4),
+            mode,
+        )
+        .unwrap();
+    let task = super::super::tests::task(&store, &run, vec![]);
+    (store, run, task)
+}
+#[test]
+fn swept_task_rebuilds_same_path_branch_and_committed_head_on_retry() {
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Worktree);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    fs::write(Path::new(&first.cwd).join("kept.txt"), "committed work").unwrap();
+    crate::git_ops::lifespan::text(&first.cwd, &["add", "."]).unwrap();
+    crate::git_ops::lifespan::text(&first.cwd, &["commit", "-m", "kept work"]).unwrap();
+    let head = crate::git_ops::lifespan::text(&first.cwd, &["rev-parse", "HEAD"]).unwrap();
+    report(&store, &first, WorkerOutcome::Failed);
+    crate::git_ops::lifespan::remove(&repo.root, &first.cwd, false).unwrap();
+    store.lifespan_record_swept(&first.cwd, 100).unwrap();
+    assert!(!store
+        .disk_report_workspaces()
+        .unwrap()
+        .contains(Path::new(&first.cwd)));
+    let retry = prepare(&store, &task, Access::Auto).unwrap();
+    assert_eq!((&retry.cwd, &retry.branch), (&first.cwd, &first.branch));
+    assert_eq!(
+        crate::git_ops::lifespan::text(&retry.cwd, &["rev-parse", "HEAD"]).unwrap(),
+        head
+    );
+    assert_eq!(
+        fs::read_to_string(Path::new(&retry.cwd).join("kept.txt")).unwrap(),
+        "committed work"
+    );
+    let ws = store
+        .snapshot(Some(&run.id))
+        .unwrap()
+        .tasks
+        .remove(0)
+        .workspace
+        .unwrap();
+    assert!(ws.swept_at.is_none());
+    assert_eq!(ws.state, WorkspaceState::Ready);
+}
+
+#[test]
+fn swept_mission_is_recreated_for_a_later_task_without_closing_the_run() {
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Mission);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    report(&store, &first, WorkerOutcome::Completed);
+    crate::git_ops::lifespan::remove(&repo.root, &first.cwd, false).unwrap();
+    store.lifespan_record_swept(&first.cwd, 100).unwrap();
+    let next = store
+        .create_task(
+            "chat:master",
+            run.id.clone(),
+            "Later task".into(),
+            "Continue mission".into(),
+            vec![],
+            None,
+            None,
+        )
+        .unwrap();
+    let later = prepare(&store, &next, Access::Auto).unwrap();
+    assert_eq!((&later.cwd, &later.branch), (&first.cwd, &first.branch));
+    assert!(store
+        .snapshot(Some(&run.id))
+        .unwrap()
+        .tasks
+        .iter()
+        .all(|t| t.workspace.as_ref().is_none_or(|ws| ws.swept_at.is_none())));
+}
+
+#[test]
+fn the_person_can_close_a_swept_mission_without_recreating_its_folder() {
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Mission);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    report(&store, &first, WorkerOutcome::Completed);
+    let head = crate::git_ops::lifespan::text(&first.cwd, &["rev-parse", "HEAD"]).unwrap();
+    let root = first.cwd.trim_end_matches(['/', '\\']);
+    store
+        .lifespan_delivery(
+            root,
+            &DeliveryEvidence {
+                head_sha: head,
+                has_commits: false,
+                merged: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    crate::git_ops::lifespan::remove(&repo.root, root, false).unwrap();
+    store.lifespan_record_swept(root, 100).unwrap();
+    assert!(store.coordinated_runs("chat:master").unwrap()[0].close_eligible);
+    let closed = store
+        .close_mission(&ChatManager::default(), "chat:master", &run.id, false)
+        .unwrap();
+    assert_eq!(closed.status, RunStatus::Closed);
+    assert!(closed.mission_delivery[0].removed);
+    assert!(!Path::new(root).exists());
+}
+
+#[test]
+fn cleanup_swept_task_uses_kept_ref_and_delivery_without_rebuild() {
+    let repo = Repo::new();
+    let (store, _run, task) = setup(&repo, WorkspaceMode::Worktree);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    report(&store, &first, WorkerOutcome::Completed);
+    let head = crate::git_ops::lifespan::text(&first.cwd, &["rev-parse", "HEAD"]).unwrap();
+    let root = first.cwd.trim_end_matches(['/', '\\']);
+    store
+        .lifespan_delivery(
+            root,
+            &DeliveryEvidence {
+                head_sha: head.clone(),
+                merged: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    crate::git_ops::lifespan::remove(&repo.root, root, false).unwrap();
+    store.lifespan_record_swept(root, 100).unwrap();
+    let attempts = store.snapshot(None).unwrap().attempts.len();
+    assert!(store
+        .cleanup_workspace(
+            &ChatManager::default(),
+            "chat:master",
+            &task.id,
+            false,
+            "stale-preview"
+        )
+        .unwrap_err()
+        .contains("workspace was swept"));
+    let cleaned = store
+        .cleanup_workspace(
+            &ChatManager::default(),
+            "chat:master",
+            &task.id,
+            false,
+            &head,
+        )
+        .unwrap();
+    assert_eq!(cleaned.workspace.unwrap().state, WorkspaceState::Cleaned);
+    assert!(!Path::new(root).exists());
+    assert_eq!(store.snapshot(None).unwrap().attempts.len(), attempts);
+}
+
+#[test]
+fn m10_swept_cleanup_reverifies_merge_against_the_current_base() {
+    let repo = Repo::new();
+    let old_base = repo.git(&["rev-parse", "main"]);
+    let (store, _run, task) = setup(&repo, WorkspaceMode::Worktree);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    let head = repo.commit(&first.cwd, "unique", "keep this commit");
+    repo.git(&["update-ref", "refs/heads/main", &head]);
+    report(&store, &first, WorkerOutcome::Completed);
+    store
+        .lifespan_delivery(
+            &first.cwd,
+            &DeliveryEvidence {
+                head_sha: head.clone(),
+                merged: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    crate::git_ops::lifespan::remove(&repo.root, &first.cwd, false).unwrap();
+    store.lifespan_record_swept(&first.cwd, 100).unwrap();
+    repo.git(&["update-ref", "refs/heads/main", &old_base]);
+    let error = store
+        .cleanup_workspace(
+            &ChatManager::default(),
+            "chat:master",
+            &task.id,
+            false,
+            &head,
+        )
+        .unwrap_err();
+    assert!(
+        error.contains("current base") && error.contains("record is kept"),
+        "{error}"
+    );
+    let retained = stored(&store, &task).workspace.unwrap();
+    assert_ne!(retained.state, WorkspaceState::Cleaned);
+    assert!(retained.swept_at.is_some());
+    assert!(!retained.delivery.as_ref().unwrap().merged);
+    assert_eq!(repo.git(&["rev-parse", &retained.plan.branch]), head);
+    repo.git(&["update-ref", "refs/heads/main", &head]);
+    let cleaned = store
+        .cleanup_workspace(
+            &ChatManager::default(),
+            "chat:master",
+            &task.id,
+            false,
+            &head,
+        )
+        .unwrap();
+    assert_eq!(cleaned.workspace.unwrap().state, WorkspaceState::Cleaned);
+}
+
+#[test]
+fn sweeping_does_not_bypass_merged_or_abandoned_task_refusals() {
+    for merged in [false, true] {
+        let repo = Repo::new();
+        let (store, _run, task) = setup(&repo, WorkspaceMode::Worktree);
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        report(&store, &first, WorkerOutcome::Failed);
+        crate::git_ops::lifespan::remove(&repo.root, &first.cwd, false).unwrap();
+        store.lifespan_record_swept(&first.cwd, 100).unwrap();
+        store
+            .mutate(|data| {
+                let ws = data
+                    .tasks
+                    .get_mut(&task.id)
+                    .unwrap()
+                    .workspace
+                    .as_mut()
+                    .unwrap();
+                if merged {
+                    ws.delivery = Some(DeliveryEvidence {
+                        merged: true,
+                        ..Default::default()
+                    });
+                } else {
+                    ws.abandoned = true;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let error = prepare(&store, &task, Access::Auto).unwrap_err();
+        assert!(
+            error.contains(if merged { "merged" } else { "closed" }),
+            "{error}"
+        );
+        assert!(!Path::new(&first.cwd).exists());
+    }
+}
+
+/// Feedback b17ade5a: an Auto run over a folder with no Git history plans
+/// the folder itself, rather than a worktree that fails after approval.
+#[test]
+fn auto_over_a_folder_without_git_plans_the_folder() {
+    let dir = crate::test_dir::TestDir::new("auto-plain").canonicalized();
+    let root = dir.to_string_lossy().into_owned();
+    let store = OrchestrationStore::default();
+    let run = store
+        .create_run_with_mode(
+            "chat:master".into(),
+            "Review".into(),
+            "project".into(),
+            root.clone(),
+            Some(2),
+            WorkspaceMode::Auto,
+        )
+        .unwrap();
+    let proposal = propose(&run, "task_review", None, None);
+    assert!(proposal.error.is_none(), "{:?}", proposal.error);
+    let plan = proposal.plan.unwrap();
+    assert_eq!(plan.mode, WorkspaceMode::Direct);
+    assert_eq!(plan.cwd, root);
+    // Where there is Git, Auto still isolates a writer.
+    let repo = Repo::new();
+    assert_eq!(
+        auto_mode_for(WorkspaceMode::Worktree, WorkspaceMode::Auto, &repo.root),
+        WorkspaceMode::Worktree
+    );
+    assert_eq!(
+        auto_mode_for(WorkspaceMode::Worktree, WorkspaceMode::Worktree, &root),
+        WorkspaceMode::Worktree
+    );
+}
+fn prepare(store: &OrchestrationStore, task: &Task, access: Access) -> Result<Attempt, String> {
+    let launch = WorkerLaunch {
+        task_id: task.id.clone(),
+        agent: ChatAgent::Codex,
+        access,
+        model: None,
+        effort: None,
+        new_worktree: None,
+        base_branch: String::new(),
+    };
+    prepare_launch(store, &launch, StartedBy::Coordinator)
+}
+fn prepare_launch(
+    store: &OrchestrationStore,
+    launch: &WorkerLaunch,
+    by: StartedBy<'_>,
+) -> Result<Attempt, String> {
+    let (run, task, reserved, previous) = store.reserve_attempt_for("chat:master", launch, by)?;
+    let workspace = store.prepare_task_workspace(
+        &ChatManager::default(),
+        &run,
+        &task,
+        &reserved,
+        previous.as_ref(),
+        &launch,
+    )?;
+    store.activate_attempt(
+        &reserved.id,
+        workspace.cwd,
+        workspace.branch,
+        workspace.is_worktree,
+    )
+}
+fn prepare_from(
+    store: &OrchestrationStore,
+    task: &Task,
+    access: Access,
+    base_branch: &str,
+) -> Result<Attempt, String> {
+    let launch = WorkerLaunch {
+        task_id: task.id.clone(),
+        agent: ChatAgent::Codex,
+        access,
+        model: None,
+        effort: None,
+        new_worktree: None,
+        base_branch: base_branch.into(),
+    };
+    let (run, task, reserved, previous) = store.reserve_attempt("chat:master", &launch)?;
+    // Settled the way start_worker settles it, so the task can launch again.
+    let workspace = store
+        .prepare_task_workspace(
+            &ChatManager::default(),
+            &run,
+            &task,
+            &reserved,
+            previous.as_ref(),
+            &launch,
+        )
+        .inspect_err(|error| {
+            store
+                .fail_preparation(
+                    &reserved.id,
+                    error.clone(),
+                    String::new(),
+                    String::new(),
+                    false,
+                )
+                .unwrap()
+        })?;
+    store.activate_attempt(
+        &reserved.id,
+        workspace.cwd,
+        workspace.branch,
+        workspace.is_worktree,
+    )
+}
+fn stored(store: &OrchestrationStore, task: &Task) -> Task {
+    store.owned_task("chat:master", &task.id).unwrap().1
+}
+fn proposed(store: &OrchestrationStore, task: &Task) -> WorkspacePlan {
+    stored(store, task)
+        .workspace_proposal
+        .and_then(|p| p.plan)
+        .expect("a planned workspace")
+}
+/// Every path under `dir` with its size and modification time, `.git`
+/// included, so a read that refreshed the index shows up too.
+fn fingerprint(dir: &Path) -> Vec<(String, u64, std::time::SystemTime)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let meta = fs::symlink_metadata(&path).unwrap();
+        out.push((
+            path.to_string_lossy().into_owned(),
+            meta.len(),
+            meta.modified().unwrap(),
+        ));
+        if meta.is_dir() {
+            for entry in fs::read_dir(&path).unwrap() {
+                stack.push(entry.unwrap().path());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn a_plan_names_the_new_branch_and_path_without_touching_git_or_disk() {
+    let repo = Repo::new();
+    // Something to refresh: an untracked file and a stale index stat.
+    fs::write(Path::new(&repo.root).join("untracked.txt"), "x").unwrap();
+    let before = fingerprint(&repo.dir);
+    let (store, _, task) = setup(&repo, WorkspaceMode::Auto);
+    assert_eq!(fingerprint(&repo.dir), before, "planning changed the disk");
+    let saved = stored(&store, &task);
+    assert!(saved.workspace.is_none(), "a plan is not a workspace");
+    let proposal = saved.workspace_proposal.unwrap();
+    let planned_at = proposal.proposed_at;
+    let plan = proposal.plan.unwrap();
+    let id = task.id.strip_prefix("task_").unwrap();
+    assert_eq!(plan.branch, format!("feature/octiq-{id}"));
+    assert_eq!(plan.base_branch, "main");
+    assert_eq!(plan.mode, WorkspaceMode::Worktree);
+    assert!(proposal.new_branch);
+    assert!(proposal.conflict.is_none());
+    assert_eq!(
+        Path::new(&plan.checkout_root),
+        repo.dir.join(".worktrees/repo").join(&plan.branch)
+    );
+    assert!(!Path::new(&plan.checkout_root).exists());
+    assert_eq!(repo.git(&["branch", "--list", &plan.branch]), "");
+    // The scheduler's backfill leaves a planned task alone.
+    store.propose_missing_workspaces().unwrap();
+    assert_eq!(fingerprint(&repo.dir), before);
+    let after = stored(&store, &task).workspace_proposal.unwrap();
+    assert_eq!(after.proposed_at, planned_at);
+}
+
+#[test]
+fn the_plan_is_saved_with_the_task_and_survives_a_restart() {
+    let repo = Repo::new();
+    let path = repo.dir.join("orchestrations.json");
+    let store = OrchestrationStore::load(path.clone());
+    let run = store
+        .create_run_with_mode(
+            "chat:master".into(),
+            "Plan".into(),
+            "project".into(),
+            repo.root.clone(),
+            None,
+            WorkspaceMode::Worktree,
+        )
+        .unwrap();
+    let task = super::super::tests::task(&store, &run, vec![]);
+    let plan = proposed(&store, &task);
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let written = &saved["tasks"][&task.id]["workspaceProposal"];
+    assert_eq!(written["plan"]["branch"], plan.branch);
+    assert_eq!(written["plan"]["cwd"], plan.cwd);
+    assert_eq!(written["newBranch"], true);
+    let reloaded = OrchestrationStore::load(path);
+    let again = proposed(&reloaded, &task);
+    assert_eq!((again.branch, again.cwd), (plan.branch, plan.cwd));
+}
+
+#[test]
+fn launch_creates_exactly_the_approved_branch_from_the_approved_base() {
+    let repo = Repo::new();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Auto);
+    let plan = proposed(&store, &task);
+    // The person's checkout moves on after approval; the task does not.
+    repo.git(&["switch", "-c", "elsewhere"]);
+    let attempt = prepare(&store, &task, Access::Auto).unwrap();
+    assert_eq!(attempt.branch, plan.branch);
+    assert_eq!(attempt.cwd, plan.cwd);
+    let workspace = stored(&store, &task).workspace.unwrap();
+    assert_eq!(workspace.plan.branch, plan.branch);
+    assert_eq!(workspace.plan.base_branch, "main");
+    assert_eq!(
+        repo.git(&["rev-parse", &plan.branch]),
+        repo.git(&["rev-parse", "main"])
+    );
+}
+
+#[test]
+fn a_launch_that_would_leave_the_approved_plan_is_refused_before_anything_is_made() {
+    let repo = Repo::new();
+    let (store, run, _) = setup(&repo, WorkspaceMode::Auto);
+    // A task whose worker was chosen as a writer: its plan is binding.
+    let task = store
+        .create_task(
+            "chat:master",
+            run.id.clone(),
+            "Write".into(),
+            "Change it".into(),
+            vec![],
+            None,
+            Some(automation::WorkerSettings {
+                agent: ChatAgent::Codex,
+                access: Access::Auto,
+                model: None,
+                effort: None,
+                recovery: None,
+            }),
+        )
+        .unwrap();
+    let plan = proposed(&store, &task);
+    assert!(
+        !stored(&store, &task)
+            .workspace_proposal
+            .unwrap()
+            .provisional
+    );
+    repo.git(&["branch", "other"]);
+    let err = prepare_from(&store, &task, Access::Auto, "other").unwrap_err();
+    assert!(err.contains("starts from main, not other"), "{err}");
+    let err = prepare_from(&store, &task, Access::Read, "").unwrap_err();
+    assert!(err.contains("uses a new worktree"), "{err}");
+    assert!(!Path::new(&plan.checkout_root).exists());
+    assert_eq!(repo.git(&["branch", "--list", &plan.branch]), "");
+    assert!(stored(&store, &task).workspace.is_none());
+}
+
+#[test]
+fn a_plan_made_before_any_worker_was_chosen_still_lets_a_reader_use_the_checkout() {
+    let repo = Repo::new();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Auto);
+    let proposal = stored(&store, &task).workspace_proposal.unwrap();
+    assert!(proposal.provisional);
+    let reader = prepare(&store, &task, Access::Read).unwrap();
+    assert_eq!(reader.cwd, repo.root);
+    assert!(!reader.is_worktree);
+    let plan = proposal.plan.unwrap();
+    assert!(!Path::new(&plan.checkout_root).exists());
+    assert_eq!(repo.git(&["branch", "--list", &plan.branch]), "");
+}
+
+#[test]
+fn a_collision_shows_in_the_plan_and_is_refused_at_launch_rather_than_reused() {
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Auto);
+    let plan = proposed(&store, &task);
+    // Someone else's branch appears under the planned name after approval.
+    repo.git(&["branch", &plan.branch]);
+    let err = prepare(&store, &task, Access::Auto).unwrap_err();
+    assert!(
+        err.contains(&format!("Branch {} already exists", plan.branch)),
+        "{err}"
+    );
+    assert!(!Path::new(&plan.checkout_root).exists());
+    // A plan made while the branch is there says so and does not say new.
+    let again = propose(&run, &task.id, None, None);
+    assert!(!again.new_branch);
+    assert!(again.conflict.unwrap().contains("already exists"));
+}
+
+/// Feedback 6f1aa0d3: even a host-marked checkout without an attempt
+/// remains a collision; its existence is not proof of a reserved launch.
+#[test]
+fn a_host_marked_orphan_is_refused_and_preserved_for_investigation() {
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Worktree);
+    let plan = proposed(&store, &task);
+    workflow::provision(&plan).unwrap(); // Reproduce the incident's disk state.
+    let err = prepare(&store, &task, Access::Auto).unwrap_err();
+    assert!(err.contains("already exist"), "{err}");
+    let attempts = store.snapshot(Some(&run.id)).unwrap().attempts;
+    assert_eq!(
+        attempts.len(),
+        1,
+        "reservation precedes the occupied-path check"
+    );
+    assert_eq!(attempts[0].number, 1);
+    assert_eq!(attempts[0].status, AttemptStatus::Preparing);
+    assert_eq!(stored(&store, &task).retries_used, 0);
+    assert!(stored(&store, &task).workspace.is_none());
+    workflow::verify(&plan).unwrap(); // Occupant was not changed or removed.
+}
+
+#[test]
+fn current_checkout_plans_its_own_branch_and_refuses_one_switched_since() {
+    let repo = Repo::new();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Direct);
+    let proposal = stored(&store, &task).workspace_proposal.unwrap();
+    let plan = proposal.plan.unwrap();
+    assert_eq!(
+        (plan.branch.as_str(), plan.cwd.as_str()),
+        ("main", repo.root.as_str())
+    );
+    assert!(!plan.managed);
+    assert!(!proposal.new_branch, "an existing branch is never new");
+    repo.git(&["switch", "-c", "moved"]);
+    let err = prepare_from(&store, &task, Access::Auto, "").unwrap_err();
+    assert!(
+        err.contains("works on main in the current checkout, which is now on moved"),
+        "{err}"
+    );
+    repo.git(&["switch", "main"]);
+    let attempt = prepare(&store, &task, Access::Auto).unwrap();
+    assert_eq!(
+        (attempt.branch.as_str(), attempt.cwd.as_str()),
+        ("main", repo.root.as_str())
+    );
+}
+
+#[test]
+fn a_retry_reuses_its_workspace_instead_of_replanning_it() {
+    let repo = Repo::new();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Worktree);
+    let plan = proposed(&store, &task);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    report(&store, &first, WorkerOutcome::Failed);
+    // The branch and path now exist — they are this task's own, so the
+    // retry is not a collision.
+    let retry = prepare(&store, &task, Access::Auto).unwrap();
+    assert_eq!(
+        (retry.branch.as_str(), retry.cwd.as_str()),
+        (plan.branch.as_str(), plan.cwd.as_str())
+    );
+    assert_ne!(retry.id, first.id);
+}
+
+#[test]
+fn tasks_from_before_plans_get_one_and_started_tasks_do_not() {
+    let repo = Repo::new();
+    let (store, run, legacy) = setup(&repo, WorkspaceMode::Auto);
+    let started = super::super::tests::task(&store, &run, vec![]);
+    prepare(&store, &started, Access::Auto).unwrap();
+    store
+        .mutate(|data| {
+            for task in data.tasks.values_mut() {
+                task.workspace_proposal = None;
+            }
+            Ok(())
+        })
+        .unwrap();
+    store.propose_missing_workspaces().unwrap();
+    let id = legacy.id.strip_prefix("task_").unwrap();
+    assert_eq!(
+        proposed(&store, &legacy).branch,
+        format!("feature/octiq-{id}")
+    );
+    assert!(stored(&store, &started).workspace_proposal.is_none());
+}
+
+fn report(store: &OrchestrationStore, attempt: &Attempt, outcome: WorkerOutcome) {
+    store
+        .report_worker(
+            &attempt.worker_chat_key,
+            WorkerReport {
+                attempt_id: attempt.id.clone(),
+                outcome,
+                summary: "Verified result".into(),
+                files_modified: vec![],
+                verdict: None,
+            },
+        )
+        .unwrap();
+}
+#[test]
+fn a_destination_removed_after_approval_fails_the_attempt_instead_of_redirecting() {
+    let (coordinator, api) = (Repo::new(), Repo::new());
+    let (store, run, _) = setup(&coordinator, WorkspaceMode::Auto);
+    let task = store
+        .create_task_for(
+            "chat:master",
+            run.id.clone(),
+            "API".into(),
+            "Change the API".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Some(TaskDestination {
+                project_id: "shop".into(),
+                project_name: "Shop".into(),
+                repository: api.root.clone(),
+            }),
+        )
+        .unwrap();
+    // The run's own project is still registered; the destination is not.
+    let projects: Vec<crate::workspaces::Workspace> = serde_json::from_value(json!([
+        { "id": "project", "name": "Coordinator", "primary_path": coordinator.root },
+    ]))
+    .unwrap();
+    let err = store
+        .start_worker(
+            Arc::new(ChatManager::default()),
+            &crate::workspaces::WorkspaceState::with_projects(projects),
+            "chat:master",
+            WorkerLaunch {
+                task_id: task.id.clone(),
+                agent: ChatAgent::Codex,
+                access: Access::Auto,
+                model: None,
+                effort: None,
+                new_worktree: None,
+                base_branch: String::new(),
+            },
+        )
+        .unwrap_err();
+    assert!(err.contains("Shop is no longer registered"), "{err}");
+    let snapshot = store.snapshot(Some(&run.id)).unwrap();
+    let attempt = snapshot
+        .attempts
+        .iter()
+        .find(|a| a.task_id == task.id)
+        .unwrap();
+    assert_eq!(attempt.status, AttemptStatus::Failed);
+    // Nothing was prepared anywhere, least of all in the coordinator's repo.
+    assert!(attempt.cwd.is_empty());
+    let task = snapshot.tasks.iter().find(|t| t.id == task.id).unwrap();
+    assert!(task.workspace.is_none());
+}
+#[test]
+fn capacity_recovery_reuses_the_lease_branch_and_uncommitted_work() {
+    let repo = Repo::new();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Auto);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    fs::write(
+        Path::new(&first.cwd).join("completed.txt"),
+        "completed work",
+    )
+    .unwrap();
+    store
+        .observe_worker_event(
+            &first.worker_chat_key,
+            &json!({"type":"turn.failed", "error":{"message":"Selected model is at capacity"}}),
+        )
+        .unwrap();
+    store
+        .mutate(|data| {
+            data.attempts
+                .get_mut(&first.id)
+                .unwrap()
+                .execution
+                .next_retry_at = Some(now_ms() - 1);
+            Ok(())
+        })
+        .unwrap();
+    let launch = WorkerLaunch {
+        task_id: task.id,
+        agent: first.agent,
+        access: first.access,
+        model: first.model.clone(),
+        effort: first.effort.clone(),
+        new_worktree: Some(false),
+        base_branch: String::new(),
+    };
+    let (run, task, reserved, previous) = store
+        .reserve_attempt_for("chat:master", &launch, StartedBy::Recovery(&first.id))
+        .unwrap();
+    let workspace = store
+        .prepare_task_workspace(
+            &ChatManager::default(),
+            &run,
+            &task,
+            &reserved,
+            previous.as_ref(),
+            &launch,
+        )
+        .unwrap();
+    assert_ne!(reserved.id, first.id);
+    assert_eq!(reserved.execution.retry_count, 1);
+    assert_eq!(workspace.cwd, first.cwd);
+    assert_eq!(workspace.branch, first.branch);
+    assert_eq!(
+        fs::read_to_string(Path::new(&workspace.cwd).join("completed.txt")).unwrap(),
+        "completed work"
+    );
+    let task = store.snapshot(Some(&run.id)).unwrap().tasks.remove(0);
+    assert_eq!(
+        task.workspace.unwrap().lease_attempt_id.as_deref(),
+        Some(reserved.id.as_str())
+    );
+}
+
+#[test]
+fn a_routed_task_works_in_its_destination_repository_and_retries_there() {
+    let (coordinator, api) = (Repo::new(), Repo::new());
+    let (store, run, _) = setup(&coordinator, WorkspaceMode::Auto);
+    let task = store
+        .create_task_for(
+            "chat:master",
+            run.id.clone(),
+            "API".into(),
+            "Change the API".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Some(TaskDestination {
+                project_id: "shop".into(),
+                project_name: "Shop".into(),
+                repository: api.root.clone(),
+            }),
+        )
+        .unwrap();
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    assert!(first.is_worktree);
+    let plan = store
+        .snapshot(Some(&run.id))
+        .unwrap()
+        .tasks
+        .into_iter()
+        .find(|t| t.id == task.id)
+        .and_then(|t| t.workspace)
+        .unwrap()
+        .plan;
+    assert_eq!(plan.repository_root, api.root);
+    assert_ne!(plan.repository_root, coordinator.root);
+    assert!(api
+        .git(&["branch", "--list", &first.branch])
+        .contains(&first.branch));
+    assert!(!coordinator
+        .git(&["branch", "--list", &first.branch])
+        .contains(&first.branch));
+    std::fs::write(Path::new(&first.cwd).join("pending.txt"), "kept").unwrap();
+    report(&store, &first, WorkerOutcome::Failed);
+    let retry = prepare(&store, &task, Access::Auto).unwrap();
+    assert_ne!(retry.id, first.id);
+    assert_eq!(
+        (retry.cwd.as_str(), retry.branch.as_str()),
+        (first.cwd.as_str(), first.branch.as_str())
+    );
+    assert_eq!(
+        std::fs::read_to_string(Path::new(&retry.cwd).join("pending.txt")).unwrap(),
+        "kept"
+    );
+    let task = store
+        .snapshot(Some(&run.id))
+        .unwrap()
+        .tasks
+        .into_iter()
+        .find(|t| t.id == task.id)
+        .unwrap();
+    assert_eq!(task.destination.unwrap().repository, api.root);
+}
+
+#[test]
+fn retry_and_review_reuse_workspace_and_preserve_uncommitted_changes() {
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Auto);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    assert!(first.is_worktree);
+    std::fs::write(Path::new(&first.cwd).join("pending.txt"), "preserved").unwrap();
+    report(&store, &first, WorkerOutcome::Blocked);
+    let retry = prepare(&store, &task, Access::Auto).unwrap();
+    assert_ne!(retry.id, first.id);
+    assert_eq!(retry.cwd, first.cwd);
+    assert_eq!(retry.branch, first.branch);
+    assert_eq!(
+        std::fs::read_to_string(Path::new(&retry.cwd).join("pending.txt")).unwrap(),
+        "preserved"
+    );
+    report(&store, &retry, WorkerOutcome::Completed);
+    assert_eq!(
+        store.snapshot(Some(&run.id)).unwrap().runs[0].status,
+        RunStatus::Completed
+    );
+    store
+        .reopen_task("chat:master", &task.id, "Address review".into())
+        .unwrap();
+    let next = prepare(&store, &task, Access::Auto).unwrap();
+    assert_eq!(next.cwd, first.cwd);
+    assert_ne!(next.id, retry.id);
+    assert!(store
+        .report_worker(
+            &retry.worker_chat_key,
+            WorkerReport {
+                attempt_id: retry.id,
+                outcome: WorkerOutcome::Completed,
+                summary: "late".into(),
+                files_modified: vec![],
+                verdict: None,
+            }
+        )
+        .unwrap_err()
+        .contains("stale"));
+}
+#[test]
+fn a_reopened_task_needs_accepting_again_and_never_pays_twice() {
+    use super::super::levels::AcceptActor;
+    let repo = Repo::new();
+    let (store, _run, task) = setup(&repo, WorkspaceMode::Auto);
+    store
+        .mutate(|data| {
+            data.tasks.get_mut(&task.id).unwrap().assignee = Some(TaskAssignee {
+                id: "agent_ada".into(),
+                name: "Ada".into(),
+            });
+            Ok(())
+        })
+        .unwrap();
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    report(&store, &first, WorkerOutcome::Completed);
+    let paid = store
+        .accept_task(AcceptActor::Person, &task.id, &first.id)
+        .unwrap();
+    assert!(paid.awarded);
+
+    let reopened = store
+        .reopen_task("chat:master", &task.id, "Address review".into())
+        .unwrap();
+    // The record of the earlier acceptance stays; it names the old result.
+    assert_eq!(reopened.acceptance.unwrap().attempt_id, first.id);
+    let fix = prepare(&store, &task, Access::Auto).unwrap();
+    report(&store, &fix, WorkerOutcome::Completed);
+    let profile = store.level_profile("agent_ada", 0).unwrap();
+    assert_eq!(profile.awaiting.len(), 1);
+    assert!(profile.awaiting[0].unscored, "it was paid already");
+    let again = store
+        .accept_task(AcceptActor::Person, &task.id, &fix.id)
+        .unwrap();
+    assert!(!again.awarded);
+    assert_eq!(again.task.acceptance.unwrap().attempt_id, fix.id);
+    let profile = store.level_profile("agent_ada", 0).unwrap();
+    assert_eq!((profile.progress.xp, profile.accepted_tasks), (75, 1));
+    assert!(profile.awaiting.is_empty());
+}
+
+/// A finished peer request in the state `reopen_task` takes: completed
+/// by its attempt, in a retained worktree. Coordinated by `chat:master`.
+pub(crate) fn finished_peer_request(repo: &Repo) -> (OrchestrationStore, Run, Task, Attempt) {
+    let (store, run, task) = setup(repo, WorkspaceMode::Auto);
+    let attempt = prepare(&store, &task, Access::Auto).unwrap();
+    report(&store, &attempt, WorkerOutcome::Completed);
+    let task = store
+        .mutate(|data| {
+            let task = data.tasks.get_mut(&task.id).unwrap();
+            task.peer_request = Some(super::super::peer_request::PeerRequest {
+                requested_by: TaskAssignee {
+                    id: "ada".into(),
+                    name: "ADA".into(),
+                },
+                requester_chat_key: "chat:master".into(),
+                requester_attempt_id: None,
+                output: "One line per volume.".into(),
+                max_minutes: 30,
+                requested_at: task.created_at,
+            });
+            Ok(task.clone())
+        })
+        .unwrap();
+    (store, run, task, attempt)
+}
+
+/// The approval a peer request rests on is for its own words. Its
+/// coordinator, which for a lead chat's request is the requester, cannot
+/// reopen the finished task with new ones: nothing changes and no attempt
+/// starts. The same task without the request reopens as before.
+#[test]
+fn a_finished_peer_request_is_not_reopened_with_new_instructions() {
+    let repo = Repo::new();
+    let (store, run, task, attempt) = finished_peer_request(&repo);
+    assert_eq!(task.status, TaskStatus::Completed);
+    let before = store.snapshot(Some(&run.id)).unwrap();
+
+    let refused = store
+        .reopen_task("chat:master", &task.id, "Now delete the volume".into())
+        .unwrap_err();
+    assert_eq!(refused, super::super::peer_request::NOT_REOPENED);
+    assert!(refused.contains("a new request, which the person approves"));
+
+    let after = store.snapshot(Some(&run.id)).unwrap();
+    let kept = after.tasks.iter().find(|t| t.id == task.id).unwrap();
+    assert_eq!(kept.spec, task.spec);
+    assert_eq!(kept.status, TaskStatus::Completed);
+    assert_eq!(kept.result, task.result);
+    assert!(kept.result.is_some());
+    assert_eq!(kept.updated_at, task.updated_at);
+    assert_eq!(kept.active_attempt_id, task.active_attempt_id);
+    // Nothing was made ready, so nothing is there to dispatch.
+    assert_eq!(after.runs[0].status, RunStatus::Completed);
+    assert_eq!(after.attempts.len(), before.attempts.len());
+    assert_eq!(after.attempts[0].id, attempt.id);
+    assert!(after
+        .tasks
+        .iter()
+        .all(|t| !matches!(t.status, TaskStatus::Ready | TaskStatus::Running)));
+    // Someone who is not the coordinator learns nothing about the task.
+    let stranger = store
+        .reopen_task("chat:other", &task.id, "Now delete the volume".into())
+        .unwrap_err();
+    assert_eq!(stranger, "Only this run's coordinator may do that.");
+
+    // What refused it is the request alone: an ordinary task in the very
+    // same state is reopened with its follow-up.
+    store
+        .mutate(|data| {
+            data.tasks.get_mut(&task.id).unwrap().peer_request = None;
+            Ok(())
+        })
+        .unwrap();
+    let reopened = store
+        .reopen_task("chat:master", &task.id, "Address review".into())
+        .unwrap();
+    assert_eq!(reopened.spec, "Address review");
+    assert_eq!(reopened.status, TaskStatus::Ready);
+    assert!(reopened.result.is_none());
+    let next = prepare(&store, &task, Access::Auto).unwrap();
+    assert_ne!(next.id, attempt.id);
+}
+
+/// Review R2: a stale page must not have a worktree rebuilt, or its chat
+/// moved, under a task that holds the checkout.
+#[test]
+fn a_removed_folder_a_task_holds_is_not_put_back_for_a_chat() {
+    let repo = Repo::new();
+    let (store, _run, task) = setup(&repo, WorkspaceMode::Worktree);
+    let attempt = prepare(&store, &task, Access::Auto).unwrap();
+    let held = attempt.cwd.clone();
+    // A worktree of the person's own beside it, for the control below.
+    let own = repo.dir.join("own").to_string_lossy().into_owned();
+    repo.git(&["worktree", "add", "-b", "person/own", &own]);
+    std::fs::remove_dir_all(&held).unwrap();
+    std::fs::remove_dir_all(&own).unwrap();
+    let listed = repo.git(&["worktree", "list", "--porcelain"]);
+
+    // The check itself: the leased checkout and anything inside it.
+    let inside = Path::new(&held).join("packages").join("app");
+    for path in [held.clone(), inside.to_string_lossy().into_owned()] {
+        let refused = store
+            .require_no_owner_of_removed("chat:stale", &path)
+            .unwrap_err();
+        assert!(refused.contains("holds that checkout"), "{refused}");
+        assert!(refused.contains(&task.title), "{refused}");
+    }
+    assert!(store
+        .require_no_owner_of_removed("chat:stale", &own)
+        .is_ok());
+    // A worker's chat is never recovered this way, wherever it points.
+    let refused = store
+        .require_no_owner_of_removed(&attempt.worker_chat_key, &own)
+        .unwrap_err();
+    assert!(refused.contains("belongs to a task"), "{refused}");
+
+    // The whole recovery, as `chat_start` asks for it.
+    let store = Arc::new(store);
+    let mut chats = ChatManager::default();
+    chats.orchestrations = store.clone();
+    let known = || crate::chat_recover::Remembered {
+        project_paths: vec![repo.root.clone()],
+        ..Default::default()
+    };
+    let refused = crate::chat_recover::recover_from(&chats, "chat:stale", &held, known)
+        .err()
+        .expect("refused");
+    assert!(refused.contains("holds that checkout"), "{refused}");
+    assert!(!Path::new(&held).exists(), "nothing was rebuilt");
+    assert_eq!(
+        repo.git(&["worktree", "list", "--porcelain"]),
+        listed,
+        "git was not touched"
+    );
+    assert!(!chats.has_process("chat:stale"));
+    // The lifecycle lock and the claim were let go with the refusal, and
+    // the person's own removed worktree is still put back.
+    let recovered = crate::chat_recover::recover_from(&chats, "chat:stale", &own, known)
+        .expect("recovered")
+        .expect("its folder was gone");
+    assert_eq!(recovered.recovery.cwd, own);
+    assert!(Path::new(&own).join("source.txt").is_file());
+    // While that recovery is held, no worker is handed a checkout.
+    assert!(store.workspace_ops.try_lock().is_err());
+    drop(recovered);
+    assert!(store.workspace_ops.try_lock().is_ok());
+
+    // A workspace being cleaned up is refused as well.
+    store
+        .mutate(|data| {
+            let ws = data
+                .tasks
+                .get_mut(&task.id)
+                .and_then(|t| t.workspace.as_mut())
+                .unwrap();
+            ws.lease_attempt_id = None;
+            ws.state = WorkspaceState::Cleaning;
+            Ok(())
+        })
+        .unwrap();
+    let refused = store
+        .require_no_owner_of_removed("chat:stale", &held)
+        .unwrap_err();
+    assert!(refused.contains("being cleaned up"), "{refused}");
+    // Once it is cleaned, the folder is nobody's.
+    store
+        .mutate(|data| {
+            data.tasks
+                .get_mut(&task.id)
+                .and_then(|t| t.workspace.as_mut())
+                .unwrap()
+                .state = WorkspaceState::Cleaned;
+            Ok(())
+        })
+        .unwrap();
+    assert!(store
+        .require_no_owner_of_removed("chat:stale", &held)
+        .is_ok());
+}
+
+#[test]
+fn direct_limits_concurrency_and_cross_run_lease_blocks_a_second_writer() {
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Direct);
+    assert_eq!(run.max_concurrent, 1);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    assert_eq!(first.cwd, repo.root);
+    assert_eq!(first.branch, "main");
+    let second_run = store
+        .create_run_with_mode(
+            "chat:master".into(),
+            "Another run".into(),
+            "project".into(),
+            repo.root.clone(),
+            Some(4),
+            WorkspaceMode::Direct,
+        )
+        .unwrap();
+    let second_task = super::super::tests::task(&store, &second_run, vec![]);
+    assert!(prepare(&store, &second_task, Access::Auto)
+        .unwrap_err()
+        .contains("leased"));
+    assert!(store
+        .require_workspace_access("chat:other", &repo.root, true)
+        .unwrap_err()
+        .contains("active writer"));
+    assert!(store
+        .require_workspace_access("chat:other", &repo.root, false)
+        .is_ok());
+    // A chat the person drives is let through and told who writes there.
+    let beside = store
+        .chat_workspace_access("chat:other", &repo.root, true)
+        .unwrap();
+    assert_eq!(beside.len(), 1);
+    assert_eq!(beside[0].task_id, task.id);
+    assert!(beside[0].notice().contains(&task.title));
+    assert!(store
+        .chat_workspace_access("chat:other", &repo.root, false)
+        .unwrap()
+        .is_empty());
+    // Another worker's chat is not: one writer at a time.
+    let worker = store
+        .inner
+        .lock()
+        .unwrap()
+        .data
+        .attempts
+        .values()
+        .next()
+        .unwrap()
+        .worker_chat_key
+        .clone();
+    let other_worker = format!("{worker}-other");
+    store
+        .mutate(|data| {
+            let mut copy = data.attempts.values().next().unwrap().clone();
+            copy.id = "attempt_other".into();
+            copy.worker_chat_key = other_worker.clone();
+            data.attempts.insert(copy.id.clone(), copy);
+            Ok(())
+        })
+        .unwrap();
+    assert!(store
+        .chat_workspace_access(&other_worker, &repo.root, true)
+        .unwrap_err()
+        .contains("active writer"));
+    assert!(store.guard_git_operation(&repo.root).is_err());
+    assert!(store
+        .cleanup_workspace(
+            &ChatManager::default(),
+            "chat:master",
+            &task.id,
+            true,
+            "head"
+        )
+        .unwrap_err()
+        .contains("Current checkout"));
+}
+/// A project registered as a plain folder that holds a repository and
+/// its `.worktrees` (the Starfall layout): a running writer in one of
+/// those worktrees was given a folder nobody else was, so a chat in the
+/// folder above it may write — the rule dispatch already keeps
+/// (`shares_checkout`). Only a chat working inside the worktree is
+/// refused, and a read-only chat there still is not.
+#[test]
+fn a_folder_holding_a_writers_worktree_admits_writers_above_it() {
+    let repo = Repo::new();
+    let (store, _run, task) = setup(&repo, WorkspaceMode::Worktree);
+    let writer = prepare(&store, &task, Access::Auto).unwrap();
+    let folder = repo.dir.to_string_lossy().into_owned();
+    assert!(
+        Path::new(&writer.cwd).starts_with(&folder),
+        "{} is not inside {folder}",
+        writer.cwd
+    );
+    assert!(store
+        .require_workspace_access("chat:talk", &folder, true)
+        .is_ok());
+    assert!(store
+        .require_workspace_access("chat:talk", &folder, false)
+        .is_ok());
+    let inside = format!("{}/src", writer.cwd.trim_end_matches('/'));
+    std::fs::create_dir_all(&inside).unwrap();
+    assert!(store
+        .require_workspace_access("chat:talk", &writer.cwd, true)
+        .unwrap_err()
+        .contains("active writer"));
+    assert!(store
+        .require_workspace_access("chat:talk", &inside, true)
+        .unwrap_err()
+        .contains("active writer"));
+    assert!(store
+        .require_workspace_access("chat:talk", &inside, false)
+        .is_ok());
+    // The repository beside the worktree is not that writer's checkout.
+    assert!(store
+        .require_workspace_access("chat:talk", &repo.root, true)
+        .is_ok());
+}
+/// Feedback 03a21d80: run A writes directly in the plain folder that holds
+/// a repository, and run B's worktree task in that repository is NOT
+/// leased to A. The worktree is B's own folder. Either order dispatches,
+/// and a second direct writer in A's folder is still refused.
+#[test]
+fn a_direct_lease_on_the_folder_above_does_not_block_a_worktree_task() {
+    let repo = Repo::new();
+    let folder = repo.dir.to_string_lossy().into_owned();
+    let store = OrchestrationStore::default();
+    let run_in = |root: &str, mode| {
+        store
+            .create_run_with_mode(
+                "chat:master".into(),
+                "Work".into(),
+                "project".into(),
+                root.into(),
+                Some(4),
+                mode,
+            )
+            .unwrap()
+    };
+    let direct = run_in(&folder, WorkspaceMode::Direct);
+    let isolated = run_in(&repo.root, WorkspaceMode::Auto);
+    let first = super::super::tests::task(&store, &direct, vec![]);
+    let writer = prepare(&store, &first, Access::Auto).unwrap();
+    assert_eq!(writer.cwd, folder);
+    let worktree = prepare(
+        &store,
+        &super::super::tests::task(&store, &isolated, vec![]),
+        Access::Auto,
+    )
+    .unwrap();
+    assert!(worktree.is_worktree);
+    assert!(Path::new(&worktree.cwd).starts_with(&folder));
+    // The other order: a worktree writer is running, a direct writer
+    // starts in the folder above it.
+    let second_isolated = prepare(
+        &store,
+        &super::super::tests::task(&store, &isolated, vec![]),
+        Access::Auto,
+    )
+    .unwrap();
+    assert!(second_isolated.is_worktree);
+    let late_direct = run_in(&folder, WorkspaceMode::Direct);
+    report(&store, &writer, WorkerOutcome::Completed);
+    assert!(prepare(
+        &store,
+        &super::super::tests::task(&store, &late_direct, vec![]),
+        Access::Auto
+    )
+    .is_ok());
+    // Two writers in the same plain folder still clash.
+    assert!(prepare(
+        &store,
+        &super::super::tests::task(&store, &direct, vec![]),
+        Access::Auto
+    )
+    .unwrap_err()
+    .contains("already leased"));
+}
+/// Feedback 083d61d9: the session table uses both ownership identities,
+/// and does not mistake a settled idle process for an active writer.
+#[test]
+fn live_session_admission_is_symmetric_and_releases_settled_idle_workers() {
+    let repo = Repo::new();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Worktree);
+    let worker = prepare(&store, &task, Access::Auto).unwrap();
+    let mut chats = ChatManager::default();
+    chats.orchestrations = std::sync::Arc::new(store);
+    chats.test_launch(&worker.worker_chat_key);
+    chats.test_remember_start(&worker.worker_chat_key, &worker.cwd);
+    let parent = repo.dir.to_string_lossy();
+    assert!(chats
+        .require_workspace_available(&parent, "chat:new", "chat:master", true, false)
+        .is_ok());
+    assert!(chats
+        .require_workspace_available(&worker.cwd, "chat:new", "chat:master", true, true)
+        .unwrap_err()
+        .contains("working inside"));
+    report(&chats.orchestrations, &worker, WorkerOutcome::Completed);
+    assert!(chats
+        .require_workspace_available(&worker.cwd, "chat:new", "chat:master", true, true)
+        .is_ok());
+    // A settled ledger is no licence to overlap tools still running.
+    chats.test_busy(&worker.worker_chat_key, true);
+    assert!(chats
+        .require_workspace_available(&worker.cwd, "chat:new", "chat:master", true, true)
+        .is_err());
+    chats.test_end(&worker.worker_chat_key);
+}
+
+/// Feedback 6f1aa0d3: queued proposals are read-only; admission failures
+/// neither provision a checkout nor spend the first attempt's retry.
+#[test]
+fn queued_workspace_reads_do_not_provision_or_spend_an_attempt_before_admission() {
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Worktree);
+    let plan = proposed(&store, &task);
+    store
+        .mutate(|data| {
+            data.runs.get_mut(&run.id).unwrap().plan_approval =
+                Some(PlanApproval::pending(now_ms()));
+            Ok(())
+        })
+        .unwrap();
+    for _ in 0..3 {
+        store.propose_missing_workspaces().unwrap();
+        assert!(prepare(&store, &task, Access::Auto).is_err());
+        assert!(!Path::new(&plan.checkout_root).exists());
+        assert!(store.snapshot(Some(&run.id)).unwrap().attempts.is_empty());
+        assert_eq!(stored(&store, &task).retries_used, 0);
+    }
+    store
+        .mutate(|data| {
+            data.runs.get_mut(&run.id).unwrap().plan_approval = None;
+            Ok(())
+        })
+        .unwrap();
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    assert_eq!(first.number, 1);
+    assert_eq!(stored(&store, &task).retries_used, 0);
+    assert_eq!(first.cwd, plan.cwd);
+}
+
+#[test]
+fn independent_worktrees_can_write_in_parallel_and_auto_readers_reuse_root() {
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Auto);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    let second = prepare(
+        &store,
+        &super::super::tests::task(&store, &run, vec![]),
+        Access::Auto,
+    )
+    .unwrap();
+    let reader = prepare(
+        &store,
+        &super::super::tests::task(&store, &run, vec![]),
+        Access::Read,
+    )
+    .unwrap();
+    assert_ne!(first.cwd, second.cwd);
+    assert_eq!(reader.cwd, repo.root);
+    assert!(!reader.is_worktree);
+}
+#[test]
+fn cleanup_requires_settlement_preservation_and_authority() {
+    let repo = Repo::new();
+    let (store, _run, task) = setup(&repo, WorkspaceMode::Worktree);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    let head = repo.git(&["rev-parse", "HEAD"]);
+    let manager = ChatManager::default();
+    assert!(store
+        .cleanup_workspace(&manager, "chat:master", &task.id, true, &head)
+        .unwrap_err()
+        .contains("settle"));
+    report(&store, &first, WorkerOutcome::Completed);
+    assert!(store
+        .cleanup_workspace(&manager, &first.worker_chat_key, &task.id, true, &head)
+        .is_err());
+    assert!(store
+        .cleanup_workspace(&manager, "chat:master", &task.id, false, &head)
+        .unwrap_err()
+        .contains("Merge"));
+    let unpublished = repo.commit(&first.cwd, "work.txt", "unpublished");
+    assert!(store
+        .cleanup_workspace(&manager, "chat:master", &task.id, true, &unpublished)
+        .unwrap_err()
+        .contains("Push unpublished"));
+    assert!(Path::new(&first.cwd).is_dir());
+}
+#[test]
+fn explicit_abandon_removes_only_a_clean_managed_tree_and_keeps_branch() {
+    let repo = Repo::new();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Worktree);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    report(&store, &first, WorkerOutcome::Completed);
+    let head = repo.git(&["rev-parse", "HEAD"]);
+    let cleaned = store
+        .cleanup_workspace(
+            &ChatManager::default(),
+            "chat:master",
+            &task.id,
+            true,
+            &head,
+        )
+        .unwrap();
+    assert_eq!(cleaned.workspace.unwrap().state, WorkspaceState::Cleaned);
+    assert_eq!(cleaned.status, TaskStatus::Cancelled);
+    assert!(!Path::new(&first.cwd).exists());
+    assert_eq!(repo.git(&["rev-parse", &first.branch]), head);
+    assert!(store
+        .reopen_task("chat:master", &task.id, "resume".into())
+        .is_err());
+}
+#[test]
+fn restart_recovers_lease_but_retains_exact_workspace_and_dirty_files() {
+    let repo = Repo::new();
+    let store_path = repo.dir.join("orchestrations.json");
+    let store = OrchestrationStore::load(store_path.clone());
+    let run = store
+        .create_run_with_mode(
+            "chat:master".into(),
+            "Restart".into(),
+            "project".into(),
+            repo.root.clone(),
+            None,
+            WorkspaceMode::Auto,
+        )
+        .unwrap();
+    let task = super::super::tests::task(&store, &run, vec![]);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    std::fs::write(Path::new(&first.cwd).join("keep.txt"), "keep").unwrap();
+    let recovered = OrchestrationStore::load(store_path);
+    let snapshot = recovered.snapshot(Some(&run.id)).unwrap();
+    assert_eq!(snapshot.attempts[0].status, AttemptStatus::Failed);
+    assert!(snapshot.tasks[0]
+        .workspace
+        .as_ref()
+        .unwrap()
+        .lease_attempt_id
+        .is_none());
+    let retry = prepare(&recovered, &task, Access::Auto).unwrap();
+    assert_eq!(retry.cwd, first.cwd);
+    assert!(Path::new(&retry.cwd).join("keep.txt").exists());
+}
+#[cfg(unix)]
+#[test]
+fn validation_removal_rechecks_after_held_raw_step_outside_lifecycle() {
+    use std::{
+        os::unix::fs::PermissionsExt,
+        time::{Duration, Instant},
+    };
+    for change_ignored in [false, true] {
+        let repo = Repo::new();
+        repo.git(&["config", "core.autocrlf", "false"]);
+        repo.commit(&repo.root, ".gitattributes", "source.txt text\n");
+        repo.commit(&repo.root, ".gitignore", "pnpm-workspace.yaml\n");
+        repo.commit(&repo.root, "package.json", "{}");
+        let (store, _, task) = setup(&repo, WorkspaceMode::Worktree);
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        let base = repo.git(&["rev-parse", "HEAD"]);
+        let path = store
+            .create_validation(&first.worker_chat_key, &task.id, &base, vec![])
+            .unwrap();
+        fs::write(
+            Path::new(&path).join("pnpm-workspace.yaml"),
+            "allowBuilds:\n  esbuild: set this to true or false\n",
+        )
+        .unwrap();
+        let hold = repo.dir.join("held");
+        let release = repo.dir.join("release");
+        let wrapper = repo.dir.join("git-wrapper");
+        fs::write(
+            &wrapper,
+            format!(
+                r#"#!/bin/sh
+case " $* " in *" cat-file --batch "*)
+  /usr/bin/git "$@"; result=$?
+  touch '{hold}'
+  n=0; while test ! -f '{release}'; do sleep 0.01; n=$((n+1)); test "$n" -lt 6000 || exit 98; done
+  exit "$result";;
+esac
+exec /usr/bin/git "$@"
+"#,
+                hold = hold.display(),
+                release = release.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+        crate::git_ops::lifespan::TEST_GIT.with(|slot| *slot.borrow_mut() = Some(wrapper));
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::git_ops::lifespan::TEST_GIT.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let _reset = Reset;
+        let chats = ChatManager::default();
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                let start = Instant::now();
+                while !hold.exists() {
+                    assert!(start.elapsed() < Duration::from_secs(45));
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let unlocked = store.workspace_ops.try_lock().is_ok();
+                let admission = chats.test_lifespan_admission(&path);
+                let queued = chats.test_lifespan_queue(&path);
+                if change_ignored {
+                    fs::write(
+                        Path::new(&path).join("pnpm-workspace.yaml"),
+                        "packages:\n  - only-original/*\n",
+                    )
+                    .unwrap();
+                } else {
+                    fs::write(
+                        Path::new(&path).join("source.txt"),
+                        "changed during comparison\n",
+                    )
+                    .unwrap();
+                }
+                fs::write(&release, "go").unwrap();
+                assert!(unlocked, "raw comparison held workspace lifecycle");
+                assert!(admission.unwrap_err().contains("lifespan cleanup"));
+                assert!(queued.unwrap_err().contains("lifespan cleanup"));
+            });
+            let error = store
+                .remove_validation(&chats, "chat:master", &task.id, &path)
+                .unwrap_err();
+            writer.join().unwrap();
+            assert!(
+                error.contains(if change_ignored {
+                    "at-stake ignored files"
+                } else {
+                    "ctime changed"
+                }),
+                "{error}"
+            );
+        });
+        assert!(
+            chats.test_lifespan_admission(&path).is_ok(),
+            "error path leaked a path mark"
+        );
+        assert!(Path::new(&path).is_dir());
+        assert!(stored(&store, &task)
+            .workspace
+            .unwrap()
+            .validation_paths
+            .contains(&path));
+    }
+}
+
+#[test]
+fn m7_validation_cleanup_refuses_a_queued_turn_without_a_live_process() {
+    let repo = Repo::new();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Worktree);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    let base = repo.git(&["rev-parse", "HEAD"]);
+    let path = store
+        .create_validation(&first.worker_chat_key, &task.id, &base, vec![])
+        .unwrap();
+    let chats = ChatManager::default();
+    chats.test_lifespan_queue(&path).unwrap();
+    let error = store
+        .remove_validation(&chats, "chat:master", &task.id, &path)
+        .unwrap_err();
+    assert!(error.contains("queued turn"), "{error}");
+    assert!(Path::new(&path).exists());
+    assert!(chats.has_queued_turns("chat:validation-queued"));
+    assert!(
+        chats.test_lifespan_admission(&path).is_ok(),
+        "refusal leaked the mark"
+    );
+    // The same owned checkout remains clean/removable without a queued owner.
+    store
+        .remove_validation(&ChatManager::default(), "chat:master", &task.id, &path)
+        .unwrap();
+    assert!(!Path::new(&path).exists());
+}
+
+#[test]
+fn validation_paths_are_owned_and_block_parent_cleanup() {
+    let repo = Repo::new();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Worktree);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    let base = repo.git(&["rev-parse", "HEAD"]);
+    let path = store
+        .create_validation(&first.worker_chat_key, &task.id, &base, vec![])
+        .unwrap();
+    assert!(store
+        .remove_validation(&ChatManager::default(), "chat:outsider", &task.id, &path)
+        .is_err());
+    assert!(store
+        .remove_validation(&ChatManager::default(), "chat:master", &task.id, &first.cwd)
+        .is_err());
+    report(&store, &first, WorkerOutcome::Completed);
+    assert!(store
+        .cleanup_workspace(
+            &ChatManager::default(),
+            "chat:master",
+            &task.id,
+            true,
+            &base
+        )
+        .unwrap_err()
+        .contains("validation"));
+    store
+        .remove_validation(&ChatManager::default(), "chat:master", &task.id, &path)
+        .unwrap();
+    assert!(!Path::new(&path).exists());
+    assert!(Path::new(&first.cwd).exists());
+}
+#[test]
+fn reopening_a_prerequisite_makes_unstarted_dependants_wait_again() {
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Auto);
+    let dependant = super::super::tests::task(&store, &run, vec![task.id.clone()]);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    report(&store, &first, WorkerOutcome::Completed);
+    assert_eq!(
+        store
+            .owned_task("chat:master", &dependant.id)
+            .unwrap()
+            .1
+            .status,
+        TaskStatus::Ready
+    );
+    store
+        .reopen_task("chat:master", &task.id, "Review fix".into())
+        .unwrap();
+    assert_eq!(
+        store
+            .owned_task("chat:master", &dependant.id)
+            .unwrap()
+            .1
+            .status,
+        TaskStatus::Pending
+    );
+}
+
+/// The person's decision of 2026-10-11: a task they approved keeps
+/// starting while a later revision waits, and reopening it is one of the
+/// ways it comes to run again. The follow-up instructions replace its
+/// spec without going on the plan card, as they did before this rule.
+#[test]
+fn a_reopened_approved_task_starts_while_a_later_revision_waits() {
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Auto);
+    store.require_plan_approval(&run.id).unwrap();
+    store
+        .approve_plan("chat:master", &run.id, None, None)
+        .unwrap();
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    report(&store, &first, WorkerOutcome::Completed);
+    let added = super::super::tests::task(&store, &run, vec![]);
+    let reopened = store
+        .reopen_task("chat:master", &task.id, "Address review".into())
+        .unwrap();
+    assert!(reopened.approved_at.is_some());
+    assert_eq!(reopened.spec, "Address review");
+    let snapshot = store.snapshot(Some(&run.id)).unwrap();
+    assert!(snapshot.runs[0].awaiting_plan_approval());
+    let wave: Vec<String> = automation::ready_wave(&snapshot, &snapshot.runs[0])
+        .into_iter()
+        .map(|task| task.id)
+        .collect();
+    assert_eq!(wave, [task.id.clone()]);
+    let next = prepare(&store, &task, Access::Auto).unwrap();
+    assert_eq!(next.cwd, first.cwd);
+    assert_eq!(next.number, 2);
+    let refused = prepare(&store, &added, Access::Auto).unwrap_err();
+    assert!(
+        refused.contains("has not approved this task yet"),
+        "{refused}"
+    );
+}
+
+/// Review H5, and the person's decision of 2026-10-11: a reopened task
+/// keeps its approval and starts on its new instructions, as the same
+/// worker and nothing else. The task keeps a record of each reopen, and
+/// the coordinator's transcript gets exactly one event for each.
+#[test]
+fn a_reopened_task_keeps_its_approval_and_its_shape_and_says_what_it_was_told() {
+    let reopened_in = |chat: &str, task_id: &str| -> Vec<serde_json::Value> {
+        crate::transcript::since(chat, 0)
+            .into_iter()
+            .map(|item| item.event)
+            .filter(|event| event["type"] == "octiq_task_reopened" && event["taskId"] == task_id)
+            .collect()
+    };
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Auto);
+    store.require_plan_approval(&run.id).unwrap();
+    store
+        .approve_plan("chat:master", &run.id, None, None)
+        .unwrap();
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    let approved = store.owned_task("chat:master", &task.id).unwrap().1;
+    // Not finished yet: nothing is reopened, recorded or told.
+    let early = store
+        .reopen_task("chat:master", &task.id, "Too soon".into())
+        .unwrap_err();
+    assert!(early.contains("Only a completed task"), "{early}");
+    assert!(reopened_in("chat:master", &task.id).is_empty());
+    report(&store, &first, WorkerOutcome::Completed);
+
+    let reopened = store
+        .reopen_task("chat:master", &task.id, "Address review".into())
+        .unwrap();
+    assert_eq!(reopened.approved_at, approved.approved_at);
+    assert_eq!(reopened.approved, approved.approved);
+    assert_eq!(reopened.spec, "Address review");
+    assert_eq!(reopened.reopens.len(), 1);
+    let record = &reopened.reopens[0];
+    assert_eq!(record.by_chat_key, "chat:master");
+    assert_eq!(record.attempt, 2);
+    assert_eq!(record.previous_spec, "Make the requested change");
+    assert_eq!(record.spec, "Address review");
+    let told = reopened_in("chat:master", &task.id);
+    assert_eq!(told.len(), 1, "one event for one reopen");
+    assert_eq!(
+        told[0],
+        json!({
+            "type": "octiq_task_reopened",
+            "runId": run.id,
+            "taskId": task.id,
+            "title": "Implement",
+            "assignee": null,
+            "attempt": 2,
+            "spec": "Address review",
+            "previousSpecChars": 25,
+            "at": record.at,
+        })
+    );
+
+    // Another access than the one it was approved with: refused, and no
+    // attempt is made of it. As approved, it starts where it worked.
+    let refused = prepare(&store, &task, Access::Full).unwrap_err();
+    assert!(refused.contains("full access instead of auto"), "{refused}");
+    let next = prepare(&store, &task, Access::Auto).unwrap();
+    assert_eq!((next.number, next.cwd.as_str()), (2, first.cwd.as_str()));
+    report(&store, &next, WorkerOutcome::Completed);
+
+    // A second reopen is a second record and a second event, each whole.
+    let again = store
+        .reopen_task("chat:master", &task.id, "And the 测试 too".into())
+        .unwrap();
+    assert_eq!(again.reopens.len(), 2);
+    assert_eq!(again.reopens[1].attempt, 3);
+    assert_eq!(again.reopens[1].previous_spec, "Address review");
+    let told = reopened_in("chat:master", &task.id);
+    assert_eq!(told.len(), 2);
+    assert_eq!(told[1]["attempt"], 3);
+    assert_eq!(told[1]["spec"], "And the 测试 too");
+    assert_eq!(
+        told[1]["previousSpecChars"], 14,
+        "characters, not UTF-16 units"
+    );
+    // Only its own coordinator reopens it, and the stranger's chat is
+    // told nothing.
+    assert!(store
+        .reopen_task("chat:other", &task.id, "Mine now".into())
+        .is_err());
+    assert!(reopened_in("chat:other", &task.id).is_empty());
+    assert_eq!(reopened_in("chat:master", &task.id).len(), 2);
+}
+
+/// A run whose coordinator is a chat the index lists, in a ledger of its
+/// own: what a reopen needs to tell the person about. The chat and its
+/// transcript are forgotten again on drop.
+struct Reopenable {
+    dir: crate::test_dir::TestDir,
+    id: String,
+    key: String,
+    store: OrchestrationStore,
+    run: Run,
+}
+
+impl Reopenable {
+    fn new() -> Self {
+        let dir = crate::test_dir::TestDir::new("m2-reopen");
+        let id = format!("reopen-{}", uuid::Uuid::new_v4().simple());
+        let key = format!("chat:{id}");
+        crate::chat_index::upsert(
+            serde_json::from_value(json!({
+                "id": id, "projectId": "project", "title": "Lead chat", "updatedAt": 100,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let store = OrchestrationStore::load(dir.0.join("orchestrations.json"));
+        let run = store
+            .create_run(
+                key.clone(),
+                "Build feature".into(),
+                "project".into(),
+                dir.0.to_string_lossy().into_owned(),
+                Some(4),
+            )
+            .unwrap();
+        Self {
+            dir,
+            id,
+            key,
+            store,
+            run,
+        }
+    }
+
+    /// A task that ran once, completed, and kept its workspace.
+    fn completed_task(&self) -> Task {
+        let task = self
+            .store
+            .create_task(
+                &self.key,
+                self.run.id.clone(),
+                "Implement".into(),
+                "Make the requested change".into(),
+                vec![],
+                None,
+                None,
+            )
+            .unwrap();
+        let attempt = self.start(&task).unwrap();
+        // Reopen/receipt tests simulate independent retained checkouts,
+        // so their writers do not contend for one shared plain folder.
+        let root = self.dir.0.join(&task.id);
+        crate::profile::make_dir(&root).unwrap();
+        let root = root.to_string_lossy().into_owned();
+        self.store
+            .mutate(|data| {
+                let task = data.tasks.get_mut(&task.id).unwrap();
+                task.status = TaskStatus::Completed;
+                task.result = Some("Done".into());
+                task.workspace = Some(TaskWorkspace {
+                    swept_at: None,
+                    plan: workflow::plan(&root, "", &task.id, WorkspaceMode::Direct)?,
+                    state: WorkspaceState::Retained,
+                    lease_attempt_id: Some(attempt.id.clone()),
+                    delivery: None,
+                    validation_paths: vec![],
+                    cleanup_intent: None,
+                    abandoned: false,
+                });
+                data.attempts.get_mut(&attempt.id).unwrap().status = AttemptStatus::Completed;
+                Ok(())
+            })
+            .unwrap();
+        task
+    }
+
+    fn reopen(&self, task: &Task, spec: &str) -> Result<Task, String> {
+        self.store.reopen_task(&self.key, &task.id, spec.into())
+    }
+
+    fn start(&self, task: &Task) -> Result<Attempt, String> {
+        self.store
+            .reserve_attempt(&self.key, &super::super::tests::launch_for(&task.id))
+            .map(|(_, _, attempt, _)| attempt)
+    }
+
+    /// The reopens the coordinator's transcript tells of, oldest first.
+    fn told(&self) -> Vec<serde_json::Value> {
+        crate::transcript::since(&self.key, 0)
+            .into_iter()
+            .map(|item| item.event)
+            .filter(|event| event["type"] == "octiq_task_reopened")
+            .collect()
+    }
+
+    fn transcript(&self) -> std::path::PathBuf {
+        crate::transcript::path_for(&self.key).unwrap()
+    }
+
+    /// The transcript cannot be appended to: a folder is where its file
+    /// goes. Nothing was in it yet.
+    fn break_transcript(&self) {
+        let _ = fs::remove_file(self.transcript());
+        fs::create_dir(self.transcript()).unwrap();
+    }
+
+    fn mend_transcript(&self) {
+        fs::remove_dir(self.transcript()).unwrap();
+    }
+
+    /// The server is stopped and started: the ledger is read again.
+    fn restarted(mut self) -> Self {
+        let path = self.dir.0.join("orchestrations.json");
+        self.store = OrchestrationStore::load(path);
+        self
+    }
+}
+
+impl Drop for Reopenable {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir(self.transcript());
+        let _ = crate::chat_index::remove(&self.id);
+        crate::transcript::forget(&self.key);
+    }
+}
+
+#[test]
+fn an_owed_reopen_notice_blocks_storage_publication() {
+    let home = crate::test_dir::TestDir::new("storage-reopen-debt");
+    let _profile = crate::profile::started_in(&home);
+    let work = Reopenable::new();
+    let task = work.completed_task();
+    crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(true));
+    let reopened = work.reopen(&task, "New instructions");
+    crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(false));
+    assert!(!reopened.unwrap().reopens[0].notice_delivered);
+    let mut manager = crate::agent_chat::ChatManager::default();
+    manager.orchestrations = std::sync::Arc::new(OrchestrationStore::load(
+        work.dir.0.join("orchestrations.json"),
+    ));
+    crate::record_trim::assert_debt_blocks_compaction(&manager, &work.key, "reopen notice");
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+}
+
+/// Review of 931b5f0, H5, the reviewer's probe: the coordinator's
+/// transcript cannot be written when a task is reopened. The reopen is
+/// on record, and its task does not start: the person is shown every
+/// reopen before its work begins.
+#[test]
+fn a_reopened_task_does_not_start_until_its_notice_is_in_the_coordinators_chat() {
+    let work = Reopenable::new();
+    let task = work.completed_task();
+    work.break_transcript();
+    let reopened = work.reopen(&task, "Entirely new instructions").unwrap();
+    assert_eq!(reopened.reopens.len(), 1);
+    assert_eq!(reopened.status, TaskStatus::Ready);
+    assert!(work.told().is_empty(), "nothing could be written");
+    let held = work
+        .start(&task)
+        .expect_err("a reopen the person was not shown");
+    assert!(
+            held.starts_with("This task was reopened with new instructions, and the notice of that in the coordinator's chat has not been confirmed as saved to disk yet"),
+            "{held}"
+        );
+    assert_eq!(held, REOPEN_NOT_TOLD);
+    // The reopen is on record as not yet shown, and the snapshot says
+    // why the task waits, in every view.
+    assert!(!reopened.reopens[0].notice_delivered);
+    let record = crate::transcript::key_record_claim(&work.key).unwrap();
+    assert!(work.store.record_quiet(&record).is_err());
+    let waiting = |store: &OrchestrationStore| {
+        let snapshot = store.snapshot(Some(&work.run.id)).unwrap();
+        let full = serde_json::to_value(&snapshot).unwrap();
+        let compact = agent_view::agent_snapshot(
+            snapshot.clone(),
+            &agent_view::AgentRead {
+                actor: &work.key,
+                run_id: Some(&work.run.id),
+                task_id: None,
+                message_limit: 12,
+            },
+        )
+        .unwrap();
+        let wave = automation::ready_wave(&snapshot, &snapshot.runs[0]).len();
+        (
+            full["tasks"][0]["heldByReopen"].clone(),
+            compact["tasks"][0]["heldByReopen"].clone(),
+            full["tasks"][0]["reopens"][0]["noticeDelivered"].clone(),
+            wave,
+        )
+    };
+    assert_eq!(
+        waiting(&work.store),
+        (json!(true), json!(true), json!(false), 0)
+    );
+    // The scheduler's pass tries again and fails again: still held.
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
+    assert!(work.start(&task).is_err());
+
+    // The fault is lifted. The next pass writes the notice, once, and
+    // the task starts on its new instructions.
+    work.mend_transcript();
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+    assert!(work.store.record_quiet(&record).is_ok());
+    let told = work.told();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(
+        told[0],
+        json!({
+            "type": "octiq_task_reopened",
+            "runId": work.run.id,
+            "taskId": task.id,
+            "title": "Implement",
+            "assignee": null,
+            "attempt": 2,
+            "spec": "Entirely new instructions",
+            "previousSpecChars": 25,
+            "at": reopened.reopens[0].at,
+        })
+    );
+    assert_eq!(
+        waiting(&work.store),
+        (
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            json!(true),
+            1
+        )
+    );
+    let next = work.start(&task).expect("shown, so it starts");
+    assert_eq!(next.number, 2);
+    assert_eq!(work.told().len(), 1, "one event for one reopen");
+}
+
+/// Two reopens whose notices could not be written are two events once
+/// they can be, one each, in the order they were made. And a notice
+/// that reached the transcript without the ledger hearing of it (the
+/// server stopped in between) is recorded, not written a second time.
+#[test]
+fn every_reopen_is_told_exactly_once_however_often_it_is_tried() {
+    let work = Reopenable::new();
+    let (first, second) = (work.completed_task(), work.completed_task());
+    work.break_transcript();
+    let one = work.reopen(&first, "Fix the first").unwrap();
+    let two = work.reopen(&second, "Fix the second").unwrap();
+    assert!(work.start(&first).is_err() && work.start(&second).is_err());
+    work.mend_transcript();
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(2));
+    let specs: Vec<String> = work
+        .told()
+        .iter()
+        .map(|event| event["spec"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(specs.len(), 2, "{specs:?}");
+    assert!(specs.contains(&"Fix the first".to_owned()));
+    assert!(specs.contains(&"Fix the second".to_owned()));
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
+    work.start(&first).unwrap();
+    work.start(&second).unwrap();
+    assert_ne!(one.reopens[0].at, 0);
+    assert_ne!(two.id, one.id);
+
+    // A reopen written with no fault is told in the same call, and the
+    // task it returns says so.
+    let third = work.completed_task();
+    let told = work.reopen(&third, "Fix the third").unwrap();
+    assert!(told.reopens[0].notice_delivered);
+    assert_eq!(work.told().len(), 3);
+    // The ledger forgets it was told: what a server stopped between
+    // the transcript's write and the ledger's would read on its way up.
+    work.store
+        .mutate(|data| {
+            data.tasks.get_mut(&third.id).unwrap().reopens[0].notice_delivered = false;
+            Ok(())
+        })
+        .unwrap();
+    let work = work.restarted();
+    assert!(work.start(&third).is_err(), "held until it is checked");
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1), "recorded");
+    assert_eq!(work.told().len(), 3, "and not written again");
+    work.start(&third).unwrap();
+}
+
+/// A restart with a notice still owed: the ledger remembers, the task
+/// stays held in the new process, and the first pass that can write the
+/// notice writes it once.
+#[test]
+fn a_notice_still_owed_at_a_restart_holds_the_task_until_it_is_written() {
+    let work = Reopenable::new();
+    let task = work.completed_task();
+    work.break_transcript();
+    work.reopen(&task, "After the restart").unwrap();
+    let work = work.restarted();
+    assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
+    work.mend_transcript();
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+    let told = work.told();
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0]["spec"], "After the restart");
+    assert_eq!(work.start(&task).unwrap().number, 2);
+}
+
+/// With no chat of the person's to show it in, there is no reopen: the
+/// task keeps its result and its instructions, and nothing is recorded.
+/// A chat in the trash is such a chat; restored, the reopen is made.
+#[test]
+fn a_reopen_is_refused_when_the_coordinators_chat_is_gone() {
+    let work = Reopenable::new();
+    let task = work.completed_task();
+    let meta = crate::chat_index::list()
+        .into_iter()
+        .find(|chat| chat.id == work.id)
+        .unwrap();
+    assert!(crate::chat_index::trash(&work.id, None, Some(meta)).unwrap());
+    let refused = work.reopen(&task, "Too late").unwrap_err();
+    assert!(
+            refused.starts_with("The coordinator's chat no longer exists, so the person could not be shown this reopen. Nothing was reopened."),
+            "{refused}"
+        );
+    let kept = work.store.owned_task(&work.key, &task.id).unwrap().1;
+    assert_eq!(kept.status, TaskStatus::Completed);
+    assert_eq!(kept.spec, "Make the requested change");
+    assert!(kept.reopens.is_empty());
+    assert!(work.told().is_empty());
+
+    // And a chat deleted after the reopen was recorded gets no notice
+    // written into a transcript nobody can open: the task stays held.
+    crate::chat_index::restore(&work.id).unwrap();
+    work.break_transcript();
+    work.reopen(&task, "In time").unwrap();
+    work.mend_transcript();
+    let meta = crate::chat_index::list()
+        .into_iter()
+        .find(|chat| chat.id == work.id)
+        .unwrap();
+    assert!(crate::chat_index::trash(&work.id, None, Some(meta)).unwrap());
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
+    assert!(work.told().is_empty());
+    assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+    crate::chat_index::restore(&work.id).unwrap();
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+    assert_eq!(work.start(&task).unwrap().number, 2);
+}
+
+/// Every folder sync on this thread is refused until this is dropped,
+/// a failed assertion included.
+struct NoFolderSync;
+
+impl NoFolderSync {
+    fn begin() -> Self {
+        crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(true));
+        Self
+    }
+}
+
+impl Drop for NoFolderSync {
+    fn drop(&mut self) {
+        crate::transcript::FAIL_DIR_SYNC.with(|fail| fail.set(false));
+    }
+}
+
+/// Review of 4603eb4, H5, the reviewer's probe: the notice's line was
+/// appended but its folder would not sync, so the host holds no receipt
+/// for it. A line that can be read is not one. While the fault lasts
+/// the task stays held, however often the scheduler looks, and the line
+/// is never written a second time; the first pass after the fault is
+/// lifted confirms the line that is there and the task starts.
+#[test]
+fn a_notice_that_was_written_but_never_confirmed_is_not_taken_as_delivered() {
+    let work = Reopenable::new();
+    let task = work.completed_task();
+    let fault = NoFolderSync::begin();
+    let reopened = work.reopen(&task, "Storage sync still failing").unwrap();
+    assert!(!reopened.reopens[0].notice_delivered, "no receipt");
+    assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+    assert_eq!(work.told().len(), 1, "the line is there, unproven");
+    for pass in 1..=10 {
+        assert_eq!(
+            work.store.deliver_reopen_notices_now(),
+            Ok(0),
+            "pass {pass}: a readable line was taken for a receipt"
+        );
+        assert_eq!(
+            work.start(&task)
+                .expect_err("started on a notice nothing confirmed"),
+            REOPEN_NOT_TOLD,
+            "pass {pass}"
+        );
+        assert_eq!(work.told().len(), 1, "pass {pass}: never written twice");
+    }
+    let held = work.store.owned_task(&work.key, &task.id).unwrap().1;
+    assert!(!held.reopens[0].notice_delivered);
+
+    // The fault is lifted: one pass confirms the line already there.
+    drop(fault);
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+    let told = work.told();
+    assert_eq!(told.len(), 1, "one event in the transcript: {told:?}");
+    assert_eq!(told[0]["spec"], "Storage sync still failing");
+    assert_eq!(work.start(&task).unwrap().number, 2);
+    assert_eq!(work.told().len(), 1);
+}
+
+/// While a chat's transcript holds a notice nothing confirmed, no
+/// other notice is written into it either: the fault is the
+/// transcript's, and a second line there would be as unproven as the
+/// first. Lifted, one pass confirms the one and writes the other.
+#[test]
+fn a_chat_with_an_unconfirmed_notice_takes_no_new_notice_until_it_is_confirmed() {
+    let work = Reopenable::new();
+    let (first, second) = (work.completed_task(), work.completed_task());
+    let fault = NoFolderSync::begin();
+    work.reopen(&first, "Fix the first").unwrap();
+    work.reopen(&second, "Fix the second").unwrap();
+    assert_eq!(work.told().len(), 1, "the first, unproven, and no other");
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
+    assert_eq!(work.told().len(), 1);
+    assert!(work.start(&first).is_err() && work.start(&second).is_err());
+    drop(fault);
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(2));
+    let specs: Vec<_> = work
+        .told()
+        .iter()
+        .map(|event| event["spec"].clone())
+        .collect();
+    assert_eq!(specs, [json!("Fix the first"), json!("Fix the second")]);
+    work.start(&first).unwrap();
+    work.start(&second).unwrap();
+}
+
+/// A task reopened while no folder will sync, then looked at ten times
+/// with the fault still on, then once with it lifted. The notice's line
+/// is written once and is no receipt: the task stays held and the line
+/// is never written again. Lifted, one pass confirms the line that is
+/// there, and the task starts on one event.
+fn held_until_the_folder_syncs(work: &Reopenable, task: &Task, fault: NoFolderSync) {
+    let reopened = work.reopen(task, "Folder sync still failing").unwrap();
+    assert!(
+        !reopened.reopens[0].notice_delivered,
+        "delivered on a line whose folder never synced"
+    );
+    assert_eq!(work.start(task).unwrap_err(), REOPEN_NOT_TOLD);
+    assert_eq!(work.told().len(), 1, "the line is there, unproven");
+    for pass in 1..=10 {
+        assert_eq!(
+            work.store.deliver_reopen_notices_now(),
+            Ok(0),
+            "pass {pass}"
+        );
+        assert_eq!(
+            work.start(task)
+                .expect_err("started on a notice nothing confirmed"),
+            REOPEN_NOT_TOLD,
+            "pass {pass}"
+        );
+        assert_eq!(work.told().len(), 1, "pass {pass}: never written twice");
+    }
+    let held = work.store.owned_task(&work.key, &task.id).unwrap().1;
+    assert!(!held.reopens[0].notice_delivered);
+    // Whoever asks: the coordinator, the person's Start, the host's own
+    // recovery. And there is nothing of it for the person to stop.
+    let launch = super::super::tests::launch_for(&task.id);
+    for by in [
+        StartedBy::Coordinator,
+        StartedBy::Page { retry_of: None },
+        StartedBy::Recovery("attempt_before"),
+    ] {
+        let refused = work.store.reserve_attempt_for(&work.key, &launch, by);
+        assert_eq!(refused.map(|_| ()).unwrap_err(), REOPEN_NOT_TOLD);
+    }
+    assert!(work.store.stop_task(&task.id, None).is_err());
+
+    drop(fault);
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+    let told = work.told();
+    assert_eq!(told.len(), 1, "one event in the transcript: {told:?}");
+    assert_eq!(told[0]["spec"], "Folder sync still failing");
+    assert_eq!(work.start(task).unwrap().number, 2);
+    assert_eq!(work.told().len(), 1);
+}
+
+/// Review of 0c0ad0b, H5b, the reviewer's first probe: the usual case.
+/// The coordinator's record was made by an ordinary append, so nothing
+/// ever synced its folder entry, and the notice is a fresh line in it.
+/// That the file was already there says nothing about its folder: the
+/// notice is delivered only once file and folder have both synced.
+#[test]
+fn a_notice_appended_to_a_record_whose_folder_never_synced_is_not_taken_as_delivered() {
+    let work = Reopenable::new();
+    let task = work.completed_task();
+    let fault = NoFolderSync::begin();
+    let said = json!({ "type": "assistant", "message": { "content": "Earlier text" } });
+    assert!(crate::transcript::append(&work.key, &said).is_some());
+    held_until_the_folder_syncs(&work, &task, fault);
+}
+
+/// Review of 0c0ad0b, H5b, the reviewer's second probe: the record had
+/// a full receipt once, file and folder. Then it was compacted, which
+/// puts a new file under the old name and syncs no folder, and the
+/// notice is a fresh line in that new file. A receipt for the file that
+/// was there is none for the one that is there now.
+#[test]
+fn a_notice_appended_to_a_record_that_was_rewritten_is_not_taken_as_delivered() {
+    let work = Reopenable::new();
+    let task = work.completed_task();
+    let picture = json!({ "type": "user", "message": { "content": [{
+            "type": "tool_result",
+            "tool_use_id": "shot",
+            "content": [{ "type": "image", "source": { "type": "base64", "data": "A".repeat(10_000) } }],
+        }] } });
+    assert!(crate::transcript::append_synced(&work.key, &picture).is_some());
+    let record = crate::transcript::generation(&work.key).unwrap();
+    assert_eq!(
+        crate::transcript::confirm_synced(&work.key, &record),
+        Some(())
+    );
+    let before = fs::metadata(work.transcript()).unwrap().len();
+    let fault = NoFolderSync::begin();
+    // Exercise a legacy non-storage rewrite that has no folder receipt.
+    // The storage migration now refuses publication while folder sync fails.
+    let rewritten = crate::transcript::rewrite_lines(&work.transcript(), |line| {
+        let mut event: serde_json::Value = serde_json::from_str(line).ok()?;
+        crate::record_trim::strip_pictures(&mut event).then(|| event.to_string())
+    })
+    .unwrap();
+    assert!(rewritten, "the record was rewritten");
+    assert!(fs::metadata(work.transcript()).unwrap().len() < before);
+    held_until_the_folder_syncs(&work, &task, fault);
+}
+
+/// What the next `notice_receipts` on this thread finds done to its
+/// chat between its last look at the record and asking for the receipt.
+fn before_the_receipt(meanwhile: impl FnOnce(&str) + 'static) {
+    BEFORE_RECEIPT.with(|slot| *slot.borrow_mut() = Some(Box::new(meanwhile)));
+}
+
+/// The person clears the chat (the page's `/clear`, which sends the
+/// socket's `chat_forget` for a chat that stays in the list), and the
+/// host then writes something ordinary to it, which makes its record
+/// again.
+fn cleared_then_written_to(chat: &str) {
+    let services = crate::dispatch::Services {
+        workspaces: Arc::new(crate::workspaces::WorkspaceState::with_projects(vec![])),
+        chats: Arc::new(ChatManager::default()),
+        watch: Arc::new(crate::file_watch::FileWatchState::default()),
+        git_watch: Arc::new(crate::git_watch::GitWatchState::default()),
+        orchestrations: Arc::new(OrchestrationStore::default()),
+        ptys: Arc::new(crate::pty::PtyManager::default()),
+        handovers: crate::handover::Wiring::scratch(),
+    };
+    crate::dispatch::dispatch(&services, "chat_forget", json!({ "key": chat })).unwrap();
+    let said = json!({ "type": "assistant", "message": { "content": "After the clear" } });
+    assert!(crate::agent_chat::record_chat_event(chat, said).is_some());
+}
+
+/// Review of 8169dd3, RULE 2, probe GATE_REPLACE: the notice was
+/// appended and synced, and before the host asked for its receipt the
+/// profile folder was moved away and another made at its path, with a
+/// record under the chat's name and no notice in it. The receipt was
+/// given for that record: delivered, with the notice nowhere the person
+/// can see, and no later pass put it right. A folder that is not the
+/// one the server started with gives no receipt and takes no line; the
+/// real one back, the notice is confirmed where it was written.
+#[test]
+fn a_notice_is_not_delivered_in_a_folder_that_took_the_profiles_place() {
+    let home = crate::profile::tests::Home::with_a_configured_base();
+    let _process = crate::profile::started_in(&home.dir);
+    crate::profile_lock::acquire("server").unwrap();
+    let chat = format!("chat:replaced-{}", uuid::Uuid::new_v4().simple());
+    let notice =
+        json!({ "type": "octiq_task_reopened", "taskId": "task_1", "attempt": 2, "at": 5 });
+    let record = crate::transcript::path_for(&chat).unwrap();
+    let strangers = "{\"type\":\"assistant\"}\n";
+    before_the_receipt({
+        let (profile, kept, record) = (home.profile(), home.kept(), record.clone());
+        move |_| {
+            fs::rename(&profile, &kept).unwrap();
+            fs::create_dir_all(profile.join("chats")).unwrap();
+            fs::write(&record, strangers).unwrap();
+        }
+    });
+    assert_eq!(
+        notice_receipts(&chat, std::slice::from_ref(&notice)),
+        [false],
+        "delivered on a record that does not hold the notice"
+    );
+    assert_eq!(
+        notice_receipts(&chat, std::slice::from_ref(&notice)),
+        [false]
+    );
+    assert_eq!(
+        fs::read_to_string(&record).unwrap(),
+        strangers,
+        "the notice was written into the folder that took the profile's place"
+    );
+
+    home.move_back();
+    assert_eq!(
+        notice_receipts(&chat, std::slice::from_ref(&notice)),
+        [true]
+    );
+    assert_eq!(
+        crate::transcript::of_type(&chat, "octiq_task_reopened").len(),
+        1
+    );
+}
+
+/// The types of the events in a chat's record, in order.
+fn recorded_types(chat: &str) -> Vec<String> {
+    crate::transcript::since(chat, 0)
+        .iter()
+        .map(|item| item.event["type"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// Review of ca4d902, H5c, the reviewer's first probe: the notice is a
+/// fresh line, and before the host asks for its receipt the person
+/// clears the chat and the host writes to it again. The record that is
+/// there now is not the one the notice went into, so a sync of it is no
+/// receipt: the task is held for that pass, and the next writes the
+/// notice once into the record the person now sees.
+#[test]
+fn a_notice_appended_to_a_record_cleared_before_its_receipt_is_not_taken_as_delivered() {
+    let work = Reopenable::new();
+    let task = work.completed_task();
+    // The usual record: made by an ordinary append, so the notice's own
+    // append syncs no folder and no receipt was ever given for it.
+    let said = json!({ "type": "assistant", "message": { "content": "Earlier text" } });
+    assert!(crate::transcript::append(&work.key, &said).is_some());
+    before_the_receipt(cleared_then_written_to);
+    let reopened = work.reopen(&task, "Cleared before the receipt").unwrap();
+    assert!(
+        !reopened.reopens[0].notice_delivered,
+        "delivered on a record that does not hold the notice"
+    );
+    assert_eq!(recorded_types(&work.key), ["assistant"]);
+    assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+    assert_eq!(
+        recorded_types(&work.key),
+        ["assistant", "octiq_task_reopened"],
+        "one notice, in the record the person now sees"
+    );
+    assert_eq!(work.told()[0]["spec"], "Cleared before the receipt");
+    assert_eq!(work.start(&task).unwrap().number, 2);
+    assert_eq!(work.told().len(), 1);
+}
+
+/// Review of ca4d902, H5c, the reviewer's second probe: the notice's
+/// line was already in the record, unconfirmed, and a pass found it
+/// there. Before that pass asks for the receipt the chat is cleared and
+/// written to again. Same answer: no receipt for a record the line was
+/// not seen in.
+#[test]
+fn a_notice_found_in_a_record_cleared_before_its_receipt_is_not_taken_as_delivered() {
+    let work = Reopenable::new();
+    let task = work.completed_task();
+    let fault = NoFolderSync::begin();
+    let reopened = work.reopen(&task, "Found, then cleared").unwrap();
+    drop(fault);
+    assert!(!reopened.reopens[0].notice_delivered);
+    assert_eq!(work.told().len(), 1, "the line is there, unproven");
+
+    before_the_receipt(cleared_then_written_to);
+    assert_eq!(
+        work.store.deliver_reopen_notices_now(),
+        Ok(0),
+        "delivered on a record that does not hold the notice"
+    );
+    let held = work.store.owned_task(&work.key, &task.id).unwrap().1;
+    assert!(!held.reopens[0].notice_delivered);
+    assert_eq!(recorded_types(&work.key), ["assistant"]);
+    let launch = super::super::tests::launch_for(&task.id);
+    for by in [
+        StartedBy::Coordinator,
+        StartedBy::Page { retry_of: None },
+        StartedBy::Recovery("attempt_before"),
+    ] {
+        let refused = work.store.reserve_attempt_for(&work.key, &launch, by);
+        assert_eq!(refused.map(|_| ()).unwrap_err(), REOPEN_NOT_TOLD);
+    }
+
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+    assert_eq!(
+        recorded_types(&work.key),
+        ["assistant", "octiq_task_reopened"]
+    );
+    assert_eq!(work.told()[0]["spec"], "Found, then cleared");
+    assert_eq!(work.start(&task).unwrap().number, 2);
+    assert_eq!(work.told().len(), 1);
+}
+
+/// The chat `id`, listed in the index of the profile this thread now
+/// stands in.
+fn listed_here(id: &str) {
+    crate::chat_index::upsert(
+        serde_json::from_value(json!({
+            "id": id, "projectId": "project", "title": "Lead chat", "updatedAt": 100,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+/// Review of bf9d8cd, finding 1, the reviewer's first transition probe
+/// (A to B). The notice is read or written in one record, and by the
+/// time the receipt is asked for the chat's name resolves to another
+/// file that has never moved on either. The folder is fixed at startup
+/// now, so the test moves it by standing the thread in another profile:
+/// the token says which file it was taken for, that file is not the one
+/// about to be synced, and the answer is no receipt. The task is held,
+/// and the next pass confirms the notice where it is, once.
+#[test]
+fn a_receipt_is_not_given_on_a_record_in_another_folder_than_the_notice_went_into() {
+    let work = Reopenable::new();
+    let task = work.completed_task();
+    let other = crate::test_dir::TestDir::new("m6-other-profile");
+    let elsewhere = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let moved = elsewhere.clone();
+    let home = other.to_path_buf();
+    before_the_receipt(move |chat| {
+        *moved.borrow_mut() = Some(crate::profile::started_in(&home));
+        let said = json!({ "type": "assistant", "message": { "content": "Other history" } });
+        assert!(crate::agent_chat::record_chat_event(chat, said).is_some());
+    });
+    let reopened = work.reopen(&task, "Seen in one folder").unwrap();
+    assert!(
+        !reopened.reopens[0].notice_delivered,
+        "delivered on a record in another folder, which holds no notice"
+    );
+    assert_eq!(recorded_types(&work.key), ["assistant"]);
+    let launch = super::super::tests::launch_for(&task.id);
+    for by in [
+        StartedBy::Coordinator,
+        StartedBy::Page { retry_of: None },
+        StartedBy::Recovery("attempt_before"),
+    ] {
+        let refused = work.store.reserve_attempt_for(&work.key, &launch, by);
+        assert_eq!(refused.map(|_| ()).unwrap_err(), REOPEN_NOT_TOLD);
+    }
+    let there = elsewhere.borrow_mut().take();
+    crate::transcript::forget(&work.key);
+    drop(there);
+
+    // Back in the folder the notice went into.
+    assert_eq!(work.told().len(), 1);
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+    assert_eq!(work.told().len(), 1, "never written a second time");
+    assert_eq!(work.start(&task).unwrap().number, 2);
+}
+
+/// The reviewer's second transition probe (B to A): the notice went
+/// into a record in another folder, and the receipt is asked for in the
+/// folder the page reads, whose record holds none. No receipt; the next
+/// pass does not find the notice there and writes it, once.
+#[test]
+fn a_notice_written_in_another_folder_is_written_again_where_the_receipt_is_asked() {
+    let work = Reopenable::new();
+    let task = work.completed_task();
+    let said = json!({ "type": "assistant", "message": { "content": "Earlier text" } });
+    assert!(crate::transcript::append(&work.key, &said).is_some());
+
+    let other = crate::test_dir::TestDir::new("m6-other-profile");
+    let elsewhere = std::rc::Rc::new(std::cell::RefCell::new(Some(crate::profile::started_in(
+        &other,
+    ))));
+    listed_here(&work.id);
+    let back = elsewhere.clone();
+    before_the_receipt(move |chat| {
+        assert_eq!(recorded_types(chat), ["octiq_task_reopened"]);
+        crate::transcript::forget(chat);
+        drop(back.borrow_mut().take());
+    });
+    let reopened = work.reopen(&task, "Written in another folder").unwrap();
+    assert!(elsewhere.borrow().is_none(), "the pass reached its receipt");
+    assert!(
+        !reopened.reopens[0].notice_delivered,
+        "delivered on a record that does not hold the notice"
+    );
+    assert_eq!(recorded_types(&work.key), ["assistant"]);
+    assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+    assert_eq!(
+        recorded_types(&work.key),
+        ["assistant", "octiq_task_reopened"],
+        "one notice, in the record the person sees"
+    );
+    assert_eq!(work.told()[0]["spec"], "Written in another folder");
+    assert_eq!(work.start(&task).unwrap().number, 2);
+}
+
+/// Two notices owed in one chat, one found there and one written now,
+/// and the chat is cleared before the receipt. Neither is delivered on
+/// the record that is left; the next pass leaves both in it, once each.
+#[test]
+fn a_clear_before_the_receipt_holds_every_notice_owed_in_that_chat() {
+    let work = Reopenable::new();
+    let (first, second) = (work.completed_task(), work.completed_task());
+    let fault = NoFolderSync::begin();
+    work.reopen(&first, "Fix the first").unwrap();
+    work.reopen(&second, "Fix the second").unwrap();
+    drop(fault);
+    assert_eq!(work.told().len(), 1, "the first, unproven, and no other");
+
+    before_the_receipt(cleared_then_written_to);
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
+    assert!(work.start(&first).is_err() && work.start(&second).is_err());
+
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(2));
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+    let mut specs: Vec<_> = work
+        .told()
+        .iter()
+        .map(|event| event["spec"].as_str().unwrap().to_string())
+        .collect();
+    specs.sort();
+    assert_eq!(specs, ["Fix the first", "Fix the second"], "once each");
+    work.start(&first).unwrap();
+    work.start(&second).unwrap();
+}
+
+/// What the rule does not promise: once a notice was delivered, the
+/// person clearing the chat removes it with the rest of that history.
+/// That is their own act. Nothing about the task changes, and the
+/// notice is not written again.
+#[test]
+fn clearing_the_chat_after_a_notice_was_delivered_changes_nothing_about_the_task() {
+    let work = Reopenable::new();
+    let task = work.completed_task();
+    let reopened = work.reopen(&task, "Delivered, then cleared").unwrap();
+    assert!(reopened.reopens[0].notice_delivered);
+    assert_eq!(work.told().len(), 1);
+
+    cleared_then_written_to(&work.key);
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
+    assert_eq!(
+        recorded_types(&work.key),
+        ["assistant"],
+        "not written again"
+    );
+    let kept = work.store.owned_task(&work.key, &task.id).unwrap().1;
+    assert!(kept.reopens[0].notice_delivered);
+    assert_eq!(kept.spec, "Delivered, then cleared");
+    assert_eq!(work.start(&task).unwrap().number, 2);
+    assert!(work.told().is_empty());
+}
+
+/// A compaction in the same window is not a clear. It puts a new file
+/// under the record's name and keeps every line of it, the notice
+/// among them, so the receipt asked for afterwards is for a record that
+/// holds the line. A storage migration moves generation, so that pass
+/// refuses its old receipt; the next pass re-reads and confirms the same
+/// notice exactly once. For a fresh line and for one found there.
+#[test]
+fn a_storage_generation_move_before_receipt_defers_then_confirms_once() {
+    let picture = json!({ "type": "user", "message": { "content": [{
+            "type": "tool_result",
+            "tool_use_id": "shot",
+            "content": [{ "type": "image", "source": { "type": "base64", "data": "A".repeat(10_000) } }],
+        }] } });
+    let compacted = |chat: &str| {
+        let path = crate::transcript::path_for(chat).unwrap();
+        let before = fs::metadata(&path).unwrap().len();
+        let freed = crate::record_trim::compact_record(&path).unwrap();
+        assert!(freed.is_some(), "the record was rewritten");
+        assert!(fs::metadata(&path).unwrap().len() < before);
+    };
+    for found in [false, true] {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        assert!(crate::transcript::append(&work.key, &picture).is_some());
+        if found {
+            let fault = NoFolderSync::begin();
+            let reopened = work.reopen(&task, "Compacted in the window").unwrap();
+            drop(fault);
+            assert!(!reopened.reopens[0].notice_delivered);
+            before_the_receipt(compacted);
+            assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
+        } else {
+            before_the_receipt(compacted);
+            let reopened = work.reopen(&task, "Compacted in the window").unwrap();
+            assert!(
+                !reopened.reopens[0].notice_delivered,
+                "old receipt refused: {found}"
+            );
+        }
+        assert_eq!(
+            work.told().len(),
+            1,
+            "the moved receipt never repeats the line"
+        );
+        assert_eq!(
+            work.store.deliver_reopen_notices_now(),
+            Ok(1),
+            "fresh receipt"
+        );
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0), "once");
+        assert_eq!(recorded_types(&work.key), ["user", "octiq_task_reopened"]);
+        assert_eq!(work.told()[0]["spec"], "Compacted in the window");
+        assert_eq!(work.start(&task).unwrap().number, 2);
+    }
+}
+
+/// A line that is not UTF-8 (a write cut inside a character) hides no
+/// notice after it: the notice is found, confirmed, and not written a
+/// second time.
+#[test]
+fn a_notice_behind_a_line_that_is_not_utf8_is_found_and_not_written_again() {
+    let work = Reopenable::new();
+    let task = work.completed_task();
+    fs::write(
+        work.transcript(),
+        b"{\"type\":\"assistant\",\"text\":\"\xE4\xB8\n",
+    )
+    .unwrap();
+    let reopened = work.reopen(&task, "Behind a torn line").unwrap();
+    assert!(reopened.reopens[0].notice_delivered);
+    // The ledger forgets it was told, as a server stopped between the
+    // transcript's write and the ledger's would on its way up.
+    work.store
+        .mutate(|data| {
+            data.tasks.get_mut(&task.id).unwrap().reopens[0].notice_delivered = false;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1), "found");
+    let record = fs::read(work.transcript()).unwrap();
+    let notices = record
+        .split(|byte| *byte == b'\n')
+        .filter(|line| String::from_utf8_lossy(line).contains("octiq_task_reopened"))
+        .count();
+    assert_eq!(notices, 1, "written a second time");
+    assert_eq!(work.start(&task).unwrap().number, 2);
+}
+
+/// A reopen kept in the ledger with no `noticeDelivered` at all, as the
+/// build that first kept reopens wrote it, is one nothing confirmed:
+/// the rule has no exception for a record that does not say. Its task
+/// is held until a pass finds the line and confirms it, or writes it
+/// once when it is not there.
+#[test]
+fn a_reopen_recorded_without_the_field_is_held_until_its_notice_is_confirmed() {
+    for line_kept in [true, false] {
+        let work = Reopenable::new();
+        let task = work.completed_task();
+        let reopened = work.reopen(&task, "Kept by an older build").unwrap();
+        assert!(reopened.reopens[0].notice_delivered);
+        let path = work.dir.0.join("orchestrations.json");
+        let mut ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let kept = ledger["tasks"][&task.id]["reopens"][0]
+            .as_object_mut()
+            .unwrap();
+        assert_eq!(kept.remove("noticeDelivered"), Some(json!(true)));
+        fs::write(&path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+        if !line_kept {
+            crate::transcript::forget(&work.key);
+        }
+        let work = work.restarted();
+
+        assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+        let fault = NoFolderSync::begin();
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(0));
+        assert_eq!(work.start(&task).unwrap_err(), REOPEN_NOT_TOLD);
+        drop(fault);
+        assert_eq!(work.store.deliver_reopen_notices_now(), Ok(1));
+        let told = work.told();
+        assert_eq!(told.len(), 1, "line kept: {line_kept}: {told:?}");
+        assert_eq!(told[0]["spec"], "Kept by an older build");
+        assert_eq!(work.start(&task).unwrap().number, 2);
+    }
+}
+
+/// The scheduler reads a chat's transcript once a pass for all the
+/// notices it owes there, and leaves a chat that gave no receipt alone
+/// for longer each time: 4 s, doubling to a minute. A wait is the
+/// chat's; a receipt ends it.
+#[test]
+fn a_transcript_is_read_once_a_pass_and_less_often_while_it_gives_no_receipt() {
+    assert_eq!(
+        [1, 2, 3, 4, 5, 6, 40].map(notice_wait),
+        [4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000]
+    );
+    let reads = || crate::transcript::READS_BY_TYPE.with(|reads| reads.get());
+    let work = Reopenable::new();
+    let (first, second) = (work.completed_task(), work.completed_task());
+    work.break_transcript();
+    work.reopen(&first, "Fix the first").unwrap();
+    work.reopen(&second, "Fix the second").unwrap();
+    let wait = || {
+        let waits = work.store.reopen_waits.lock().unwrap();
+        waits.get(&work.key).copied()
+    };
+    let (tries, next) = wait().expect("no receipt, so the chat waits");
+    assert_eq!(tries, 2, "one try for each reopen as it was made");
+
+    // Inside the wait nothing is read, though the fault is lifted.
+    work.mend_transcript();
+    let before = reads();
+    assert_eq!(work.store.deliver_reopen_notices(next - 1), Ok(0));
+    assert_eq!(reads(), before, "not asked before its time");
+    assert_eq!(work.start(&first).unwrap_err(), REOPEN_NOT_TOLD);
+
+    // Due, and the fault is back: one read for both notices, and the
+    // next wait is longer.
+    work.break_transcript();
+    assert_eq!(work.store.deliver_reopen_notices(next), Ok(0));
+    assert_eq!(reads(), before + 1, "one read for two notices");
+    assert_eq!(wait(), Some((3, next + 16_000)));
+    assert_eq!(work.store.deliver_reopen_notices(next + 15_999), Ok(0));
+    assert_eq!(reads(), before + 1);
+
+    // Due again with the fault gone: one read, both written, no wait.
+    work.mend_transcript();
+    assert_eq!(work.store.deliver_reopen_notices(next + 16_000), Ok(2));
+    assert_eq!(reads(), before + 2, "one read for two notices");
+    assert_eq!(wait(), None);
+    assert_eq!(work.told().len(), 2);
+    work.start(&first).unwrap();
+    work.start(&second).unwrap();
+    // Nothing owed: nothing read.
+    assert_eq!(work.store.deliver_reopen_notices(next + 16_001), Ok(0));
+    assert_eq!(reads(), before + 2);
+}
+
+/// agent_delete review, M3: a workspace the host is preparing or
+/// cleaning up for a task of the agent's is work in progress. A lease
+/// left on a settled task's retained workspace is not: it stays there
+/// until cleanup, and would keep every agent that ever finished a task.
+#[test]
+fn a_workspace_being_prepared_or_cleaned_up_keeps_its_agent_from_removal() {
+    let repo = Repo::new();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Auto);
+    let ada = TaskAssignee {
+        id: "agent_ada".into(),
+        name: "Ada".into(),
+    };
+    store
+        .mutate(|data| {
+            data.tasks.get_mut(&task.id).unwrap().assignee = Some(ada.clone());
+            Ok(())
+        })
+        .unwrap();
+    let attempt = prepare(&store, &task, Access::Auto).unwrap();
+    assert_eq!(store.agent_work(&ada.id).unwrap().running.len(), 1);
+    report(&store, &attempt, WorkerOutcome::Completed);
+    let settled = store.owned_task("chat:master", &task.id).unwrap().1;
+    let workspace = settled.workspace.unwrap();
+    assert_eq!(workspace.state, WorkspaceState::Retained);
+    assert!(workspace.lease_attempt_id.is_some(), "the lease is kept");
+    assert_eq!(store.removal_of(&ada.id, "Ada"), Ok(None));
+    for (state, busy) in [
+        (WorkspaceState::Cleaning, true),
+        (WorkspaceState::Preparing, true),
+        (WorkspaceState::Ready, false),
+        (WorkspaceState::Cleaned, false),
+    ] {
+        store
+            .mutate(|data| {
+                let task = data.tasks.get_mut(&task.id).unwrap();
+                task.workspace.as_mut().unwrap().state = state.clone();
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.removal_of(&ada.id, "Ada").is_err(), busy, "{state:?}");
+    }
+}
+
+fn choose_on_card(
+    store: &OrchestrationStore,
+    run: &Run,
+    choices: BTreeMap<String, WorkspaceChoice>,
+) -> Result<Run, String> {
+    let snapshot = store.snapshot(Some(&run.id)).unwrap();
+    let ids: Vec<_> = snapshot
+        .tasks
+        .iter()
+        .filter(|t| t.approved_at.is_none())
+        .map(|t| t.id.clone())
+        .collect();
+    store.approve_plan_from_card_with_choices(
+        "chat:master",
+        &run.id,
+        Some(&ids),
+        Some(snapshot.runs[0].plan_approval.as_ref().unwrap().revision),
+        CardView {
+            surface: "chat".into(),
+            shown_ms: Some(3000),
+            updated_ms: None,
+        },
+        (!choices.is_empty()).then_some(&choices),
+    )
+}
+
+fn selected_worker(store: &OrchestrationStore, task: &Task, access: Access) {
+    store
+        .revise_task(
+            "chat:master",
+            &task.id,
+            TaskRevision {
+                route: Some((
+                    Some(automation::WorkerSettings {
+                        agent: ChatAgent::Codex,
+                        access,
+                        model: None,
+                        effort: None,
+                        recovery: None,
+                    }),
+                    task.assignee.clone(),
+                    task.destination.clone(),
+                )),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn workspace_choices_leave_every_run_modes_advice_unchanged_when_absent() {
+    let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+    let _profile = crate::profile::started_in(&home);
+    for mode in [
+        WorkspaceMode::Auto,
+        WorkspaceMode::Mission,
+        WorkspaceMode::Worktree,
+        WorkspaceMode::Direct,
+    ] {
+        for access in [Access::Auto, Access::Read] {
+            let repo = Repo::new();
+            let (store, run, task) = setup(&repo, mode);
+            store.require_plan_approval(&run.id).unwrap();
+            selected_worker(&store, &task, access);
+            let before = stored(&store, &task).workspace_proposal.unwrap();
+            choose_on_card(&store, &run, BTreeMap::new()).unwrap();
+            let approved = stored(&store, &task);
+            assert_eq!(
+                serde_json::to_value(before).unwrap(),
+                serde_json::to_value(approved.workspace_proposal).unwrap()
+            );
+            assert_eq!(
+                approved.approved.unwrap().workspace_mode,
+                Some(first_mode(mode, access))
+            );
+            let launched = prepare(&store, &task, access).unwrap();
+            assert_eq!(launched.is_worktree, first_mode(mode, access).is_worktree());
+        }
+    }
+}
+
+#[test]
+fn workspace_choices_put_writers_in_the_root_and_readers_in_a_worktree() {
+    let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+    let _profile = crate::profile::started_in(&home);
+    for mode in [
+        WorkspaceMode::Auto,
+        WorkspaceMode::Mission,
+        WorkspaceMode::Worktree,
+        WorkspaceMode::Direct,
+    ] {
+        for (access, choice) in [
+            (Access::Auto, WorkspaceChoice::Checkout),
+            (Access::Read, WorkspaceChoice::Worktree),
+        ] {
+            let repo = Repo::new();
+            let (store, run, task) = setup(&repo, mode);
+            store.require_plan_approval(&run.id).unwrap();
+            selected_worker(&store, &task, access);
+            let old = stored(&store, &task)
+                .workspace_proposal
+                .unwrap()
+                .plan
+                .unwrap();
+            choose_on_card(&store, &run, BTreeMap::from([(task.id.clone(), choice)])).unwrap();
+            let fixed = stored(&store, &task);
+            assert_eq!(
+                fixed.approved.as_ref().unwrap().workspace_mode,
+                Some(choice.mode(&run))
+            );
+            let launch = WorkerLaunch {
+                task_id: task.id.clone(),
+                agent: ChatAgent::Codex,
+                model: None,
+                effort: None,
+                access,
+                new_worktree: Some(choice != WorkspaceChoice::Worktree),
+                base_branch: String::new(),
+            };
+            let launched = prepare_launch(&store, &launch, StartedBy::Coordinator).unwrap();
+            assert_eq!(
+                serde_json::to_value(stored(&store, &task).approved).unwrap(),
+                serde_json::to_value(&fixed.approved).unwrap()
+            );
+            assert_eq!(launched.is_worktree, choice == WorkspaceChoice::Worktree);
+            if choice == WorkspaceChoice::Checkout {
+                assert_eq!(launched.cwd, repo.root);
+                if old.mode.is_worktree() {
+                    assert!(!Path::new(&old.cwd).exists());
+                }
+                assert_eq!(
+                    repo.git(&["worktree", "list", "--porcelain"])
+                        .matches("worktree ")
+                        .count(),
+                    1
+                );
+            } else if mode == WorkspaceMode::Mission {
+                assert_eq!(
+                    launched.branch,
+                    format!("feature/mission-{}", run.id.strip_prefix("run_").unwrap())
+                );
+            }
+            report(&store, &launched, WorkerOutcome::Blocked);
+            let retry = prepare(&store, &task, access).unwrap();
+            assert_eq!(retry.cwd, launched.cwd);
+            report(&store, &retry, WorkerOutcome::Completed);
+            let reopened = store
+                .reopen_task(
+                    "chat:master",
+                    &task.id,
+                    "Finish the follow-up in the same workspace".into(),
+                )
+                .unwrap();
+            assert_eq!(
+                reopened.approved.as_ref().unwrap().workspace_mode,
+                Some(choice.mode(&run))
+            );
+            assert_eq!(prepare(&store, &task, access).unwrap().cwd, launched.cwd);
+        }
+    }
+}
+
+fn approved_flag_fixture(
+    mode: WorkspaceMode,
+    choice: Option<WorkspaceChoice>,
+) -> (Repo, OrchestrationStore, Run, Task) {
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, mode);
+    store.require_plan_approval(&run.id).unwrap();
+    selected_worker(&store, &task, Access::Auto);
+    choose_on_card(
+        &store,
+        &run,
+        choice
+            .map(|c| BTreeMap::from([(task.id.clone(), c)]))
+            .unwrap_or_default(),
+    )
+    .unwrap();
+    let task = stored(&store, &task);
+    (repo, store, run, task)
+}
+
+fn preparation_failed_without_workspace(store: &OrchestrationStore, task: &Task) -> Attempt {
+    let launch = super::super::tests::launch_for(&task.id);
+    let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
+    store
+        .fail_preparation(
+            &attempt.id,
+            "Preparation temporarily unavailable".into(),
+            String::new(),
+            String::new(),
+            false,
+        )
+        .unwrap();
+    let failed = store
+        .snapshot(Some(&task.run_id))
+        .unwrap()
+        .attempts
+        .into_iter()
+        .find(|a| a.id == attempt.id)
+        .unwrap();
+    assert!(failed.cwd.is_empty());
+    assert!(stored(store, task).workspace.is_none());
+    failed
+}
+
+/// Exercise reservation AND the real Git allocation. The flag must not
+/// mutate approval or allocate the alternate mode, branch or path.
+fn start_in_approved_plan(
+    repo: &Repo,
+    store: &OrchestrationStore,
+    task: &Task,
+    flag: bool,
+    by: StartedBy<'_>,
+) -> Attempt {
+    let plan = task
+        .workspace_proposal
+        .as_ref()
+        .unwrap()
+        .plan
+        .as_ref()
+        .unwrap();
+    let launch = WorkerLaunch {
+        new_worktree: Some(flag),
+        ..super::super::tests::launch_for(&task.id)
+    };
+    let attempt = prepare_launch(store, &launch, by).unwrap();
+    assert_eq!(attempt.status, AttemptStatus::Running);
+    assert_eq!(attempt.cwd, plan.cwd);
+    assert_eq!(attempt.branch, plan.branch);
+    assert_eq!(attempt.is_worktree, plan.mode.is_worktree());
+    let after = stored(store, task);
+    assert_eq!(after.workspace.as_ref().unwrap().plan.mode, plan.mode);
+    assert_eq!(
+        serde_json::to_value(&after.approved).unwrap(),
+        serde_json::to_value(&task.approved).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&after.workspace_proposal).unwrap(),
+        serde_json::to_value(&task.workspace_proposal).unwrap()
+    );
+    assert_eq!(
+        repo.git(&["worktree", "list", "--porcelain"])
+            .matches("worktree ")
+            .count(),
+        if plan.mode.is_worktree() { 2 } else { 1 }
+    );
+    attempt
+}
+
+/// Review M1: the coordinator's documented false hint, before either a
+/// first start or retry, must reserve the six reviewed cases and Direct
+/// controls without Task.workspace.
+#[test]
+fn coordinator_false_without_saved_workspace_keeps_the_approved_mode() {
+    let home = crate::test_dir::TestDir::new("workspace-flag-profile");
+    let _profile = crate::profile::started_in(&home);
+    for mode in [
+        WorkspaceMode::Worktree,
+        WorkspaceMode::Mission,
+        WorkspaceMode::Auto,
+        WorkspaceMode::Direct,
+    ] {
+        for retry in [false, true] {
+            let (repo, store, _, task) = approved_flag_fixture(mode, None);
+            if retry {
+                preparation_failed_without_workspace(&store, &task);
+            }
+            assert!(stored(&store, &task).workspace.is_none());
+            start_in_approved_plan(&repo, &store, &task, false, StartedBy::Coordinator);
+        }
+    }
+}
+
+/// Review M2: the page generates true from an empty preparation cwd.
+/// Checkout on the plan card fixes Direct across all four run policies.
+#[test]
+fn page_true_after_preparation_failure_keeps_the_approved_mode() {
+    let home = crate::test_dir::TestDir::new("workspace-flag-profile");
+    let _profile = crate::profile::started_in(&home);
+    for (mode, choice) in [
+        (WorkspaceMode::Direct, WorkspaceChoice::Checkout),
+        (WorkspaceMode::Auto, WorkspaceChoice::Checkout),
+        (WorkspaceMode::Mission, WorkspaceChoice::Checkout),
+        (WorkspaceMode::Worktree, WorkspaceChoice::Checkout),
+        (WorkspaceMode::Worktree, WorkspaceChoice::Worktree),
+        (WorkspaceMode::Mission, WorkspaceChoice::Worktree),
+    ] {
+        let (repo, store, _, task) = approved_flag_fixture(mode, Some(choice));
+        let failed = preparation_failed_without_workspace(&store, &task);
+        let page_flag = failed.cwd.trim().is_empty();
+        assert!(page_flag);
+        start_in_approved_plan(
+            &repo,
+            &store,
+            &task,
+            page_flag,
+            StartedBy::Page {
+                retry_of: Some(&failed.id),
+            },
+        );
+    }
+}
+
+/// Host recovery shares the same boundary, including the old false hint.
+#[test]
+fn recovery_flags_without_saved_workspace_keep_every_approved_mode() {
+    let home = crate::test_dir::TestDir::new("workspace-flag-profile");
+    let _profile = crate::profile::started_in(&home);
+    for mode in [
+        WorkspaceMode::Worktree,
+        WorkspaceMode::Mission,
+        WorkspaceMode::Direct,
+    ] {
+        for flag in [false, true] {
+            let (repo, store, _, task) = approved_flag_fixture(mode, None);
+            let failed = preparation_failed_without_workspace(&store, &task);
+            store
+                .mutate(|data| {
+                    data.attempts
+                        .get_mut(&failed.id)
+                        .unwrap()
+                        .execution
+                        .next_retry_at = Some(now_ms() - 1);
+                    Ok(())
+                })
+                .unwrap();
+            let retry =
+                start_in_approved_plan(&repo, &store, &task, flag, StartedBy::Recovery(&failed.id));
+            assert_eq!(retry.execution.retry_count, 1);
+        }
+    }
+}
+
+#[test]
+fn approved_flags_preserve_saved_workspace_and_retained_work() {
+    let home = crate::test_dir::TestDir::new("workspace-flag-profile");
+    let _profile = crate::profile::started_in(&home);
+    for mode in [
+        WorkspaceMode::Worktree,
+        WorkspaceMode::Mission,
+        WorkspaceMode::Direct,
+    ] {
+        let (repo, store, _, task) = approved_flag_fixture(mode, None);
+        let mut previous = prepare(&store, &task, Access::Auto).unwrap();
+        let work = Path::new(&previous.cwd).join("retained.txt");
+        fs::write(&work, "Keep the worker's changes").unwrap();
+        for flag in [false, true] {
+            report(&store, &previous, WorkerOutcome::Blocked);
+            let retry = start_in_approved_plan(
+                &repo,
+                &store,
+                &task,
+                flag,
+                StartedBy::Page {
+                    retry_of: Some(&previous.id),
+                },
+            );
+            assert_eq!(retry.cwd, previous.cwd);
+            assert_eq!(retry.branch, previous.branch);
+            assert_eq!(
+                fs::read_to_string(&work).unwrap(),
+                "Keep the worker's changes"
+            );
+            previous = retry;
+        }
+    }
+}
+
+#[test]
+fn a_legacy_attempt_without_saved_workspace_cannot_change_an_approved_allocation() {
+    let home = crate::test_dir::TestDir::new("workspace-flag-profile");
+    let _profile = crate::profile::started_in(&home);
+    for mode in [
+        WorkspaceMode::Worktree,
+        WorkspaceMode::Mission,
+        WorkspaceMode::Direct,
+    ] {
+        let (repo, store, _, task) = approved_flag_fixture(mode, None);
+        let failed = preparation_failed_without_workspace(&store, &task);
+        let elsewhere = Repo::new();
+        // A nonempty legacy cwd used to skip launch_mode entirely and be
+        // adopted as Direct. It cannot choose an approved task's location.
+        store
+            .mutate(|data| {
+                let a = data.attempts.get_mut(&failed.id).unwrap();
+                a.cwd = elsewhere.root.clone();
+                a.branch = elsewhere.git(&["branch", "--show-current"]);
+                Ok(())
+            })
+            .unwrap();
+        start_in_approved_plan(
+            &repo,
+            &store,
+            &task,
+            false,
+            StartedBy::Page {
+                retry_of: Some(&failed.id),
+            },
+        );
+        assert_eq!(
+            elsewhere
+                .git(&["worktree", "list", "--porcelain"])
+                .matches("worktree ")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn workspace_choices_refuse_the_whole_revision_before_changing_any_task() {
+    let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+    let _profile = crate::profile::started_in(&home);
+    let repo = Repo::new();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Auto);
+    store.require_plan_approval(&run.id).unwrap();
+    selected_worker(&store, &task, Access::Auto);
+    let other = super::super::tests::run(&store);
+    let foreign = super::super::tests::task(&store, &other, vec![]);
+    for invalid in ["missing".to_string(), foreign.id] {
+        let before = serde_json::to_value(store.snapshot(Some(&run.id)).unwrap()).unwrap();
+        assert!(choose_on_card(
+            &store,
+            &run,
+            BTreeMap::from([
+                (task.id.clone(), WorkspaceChoice::Checkout),
+                (invalid, WorkspaceChoice::Worktree)
+            ])
+        )
+        .is_err());
+        assert_eq!(
+            before,
+            serde_json::to_value(store.snapshot(Some(&run.id)).unwrap()).unwrap()
+        );
+    }
+    choose_on_card(&store, &run, BTreeMap::new()).unwrap();
+    let new = super::super::tests::task(&store, &run, vec![]);
+    assert!(choose_on_card(
+        &store,
+        &run,
+        BTreeMap::from([(task.id.clone(), WorkspaceChoice::Checkout)])
+    )
+    .is_err());
+    assert!(stored(&store, &new).approved_at.is_none());
+    // A task already started without a plan cannot acquire a new mode on a later revision.
+    let (active_store, active_run, active) = setup(&repo, WorkspaceMode::Auto);
+    let _ = prepare(&active_store, &active, Access::Auto).unwrap();
+    active_store.require_plan_approval(&active_run.id).unwrap();
+    assert!(choose_on_card(
+        &active_store,
+        &active_run,
+        BTreeMap::from([(active.id, WorkspaceChoice::Checkout)])
+    )
+    .is_err());
+}
+
+#[test]
+fn workspace_choices_for_a_non_git_folder_only_offer_checkout_and_reject_worktree() {
+    let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+    let _profile = crate::profile::started_in(&home);
+    let root = crate::test_dir::TestDir::new("workspace-choice-plain").canonicalized();
+    let store = OrchestrationStore::default();
+    let run = store
+        .create_run_with_mode(
+            "chat:master".into(),
+            "Plain folder".into(),
+            "project".into(),
+            root.to_string_lossy().into_owned(),
+            Some(3),
+            WorkspaceMode::Worktree,
+        )
+        .unwrap();
+    store.require_plan_approval(&run.id).unwrap();
+    let task = super::super::tests::task(&store, &run, vec![]);
+    selected_worker(&store, &task, Access::Auto);
+    assert!(
+        stored(&store, &task).workspace_choice.is_none(),
+        "the stored task holds no derived choice"
+    );
+    let fact = store
+        .snapshot(Some(&run.id))
+        .unwrap()
+        .tasks
+        .into_iter()
+        .find(|t| t.id == task.id)
+        .unwrap()
+        .workspace_choice
+        .unwrap();
+    assert_eq!(fact.advised, WorkspaceChoice::Checkout);
+    assert_eq!(fact.options, vec![WorkspaceChoice::Checkout]);
+    assert!(fact.only_checkout_because.is_some());
+    if std::env::var_os("OCTIQ_RECORD_FACTS").is_some() {
+        println!(
+            "FACT workspace_choice_only_checkout {}",
+            serde_json::to_value(store.snapshot(Some(&run.id)).unwrap()).unwrap()
+        );
+    }
+    let before = serde_json::to_value(store.snapshot(Some(&run.id)).unwrap()).unwrap();
+    assert!(choose_on_card(
+        &store,
+        &run,
+        BTreeMap::from([(task.id.clone(), WorkspaceChoice::Worktree)])
+    )
+    .is_err());
+    assert_eq!(
+        before,
+        serde_json::to_value(store.snapshot(Some(&run.id)).unwrap()).unwrap()
+    );
+    choose_on_card(&store, &run, BTreeMap::new()).unwrap();
+    assert_eq!(
+        prepare(&store, &task, Access::Auto).unwrap().cwd,
+        run.root_path
+    );
+}
+
+#[test]
+fn workspace_choices_advice_is_available_in_every_run_mode_and_git_destination() {
+    let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+    let _profile = crate::profile::started_in(&home);
+    let repo = Repo::new();
+    let plain = crate::test_dir::TestDir::new("workspace-choice-plain").canonicalized();
+    for mode in [
+        WorkspaceMode::Auto,
+        WorkspaceMode::Mission,
+        WorkspaceMode::Worktree,
+        WorkspaceMode::Direct,
+    ] {
+        for root in [&repo.root, &plain.to_string_lossy().into_owned()] {
+            for access in [Access::Auto, Access::Read] {
+                let (store, run, _) = setup(&repo, mode);
+                store.require_plan_approval(&run.id).unwrap();
+                let task = store
+                    .create_task_for(
+                        "chat:master",
+                        run.id.clone(),
+                        "Destination".into(),
+                        "Work in this folder".into(),
+                        vec![],
+                        None,
+                        None,
+                        None,
+                        Some(TaskDestination {
+                            project_id: "destination".into(),
+                            project_name: "Destination".into(),
+                            repository: root.clone(),
+                        }),
+                    )
+                    .unwrap();
+                selected_worker(&store, &task, access);
+                let fact = store
+                    .snapshot(Some(&run.id))
+                    .unwrap()
+                    .tasks
+                    .into_iter()
+                    .find(|t| t.id == task.id)
+                    .unwrap()
+                    .workspace_choice
+                    .unwrap();
+                assert!(
+                    fact.options.contains(&fact.advised),
+                    "{mode:?}, {access:?}, {root}"
+                );
+                if !workflow::has_git(root) {
+                    assert_eq!(fact.options, vec![WorkspaceChoice::Checkout]);
+                    assert_eq!(fact.advised, WorkspaceChoice::Checkout);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn workspace_choices_non_git_destinations_approve_and_start_direct_with_or_without_a_choice() {
+    let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+    let _profile = crate::profile::started_in(&home);
+    let repo = Repo::new();
+    let root = crate::test_dir::TestDir::new("workspace-choice-plain").canonicalized();
+    for mode in [
+        WorkspaceMode::Auto,
+        WorkspaceMode::Mission,
+        WorkspaceMode::Worktree,
+        WorkspaceMode::Direct,
+    ] {
+        for explicit in [false, true] {
+            let (store, run, _) = setup(&repo, mode);
+            store.require_plan_approval(&run.id).unwrap();
+            let task = store
+                .create_task_for(
+                    "chat:master",
+                    run.id.clone(),
+                    "Plain destination".into(),
+                    "Work in this folder".into(),
+                    vec![],
+                    None,
+                    None,
+                    None,
+                    Some(TaskDestination {
+                        project_id: "plain".into(),
+                        project_name: "Plain folder".into(),
+                        repository: root.to_string_lossy().into_owned(),
+                    }),
+                )
+                .unwrap();
+            selected_worker(&store, &task, Access::Auto);
+            if mode == WorkspaceMode::Worktree {
+                assert!(stored(&store, &task)
+                    .workspace_proposal
+                    .unwrap()
+                    .error
+                    .is_some());
+            }
+            let choices = if explicit {
+                BTreeMap::from([(task.id.clone(), WorkspaceChoice::Checkout)])
+            } else {
+                BTreeMap::new()
+            };
+            choose_on_card(&store, &run, choices).unwrap();
+            let approved = stored(&store, &task);
+            assert_eq!(
+                approved.approved.unwrap().workspace_mode,
+                Some(WorkspaceMode::Direct)
+            );
+            let proposal = approved.workspace_proposal.unwrap();
+            assert!(proposal.error.is_none());
+            assert!(!proposal.provisional);
+            assert_eq!(proposal.plan.unwrap().mode, WorkspaceMode::Direct);
+            let launched = prepare(&store, &task, Access::Auto).unwrap();
+            assert_eq!(launched.status, AttemptStatus::Running);
+            assert_eq!(launched.cwd, root.to_string_lossy());
+            assert!(!launched.is_worktree);
+            assert_eq!(
+                stored(&store, &task).workspace.unwrap().plan.mode,
+                WorkspaceMode::Direct
+            );
+        }
+    }
+}
+
+#[test]
+fn workspace_choices_are_fixed_at_reservation_and_checkout_writers_wait() {
+    let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+    let _profile = crate::profile::started_in(&home);
+    let repo = Repo::new();
+    let (store, run, first) = setup(&repo, WorkspaceMode::Auto);
+    store.require_plan_approval(&run.id).unwrap();
+    let second = super::super::tests::task(&store, &run, vec![]);
+    for task in [&first, &second] {
+        selected_worker(&store, task, Access::Auto);
+    }
+    choose_on_card(
+        &store,
+        &run,
+        BTreeMap::from([
+            (first.id.clone(), WorkspaceChoice::Checkout),
+            (second.id.clone(), WorkspaceChoice::Checkout),
+        ]),
+    )
+    .unwrap();
+    let before = store.snapshot(Some(&run.id)).unwrap();
+    let launch = WorkerLaunch {
+        task_id: first.id.clone(),
+        agent: ChatAgent::Codex,
+        model: None,
+        effort: None,
+        access: Access::Auto,
+        new_worktree: Some(true),
+        base_branch: String::new(),
+    };
+    assert_eq!(automation::ready_wave(&before, &before.runs[0]).len(), 1);
+    let one = prepare_launch(&store, &launch, StartedBy::Page { retry_of: None }).unwrap();
+    assert_eq!(one.cwd, repo.root);
+    assert!(!one.is_worktree);
+    assert_eq!(
+        serde_json::to_value(stored(&store, &first).approved).unwrap(),
+        serde_json::to_value(
+            &before
+                .tasks
+                .iter()
+                .find(|t| t.id == first.id)
+                .unwrap()
+                .approved
+        )
+        .unwrap()
+    );
+    let snapshot = store.snapshot(Some(&run.id)).unwrap();
+    assert!(automation::ready_wave(&snapshot, &snapshot.runs[0]).is_empty());
+    assert!(prepare(&store, &second, Access::Auto)
+        .unwrap_err()
+        .contains("can start when it finishes"));
+    assert_eq!(stored(&store, &second).status, TaskStatus::Ready);
+    assert_eq!(store.snapshot(Some(&run.id)).unwrap().attempts.len(), 1);
+    report(&store, &one, WorkerOutcome::Completed);
+    assert_eq!(prepare(&store, &second, Access::Auto).unwrap().cwd, one.cwd);
+}
+
+#[test]
+fn workspace_choices_snapshot_records_the_host_contract_for_the_page() {
+    let home = crate::test_dir::TestDir::new("workspace-choice-profile");
+    let _profile = crate::profile::started_in(&home);
+    let repo = Repo::new();
+    let (store, run, writer) = setup(&repo, WorkspaceMode::Auto);
+    store.require_plan_approval(&run.id).unwrap();
+    let reader = super::super::tests::task(&store, &run, vec![]);
+    selected_worker(&store, &writer, Access::Auto);
+    selected_worker(&store, &reader, Access::Read);
+    let pending = store.snapshot(Some(&run.id)).unwrap();
+    assert_eq!(
+        pending
+            .tasks
+            .iter()
+            .find(|t| t.id == writer.id)
+            .unwrap()
+            .workspace_choice
+            .as_ref()
+            .unwrap()
+            .advised,
+        WorkspaceChoice::Worktree
+    );
+    assert_eq!(
+        pending
+            .tasks
+            .iter()
+            .find(|t| t.id == reader.id)
+            .unwrap()
+            .workspace_choice
+            .as_ref()
+            .unwrap()
+            .advised,
+        WorkspaceChoice::Checkout
+    );
+    choose_on_card(
+        &store,
+        &run,
+        BTreeMap::from([
+            (writer.id, WorkspaceChoice::Checkout),
+            (reader.id, WorkspaceChoice::Worktree),
+        ]),
+    )
+    .unwrap();
+    let approved = store.snapshot(Some(&run.id)).unwrap();
+    assert!(approved
+        .tasks
+        .iter()
+        .all(|t| t.workspace_choice.as_ref().unwrap().chosen.is_some()));
+    if std::env::var_os("OCTIQ_RECORD_FACTS").is_some() {
+        println!(
+            "FACT workspace_choice_pending {}",
+            serde_json::to_value(pending).unwrap()
+        );
+        println!(
+            "FACT workspace_choice_approved {}",
+            serde_json::to_value(approved).unwrap()
+        );
+    }
+}
+
+#[test]
+fn a_legacy_flag_cannot_override_auto_policy_for_a_first_writer() {
+    let repo = Repo::new();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Auto);
+    let launch = WorkerLaunch {
+        task_id: task.id.clone(),
+        agent: ChatAgent::Codex,
+        access: Access::Auto,
+        model: None,
+        effort: None,
+        new_worktree: Some(false),
+        base_branch: String::new(),
+    };
+    let (run, task, reserved, previous) = store.reserve_attempt("chat:master", &launch).unwrap();
+    assert!(store
+        .prepare_task_workspace(
+            &ChatManager::default(),
+            &run,
+            &task,
+            &reserved,
+            previous.as_ref(),
+            &launch
+        )
+        .unwrap_err()
+        .contains("first writing attempt"));
+    assert_eq!(repo.git(&["status", "--porcelain"]), "");
+}
+
+#[test]
+fn a_read_only_auto_checkout_cannot_be_silently_upgraded_to_a_writer_on_retry() {
+    let repo = Repo::new();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Auto);
+    let first = prepare(&store, &task, Access::Read).unwrap();
+    report(&store, &first, WorkerOutcome::Blocked);
+    assert!(prepare(&store, &task, Access::Auto)
+        .unwrap_err()
+        .contains("read-only work"));
+    assert_eq!(repo.git(&["status", "--porcelain"]), "");
+}
+fn h11_preservation_cases(mode: WorkspaceMode, abandon: bool) {
+    for case in ["stat-cache", "ident", "config", "ignored"] {
+        let repo = Repo::new();
+        repo.commit(&repo.root, ".gitattributes", "id.txt ident\n");
+        repo.commit(&repo.root, "id.txt", "$Id$\n");
+        repo.commit(&repo.root, ".gitignore", "source/\n");
+        repo.remote();
+        let (store, run, task) = setup(&repo, mode);
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        report(&store, &first, WorkerOutcome::Completed);
+        let head = repo.git(&["rev-parse", "HEAD"]);
+        let target = Path::new(&first.cwd).join("source.txt");
+        let admin =
+            crate::git_ops::lifespan::text(&first.cwd, &["rev-parse", "--absolute-git-dir"])
+                .unwrap();
+        let ignored = Path::new(&first.cwd).join("source/private.txt");
+        match case {
+            "stat-cache" => {
+                crate::git_ops::lifespan::text(&first.cwd, &["config", "core.trustctime", "false"])
+                    .unwrap();
+                crate::git_ops::lifespan::text(
+                    &first.cwd,
+                    &["config", "core.checkStat", "minimal"],
+                )
+                .unwrap();
+                let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(&target)
+                    .unwrap()
+                    .set_times(fs::FileTimes::new().set_modified(old))
+                    .unwrap();
+                crate::git_ops::lifespan::text(&first.cwd, &["update-index", "--refresh"]).unwrap();
+                fs::write(&target, "authored\n").unwrap();
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(&target)
+                    .unwrap()
+                    .set_times(fs::FileTimes::new().set_modified(old))
+                    .unwrap();
+            }
+            "ident" => {
+                fs::write(
+                    Path::new(&first.cwd).join("id.txt"),
+                    "$Id: Unique authored note $\n",
+                )
+                .unwrap();
+                crate::git_ops::lifespan::text(&first.cwd, &["add", "id.txt"]).unwrap();
+            }
+            "config" => fs::write(
+                Path::new(&admin).join("config.worktree"),
+                "# unique worktree settings\n",
+            )
+            .unwrap(),
+            "ignored" => {
+                crate::profile::make_dir(ignored.parent().unwrap()).unwrap();
+                fs::write(&ignored, "unique ignored original").unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            crate::git_ops::lifespan::text(&first.cwd, &["status", "--porcelain=v1"])
+                .unwrap()
+                .is_empty(),
+            "{case}"
+        );
+        let remove = || -> Result<(), String> {
+            if mode == WorkspaceMode::Mission {
+                store
+                    .close_mission(&ChatManager::default(), "chat:master", &run.id, abandon)
+                    .map(|_| ())
+            } else {
+                store
+                    .cleanup_workspace(
+                        &ChatManager::default(),
+                        "chat:master",
+                        &task.id,
+                        abandon,
+                        &head,
+                    )
+                    .map(|_| ())
+            }
+        };
+        let error = remove().unwrap_err();
+        assert!(
+            Path::new(&first.cwd).exists(),
+            "{mode:?} {abandon} {case}: {error}"
+        );
+        match case {
+            "stat-cache" => assert_eq!(fs::read_to_string(&target).unwrap(), "authored\n"),
+            "ident" => assert_eq!(
+                fs::read_to_string(Path::new(&first.cwd).join("id.txt")).unwrap(),
+                "$Id: Unique authored note $\n"
+            ),
+            "config" => assert!(
+                fs::read_to_string(Path::new(&admin).join("config.worktree"))
+                    .unwrap()
+                    .contains("unique worktree")
+            ),
+            "ignored" => assert_eq!(
+                fs::read_to_string(&ignored).unwrap(),
+                "unique ignored original"
+            ),
+            _ => unreachable!(),
+        }
+        // Only fixture-owned adversarial bytes are replaced with an actual
+        // Restore. The same endpoint must then really remove the control.
+        match case {
+            "stat-cache" | "ident" => {
+                let name = if case == "ident" {
+                    "id.txt"
+                } else {
+                    "source.txt"
+                };
+                fs::remove_file(Path::new(&first.cwd).join(name)).unwrap();
+                crate::git_ops::lifespan::text(&first.cwd, &["checkout-index", "-f", "--", name])
+                    .unwrap();
+                crate::git_ops::lifespan::text(&first.cwd, &["add", name]).unwrap();
+            }
+            "config" => fs::remove_file(Path::new(&admin).join("config.worktree")).unwrap(),
+            "ignored" => fs::remove_file(&ignored).unwrap(),
+            _ => unreachable!(),
+        }
+        remove().unwrap_or_else(|e| panic!("safe control {mode:?} {abandon} {case}: {e}"));
+        assert!(!Path::new(&first.cwd).exists());
+    }
+}
+#[test]
+fn h11_task_cleanup_preserves_raw_config_and_ignored_data() {
+    h11_preservation_cases(WorkspaceMode::Worktree, false);
+}
+#[test]
+fn h11_task_abandon_preserves_raw_config_and_ignored_data() {
+    h11_preservation_cases(WorkspaceMode::Worktree, true);
+}
+#[test]
+fn h11_mission_close_preserves_raw_config_and_ignored_data() {
+    h11_preservation_cases(WorkspaceMode::Mission, false);
+}
+#[test]
+fn h11_mission_abandon_preserves_raw_config_and_ignored_data() {
+    h11_preservation_cases(WorkspaceMode::Mission, true);
+}
+
+fn m13_shared_mission_chat(abandon: bool, active: bool) {
+    let home = crate::test_dir::TestDir::new("m13-mission-profile");
+    let _profile = crate::profile::started_in(&home);
+    let (alpha, beta) = (Repo::new(), Repo::new());
+    alpha.remote();
+    beta.remote();
+    let (store, run, first) = setup(&alpha, WorkspaceMode::Mission);
+    let second = store
+        .create_task_for(
+            "chat:master",
+            run.id.clone(),
+            "Beta".into(),
+            "Second repository".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Some(TaskDestination {
+                project_id: "beta".into(),
+                project_name: "Beta".into(),
+                repository: beta.root.clone(),
+            }),
+        )
+        .unwrap();
+    let a = prepare(&store, &first, Access::Auto).unwrap();
+    let b = prepare(&store, &second, Access::Auto).unwrap();
+    report(&store, &a, WorkerOutcome::Completed);
+    report(&store, &b, WorkerOutcome::Completed);
+    let chats = ChatManager::default();
+    let key = "chat:m13-shared";
+    chats.test_remember_start_with_extra(key, &a.cwd, Some(vec![b.cwd.clone()]));
+    if active {
+        chats.test_launch(key);
+        chats.test_busy(key, true);
+        let error = store
+            .close_mission(&chats, "chat:master", &run.id, abandon)
+            .unwrap_err();
+        assert!(error.contains("already running"), "{error}");
+        assert!(chats.has_process(key), "cleanup must not stop this chat");
+        for path in [&a.cwd, &b.cwd] {
+            assert!(Path::new(path).is_dir());
+            assert!(chats.test_lifespan_admission(path).is_ok());
+        }
+        chats.test_end(key);
+    }
+    // No restart and no forgetting StartContext: cwd and extraDirs still
+    // refer to both roots. Both safe folders must actually be removed.
+    let closed = store
+        .close_mission(&chats, "chat:master", &run.id, abandon)
+        .unwrap();
+    assert_eq!(closed.status, RunStatus::Closed);
+    assert_eq!(closed.mission_delivery.len(), 2);
+    assert!(closed.mission_delivery.iter().all(|d| d.removed));
+    for path in [&a.cwd, &b.cwd] {
+        assert!(!Path::new(path).exists());
+        assert!(chats.test_lifespan_admission(path).is_ok());
+    }
+    assert!(chats.claim_start(key).is_ok(), "claim leaked after removal");
+}
+
+#[test]
+fn m13_mission_close_removes_both_roots_of_one_stopped_chat() {
+    m13_shared_mission_chat(false, false);
+}
+#[test]
+fn m13_mission_abandon_removes_both_roots_of_one_stopped_chat() {
+    m13_shared_mission_chat(true, false);
+}
+#[test]
+fn m13_mission_close_keeps_both_roots_while_shared_chat_is_active() {
+    m13_shared_mission_chat(false, true);
+}
+#[test]
+fn m13_mission_abandon_keeps_both_roots_while_shared_chat_is_active() {
+    m13_shared_mission_chat(true, true);
+}
+
+fn m13_task_and_validation_chat(abandon: bool) {
+    let home = crate::test_dir::TestDir::new("m13-task-profile");
+    let _profile = crate::profile::started_in(&home);
+    let repo = Repo::new();
+    repo.remote();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Worktree);
+    let first = prepare(&store, &task, Access::Auto).unwrap();
+    let head = repo.git(&["rev-parse", "HEAD"]);
+    let validation = store
+        .create_validation(&first.worker_chat_key, &task.id, &head, vec![])
+        .unwrap();
+    report(&store, &first, WorkerOutcome::Completed);
+    let chats = ChatManager::default();
+    let key = "chat:m13-task-validation";
+    chats.test_remember_start_with_extra(key, &first.cwd, Some(vec![validation.clone()]));
+    chats.test_launch(key);
+    chats.test_busy(key, true);
+    assert!(store
+        .remove_validation(&chats, "chat:master", &task.id, &validation)
+        .unwrap_err()
+        .contains("already running"));
+    assert!(store
+        .cleanup_workspace(&chats, "chat:master", &task.id, abandon, &head)
+        .unwrap_err()
+        .contains("validation"));
+    assert!(Path::new(&validation).exists() && Path::new(&first.cwd).exists());
+    assert!(chats.has_process(key));
+    chats.test_end(key);
+    store
+        .remove_validation(&chats, "chat:master", &task.id, &validation)
+        .unwrap();
+    assert!(!Path::new(&validation).exists());
+    assert!(stored(&store, &task)
+        .workspace
+        .unwrap()
+        .validation_paths
+        .is_empty());
+    chats.test_launch(key);
+    let error = store
+        .cleanup_workspace(&chats, "chat:master", &task.id, abandon, &head)
+        .unwrap_err();
+    assert!(error.contains("already running"), "{error}");
+    assert!(Path::new(&first.cwd).exists());
+    chats.test_end(key);
+    // The previous validation claim must have dropped before task cleanup.
+    store
+        .cleanup_workspace(&chats, "chat:master", &task.id, abandon, &head)
+        .unwrap();
+    assert!(!Path::new(&first.cwd).exists());
+    for path in [&first.cwd, &validation] {
+        assert!(chats.test_lifespan_admission(path).is_ok());
+    }
+    assert!(chats.claim_start(key).is_ok());
+}
+#[test]
+fn m13_task_cleanup_after_validation_releases_the_shared_stopped_chat() {
+    m13_task_and_validation_chat(false);
+}
+#[test]
+fn m13_task_abandon_after_validation_releases_the_shared_stopped_chat() {
+    m13_task_and_validation_chat(true);
+}
+
+// ---- Missions: one worktree per repository, open until closed --------
+
+fn close(store: &OrchestrationStore, run: &Run, abandon: bool) -> Result<Run, String> {
+    store.close_mission(&ChatManager::default(), "chat:master", &run.id, abandon)
+}
+
+#[test]
+fn a_mission_shares_one_worktree_and_a_follow_up_lands_on_its_branch() {
+    let repo = Repo::new();
+    let (store, run, first) = setup(&repo, WorkspaceMode::Mission);
+    let one = prepare(&store, &first, Access::Auto).unwrap();
+    let id = run.id.strip_prefix("run_").unwrap();
+    assert_eq!(one.branch, format!("feature/mission-{id}"));
+    let made = repo.commit(&one.cwd, "first.txt", "first");
+    report(&store, &one, WorkerOutcome::Completed);
+
+    // The follow-up's plan is the mission's worktree, and not a conflict.
+    let follow_up = super::super::tests::task(&store, &run, vec![]);
+    let proposal = stored(&store, &follow_up).workspace_proposal.unwrap();
+    assert_eq!(proposal.conflict, None);
+    assert_eq!(proposal.plan.unwrap().branch, one.branch);
+    let two = prepare(&store, &follow_up, Access::Auto).unwrap();
+    assert_eq!(
+        (two.cwd.as_str(), two.branch.as_str()),
+        (one.cwd.as_str(), one.branch.as_str())
+    );
+    assert_eq!(repo.git(&["rev-parse", &two.branch]), made);
+}
+
+#[test]
+fn a_mission_has_one_writer_at_a_time_and_the_scheduler_holds_the_next() {
+    let repo = Repo::new();
+    let (store, run, first) = setup(&repo, WorkspaceMode::Mission);
+    let second = super::super::tests::task(&store, &run, vec![]);
+    let wave = |store: &OrchestrationStore| {
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let run = snapshot.runs[0].clone();
+        automation::ready_wave(&snapshot, &run)
+            .into_iter()
+            .map(|t| t.id)
+            .collect::<Vec<_>>()
+    };
+    // Two ready writers: the wave takes one, not both.
+    assert_eq!(wave(&store).len(), 1);
+    let one = prepare(&store, &first, Access::Auto).unwrap();
+    assert!(
+        wave(&store).is_empty(),
+        "the second writer waits while the first works"
+    );
+    // Started by hand anyway, it is refused before an attempt exists, so
+    // the task stays ready for its turn instead of failing.
+    let refused = prepare_from(&store, &second, Access::Auto, "").unwrap_err();
+    assert!(refused.contains("can start when it finishes"), "{refused}");
+    report(&store, &one, WorkerOutcome::Completed);
+    assert_eq!(wave(&store), vec![second.id.clone()]);
+    assert_eq!(prepare(&store, &second, Access::Auto).unwrap().cwd, one.cwd);
+}
+
+#[test]
+fn closing_waits_for_the_merge_then_removes_the_worktree_and_local_branch() {
+    let repo = Repo::new();
+    repo.remote();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Mission);
+    let one = prepare(&store, &task, Access::Auto).unwrap();
+    repo.commit(&one.cwd, "feature.txt", "done");
+    report(&store, &one, WorkerOutcome::Completed);
+
+    let refused = close(&store, &run, false).unwrap_err();
+    assert!(refused.contains("not merged"), "{refused}");
+    assert!(
+        Path::new(&one.cwd).exists(),
+        "a refused close removes nothing"
+    );
+    let refreshed = store.refresh_mission("chat:master", &run.id).unwrap();
+    assert!(!refreshed.mission_delivery[0].merged);
+
+    // The lead fast-forwards the base and pushes it; no PR, branch never pushed.
+    repo.git(&["merge", "--ff-only", &one.branch]);
+    repo.git(&["push", "origin", "main"]);
+    assert!(
+        store
+            .refresh_mission("chat:master", &run.id)
+            .unwrap()
+            .mission_delivery[0]
+            .merged
+    );
+
+    let closed = close(&store, &run, false).unwrap();
+    assert_eq!(closed.status, RunStatus::Closed);
+    assert!(!closed.abandoned && closed.closed_at.is_some());
+    assert!(closed.mission_delivery[0].removed && closed.mission_delivery[0].branch_deleted);
+    assert!(!Path::new(&one.cwd).exists());
+    assert!(repo.git(&["branch", "--list", &one.branch]).is_empty());
+    assert_eq!(
+        stored(&store, &task).workspace.unwrap().state,
+        WorkspaceState::Cleaned
+    );
+    // Closed is closed: new work is a new mission.
+    let again = store.create_task(
+        "chat:master",
+        run.id.clone(),
+        "More".into(),
+        "More".into(),
+        vec![],
+        None,
+        None,
+    );
+    assert!(again.unwrap_err().contains("closed"));
+}
+
+#[test]
+fn abandoning_keeps_the_branch_and_never_drops_unpublished_commits() {
+    let repo = Repo::new();
+    repo.remote();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Mission);
+    let one = prepare(&store, &task, Access::Auto).unwrap();
+    let head = repo.commit(&one.cwd, "draft.txt", "half done");
+    report(&store, &one, WorkerOutcome::Completed);
+    let refused = close(&store, &run, true).unwrap_err();
+    assert!(refused.contains("Push"), "{refused}");
+    assert!(Path::new(&one.cwd).exists());
+
+    crate::git_ops::workflow::tests::push_branch(&one.cwd, &one.branch);
+    let closed = close(&store, &run, true).unwrap();
+    assert_eq!(closed.status, RunStatus::Closed);
+    assert!(closed.abandoned);
+    assert!(!closed.mission_delivery[0].branch_deleted);
+    assert!(!Path::new(&one.cwd).exists());
+    assert_eq!(repo.git(&["rev-parse", &one.branch]), head);
+}
+
+#[test]
+fn a_task_cannot_clean_up_the_worktree_its_mission_shares() {
+    let repo = Repo::new();
+    let (store, _, task) = setup(&repo, WorkspaceMode::Mission);
+    let one = prepare(&store, &task, Access::Auto).unwrap();
+    report(&store, &one, WorkerOutcome::Completed);
+    let head = repo.git(&["rev-parse", &one.branch]);
+    let refused = store
+        .cleanup_workspace(
+            &ChatManager::default(),
+            "chat:master",
+            &task.id,
+            true,
+            &head,
+        )
+        .unwrap_err();
+    assert!(refused.contains("Close the mission"), "{refused}");
+    assert!(Path::new(&one.cwd).exists());
+}
+
+/// What `chat_complete_preview` reads: the runs a chat coordinates, and
+/// whether Close would go through, without changing or fetching anything.
+#[test]
+fn a_coordinators_runs_say_when_their_mission_can_be_closed() {
+    let repo = Repo::new();
+    repo.remote();
+    let (store, run, task) = setup(&repo, WorkspaceMode::Mission);
+    let only = |store: &OrchestrationStore| {
+        let mut runs = store.coordinated_runs("chat:master").unwrap();
+        assert_eq!(runs.len(), 1);
+        runs.remove(0)
+    };
+    assert!(store
+        .coordinated_runs("chat:someone-else")
+        .unwrap()
+        .is_empty());
+
+    // A worker is on it: live, and Close says so in its own words.
+    let one = prepare(&store, &task, Access::Auto).unwrap();
+    let working = only(&store);
+    assert_eq!(working.run_id, run.id);
+    assert!(working.live && working.mission);
+    assert_eq!(working.workers_running, 1);
+    assert!(!working.close_eligible);
+    assert!(working
+        .close_blocker
+        .unwrap()
+        .contains("settle every worker"));
+
+    // Settled, with a file nobody committed.
+    std::fs::write(Path::new(&one.cwd).join("scratch.txt"), "left behind").unwrap();
+    report(&store, &one, WorkerOutcome::Completed);
+    let dirty = only(&store);
+    assert_eq!(dirty.workers_running, 0);
+    assert!(dirty.close_blocker.unwrap().contains("uncommitted"));
+
+    // Committed, but nothing has asked git about the merge yet.
+    repo.commit(&one.cwd, "feature.txt", "done");
+    std::fs::remove_file(Path::new(&one.cwd).join("scratch.txt")).unwrap();
+    let unasked = only(&store);
+    assert!(unasked
+        .close_blocker
+        .unwrap()
+        .contains("Refresh the mission"));
+
+    // Merged and refreshed: eligible, and nothing was removed by asking.
+    repo.git(&["merge", "--ff-only", &one.branch]);
+    repo.git(&["push", "origin", "main"]);
+    store.refresh_mission("chat:master", &run.id).unwrap();
+    let ready = only(&store);
+    assert!(ready.close_eligible, "{:?}", ready.close_blocker);
+    assert_eq!(ready.close_blocker, None);
+    assert!(Path::new(&one.cwd).exists());
+
+    // A commit made after the refresh is not covered by it.
+    repo.commit(&one.cwd, "later.txt", "more");
+    assert!(!only(&store).close_eligible);
+
+    // Stopped but not closed, a mission is still the person's to close;
+    // closed, it is no longer listed.
+    repo.git(&["merge", "--ff-only", &one.branch]);
+    repo.git(&["push", "origin", "main"]);
+    store.refresh_mission("chat:master", &run.id).unwrap();
+    close(&store, &run, false).unwrap();
+    assert!(store.coordinated_runs("chat:master").unwrap().is_empty());
+}
