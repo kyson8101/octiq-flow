@@ -1,0 +1,175 @@
+/* Cached messages remain readable during transcript synchronization.
+
+   The note takes no height of its own. It was a 30px strip above the
+   transcript, there for as long as the catch-up took: every time a chat was
+   opened again, the whole conversation stepped down and, a third of a second
+   later, back up. It rides over the top corner of the transcript instead, and
+   waits a beat before showing at all, so a catch-up that is already answered
+   says nothing. */
+.chat-sync-note {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 0;
+  height: 0;
+  pointer-events: none;
+}
+.chat-sync-note > span {
+  position: absolute;
+  top: 6px;
+  left: 16px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-1);
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  animation: enter-fade var(--enter-duration) var(--enter-ease) 160ms backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-sync-note > span { animation: none; }
+}
+
+.history-more {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 16px;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+.history-more button {
+  height: 44px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg-1);
+  background: var(--bg-1);
+  cursor: pointer;
+}
+.history-more button:disabled { opacity: 0.6; cursor: wait; }
+.history-start {
+  height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.skill-reload {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.skill-reload button {
+  font: inherit;
+  color: var(--fg-2);
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.skill-reload button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* Mobile project navigation shares one row with its direct actions. Keep
+   touch targets generous; reclaim the separate heading and pill padding. */
+@media (max-width: 859.98px) {
+  .projects-screen .projects-return {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  .projects-screen .projects-return > span { display: none; }
+  .projects-screen .projects-return-icon { display: block; }
+
+  .projects-screen .proj-list { padding-top: 4px; }
+  .projects-screen .proj-btn { height: 44px; }
+  .projects-screen .proj-node { --sib-mid: 22px; }
+}
+
+.work-location { flex-wrap: wrap; }
+
+/* Recovered calls keep their words, without claiming the turn is broken. */
+.tool-error.is-recovered > .tool-head-row .tool-icon { --tint: var(--fg-3); }
+.tool-group.tool-error.is-recovered .tool-summary-icon,
+.tool-group.is-recovered .tool-result-failed,
+.tool.is-recovered > .tool-head-row .tool-state.is-error { color: var(--fg-3); }
+
+.turn-work { min-width: 0; }
+.turn-work-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0;
+  border: 0; padding: 6px 0; background: none; color: var(--fg-3);
+  font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+}
+.turn-work-head > svg { flex: 0 0 auto; }
+.turn-work-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn-work-failed { flex: 0 0 auto; white-space: nowrap; }
+.turn-work-failed.is-danger { color: var(--danger); }
+.turn-work-head:hover { color: var(--fg-2); }
+
+/* Keep the final reply in place when a live collapse leaves a short page. */
+.msgs-inner { padding-top: calc(18px + var(--fold-space, 0px)); }
+
+/* Reserve the final reply's copy line while it is live, so ending the turn
+   adds no height below the words the reader is following. */
+.msg-foot.is-placeholder { visibility: hidden; }
+
+/* A judged auto-mode refusal asks in a line, and so does an outage of
+   Claude's check (neutral). Codex cards keep their surface; only the
+   warning's icon/rule carries amber here. */
+.safety-refusal {
+  container-type: inline-size;
+  flex: 0 0 auto; width: 100%; max-width: var(--chat-column);
+  min-width: 0; margin: 0 auto 4px; padding: 0 0 0 8px;
+  border: 0; border-left: 2px solid var(--warn); border-radius: 0; background: none;
+}
+.safety-refusal-row { display: flex; align-items: center; gap: 6px; min-height: 28px; min-width: 0; }
+.safety-refusal-icon { flex: 0 0 14px; color: var(--warn); font-size: 12px; text-align: center; }
+/* An outage of Claude's check is no verdict and no warning: the judged row's
+   shape with a neutral rule and info icon, and Retry once kept on the row. */
+.safety-refusal.is-outage { border-left-color: var(--border); }
+.safety-refusal.is-outage .safety-refusal-icon { color: var(--fg-3); }
+.safety-refusal-copy { display: flex; align-items: baseline; gap: 0; flex: 1 1 auto; min-width: 0; font-size: 12px; }
+.safety-refusal-context { display: inline-flex; flex: 0 1 auto; min-width: 0; max-width: 35%; gap: 0; color: var(--fg-3); overflow: hidden; white-space: nowrap; }
+.safety-refusal-context-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.safety-refusal-context > [aria-hidden] { flex: 0 0 auto; margin-left: 3px; }
+.safety-refusal-context { margin-right: 6px; }
+.safety-refusal-subject { display: inline-flex; align-items: baseline; gap: 6px; flex: 0 0 auto; max-width: 100%; min-width: 0; }
+.safety-refusal-context + .safety-refusal-subject { max-width: calc(100% - 6px); }
+.safety-refusal-what { flex: 0 0 auto; color: var(--fg-2); white-space: nowrap; }
+.safety-refusal-reason { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-3); }
+.safety-refusal-reason::before { content: "·"; margin-right: 6px; }
+.safety-refusal-answers { display: flex; flex: 0 0 auto; gap: 5px; margin-left: auto; }
+.safety-refusal .ask-btn { min-height: 26px; padding: 3px 8px; font-size: 11.5px; }
+.safety-refusal .ask-btn:not(.is-primary) { border-color: transparent; color: var(--fg-3); background: none; }
+.safety-refusal-toggle { display: grid; place-items: center; flex: 0 0 auto; width: 28px; min-height: 28px; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--fg-3); background: none; cursor: pointer; }
+.safety-refusal-toggle:hover { color: var(--fg-1); background: var(--bg-2); }
+.safety-refusal-toggle:focus-visible { outline: 2px solid var(--decide); outline-offset: 1px; }
+.safety-refusal-toggle[aria-expanded="true"] .safety-card-chevron { transform: rotate(180deg); }
+.safety-refusal-body { min-width: 0; padding: 2px 6px 6px 20px; }
+.safety-refusal .safety-card-preview { max-height: none; overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; }
+.safety-refusal .safety-card-preview > span { display: contents; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
+.safety-refusal .safety-card-buttons { margin-top: 4px; }
+@container (max-width: 560px) {
+  .safety-refusal-row { flex-wrap: wrap; }
+  .safety-refusal-copy { flex: 1 1 calc(100% - 26px); min-height: 28px; align-items: center; }
+  .safety-refusal-answers { margin-left: 20px; }
+  .safety-refusal .ask-btn { min-height: 44px; padding: 6px 10px; }
+  .safety-refusal-toggle { width: 44px; min-height: 44px; margin-left: auto; }
+  .safety-refusal .status-row-dismiss { flex-basis: 44px; width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+}

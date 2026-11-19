@@ -1,0 +1,370 @@
+/* ---- Messages --------------------------------------------------------- */
+.msgs {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* The transcript scrolls one way only. A wide code block or table brings its
+     own horizontal scroll; the column of messages around it must not. */
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+/* The space between two things in the transcript is the lower one's own top
+   margin. `.msgs-inner` doubled so it also beats a child's own `margin`
+   shorthand (a safety line is `margin: 0 auto 4px`), which used to stack on the
+   column's gap and now would replace it. */
+.msgs-inner.msgs-inner > * + * { margin-top: 18px; }
+
+/* The host's one-line rows (plan auto-approved, host notifications) are one
+   line each and read as part of the turn around them: a short step in, one
+   straight under the other, and a short step out. Their own height (28/32px,
+   44px on a touch screen) already carries the space inside the line. */
+.msgs-inner.msgs-inner > * + :is(.msg-event, .msg-host) { margin-top: var(--space-1); }
+.msgs-inner.msgs-inner > :is(.msg-event, .msg-host) + * { margin-top: var(--space-2); }
+.msgs-inner.msgs-inner > :is(.msg-event, .msg-host) + :is(.msg-event, .msg-host) { margin-top: 0; }
+
+/* Two lines that used to sit inside the old 18px gap with a margin of their
+   own: the stop mark (-6px, so 12px in all) and the compaction rule (6px, so 24px). */
+.msgs-inner.msgs-inner > .stopmark { margin-top: 12px; }
+.msgs-inner.msgs-inner > .stopmark + * { margin-top: 18px; }
+.msgs-inner.msgs-inner > * + .compacted { margin-top: 24px; }
+
+.msgs-inner {
+  max-width: var(--chat-column);
+  margin: 0 auto;
+  padding: 18px 16px 4px;
+  display: flex;
+  flex-direction: column;
+  /* The space between turns is each turn's own top margin (above), not the
+     column's gap: a gap is one value for every pair, and the host's one-line
+     rows sit closer to what is around them than a turn does to a turn. */
+  gap: 0;
+  /* A flex item's floor is its CONTENT width unless told otherwise, so one
+     long line inside a message would widen this whole column rather than
+     scroll within its own block. */
+  min-width: 0;
+  /* And a floor on the height, which is not about this box at all: it is what
+     puts the jump button at the bottom of the PANE.
+     `.jump-slot` below is sticky, and a sticky box can only be held inside the
+     space its own flow position gives it — with a short transcript that space
+     ends where the last message does, so the button parked half way up the
+     pane, on top of the conversation. A short transcript now fills the
+     scroller, so the slot always starts at its foot and sticks there.
+     `box-sizing` is border-box globally, so the padding above is INSIDE this
+     100% and a transcript that fits does not become scrollable by 22px. */
+  min-height: 100%;
+}
+
+/* The way back down, for a reader who has scrolled away from the end.
+   Following the stream is switched OFF the moment they scroll up (see
+   MessageList), and without this the only way back is to scroll the whole
+   distance by hand — a long transcript makes that a real journey.
+
+   It floats OVER the last of the conversation rather than taking a row of its
+   own: a strip reserved at the foot of the transcript would be empty almost
+   always, and would push the composer up by its height for nothing. */
+.jump-slot {
+  position: sticky;
+  bottom: 0;
+  /* No height at all. The transcript ends where it ends; this hangs over it. */
+  height: 0;
+  z-index: 3;
+  /* Aligned to the message column, not to the pane: on a wide window the pane's
+     left edge is a long way from anything the button refers to. */
+  max-width: var(--chat-column);
+  margin: 0 auto;
+  /* Only the button takes a click. The rest of this strip is the last message,
+     and it has to stay readable and selectable underneath. */
+  pointer-events: none;
+}
+
+/* On the RIGHT, and it was on the left. Two reasons, both about a thumb:
+   the left edge of the transcript is where the drawer's edge-swipe lives, so
+   the button sat in a gesture's lap; and the left is where a tool row draws
+   its icon and its words, which is what it was on top of in the report that
+   moved it. The right of a message is a copy control's column, and that one
+   only exists on the row under the pointer. */
+.jump {
+  pointer-events: auto;
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-1) 82%, transparent);
+  /* What makes it read as floating rather than as a hole in the conversation:
+     the words behind it stay faintly visible and out of focus. */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: var(--fg-1);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  /* Hidden by default, and hidden PROPERLY: opacity alone would leave it
+     catching clicks over the last message it is drawn on top of. */
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(6px) scale(0.92);
+  transition:
+    opacity 160ms ease-out,
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 160ms,
+    background 120ms ease-out,
+    border-color 120ms ease-out;
+}
+
+.jump.is-on {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  /* Visible IMMEDIATELY on the way in, and only delayed on the way out — the
+     0s delay above is what holds it clickable until the fade has finished. */
+  transition-delay: 0s;
+}
+
+.jump:hover {
+  background: var(--bg-2);
+  border-color: var(--border-strong);
+  color: var(--fg-0);
+}
+
+.jump:active {
+  transform: scale(0.94);
+}
+
+/* The loaded bottom of a past window is not the live tail. Words, in the
+   same zero-height overlay, keep that distinction visible without moving
+   the transcript or composer. A phone-sized target at every pointer type. */
+.jump.jump-latest, .app.focus-mode .jump.jump-latest {
+  width: auto;
+  max-width: calc(100% - 32px);
+  height: auto;
+  min-height: 44px;
+  min-width: 44px;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  line-height: 18px;
+  transition: opacity 160ms ease-out, transform 160ms ease-out,
+    visibility 0s linear 160ms, background 160ms ease-out, border-color 160ms ease-out;
+}
+.jump.jump-latest.is-on { transition-delay: 0s; }
+.jump-latest svg { flex-shrink: 0; }
+.jump-latest:disabled { cursor: wait; }
+
+@media (prefers-reduced-motion: reduce) {
+  .jump, .jump.jump-latest, .app.focus-mode .jump.jump-latest {
+    transition:
+      opacity 1ms linear,
+      visibility 0s linear 1ms;
+    transform: none;
+  }
+
+  .jump:active {
+    transform: none;
+  }
+}
+
+/* The one control on this pane that floats over empty space, so it can simply
+   be the size a thumb wants without taking the room from anything. */
+@media (pointer: coarse) {
+  .jump {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* Your turn is a right-hand column: the bubble, then the line under it that
+   says what became of it, each as wide as what it holds. A three-word message
+   is a three-word bubble.
+
+   What tells it from the reply is its surface, not a colour: a framed wash of
+   the foreground on whatever the transcript sits on, where tool cards and
+   prose have none. Never the accent: the accent is a turn in flight, and your
+   message is not one. `--bubble-edge` is the frame, and the thread that ties
+   the line under it to the bubble (MessageBubble.css) is drawn in the same. */
+.msg-user {
+  --bubble-edge: var(--border-strong);
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  /* The pill stretches; the small print above and below it does not, and each
+     of those states its own alignment — see `.msg-to`, `.msg-ran`. */
+  align-items: flex-end;
+  /* A flex item's floor is its content width unless told otherwise, so one long
+     unbroken line would push the column past the transcript's width rather than
+     wrap inside it. */
+  min-width: 0;
+}
+
+/* The bubble. Rounded at one line, a softer block when it runs longer, and
+   never wider than most of the column, so it stays a thing on the right
+   rather than a band across the page. The wash is mixed over transparent, so
+   it reads on any background a mode paints behind the conversation, and the
+   ordinary foreground colours stay legible on it: prose, code, links and
+   attachments keep the colours they wear everywhere else. */
+.msg-user .msg-body {
+  width: fit-content;
+  max-width: min(100%, max(85%, 320px));
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid var(--bubble-edge);
+  /* Round ends at one line. */
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--fg-0) 6%, transparent);
+  color: var(--fg-0);
+  /* The clock hangs off this. */
+  position: relative;
+  /* The moment the agent picks the message up, `is-queued` lifts and the whole
+     bubble comes back to full strength. That is a real state change and the one
+     the reader is waiting for, so it eases rather than snapping. */
+  transition: opacity 200ms ease-out;
+}
+
+/* What measures itself by the width it is given (a card diagram, a code block
+   that scrolls) takes all the bubble may have, rather than the little it would
+   claim inside a bubble that hugs its content. Strong enough to hold against
+   a mode's own fit-content bubble (Manga, 中国风). */
+:root .msg.msg-user .msg-body:has(.dgm, .dgm-pending, pre, table) {
+  width: 100%;
+}
+
+/* A chip's `--bg-2` body lands at almost exactly this surface's lightness, so
+   the box around an attachment would disappear and leave its name and icon
+   floating loose. Lifted off the bubble with a stronger wash of the
+   foreground. */
+.msg-user .msg-body .chip {
+  background: color-mix(in srgb, var(--fg-0) 12%, transparent);
+}
+
+.msg-user .msg-body .chip:hover {
+  background: color-mix(in srgb, var(--fg-0) 20%, transparent);
+}
+
+/* What you typed, laid out the way you typed it. Enter makes a new line in the
+   composer, so a message can arrive with real line breaks in it — and markdown
+   turns a single newline into a space, which would run the lines together.
+   Only YOUR bubble: the agent writes markdown on purpose, and its own wrapping
+   is not something to preserve. */
+.msg-user .prose p {
+  white-space: pre-wrap;
+}
+
+/* A message you just sent arrives rather than appearing. Up and in, because the
+   composer it came from is below the transcript — and slight, because the
+   bubble is already where it belongs and this only says it has just got there.
+   Which turn counts as having arrived is decided in `useJustArrived`, and it is
+   deliberately hard to qualify: a transcript opening is not an arrival.
+
+   Only your own bubble reads the class. An agent's reply gets it too, and is
+   welcome to it — a reply arrives a word at a time and has nothing to announce
+   by moving. */
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Delayed past the START of the conversation's travel, rather than run against
+   it. `MessageList` glides the scroller to the new bottom over GLIDE_MS when a
+   turn arrives, so by the time these 110ms are up the space this bubble belongs
+   in has already opened above the composer — and the two read as one movement
+   instead of two things happening at once.
+
+   `backwards` is what makes the delay a WAIT rather than a stutter: without it
+   the bubble holds its final look for those 110ms and only then jumps back to
+   the start of the animation, which is precisely the flash the delay was added
+   to hide. Keep the two numbers in step. */
+.msg-user.is-new {
+  animation: bubble-in 200ms cubic-bezier(0.22, 1, 0.36, 1) 110ms backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-user.is-new {
+    animation: none;
+  }
+}
+
+/* A long message of yours — a pasted log, a pasted json — kept to a readable
+   head with the rest one click away. The cut itself is made on the text (see
+   lib/clip), so the button only ever appears when there really is more. */
+.clip {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* The last line fades out rather than stopping dead: that is what says "this
+   goes on" before you have read the button. */
+.clip.is-cut .prose {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+}
+
+.clip-more {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.clip-more:hover {
+  color: var(--fg-0);
+}
+
+.msg-role .agent-avatar { margin-inline-end: 6px; }
+.msg-role {
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--fg-3);
+}
+
+/* Codex can have several native turns waiting while an earlier answer is
+   still being written. When another prompt sits between the one it picked up
+   and this answer, name the actual target here so a long reply cannot look like
+   it belongs to the newest bubble merely because that bubble is nearest. */
+.msg-reply {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin: 0 0 8px;
+  padding-left: 7px;
+  border-left: 2px solid var(--border-strong);
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-3);
+}
+
+.msg-reply-label {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.msg-reply-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-2);
+}
+

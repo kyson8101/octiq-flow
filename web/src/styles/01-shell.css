@@ -1,0 +1,738 @@
+/* Flow workbench layout and components. Shared tokens: design-system.css. */
+
+:root {
+  --tool-pad: 4px;
+  --tool-indent: 28px;
+  --nav-w: 260px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  /* A rightward drag at the viewport edge belongs to the mobile sidebar, not
+     browser history. The touch listener is the Safari fallback; browsers that
+     implement overscroll containment can reject navigation before JS runs. */
+  overscroll-behavior-x: none;
+}
+
+body {
+  background: var(--bg-0);
+  color: var(--fg-1);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The app is sized to the VISUAL viewport (see main layout note): on a phone
+   the soft keyboard shrinks that, and the composer has to stay above it. */
+.app {
+  /* Every chat-facing element shares this cap. Full-width chat temporarily
+     removes it, so the transcript and composer keep their edges aligned. */
+  --chat-column: 780px;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  /* Nothing may scroll the SHELL sideways. One over-wide descendant — a long
+     unbroken URL, a wide table, a code line — used to drag the entire app
+     across on a phone, taking the header and composer off screen with it.
+     Anything genuinely wide scrolls inside its own box instead (pre, table),
+     which is where a horizontal scroll belongs. */
+  overflow-x: hidden;
+}
+
+.app.chat-wide {
+  --chat-column: none;
+}
+
+/* ---- Top bar ---------------------------------------------------------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+  /* Wherever the page reaches under the status bar — a home-screen app
+     installed while index.html still asked for a black-translucent status bar
+     (iOS keeps what it read at install), an edge-to-edge Android one — the
+     bar is 48px of content plus however tall that bar is: grown rather than
+     padded, because `box-sizing: border-box` would otherwise take the inset
+     out of the 48px and squash the row instead of moving it down. Installed
+     today the status bar is opaque, the inset is 0 and this is plain 48px.
+
+     The left and right insets were the wrong way round here: the shorthand runs
+     top-right-bottom-left, so `-left` was being applied on the right. Both are
+     0 in portrait, which is why it never showed. */
+  height: calc(48px + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) max(8px, env(safe-area-inset-right)) 0
+    max(8px, env(safe-area-inset-left));
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
+  /* Sticky only so iOS sees it: an installed web app on iOS 26+ lays a
+     Liquid Glass blur over the top of the page, and WebKit swaps that blur
+     for a solid colour only when a fixed or sticky box spans the top edge
+     (`LocalFrameView::fixedContainerEdges`) AND the status bar is opaque
+     (index.html), which is what gives `WKWebView` an inset to colour.
+     Nothing scrolls `.app` vertically, so the bar never moves.
+     It does make the bar a stacking context; 30 keeps its dropdowns above the
+     page and the sidebar (20) and under every sheet and scrim (40+). */
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+
+.topbar-leading,
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.topbar-leading {
+  flex: 1 1 auto;
+}
+
+.topbar-actions {
+  flex: 0 0 auto;
+}
+
+.topbar-actions {
+  gap: 8px;
+  margin-left: auto;
+}
+
+.topbar-action-label {
+  display: none;
+}
+
+.topbar-leading .topbar-title {
+  max-width: 100%;
+}
+
+/* The socket can disappear without stopping the server-side work. Keep that
+   visible, but in the app chrome rather than a full-width warning that moves
+   the whole conversation. The dashed link travels while another connection is
+   being attempted; the nodes stay still so the icon remains legible. */
+.connection-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  margin-left: 2px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  color: var(--warn);
+}
+
+.connection-status-link {
+  stroke-dasharray: 1.75 2.25;
+  animation: connection-link 0.8s linear infinite;
+}
+
+@keyframes connection-link {
+  to {
+    stroke-dashoffset: -4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connection-status-link {
+    animation: none;
+  }
+}
+
+/* The phone chat list's name: the app's mark, "Chats" and the version. It
+   shrinks before anything else on the bar does. */
+.topbar-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 5px 2px;
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.topbar-logo {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+}
+
+/* Project identity is deliberately stronger than the old five-pixel dot: an
+   uploaded image when one exists, otherwise a compact letter tile whose tint
+   stays stable for that project. The same component scales across the app. */
+.project-avatar {
+  --project-color: var(--fg-3);
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--project-color) 58%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--project-color) 18%, var(--bg-1));
+  color: color-mix(in srgb, var(--project-color) 78%, var(--fg-0));
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  user-select: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+.project-avatar.is-tiny { width: 14px; height: 14px; border-radius: 4px; font-size: 7px; }
+.project-avatar.is-small { width: 20px; height: 20px; font-size: 9px; }
+.project-avatar.is-medium { width: 26px; height: 26px; font-size: 11px; }
+.project-avatar.is-large { width: 48px; height: 48px; border-radius: 10px; font-size: 17px; }
+
+.project-avatar.has-icon {
+  border-color: color-mix(in srgb, var(--project-color) 42%, var(--border));
+  background: var(--bg-2);
+}
+
+.project-avatar-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  border-radius: inherit;
+}
+
+.project-avatar-text { transform: translateX(-0.02em); }
+
+.topbar-identity {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  line-height: 1.05;
+}
+
+.topbar-name {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.topbar-version {
+  margin-top: 2px;
+  color: var(--fg-3);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.topbar-brand { border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.topbar-brand:hover { background: var(--bg-1); border-radius: var(--r-sm); }
+.topbar-brand:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--r-sm); }
+
+/* The way back to the chat list while it is off screen. On a desktop the
+   put-away column's mark rides on it — the app is named once, wherever the
+   sidebar is — and turns into the sidebar glyph under the pointer or focus,
+   so what it does is shown the moment it matters. */
+.topbar-nav {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: background 140ms ease-out, color 140ms ease-out;
+}
+.topbar-nav:hover { background: var(--bg-2); color: var(--fg-0); }
+.topbar-nav:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.topbar-nav:disabled { opacity: 0.45; cursor: default; }
+.topbar-nav-logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  transition: opacity 140ms ease-out;
+}
+.topbar-nav.is-brand .topbar-nav-icon {
+  position: absolute;
+  opacity: 0;
+  transition: opacity 140ms ease-out;
+}
+.topbar-nav.is-brand:not(:disabled):is(:hover, :focus-visible) .topbar-nav-logo { opacity: 0; }
+.topbar-nav.is-brand:not(:disabled):is(:hover, :focus-visible) .topbar-nav-icon { opacity: 1; }
+
+/* What is on screen: a page's heading (filled by WorkspaceHeader), or the
+   chat's project and, after it, its run. Each shrinks before the actions. */
+.topbar-page,
+.topbar-context,
+.topbar-page-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.topbar-page { flex: 0 1 auto; gap: 4px; }
+.topbar-page[hidden],
+.topbar-context[hidden],
+.topbar-page-actions[hidden],
+.topbar-context:empty,
+.topbar-page-actions:empty { display: none; }
+.topbar-page-actions { flex: 0 0 auto; }
+/* What is left at the end of the top bar: a phone's way back from its chat
+   list, and a phone's usage number on a page that has no action bar. */
+
+.topbar-chat {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0 6px;
+  color: var(--fg-0);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.topbar-context { flex: 1 1 auto; }
+
+/* Until the project list has answered, a row of the chat list does not know
+   whose project it is: that part stays out of sight in its place and comes in
+   once. The action bar keeps the same gate (components/ActionBar.css). */
+.sidebar.gate-held :is(.chat-project, .conversation-projects, .chat-badge .project-avatar) { visibility: hidden; }
+.sidebar.gate-entering :is(.chat-project, .conversation-projects, .chat-badge .project-avatar) {
+  animation: enter-fade var(--enter-duration) var(--enter-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar.gate-entering :is(.chat-project, .conversation-projects, .chat-badge .project-avatar) { animation: none; }
+}
+.topbar-workflow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+.topbar-crumb-sep { flex: 0 0 auto; color: var(--fg-3); font-size: 14px; }
+.topbar-workflow .workflow-heading {
+  align-items: center;
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.topbar-workflow .workflow-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.topbar-workflow .workflow-heading.is-open .workflow-title {
+  max-height: min(40vh, 360px);
+  overflow-y: auto;
+  -webkit-line-clamp: unset;
+}
+.topbar-workflow .chat-workflow-bar {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 0;
+  border-bottom: 0;
+}
+.topbar-workflow .chat-workflow-views button,
+.topbar-workflow .chat-run-summary { padding: 4px 9px; white-space: nowrap; }
+.topbar-workflow .chat-run-summary { margin-left: 0; }
+
+/* Expanding a long run title is the one time the shared top bar grows. It is
+   deliberate and reversible; the default two-line clamp keeps the work below
+   it visible, while Less remains beside the expanded objective. */
+.topbar:has(.topbar-workflow .workflow-heading.is-open) {
+  height: auto;
+  min-height: calc(48px + env(safe-area-inset-top));
+  align-items: flex-start;
+  padding-top: calc(env(safe-area-inset-top) + 8px);
+  padding-bottom: 8px;
+}
+
+@media (max-width: 700px) {
+  .topbar:has(.topbar-workflow) { height: auto; min-height: calc(48px + env(safe-area-inset-top)); }
+  .topbar:has(.topbar-workflow) .topbar-chat { flex: 0 0 auto; padding-inline: 2px; }
+  .topbar:has(.topbar-workflow) .topbar-chat .topbar-name { display: none; }
+  .topbar-context { flex: 1 1 0; }
+  .topbar-workflow { flex-wrap: wrap; gap: 1px 4px; }
+  .topbar-crumb-sep { display: none; }
+  .topbar-workflow .workflow-heading { flex: 1 1 100%; }
+  .topbar-workflow .workflow-title { font-size: 12px; line-height: 1.15; }
+  .topbar-workflow .workflow-title-toggle { padding-inline: 3px; font-size: 11px; }
+  .topbar-workflow .chat-workflow-bar { flex: 1 1 100%; gap: 2px; min-width: 0; }
+  .topbar-workflow .chat-workflow-views button { padding-inline: 5px; }
+  .topbar-workflow .chat-run-summary {
+    flex: 1 1 60px;
+    min-width: 0;
+    overflow: hidden;
+    padding-inline: 3px;
+    text-overflow: ellipsis;
+  }
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-md);
+  height: var(--control-md);
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  cursor: pointer;
+}
+
+.icon-btn:active,
+.icon-btn:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* Destructive while remaining the same quiet top-bar action as its peers.
+   Once the undo clock starts it stays red so the way back is visible even
+   without hover. */
+.topbar-delete:hover,
+.topbar-delete.is-going {
+  color: var(--danger);
+}
+
+.topbar-delete:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---- Reload, for an installed window ---------------------------------- */
+/* Drawn only when there is no browser chrome to reload from. It spins from the
+   press until the document goes away, which on a phone over a tunnel is long
+   enough that a still icon reads as a dead button. It reuses `tool-spin`
+   rather than declaring a second identical rotation. */
+.installed-reload.is-spinning svg {
+  animation: tool-spin 0.7s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .installed-reload.is-spinning svg {
+    animation: none;
+  }
+}
+
+/* ---- Full-width chat -------------------------------------------------- */
+/* The switch that gives the chat the available body width. It wears the same
+   held-down look the rail and files buttons wear, because it is a mode you are
+   in, not an action you fire.
+
+   The border is what carries that, not the fill: `.icon-btn:hover` is already
+   `--bg-2`, so a tint on its own would make hovering the button look exactly
+   like having pressed it. `box-sizing` is border-box everywhere, so the outline
+   eats inward and the button stays 36px beside its neighbours. */
+.chat-width-toggle {
+  border: 1px solid transparent;
+}
+
+.chat-width-toggle.is-on {
+  border-color: var(--border);
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* Both arrow sets live in the SVG at once and one is faded out, so going in and
+   coming out is a cross-fade rather than a swap that pops. The scale is 0.82
+   and not 0 — arrows that grow from nothing read as an arrival, and nothing is
+   arriving here; the same four corners are turning round. */
+.chat-width-arrows {
+  /* Both groups scale about the middle of the icon, not about their own
+     bounding boxes — `fill-box` would give the two sets slightly different
+     centres and the cross-fade would drift sideways as it ran. */
+  transform-box: view-box;
+  transform-origin: center;
+  transition:
+    opacity 160ms ease-out,
+    transform 160ms ease-out;
+}
+
+/* Written as two mutually exclusive halves rather than a base rule and an
+   override: with `:not()` on both sides exactly one of them ever matches, so
+   which arrows show does not rest on which selector is more specific. */
+.chat-width-toggle:not(.is-on) .chat-width-arrows-out,
+.chat-width-toggle.is-on .chat-width-arrows-in {
+  opacity: 0;
+  transform: scale(0.82);
+}
+
+.chat-width-toggle:not(.is-on) .chat-width-arrows-in,
+.chat-width-toggle.is-on .chat-width-arrows-out {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-width-arrows {
+    transition: none;
+  }
+}
+
+/* The phone bar carries where you are; what can be done about it is the
+   action bar under it (components/ActionBar). */
+@media (max-width: 700px) {
+  .topbar {
+    gap: 3px;
+    /* Match the drawer's 8px outer gutter. With 4px here, the return arrow
+       sat four pixels to the right of the chat-list menu on phones.
+
+       The sides only. This was the `padding` shorthand, which also set the
+       top to 0 and took the status-bar inset away from the bar above while
+       its height kept it — so in an installed app the row was centred across
+       the whole bar, half under the clock, where iOS 26+ blurs the page. */
+    padding-right: max(8px, env(safe-area-inset-right));
+    padding-left: max(8px, env(safe-area-inset-left));
+  }
+
+  .topbar-actions { gap: 2px; }
+
+  .topbar .icon-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .topbar-title {
+    font-size: 14px;
+  }
+
+}
+
+.mobile-actions {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.mobile-actions-trigger[aria-expanded="true"] {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.mobile-actions-attention {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border: 2px solid var(--bg-0);
+  border-radius: 999px;
+  background: var(--warn);
+  color: var(--bg-0);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 11px;
+  text-align: center;
+}
+
+.mobile-actions-panel {
+  position: absolute;
+  z-index: 90;
+  top: calc(100% + 7px);
+  right: 0;
+  display: grid;
+  gap: 2px;
+  width: min(250px, calc(100vw - 16px));
+  max-height: min(520px, calc(100dvh - 64px - env(safe-area-inset-top)));
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+}
+
+.actionbar .mobile-actions-panel > .icon-btn,
+.actionbar .mobile-actions-panel > .gitp-toggle,
+.actionbar .mobile-actions-panel > .orch-toggle,
+.actionbar .mobile-actions-panel > .attention-inbox .attention-trigger {
+  width: 100%;
+  min-height: 40px;
+  height: auto;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 13px;
+}
+
+.actionbar .mobile-actions-panel > .icon-btn:hover,
+.actionbar .mobile-actions-panel > .gitp-toggle:hover,
+.actionbar .mobile-actions-panel > .orch-toggle:hover,
+.actionbar .mobile-actions-panel > .attention-inbox .attention-trigger:hover,
+.actionbar .mobile-actions-panel > .attention-inbox .attention-trigger[aria-expanded="true"] {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.mobile-actions-panel > .attention-inbox {
+  width: 100%;
+}
+
+/* The inbox is a disclosure of its own. It escapes the scrolling action list
+   instead of being clipped inside it, at every width that uses this menu. */
+.mobile-actions-panel .attention-panel {
+  position: fixed;
+  top: calc(58px + env(safe-area-inset-top));
+  right: 12px;
+  left: 12px;
+  width: auto;
+  max-height: calc(100dvh - 90px - env(safe-area-inset-top));
+}
+
+.mobile-actions-panel .topbar-action-label,
+.mobile-actions-panel .attention-trigger > span:not(.attention-count),
+.mobile-actions-panel .rail-count,
+.mobile-actions-panel .sfp-count {
+  display: inline;
+}
+
+.mobile-actions-panel .topbar-action-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+}
+
+.mobile-actions-panel > .topbar-actions-separator {
+  display: block;
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+.copy-chat-id.is-done {
+  color: var(--ok);
+}
+
+.copy-chat-id.is-failed {
+  color: var(--danger);
+}
+
+.mobile-actions-panel > .rail-toggle.is-on,
+.mobile-actions-panel > .gitp-toggle.is-on {
+  background: var(--bg-2);
+}
+
+.mobile-actions-panel > .topbar-delete.is-going {
+  color: var(--danger);
+}
+
+/* ---- Shell: sidebar + workspace --------------------------------------
+   Two columns on a desktop: the sidebar the full height of the window, and a
+   workspace column holding the top bar over the body. On a phone the
+   workspace column dissolves, so the top bar and the body are rows of `.app`
+   again, and the sidebar is ordered between them — the screen it becomes on
+   `.projects-screen` sits under the top bar, as it always has. */
+.shell-main {
+  display: contents;
+}
+
+@media (max-width: 859.98px) {
+  .app > .sidebar { order: 1; }
+  .shell-main > .topbar { order: 0; }
+  .shell-main > .body { order: 2; }
+  /* A desktop's row. The page stops drawing it below this width; this keeps
+     it out of the frame in which the window crossed it. */
+  .shell-main > .usage-strip { display: none; }
+}
+
+/* ---- Body: drawer + main --------------------------------------------- */
+.body {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* The git sheet parks itself just off the RIGHT edge, and overflow to the
+     right is scrollable where overflow to the left is not — which is why the
+     sidebar has never needed this and the git panel does. `clip` rather than
+     `hidden` so this does not become a scroll container and steal the inner
+     panes' own scrolling. */
+  overflow-x: clip;
+}
+
+/* Mobile navigation is a separate page in the body, never an overlay.
+   Both views stay mounted so drafts and the list's scroll position survive. */
+.sidebar {
+  position: relative;
+  z-index: 20;
+  width: 100%;
+  display: none;
+  min-height: 0;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border);
+}
+
+.projects-return {
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.projects-return:hover { background: var(--bg-1); }
+.projects-return-icon { display: none; }
+.sidebar-toolbar { flex: 0 0 auto; }
+
+@media (max-width: 859.98px) {
+  .app.projects-screen .sidebar {
+    display: flex;
+    flex: 1 1 auto;
+    border-right: 0;
+  }
+
+  /* The whole body, file/git panels portalled into the dock included: none
+     can cover the list. */
+  .app.projects-screen .body {
+    display: none;
+  }
+
+  /* The top bar already says where this is ("Chats") on a phone. */
+  .app .task-sidebar .sidebar-head {
+    display: none;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .app.projects-screen .sidebar { animation: projects-enter 120ms ease-out; }
+  }
+}
+

@@ -1,0 +1,808 @@
+/* ---- A seat's reply ---------------------------------------------------- */
+
+/* A room's guests each speak in their own block. The host does not: it keeps
+   the plain full-width prose every chat has always had, because it is the one
+   voice a room never has to identify, and boxing it too would make a one-seat
+   room read as two strangers talking.
+
+   Before this, every reply in a room was the same prose at the same width
+   under an 11px name at 32% opacity — the faintest text on the page carrying
+   the first question a room asks, which of these is talking. Scrolled back
+   through three seats it was a wall with no owners. */
+.msg-seat {
+  --tint: var(--fg-2);
+  padding: 8px 13px 10px;
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--tint) 6%, transparent);
+  /* An inset ring rather than a border: this sits in a flex column whose items
+     are already held to `min-width: 0`, and a border would add its two pixels
+     to the width rather than to the inside. Drawn on all four sides — a strip
+     down one edge is a look this project does not use. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tint) 20%, transparent);
+}
+
+/* The name, said properly rather than whispered. It carries the seat's colour;
+   the agent's mark keeps its own beside it. The mark says WHICH AGENT, the
+   colour says WHICH SEAT, and a room holding two Claudes needs both. */
+.msg-seat .msg-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 7px;
+  color: color-mix(in srgb, var(--tint) 65%, var(--fg-0));
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+/* Eight colours, handed out in order of first appearance (see lib/seatTint) —
+   the same categorical palette the tool icons draw from. Quiet, and never the
+   only thing carrying the meaning, since the name is right beside it. */
+.msg-seat[data-tint="0"] {
+  --tint: #0a84ff;
+}
+.msg-seat[data-tint="1"] {
+  --tint: #ff9f0a;
+}
+.msg-seat[data-tint="2"] {
+  --tint: #bf5af3;
+}
+.msg-seat[data-tint="3"] {
+  --tint: #30d158;
+}
+.msg-seat[data-tint="4"] {
+  --tint: #ff375f;
+}
+.msg-seat[data-tint="5"] {
+  --tint: #64d2ff;
+}
+.msg-seat[data-tint="6"] {
+  --tint: #ffd60a;
+}
+.msg-seat[data-tint="7"] {
+  --tint: #66d4cf;
+}
+
+.msg-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Codex's intermediary words are a changing status display, not a permanent
+   wall of prose. The newest reading is always visible; its history uses one
+   quiet disclosure. Once the turn is over the newest reading stays, quieter. */
+.agent-progress {
+  min-width: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+}
+
+.agent-progress-live {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 9px 11px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--fg-2) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg-2) 12%, transparent);
+}
+
+.agent-progress-log + .agent-progress-live {
+  margin-top: 5px;
+}
+
+.agent-progress-live-copy {
+  min-width: 0;
+}
+
+.agent-progress-live-label {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.agent-progress-pulse {
+  width: 6px;
+  height: 6px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: agent-progress-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes agent-progress-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.82); }
+  50% { opacity: 0.9; transform: scale(1); }
+}
+
+/* The accent and the pulse are for a turn in flight only. A finished turn's
+   last update keeps its place, with a still, neutral dot. */
+.agent-progress.is-settled .agent-progress-live {
+  background: color-mix(in srgb, var(--fg-2) 4%, transparent);
+}
+
+.agent-progress.is-settled .agent-progress-pulse {
+  background: var(--fg-3);
+  opacity: 0.6;
+  animation: none;
+  transition: background-color 180ms ease-out, opacity 180ms ease-out;
+}
+
+.agent-progress .prose {
+  line-height: 1.55;
+}
+
+.agent-progress .prose :is(p, ul, ol) {
+  margin-bottom: 7px;
+}
+
+.agent-progress-log {
+  margin-top: 0;
+}
+
+.agent-progress-log > summary {
+  display: inline-flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 3px;
+  border-radius: var(--r-sm);
+  color: var(--fg-3);
+  font-size: 11.5px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.agent-progress-order {
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+  color: color-mix(in srgb, var(--fg-3) 78%, transparent);
+  font-size: 10.5px;
+}
+
+.agent-progress-log > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-progress-log > summary::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 140ms ease-out;
+}
+
+.agent-progress-log[open] > summary::before {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.agent-progress-log > summary:hover {
+  color: var(--fg-1);
+  background: color-mix(in srgb, var(--fg-2) 7%, transparent);
+}
+
+.agent-progress-log > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.agent-progress-items {
+  /* A long-running turn can produce dozens of commentary updates. Opening the
+     history must not turn that secondary log into a page taller than the
+     conversation around it. Keep enough room to compare several updates and
+     let the log itself carry the rest. `dvh` follows the usable phone viewport
+     while the pixel ceiling keeps the box disciplined on a large display. */
+  max-height: min(42dvh, 360px);
+  margin: 6px 0 0;
+  padding: 10px 11px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--fg-2) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg-2) 10%, transparent);
+}
+
+.agent-progress-items:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.agent-progress-list {
+  position: relative;
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding: 0 0 0 18px;
+  list-style: none;
+}
+
+.agent-progress-list::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 3px;
+  width: 1px;
+  background: color-mix(in srgb, var(--fg-3) 28%, transparent);
+}
+
+.agent-progress-item {
+  position: relative;
+}
+
+.agent-progress-item + .agent-progress-item {
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+
+.agent-progress-item::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: -17px;
+  width: 5px;
+  height: 5px;
+  border: 1.5px solid color-mix(in srgb, var(--fg-3) 72%, transparent);
+  border-radius: 50%;
+  background: var(--bg-1);
+}
+
+.agent-progress-item + .agent-progress-item::before {
+  top: 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-progress-pulse {
+    animation: none;
+    opacity: 0.7;
+  }
+
+  .agent-progress-log > summary::before {
+    transition: none;
+  }
+}
+
+/* Markdown */
+
+/* Prose is the one thing here that is READ rather than glanced at, and it is
+   often read in Chinese. It shares the UI's CJK face (see `--prose-font`)
+   with more air between the lines — 1.5 is set for a Latin x-height, and a column of full-width
+   characters at that leading is a wall. 1.8 is what the same files are read at
+   in the editor next door. */
+.prose {
+  font-family: var(--prose-font);
+  line-height: 1.8;
+  /* Long URLs and unbroken text must fit within the message column. */
+  overflow-wrap: anywhere;
+}
+
+/* Conversation copy gets one more pixel than the surrounding 14px UI. Scope
+   this to top-level message prose so progress readouts, tool briefs and file
+   previews keep their deliberately denser type. A clipped user message wraps
+   its prose in `.clip`, hence the second selector. */
+.msg-body > .prose,
+.msg-body > .clip > .prose {
+  font-size: 15px;
+}
+
+.prose > :first-child {
+  margin-top: 0;
+}
+
+.prose > :last-child {
+  margin-bottom: 0;
+}
+
+.prose p,
+.prose ul,
+.prose ol {
+  margin: 0 0 10px;
+}
+
+.prose h1,
+.prose h2,
+.prose h3 {
+  margin: 16px 0 8px;
+  font-size: 15px;
+  color: var(--fg-0);
+}
+
+.msg-body > .prose > :is(h1, h2, h3),
+.msg-body > .clip > .prose > :is(h1, h2, h3) {
+  font-size: 16px;
+}
+
+.prose code {
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.prose pre {
+  margin: 0 0 10px;
+  padding: 11px 13px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+}
+
+.prose pre code {
+  padding: 0;
+  background: none;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* A table an agent wrote — see components/ProseTable for why it is in a box.
+   The box, not the table, carries the frame: it is what stays still while the
+   table is scrolled under it, so the border does not slide away with the last
+   column. */
+.prose-table {
+  /* Always the full width of the message column, whatever the table inside it
+     measures: a box that hugged its content left every table a different
+     width, so a run of them down the transcript had a ragged right edge and
+     no two columns lined up. A table wider than this keeps its own width and
+     is scrolled to inside the box. */
+  width: 100%;
+  margin: 0 0 10px;
+  overflow-x: auto;
+  /* A sideways flick that runs out of table stops here rather than becoming a
+     swipe on the page behind it. */
+  overscroll-behavior-x: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  /* Figures in a column line up under each other — the whole reason a number
+     is in a table rather than a sentence. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* Inside the box it takes the width it needs and is scrolled to; `min-width`
+   is what keeps a narrow table filling the box rather than leaving a strip of
+   empty frame beside it. A table with no box of its own — a tool's brief —
+   keeps the plain full-width rule above, since it has nowhere to scroll. */
+.prose-table table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+}
+
+/* The header is told apart by a tint and the weight of its words, not by a
+   grid: lines around every cell turn a small table into a spreadsheet, and the
+   reading happens along the rows. */
+.prose th {
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  /* A heading is a label, not a sentence: kept on one line, it also stops the
+     column from being sized by where its title happens to wrap. */
+  white-space: nowrap;
+  text-align: left;
+}
+
+.prose td {
+  padding: 6px 11px;
+  /* A cell sized to its content is right for a word and wrong for a sentence:
+     inside the box the table takes the width it wants, so one long note would
+     otherwise make a whole table something you scroll to read. Past this the
+     text wraps instead. (A cell's max-width is a suggestion the table layout
+     may ignore — where it is ignored the table simply scrolls, as it did.) */
+  max-width: 22em;
+  /* Between rows only, and quieter than the frame around them — enough to
+     follow a row across, not enough to be read as a shape of its own. */
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  /* A cell that wraps sits under its own first line, not floating beside the
+     tallest cell in the row. */
+  vertical-align: top;
+  text-align: left;
+}
+
+/* The row under the pointer, for reading a wide one across. Touch has no
+   hover, so this costs a phone nothing. */
+.prose tbody tr:hover td {
+  background: color-mix(in srgb, var(--fg-1) 4%, transparent);
+}
+
+.prose a {
+  color: var(--link);
+}
+
+/* A file path an agent wrote, once the backend has confirmed the file is
+   really there — see components/ProsePath. A button rather than a link,
+   because it opens the file BESIDE the chat rather than going anywhere, and
+   the dashed underline is what says so: an ordinary link here is solid. */
+.prose-path {
+  /* A button is inline-BLOCK by default, and an inline-block's baseline is its
+     LAST line — so a path long enough to wrap dragged the bullet of its own
+     list item down to the bottom of it. Inline makes it flow like the words it
+     is standing among, and break like them. */
+  display: inline;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  /* A button centres its text — the browser's own rule, and invisible until a
+     long path wraps, at which point four centred lines sit in the middle of the
+     paragraph like a poem. It is a word in a sentence: it starts at the left. */
+  text-align: left;
+  /* And it may be broken anywhere. A path has no spaces in it, so without this
+     one long enough to pass the edge of a phone simply goes past it. */
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+/* Every confirmed conversation file has explicit actions. The path remains
+   the primary action; its two less-common actions appear as a labelled
+   popover on hover/focus instead of two unexplained icons after every path. */
+.prose-file-actions {
+  display: inline;
+  position: relative;
+}
+
+.prose-file-action-menu {
+  /* Without the Popover API, keep the original inline containing block. */
+  position: absolute;
+  z-index: 100;
+  inset: auto;
+  top: 0;
+  left: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: max-content;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(3px);
+  transition: none;
+}
+
+/* Only a successful native popover escapes the transcript's clip and stacking
+   context. Both placements choose a path edge clear of nearby players. */
+.prose-file-action-menu[popover] {
+  position: fixed;
+}
+
+/* Intent gates the whole popover, rather than transitioning inherited
+   visibility: the two buttons become visible and interactive together. */
+.prose-file-actions[data-menu-open] .prose-file-action-menu,
+.prose-file-actions:focus-within .prose-file-action-menu {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+  transition:
+    opacity 120ms ease-out,
+    transform 120ms ease-out;
+}
+
+.prose-file-actions[data-menu-dismissed] .prose-file-action-menu {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: none;
+}
+
+/* Prose actions own their geometry, including narrow windows with a mouse.
+   Outrank ActionIcon's shared toolbar sizing without changing other buttons. */
+:root .prose-file-action-menu button.prose-file-action[data-icon-action] {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex: 0 0 auto;
+  gap: 8px;
+  width: 100%;
+  height: auto;
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+:root .prose-file-action-menu button.prose-file-action:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--fg-1);
+}
+
+:root .prose-file-action-menu button.prose-file-action.is-copied {
+  color: var(--ok);
+}
+
+:root .prose-file-action-menu button.prose-file-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Touch has no hover. Keep the old compact, always-visible affordance there so
+   both actions remain reachable without inventing a tap that steals the file
+   path's existing "open" behaviour. */
+@media (hover: none), (pointer: coarse) {
+  :root .prose-file-actions span.prose-file-action-menu {
+    position: static;
+    display: inline-flex;
+    flex-direction: row;
+    gap: 6px;
+    margin-left: 5px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: none;
+    vertical-align: -3px;
+  }
+
+  :root .prose-file-action-menu button.prose-file-action[data-icon-action] {
+    position: relative;
+    justify-content: center;
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+    min-height: 20px;
+    padding: 0;
+    gap: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  :root .prose-file-action-menu button.prose-file-action:is(:hover, :active) {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+
+  .prose-file-action > .action-icon {
+    width: 14px;
+    height: 14px;
+  }
+
+  .prose-file-action > .action-label {
+    display: none;
+  }
+}
+
+.prose-path:hover {
+  border-bottom-color: var(--accent);
+}
+
+.prose-path:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Written in backticks, so it stays a code chip — the same one `.prose code`
+   draws, in the colour that says it opens. */
+.prose-path.is-code {
+  padding: 1px 5px;
+  border-bottom: 0;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+/* A picture the reply named, drawn under the words that named it — see
+   components/ProseShot. A span rather than a div because it sits INSIDE a
+   paragraph, where a div is not allowed; `display: block` is what gives it a
+   line of its own there. */
+.prose-shot {
+  display: block;
+  margin: 8px 0 4px;
+}
+
+.prose-shot-btn {
+  display: block;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  /* The frame must not add a line's worth of space under the picture. */
+  line-height: 0;
+  cursor: zoom-in;
+}
+
+.prose-shot-btn:hover {
+  border-color: var(--accent);
+}
+
+.prose-shot-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Big enough to recognise a screenshot, small enough that three of them in one
+   reply are still a reply. The full size is one click away. */
+.prose-shot img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(100%, 360px);
+  max-height: 240px;
+}
+
+/* Something is coming. Roughly a small picture's shape, so the words below it
+   move as little as possible when the real one arrives. */
+.prose-shot-wait {
+  display: block;
+  width: 180px;
+  height: 110px;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+/* Video, audio, PDF and HTML the reply named — see components/ProseMedia.
+   Spans for the same reason as `.prose-shot`: they sit inside a paragraph. */
+.prose-media {
+  display: block;
+  margin: 8px 0 4px;
+  max-width: min(100%, 520px);
+}
+
+.prose-media video {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: #000;
+}
+
+.prose-media audio {
+  display: block;
+  width: 100%;
+  height: 40px;
+}
+
+.prose-media iframe {
+  display: block;
+  width: 100%;
+  height: 360px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: #fff;
+}
+
+.prose-media-wait {
+  display: block;
+  height: 110px;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.prose-media.is-audio .prose-media-wait { height: 40px; }
+.prose-media-error { display: block; color: var(--fg-2); font-size: 12px; margin-bottom: 6px; }
+.prose-media-error button { color: var(--fg-1); background: var(--bg-2); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; cursor: pointer; }
+.prose-media-error button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.prose-page-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  line-height: 1.3;
+}
+
+.prose-page-icon {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.prose-page-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-1);
+  font-size: 13px;
+}
+
+.prose-page-card button {
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 160ms ease-out, color 160ms ease-out;
+}
+
+.prose-page-card button:hover { background: var(--bg-2); color: var(--fg-0); }
+.prose-page-card button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.prose-page-stage { display: block; margin-top: 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .prose-media-wait { animation: none; }
+}
+
+/* A Codex `visualize` content reference, reduced to the one useful thing in
+   chat: a clean link to the document, without its protocol delimiters or JSON. */
+.visualization-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.visualization-link:hover {
+  border-bottom-color: var(--accent);
+}
+
+.visualization-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.visualization-link span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prose-shot-wait {
+    animation: none;
+  }
+}
+

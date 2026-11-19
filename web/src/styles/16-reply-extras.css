@@ -1,0 +1,579 @@
+/* ---- Copy a whole reply -------------------------------------------------
+   Sits under the answer it belongs to. Quiet until the turn is hovered, but
+   never hidden — a touch screen has no hover, and this is the only way to take
+   a reply with you. */
+/* One row under a reply, holding Copy. The files the turn touched used to share
+   it; they are a whole-session question now and live in their own column. */
+.msg-foot {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 0;
+}
+
+/* Under your own bubble it is one button on its own, so it sits closer than a
+   reply's row does — far enough to read as separate, near enough to belong. */
+.msg-user .msg-foot {
+  margin-top: 3px;
+}
+
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.msg-unsent {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-1);
+  font-size: 12px;
+}
+
+.msg-unsent button {
+  min-height: 36px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg-0);
+  background: var(--bg-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.msg-unsent button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.msg-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.msg:hover .msg-copy,
+.msg-copy:focus-visible {
+  opacity: 1;
+}
+
+.msg-copy:hover {
+  border-color: var(--border);
+  background: var(--bg-1);
+  color: var(--fg-1);
+}
+
+.msg-copy.is-done {
+  opacity: 1;
+  color: var(--ok);
+}
+
+.msg-copy svg {
+  flex: 0 0 auto;
+}
+
+/* ---- Context meter (beside the send button) ----------------------------
+   A ring that fills as the session's context does. It is next to Send because
+   that is where you decide whether to keep going in this chat or start a new
+   one — which is the only decision the number informs. */
+.ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  cursor: default;
+}
+
+.ctx-track {
+  stroke: var(--bg-2);
+}
+
+.ctx-fill {
+  stroke: var(--fg-2);
+  transition: stroke-dasharray 0.5s ease, stroke 0.3s ease;
+}
+
+.ctx-val {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx.is-warn {
+  color: var(--warn);
+}
+
+.ctx.is-warn .ctx-fill {
+  stroke: var(--warn);
+}
+
+.ctx.is-danger {
+  color: var(--danger);
+}
+
+.ctx.is-danger .ctx-fill {
+  stroke: var(--danger);
+}
+
+/* On a phone the ring alone carries it; the number would crowd the send
+   button it sits beside. */
+@media (max-width: 480px) {
+  .ctx-val {
+    display: none;
+  }
+}
+
+/* ---- Confirmation dialog -----------------------------------------------
+   Replaces window.confirm. It is in the app's own style, it can say more than
+   one line, and — the reason that matters most here — it does not freeze the
+   page, so the chats running in the background keep running while it is up. */
+.ask-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.55);
+  animation: ask-fade 0.14s ease;
+}
+
+.ask {
+  width: min(400px, 100%);
+  padding: var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+  animation: ask-rise 0.16s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes ask-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes ask-rise {
+  from {
+    transform: translateY(8px) scale(0.98);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ask-scrim,
+  .ask {
+    animation: none;
+  }
+}
+
+.ask-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--fg-0);
+}
+
+.ask-body {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-2);
+  /* Callers pass a whole sentence, sometimes two paragraphs of consequence.
+     Keep the breaks they wrote. */
+  white-space: pre-wrap;
+}
+
+.ask-command {
+  margin: 12px 0 0;
+  padding: 12px;
+  max-height: min(40vh, 320px);
+  overflow: auto;
+  white-space: pre;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  color: var(--fg-0);
+  font: 12px/1.6 var(--mono);
+}
+
+.ask:has(.ask-command) {
+  width: min(600px, 100%);
+  max-height: calc(100dvh - 40px);
+  overflow: auto;
+}
+
+.ask:has(.ask-command) .ask-body {
+  overflow-wrap: anywhere;
+}
+
+.ask-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.ask-btn {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-2);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  min-height: var(--control-md);
+}
+
+.ask-btn:hover {
+  background: var(--border-strong);
+  color: var(--fg-0);
+}
+
+.ask-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ask-btn.is-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.ask-btn.is-primary:hover {
+  filter: brightness(1.1);
+}
+
+.ask-btn.is-primary.is-danger {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+.ask-btn.is-primary.is-danger:focus-visible {
+  outline-color: var(--danger);
+}
+
+/* ---- Attachments -------------------------------------------------------
+   Files riding along with the next message: pasted images, and files on the
+   machine that the agent should look at. */
+.attach {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.attach-input {
+  display: none;
+}
+
+/* The "+". First control in the bar, ahead of the agent's own settings,
+   because it is about the MESSAGE being written rather than about the agent —
+   and because that is where every chat box has taught people to look for it.
+   A touch more padding than the labels beside it: this one is a target, not a
+   word you read. */
+.attach-btn {
+  padding: 4px;
+}
+
+/* The mark stands where a word stood, so it must not shrink when the bar gets
+   tight — a squashed logo reads as a smudge, and the word it replaced would
+   have ellipsised instead of deforming. Claude keeps its orange: at 14px the
+   colour identifies the agent faster than the shape does, which is the whole
+   reason for showing a logo. OpenAI's mark has no colour of its own, so Codex
+   takes the button's — including the lift on hover. */
+.agent-logo {
+  flex: 0 0 auto;
+}
+
+.agent-logo.is-claude {
+  color: #d97757;
+}
+
+.agent-logo.is-antigravity {
+  color: #6fa2f7;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 3px 4px 3px 3px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-1);
+  text-align: left;
+}
+
+/* On a sent message the chip is a button — the picture on it is a thumbnail of
+   something you may well want to see full size. */
+.sent-files .chip {
+  cursor: pointer;
+}
+
+.sent-files .chip:hover {
+  background: var(--bg-1);
+  color: var(--fg-0);
+}
+
+.chip svg {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+}
+
+.chip.is-image svg {
+  margin-left: 5px;
+  color: var(--accent);
+}
+
+/* The image itself, at chip size. `cover` so a wide screenshot still fills the
+   square instead of becoming a sliver. */
+.chip-thumb {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--bg-0);
+}
+
+/* The files a SENT message carried, above its words. Wraps, because a message
+   can go out with a handful of screenshots. */
+.sent-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.chip-name {
+  padding-left: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chip-x {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.chip-x:hover {
+  background: var(--bg-0);
+  color: var(--fg-0);
+}
+
+.chip.is-pasted {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.chip-insert {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chip-insert:hover {
+  background: var(--bg-0);
+  color: var(--fg-0);
+}
+
+.chip-insert:focus-visible {
+  outline: 2px solid var(--fg-2);
+  outline-offset: -2px;
+}
+
+.attach-saving {
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+@media (max-width: 700px), (pointer: coarse) {
+  .chip.is-pasted .chip-insert,
+  .chip.is-pasted .chip-x {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* The bin only appears when the box has something in it, so it must not shout
+   for the second it is there. Red on hover, where a destructive button says
+   what it is at the moment of pressing it. */
+.clear-btn:hover {
+  color: var(--danger);
+}
+
+/* What "clear" threw away is still reachable for a few seconds. Quiet — it is
+   a way back, not a warning. */
+.attach-undo {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+.attach-undo-btn {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.attach-undo-btn:hover {
+  border-bottom-color: var(--accent);
+}
+
+/* A whole line of its own, and allowed to use more than one. It sits in the
+   same wrapping row as the file chips, where a sentence with nowhere to break
+   would run off the side of a phone. */
+.attach-error {
+  flex: 1 1 100%;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--warn);
+}
+
+/* A file row in the picker reads as a leaf, not somewhere to go. */
+.fp-picker-row.is-file .fp-picker-name {
+  color: var(--fg-1);
+}
+
+/* ---- A turn that failed ------------------------------------------------
+   Louder than a notice, because it is the reason nothing came back. Running
+   out of quota gets its own colour: nothing is broken, so it should not look
+   like something is. */
+.failure {
+  position: relative;
+  flex: 0 0 auto;
+  max-width: var(--chat-column);
+  width: 100%;
+  margin: 0 auto 10px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+/* Floated rather than laid out beside the text: the title and detail keep the
+   full width they had before there was a × to make room for, and a one-line
+   banner does not grow a second line to hold the button. */
+.failure-close {
+  float: right;
+  margin: -4px -6px 0 8px;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.failure-close:hover {
+  background: color-mix(in srgb, var(--fg-0) 10%, transparent);
+  color: var(--fg-0);
+}
+
+.failure.is-quota {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
+.failure-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.failure-detail {
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg-2);
+}
+
+.failure-link {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+.auto-resume-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg-1);
+}
+
+.auto-resume-cancel {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  border-radius: var(--r-sm);
+  padding: 5px 8px;
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  color: var(--fg-1);
+  font: inherit;
+  cursor: pointer;
+}
+
+.auto-resume-cancel:hover {
+  border-color: var(--warn);
+  color: var(--fg-0);
+}
+
+@media (max-width: 600px) {
+  .auto-resume-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+

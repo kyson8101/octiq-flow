@@ -1,0 +1,289 @@
+/* ---- Plan usage -------------------------------------------------------
+   A phone: one small entry at the end of the action bar, a gauge and the
+   fullest window across both agents, coloured by how close it is. Hovering
+   opens the full breakdown — every window each agent reports, with when it
+   resets — and a tap does the same where there is no pointer to hover with.
+   A desktop: a row of its own (`.usage-strip`, below). */
+.usage {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.usage-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    background 140ms ease-out,
+    opacity 140ms ease-out;
+}
+
+.usage-btn:hover,
+.usage-btn[aria-expanded="true"] {
+  background: var(--bg-1);
+  color: var(--fg-2);
+}
+.usage-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Faded when the number could not be refreshed: still the best we have, but
+   no longer a claim about right now. */
+.usage-btn.is-stale {
+  opacity: 0.55;
+}
+
+.usage-icon { flex: 0 0 auto; }
+
+/* The popup and the desktop row draw bars; a phone's entry is one number. */
+.usage-track {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 5px;
+  border-radius: 2px;
+  background: var(--bg-2);
+  overflow: hidden;
+}
+
+.usage-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  background: var(--ok);
+  transition: width 0.4s ease;
+}
+
+.usage-track.is-warn .usage-fill {
+  background: var(--warn);
+}
+
+.usage-track.is-danger .usage-fill {
+  background: var(--danger);
+}
+
+.usage-val {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--fg-2);
+}
+
+.usage-val.is-warn {
+  color: var(--warn);
+}
+
+.usage-val.is-danger {
+  color: var(--danger);
+}
+
+@media (max-width: 560px) {
+  .usage-btn { padding: 0 6px; }
+  .usage-val { font-size: 11px; }
+}
+
+/* ---- Plan usage, a desktop's row --------------------------------------
+   Every window the host reports, under the action bar: a short label, a
+   small bar and the percent each. One fixed height whatever is in it, so a
+   reading that arrives never moves the page. A window too narrow for them
+   scrolls the row sideways; it never wraps, and it draws no scrollbar that
+   would add to its height (a browser with classic scrollbars, on Windows).
+
+   Calm is grey here, not the popup's green: five green bars across the top
+   of every page would be a statement, and nothing is being said until a
+   window passes the warning mark. */
+.usage-strip {
+  position: relative;
+  z-index: 28;
+  display: flex;
+  flex: 0 0 auto;
+  height: 26px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.usage-strip-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.usage-strip-scroll::-webkit-scrollbar { display: none; }
+
+/* The end that is cut fades into the row, as the action bar's does. */
+.usage-strip::before,
+.usage-strip::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  width: 28px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease-out;
+}
+.usage-strip::before { left: 0; background: linear-gradient(to right, var(--bg-sunken), transparent); }
+.usage-strip::after { right: 0; background: linear-gradient(to left, var(--bg-sunken), transparent); }
+.usage-strip[data-cut~="start"]::before,
+.usage-strip[data-cut~="end"]::after { opacity: 1; }
+
+/* The whole row is one button: it opens the breakdown the phone's entry
+   opens, so a reset time is a press away and never behind a hover alone.
+   It keeps to the end of the row while there is room, and starts at the
+   start when there is not, so the scroll begins at the first window. */
+.usage-strip-btn {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 18px;
+  height: 100%;
+  margin-left: auto;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 140ms ease-out;
+}
+.usage-strip-btn:hover,
+.usage-strip-btn[aria-expanded="true"] { background: var(--bg-1); }
+.usage-strip-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+.usage-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: opacity 140ms ease-out;
+}
+/* Faded when it could not be refreshed, as the phone's number is. */
+.usage-cell.is-stale { opacity: 0.55; }
+.usage-cell-label,
+.usage-cell-none { color: var(--fg-3); }
+.usage-cell .usage-track {
+  --usage-fill-colour: var(--fg-3);
+  flex: 0 0 44px;
+  width: 44px;
+  height: 4px;
+  background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat;
+}
+.usage-cell .usage-track.is-warn { --usage-fill-colour: var(--warn); }
+.usage-cell .usage-track.is-danger { --usage-fill-colour: var(--danger); }
+.usage-cell .usage-track .usage-fill {
+  background: linear-gradient(to right,
+    color-mix(in srgb, var(--usage-fill-colour) 35%, transparent), var(--usage-fill-colour));
+}
+.usage-cell .usage-val { font-size: 11px; }
+.usage-strip .usage-pop { top: calc(100% + 4px); right: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .usage-strip::before,
+  .usage-strip::after,
+  .usage-strip-btn,
+  .usage-cell,
+  .usage-fill { transition: none; }
+}
+
+.usage-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+}
+
+.usage-pop {
+  position: absolute;
+  z-index: 141;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(340px, calc(100vw - 20px));
+  /* A short window scrolls the card, never the app shell. */
+  max-height: calc(100dvh - 64px - env(safe-area-inset-top));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+}
+
+.usage-block {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.usage-block-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.usage-block-name {
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.usage-plan {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-2);
+}
+
+.usage-stale {
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.usage-row {
+  display: grid;
+  grid-template-columns: 78px 1fr 40px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.usage-row-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-2);
+}
+
+.usage-row .usage-track {
+  width: 100%;
+  height: 5px;
+}
+
+/* The reset time sits on its own line under the bar it belongs to. */
+.usage-reset {
+  grid-column: 2 / -1;
+  margin-top: -3px;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.usage-empty {
+  font-size: 12px;
+  color: var(--fg-3);
+}
+

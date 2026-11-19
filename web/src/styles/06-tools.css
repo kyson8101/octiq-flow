@@ -1,0 +1,725 @@
+/* ---- Thinking --------------------------------------------------------- */
+.thinking-head,
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The icon leads the row, so the row needs a little more air around it than a
+   line of text does, and the caret has moved to the far end. */
+.tool-head {
+  gap: 8px;
+  min-height: 34px;
+  padding: 5px 4px;
+  border-radius: var(--r-md);
+}
+
+.thinking-head:hover,
+.tool-head:hover {
+  background: var(--bg-1);
+  color: var(--fg-2);
+}
+
+.thinking-body {
+  padding: 8px 12px;
+  border-left: 2px solid var(--border);
+  margin-left: 10px;
+  color: var(--fg-2);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+/* Holds the row and, where the row leads somewhere else, the fold beside it.
+   A card whose head only folds keeps the head alone in here: the button is
+   still `width: 100%`, so the row is the same row it was. */
+.tool-head-row {
+  display: flex;
+  align-items: center;
+  border-radius: var(--r-md);
+}
+
+.tool-head-row .tool-head {
+  min-width: 0;
+}
+
+/* The fold, for a card whose row opens an agent's screen. Same size and colour
+   as the caret it replaced, with enough padding either side to be hit. */
+.tool-fold {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 7px 5px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  transition: background 0.13s ease, color 0.13s ease;
+}
+
+.tool-fold:hover {
+  background: var(--bg-1);
+  color: var(--fg-2);
+}
+
+.tool-caret {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  transition: transform 0.12s ease;
+  font-size: 10px;
+  color: var(--fg-3);
+}
+
+.tool-caret.is-open {
+  transform: rotate(90deg);
+}
+
+/* ---- The folder over a run of file cards ------------------------------- */
+/* Where the cards under it are. Not a card itself and deliberately not shaped
+   like one: it is a label ON a run, and giving it a fill and a border would
+   make it a fourth thing that happened.
+
+   It hugs the card below rather than floating between two — `.msg-body` sets a
+   10px gap between everything in it, which reads as "these are separate", and
+   this one is the opposite claim. Pulled down to 4px, so what the eye sees is a
+   header attached to what follows it. */
+.folder-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: -6px;
+  padding-left: var(--tool-pad);
+  color: var(--fg-3);
+  font-size: 11.5px;
+  /* A folder is a place, not a file — the row below it is the mono one. */
+  font-family: var(--font);
+}
+
+.folder-head-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---- Tool cards ------------------------------------------------------- */
+/* A transcript action is a quiet line, not a card. A reply can have dozens of
+   them, so framing every one makes the machinery louder than the answer. The
+   disclosure body is still there on demand; only its resting state is flat. */
+.tool {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+.tool-error {
+  color: var(--danger);
+}
+
+/* The action mark is a small line icon. Colour tells a reader its family, but
+   the words carry the meaning — a big tinted tile turns a quiet event into a
+   dashboard card. */
+.tool-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--tint);
+  --tint: var(--fg-2);
+}
+
+.tool-icon[data-kind="read"] {
+  --tint: #64d2ff;
+}
+/* The edit tint is stated once and worn twice: by the icon of a card that
+   changed a file, and by the chip for that file in a folded run's tally. The
+   two are the same claim at two sizes, so they are the same colour. */
+.tool-icon[data-kind="edit"],
+.tool-tally-item[data-kind="edit"] {
+  --tint: #ff9f0a;
+}
+.tool-icon[data-kind="run"] {
+  --tint: #30d158;
+}
+.tool-icon[data-kind="search"] {
+  --tint: #7d7aff;
+}
+.tool-icon[data-kind="web"] {
+  --tint: #0a84ff;
+}
+.tool-icon[data-kind="agent"] {
+  --tint: #0a84ff;
+}
+.tool-icon[data-kind="message"] {
+  --tint: #0a84ff;
+}
+.tool-icon[data-kind="skill"] {
+  --tint: #bf5af3;
+}
+.tool-icon[data-kind="mcp"] {
+  --tint: #66d4cf;
+}
+.tool-icon[data-kind="plan"] {
+  --tint: #ff375f;
+}
+
+/* The icon used to breathe while a call was in flight, so a long-running row
+   was findable in a scrolled-past reply. The SPINNER at the other end of the
+   same row already does that, and better — it turns rather than fades, which
+   survives a glance, and it is the conventional mark for it. Two loops on one
+   12px row saying one thing is one loop too many; the fade was the one to go,
+   because a dimming icon also reads as "disabled" at the edge of vision. */
+
+/* Scope the failure tint to this card's own header. A failed ToolGroup also
+   carries `.tool-error`; a descendant selector there would paint every
+   successful card inside the expanded group red. */
+.tool-error > .tool-head-row .tool-icon {
+  --tint: var(--danger);
+}
+
+/* A failure that broke nothing (lib/toolOutcome): an expired or declined
+   card, a rate limit. Its icon wears the warning colour, like its badge. */
+.tool-error.is-warning > .tool-head-row .tool-icon {
+  --tint: var(--warn);
+}
+
+/* The copy gets the available middle of the row. Identity and detail are two
+   deliberate lines: provider tool names are evidence and stay fully visible,
+   while an unbounded command or path may be ellipsised below them. */
+.tool-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.tool-identity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 7px;
+  min-width: 0;
+}
+
+/* The name carries the row, so it is the one thing in it drawn at full
+   strength. Long qualified MCP names wrap instead of losing the very suffix
+   that distinguishes one tool from another. Everything else — the scope, the
+   path, the counts, the caret — stays quiet. */
+.tool-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--fg-2);
+}
+
+/* Where a call came from — the plugin behind a skill, the server behind an MCP
+   tool. Second in the row and quieter than the name, because it answers a
+   question the reader only sometimes has. */
+.tool-scope {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-1);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--fg-3);
+}
+
+.tool-detail {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl; /* a long path keeps its useful end; the <bdi> inside keeps
+                     its characters in their own left-to-right order */
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-3);
+}
+
+.tool-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.tool-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.tool-state.is-running {
+  color: var(--accent);
+}
+
+.tool-state.is-error {
+  color: var(--danger);
+}
+
+/* The status group owns the live colour; inline background labels stay quiet. */
+.tool-state.is-background {
+  color: var(--fg-3);
+}
+
+/* A call the stop caught in flight. It never answered and never will, but
+   nothing failed either — so it says so in the same grey as a finished row
+   rather than borrowing the red of one that broke. */
+.tool-state.is-stopped {
+  color: var(--fg-3);
+}
+
+.tool-stopped .tool-icon {
+  opacity: 0.55;
+}
+
+/* A ring with one quarter drawn, turning. Small enough to sit on a 12px row
+   without pushing it taller. */
+.tool-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: tool-spin 0.7s linear infinite;
+}
+
+@keyframes tool-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Everything that moves stops for a reader who asked for that. */
+@media (prefers-reduced-motion: reduce) {
+  .tool-spinner {
+    animation: none;
+  }
+  .tool-expand {
+    animation: none;
+  }
+}
+
+.tool-expand {
+  /* The collapsed transcript remains flat; detail gets a clear boundary only
+     while it is being read. The brief ring is a one-time arrival cue, not a
+     distracting pulse that competes with an in-progress tool. */
+  --tool-expand-border: color-mix(in srgb, var(--accent) 42%, var(--border));
+  --tool-expand-glow: color-mix(in srgb, var(--accent) 18%, transparent);
+  margin: 2px 4px 8px 32px;
+  overflow: hidden;
+  border: 1px solid var(--tool-expand-border);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--bg-0) 76%, transparent);
+  animation:
+    tool-expand-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both,
+    tool-expand-border-in 420ms ease-out both;
+}
+
+/* An error's reveal echoes the state already present on the row, so opening a
+   failed command does not borrow the success-path accent. */
+.tool-error .tool-expand {
+  --tool-expand-border: color-mix(in srgb, var(--danger) 58%, var(--border));
+  --tool-expand-glow: color-mix(in srgb, var(--danger) 18%, transparent);
+}
+
+@keyframes tool-expand-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes tool-expand-border-in {
+  0% {
+    border-color: transparent;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  55% {
+    border-color: var(--tool-expand-border);
+    box-shadow: 0 0 0 3px var(--tool-expand-glow);
+  }
+  100% {
+    border-color: var(--tool-expand-border);
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.tool-body {
+  padding: 8px 10px 10px;
+}
+
+.tool-label {
+  margin: 6px 0 3px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.tool-pre {
+  margin: 0;
+  padding: 9px 11px;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---- File diffs ------------------------------------------------------- */
+/* An Edit or a Write, drawn as the change it is.
+
+   TWO number columns. A unified diff numbers an added line against the file as
+   it will be and a removed one against the file as it was; put both in one
+   column and a correct diff reads as a viewer that lost count. Each line fills
+   the column it belongs to and leaves the other blank.
+
+   The rows are `display: contents`, so every cell is a grid item of the body
+   and the columns line up down the whole diff. It is also what makes a row's
+   background reach the end of the LONGEST line rather than the end of the box:
+   the last track is `minmax(max-content, 1fr)`, so it never sizes below the
+   widest line, and the body scrolls sideways instead of wrapping code. */
+.diff {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  overflow: hidden;
+}
+
+.diff-body {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(max-content, 1fr);
+  align-items: baseline;
+  max-height: 360px;
+  overflow: auto;
+  padding: 5px 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  tab-size: 2;
+}
+
+/* No patch yet, so no gutter: the two number columns simply are not there. */
+.diff.is-plain .diff-body {
+  grid-template-columns: auto minmax(max-content, 1fr);
+}
+
+.diff-row {
+  display: contents;
+}
+
+.diff-n {
+  padding-right: 8px;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+}
+
+.diff-row > .diff-n:first-child {
+  padding-left: 11px;
+}
+
+.diff-mark {
+  padding: 0 5px 0 3px;
+  color: var(--fg-3);
+  user-select: none;
+}
+
+.diff.is-plain .diff-row > .diff-mark {
+  padding-left: 11px;
+}
+
+.diff-text {
+  padding-right: 12px;
+  color: var(--fg-1);
+  white-space: pre;
+}
+
+/* The tint sits on the cells, not the row — a `display: contents` row has no
+   box of its own to paint. */
+.diff-row.is-add > * {
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+}
+
+.diff-row.is-del > * {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.diff-row.is-add > .diff-mark {
+  color: var(--ok);
+}
+
+.diff-row.is-del > .diff-mark {
+  color: var(--danger);
+}
+
+.diff-row.is-add > .diff-text,
+.diff-row.is-del > .diff-text {
+  color: var(--fg-0);
+}
+
+/* The lines nobody changed, counted rather than printed. */
+.diff-row.is-gap > * {
+  grid-column: 1 / -1;
+  padding: 2px 11px;
+  margin: 2px 0;
+  background: color-mix(in srgb, var(--fg-3) 7%, transparent);
+  color: var(--fg-3);
+  font-size: 10.5px;
+}
+
+.diff-more {
+  display: block;
+  width: 100%;
+  padding: 6px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg-sunken);
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.diff-more:hover {
+  background: var(--bg-1);
+  color: var(--fg-0);
+}
+
+.diff-none {
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+/* `+46 −1` on the collapsed row: the size of the change, for a card nobody has
+   opened yet. */
+.diff-stat {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 5px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-stat-add {
+  color: var(--ok);
+}
+
+.diff-stat-del {
+  color: var(--danger);
+}
+
+/* `A` or `M`, in a chip rather than as a third number — it is a different KIND
+   of fact from the two beside it, and a bare letter after `+46 −1` reads as
+   part of the arithmetic. Sized to be square whichever letter it holds, so a
+   column of cards keeps its right-hand edge. */
+.diff-kind {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--tint) 18%, transparent);
+  color: var(--tint);
+  --tint: var(--accent);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* Green for a file that was made, because it is the same claim `+46` is making
+   in the number beside it. */
+.diff-kind[data-kind="create"] {
+  --tint: var(--ok);
+}
+
+/* A note beside a section label, in the label's own quiet voice but not
+   shouting in capitals with it. */
+.tool-note {
+  margin-left: 7px;
+  color: var(--fg-3);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* ---- Skills ----------------------------------------------------------- */
+/* A skill call is the same flat row as every other tool call. The purple icon
+   (`.tool-icon[data-kind="skill"]`) is what marks it — it used to be a bordered,
+   gradient-filled card with its own icon tile and a bold name, which made one
+   call louder than the transcript around it. */
+
+/* A description is prose, and prose is read from its start. Only the shared
+   rule's path-truncation wants the other end. */
+.tool-skill .tool-detail {
+  direction: ltr;
+}
+
+/* What the skill was called with (`--fast`), as a chip by its name. */
+.tool-args {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-1);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--fg-2);
+}
+
+/* The skill's instructions, opened. Rendered as the markdown they were written
+   in, and capped in height: a SKILL.md runs to hundreds of lines, and the card
+   is a thing to glance into, not a page to scroll the conversation by. */
+.tool-brief {
+  max-height: 380px;
+  overflow: auto;
+  padding: 10px 13px;
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--fg-1);
+}
+
+.tool-brief h1,
+.tool-brief h2,
+.tool-brief h3 {
+  margin: 12px 0 6px;
+  font-size: 13px;
+}
+
+.tool-brief h1 {
+  font-size: 14px;
+}
+
+.tool-brief p,
+.tool-brief ul,
+.tool-brief ol {
+  margin: 0 0 8px;
+}
+
+.tool-brief code {
+  font-size: 11.5px;
+}
+
+.tool-brief pre {
+  padding: 8px 10px;
+  background: var(--bg-1);
+}
+
+.tool-brief pre code {
+  font-size: 11.5px;
+}
+
+.tool-brief table {
+  font-size: 12px;
+}
+
+/* How work the call left RUNNING ended — an exit code that arrived minutes
+   after the call itself answered. Quiet by default: a background command
+   finishing cleanly is the expected case, and only the other cases are news. */
+.tool-finish {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-1);
+  font-size: 10.5px;
+  color: var(--fg-3);
+}
+
+.tool-finish[data-status="failed"],
+.tool-finish[data-status="killed"],
+.tool-finish[data-status="stopped"] {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+/* The subagent's own working. Indented behind a rule, because its tool cards
+   look exactly like the ones outside it and there would otherwise be nothing
+   on screen saying which agent ran them. */
+.subagent {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-left: 3px;
+  padding: 4px 0 4px 11px;
+  border-left: 2px solid var(--border);
+}
+
+/* Nested cards sit ON a card, so they need a shade of their own to read as
+   separate rather than as more of the same panel. */
+.subagent .tool {
+  background: var(--bg-0);
+}
+
+/* ---- Working indicator ------------------------------------------------ */
+/* The dots that once sat at the foot of the transcript are gone — the status
+   line above the composer was saying the same thing a few pixels below them.
+   What is left draws only INSIDE a streaming bubble that has no blocks yet, so
+   it owns a box that would otherwise be empty and needs no slot held for it. */
+.dots {
+  width: 22px;
+  height: 8px;
+  background:
+    radial-gradient(circle 3px at 3px 4px, var(--fg-3) 99%, transparent),
+    radial-gradient(circle 3px at 11px 4px, var(--fg-3) 99%, transparent),
+    radial-gradient(circle 3px at 19px 4px, var(--fg-3) 99%, transparent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dots {
+    animation: none;
+  }
+}
+

@@ -1,0 +1,309 @@
+/* ---- Empty state ------------------------------------------------------ */
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  padding: 24px;
+  text-align: center;
+}
+
+.hero-title {
+  margin: 0;
+  font-size: var(--text-title);
+  font-weight: 600;
+  color: var(--fg-0);
+  letter-spacing: -0.03em;
+}
+
+.hero-sub {
+  margin: 8px 0 0;
+  font-size: var(--text-sm);
+  color: var(--fg-3);
+  font-family: var(--font);
+  max-width: 60ch;
+}
+
+@media (max-width: 640px) {
+  /* A phone's welcome is a heading and a line, then the picker and the
+     message box — not a page of prose above them. */
+  .hero .hero-title { font-size: 20px; }
+  .hero { padding-block: 16px; }
+}
+
+/* The same middle of the page while a picked session is still being read back.
+   Deliberately almost nothing — a name and three dots. Anything more would be
+   a second page to look at for the second it is there, and the transcript is
+   what the reader is waiting for. */
+.hero.is-waiting {
+  gap: 12px;
+}
+
+.hero.is-waiting .hero-sub {
+  margin: 0;
+  max-width: 90%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The session was picked up, but its transcript could not be read back. Not a
+   failure of the conversation — typing still resumes it — so this is a warmer
+   note on the same line, not an error block. */
+.hero-warn {
+  color: var(--warn, #d08b3c);
+}
+
+/* ---- Resuming an earlier agent session --------------------------------- */
+/* Shown under the hero, on the page where a new chat would otherwise start
+   from nothing. Closed it is one quiet line; open it is a search field over
+   every session Claude Code and Codex remember. */
+.resume-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 22px;
+  padding: 7px 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.resume-open:hover {
+  background: var(--bg-1);
+  color: var(--fg-0);
+}
+
+.resume-count {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.resume {
+  width: 100%;
+  max-width: 560px;
+  margin-top: 22px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.resume-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 0;
+}
+
+.resume-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font: inherit;
+  /* 16px or iOS zooms the whole page when the field takes focus. */
+  font-size: 16px;
+}
+
+.resume-input::placeholder {
+  color: var(--fg-3);
+}
+
+.resume-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.resume-close {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.resume-close:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.resume-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.resume-chip {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.resume-chip:hover {
+  color: var(--fg-0);
+}
+
+.resume-chip.is-on {
+  border-color: transparent;
+  background: var(--accent-tint);
+  color: var(--fg-0);
+}
+
+.resume-chip.is-scope {
+  margin-left: auto;
+}
+
+.resume-list {
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  -webkit-overflow-scrolling: touch;
+}
+
+.resume-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The row under the cursor is filled, not edged. A bar down one side of a row
+   is the pattern this project does not use anywhere. */
+.resume-row.is-on {
+  background: var(--bg-2);
+}
+
+.resume-tag {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.resume-row.is-on .resume-tag {
+  background: var(--bg-1);
+}
+
+.resume-tag.is-claude {
+  color: #ff9d6b;
+}
+
+.resume-tag.is-codex {
+  color: #8fd3ff;
+}
+
+.resume-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.resume-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-0);
+  font-size: 13px;
+}
+
+.resume-mark {
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.resume-where {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-3);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.resume-dot {
+  margin: 0 5px;
+}
+
+.resume-when {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.resume-msg {
+  padding: 14px 12px;
+  color: var(--fg-3);
+  font-size: 12px;
+}
+
+.resume-msg.is-bad {
+  color: var(--warn);
+}
+
+.resume-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-3);
+  font-size: 11px;
+}
+
+.resume-foot > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.resume-link {
+  flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+@media (min-width: 621px) {
+  .resume-input {
+    font-size: 13px;
+  }
+}
+

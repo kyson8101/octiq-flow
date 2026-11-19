@@ -1,0 +1,398 @@
+/* ---- A compaction, start to end ---------------------------------------
+   One shape for both halves of the same event: the rule that runs while the
+   agent rewrites its own history IS the rule it leaves behind afterwards, in
+   the same place, so nothing appears, vanishes, or jumps when it finishes.
+   While it runs the rules travel — the agent reports no progress, only a start
+   and an end, so there is no percentage to draw and none is faked. */
+.compacted-line.is-running {
+  /* The road the truck drives on. Positioned so it can carry one. */
+  position: relative;
+  background: linear-gradient(
+    90deg,
+    var(--border) 0%,
+    var(--accent) 45%,
+    var(--border) 90%
+  );
+  background-size: 220% 100%;
+  animation: compacting-run 1.6s linear infinite;
+}
+
+@keyframes compacting-run {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+
+/* ---- The load, being carted off ---------------------------------------
+   A truck runs the length of the rule while the agent packs the conversation
+   down. It reports nothing — there is no progress to report — it just says the
+   job is the kind of job that MOVES things, which a bar sweeping left cannot.
+
+   Two elements, and that is the trick: the track is the width of the rule and
+   does the travelling, the truck hangs off its left edge and does the bobbing.
+   A percentage translate is a percentage of the element's OWN width, so a truck
+   asked to cross its parent this way would only ever cross itself; the track,
+   being exactly as wide as the road, turns `100%` into the distance wanted —
+   at which point the truck's nose is at the far end, whatever that end is. */
+.compacting-truck {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 0;
+  animation: compacting-haul 3.6s linear infinite;
+}
+
+.compacting-truck-art {
+  position: absolute;
+  /* Off the left end of the road, waiting to be driven onto it. */
+  right: 100%;
+  /* A pixel low, so the wheels sit ON the rule rather than hovering over it:
+     the drawing keeps a unit of clearance under them for the bob. */
+  bottom: -1px;
+  color: var(--accent);
+  animation: compacting-bob 0.42s ease-in-out infinite alternate;
+}
+
+.compacting-truck-load {
+  animation: compacting-load 0.42s ease-in-out infinite alternate;
+}
+
+/* It fades out at the END OF THE RULE rather than carrying on into the words:
+   the label is in-flow and the truck is positioned, so anything past that point
+   would be drawn straight over the sentence. Arriving and fading also beats a
+   truck that vanishes mid-stride — it reads as delivered. */
+@keyframes compacting-haul {
+  0% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  7% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+@keyframes compacting-bob {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-0.5px);
+  }
+}
+
+/* User units, not pixels — inside a viewBox this is about half a device pixel
+   at the size the truck is drawn, which is all a loose crate should be. */
+@keyframes compacting-load {
+  from {
+    transform: translateY(0.5px);
+  }
+  to {
+    transform: translateY(-0.5px);
+  }
+}
+
+.compacted.is-running .compacted-label {
+  color: var(--fg-2);
+}
+
+/* A machine that says it prefers less movement gets a still rule rather than
+   none: the row still has to read as work in progress. */
+@media (prefers-reduced-motion: reduce) {
+  .compacted-line.is-running {
+    background: var(--accent);
+    opacity: 0.5;
+    animation: none;
+  }
+
+  /* The truck stays, parked halfway along: it is what says which wait this is,
+     and a still one still says it. */
+  .compacting-truck {
+    transform: translateX(50%);
+    opacity: 1;
+    animation: none;
+  }
+
+  .compacting-truck-art,
+  .compacting-truck-load {
+    animation: none;
+  }
+}
+
+/* ---- Compaction boundary ----------------------------------------------
+   A quiet rule across the conversation. Everything above it is a summary now,
+   which is the answer to "why has it forgotten what I said earlier". */
+.compacted {
+  margin: 6px 0;
+}
+
+.compacted-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.compacted-line {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--border);
+}
+
+.compacted-label {
+  /* Does NOT shrink. The rules either side are decoration and this is the
+     information, so the rules give up their width first — before this row was
+     told that, the numbers it exists to report were the first thing cut. */
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+/* The whole label is the handle: a 10px chevron is not something you can hit
+   on a phone. */
+.compacted-label.is-button {
+  cursor: pointer;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  font: inherit;
+  color: var(--fg-3);
+  text-align: left;
+}
+
+.compacted-label.is-button:hover,
+.compacted.is-open .compacted-label.is-button {
+  border-color: var(--border);
+  background: var(--bg-2);
+  color: var(--fg-2);
+}
+
+.compacted-facts {
+  color: var(--fg-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Written here rather than in the markup so the narrow layout can drop it: with
+   the facts on a line of their own, a leading bullet reads as a list item. */
+.compacted-facts::before {
+  content: " · ";
+}
+
+/* ---- Card 81: the same event, in the width a phone has ----------------
+   `rule — label — rule` needs about 500px and a phone has 390. It failed in
+   three ways at once: the phrase wrapped mid-sentence, the facts ellipsised
+   away the one number the row reports (`889k → 1…`), and both rules shrank to
+   nothing, so the line across the conversation was not a line.
+
+   So it stacks: one full-width rule, the phrase under it, the facts under that.
+   `CompactRule` is shared by the running compaction and the finished one, which
+   is what keeps them one shape — the running row restacks with it and nothing
+   jumps when the work ends. */
+@media (max-width: 700px) {
+  .compacted-bar {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* The rule goes above, whole. */
+  .compacted-line:first-child {
+    flex-basis: 100%;
+  }
+
+  /* One rule is a line across the conversation. Two, with the words below
+     rather than between them, is a box round nothing. */
+  .compacted-line:last-child {
+    display: none;
+  }
+
+  .compacted-label {
+    flex-wrap: wrap;
+    /* The phrase gets the whole width, so if it has to wrap it wraps cleanly
+       instead of colliding with the numbers. */
+    flex-basis: 100%;
+  }
+
+  .compacted-facts {
+    flex-basis: 100%;
+    /* Nothing is cut. There is a line here for it now. */
+    white-space: normal;
+    overflow: visible;
+    /* The chevron's width, so the facts line up under the phrase and not under
+       the arrow. */
+    padding-left: 15px;
+  }
+
+  .compacted-facts::before {
+    content: none;
+  }
+}
+
+.compacted-chev {
+  flex: 0 0 auto;
+  transition: transform 0.12s ease;
+}
+
+.compacted-chev.is-open {
+  transform: rotate(90deg);
+}
+
+/* The summary itself. Capped and scrollable: it is a page of text sitting
+   between two turns, and the reader came here to check one thing in it. */
+.compacted-body {
+  margin: 8px 0 4px;
+  padding: 10px 12px;
+  max-height: 46vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  font-size: 13px;
+  color: var(--fg-2);
+}
+
+/* A message the agent has not started on yet. Dimmed rather than hidden: it
+   was sent, it just has not been picked up. */
+.msg.is-queued .msg-body {
+  opacity: 0.86;
+}
+
+/* ---- /context, drawn ---------------------------------------------------
+   One bar for the categories, a legend with the numbers, and the ninety-odd
+   MCP tools folded away behind their servers. */
+.ctxr {
+  margin: 2px 0 4px;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+}
+
+.ctxr-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ctxr-total {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.ctxr-pct {
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+.ctxr-model {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.ctxr-bar {
+  display: flex;
+  height: 10px;
+  margin: 11px 0 12px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--bg-2);
+}
+
+.ctxr-seg {
+  height: 100%;
+  /* A slice of a few hundred tokens would otherwise be invisible. */
+  min-width: 2px;
+}
+
+.ctxr-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ctxr-legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.ctxr-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.ctxr-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-1);
+}
+
+.ctxr-tokens {
+  flex: 0 0 auto;
+  min-width: 46px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-0);
+}
+
+.ctxr-share {
+  flex: 0 0 auto;
+  min-width: 58px;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--fg-3);
+}
+
+.ctxr-servers {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.ctxr-more {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ctxr-more:hover {
+  color: var(--fg-0);
+}
+
+.ctxr-servers .ctxr-legend {
+  margin-top: 9px;
+}
+

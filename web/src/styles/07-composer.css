@@ -1,0 +1,391 @@
+/* ---- Composer --------------------------------------------------------- */
+.composer {
+  /* The fallback is the app's ordinary blue, but every registered model
+     supplies one of the profiles below. These variables stay local to the
+     composer: changing model should change the place you address it, not
+     recolour the transcript and project chrome around it. */
+  --composer-accent: #0a84ff;
+  --composer-on-accent: #fff;
+  /* Rebind the app's semantic accent tokens only inside this subtree. That
+     keeps every existing selected/focused state in step — including the model
+     grid and the phone sheet — without teaching each control about models. */
+  --accent: var(--composer-ink, var(--composer-accent));
+  --accent-tint: color-mix(in srgb, var(--composer-accent) 16%, transparent);
+  --accent-fg: var(--composer-label, var(--composer-on-accent));
+  flex: 0 0 auto;
+  padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
+}
+
+:root[data-color-scheme="light"] .composer {
+  --composer-ink: color-mix(in oklab, var(--composer-accent) 60%, #000);
+  --composer-label: #fff;
+}
+
+/* Claude's models: richer work leans violet, the everyday model keeps
+   Claude's warm coral, the quick model is crisp cyan, and Fable gets a softer
+   rose. The default stays close to Claude's own mark. */
+.composer[data-composer-style="opus"] {
+  --composer-accent: #b99cff;
+  --composer-on-accent: #1b112b;
+}
+
+.composer[data-composer-style="sonnet"] {
+  --composer-accent: #e07a59;
+  --composer-on-accent: #21110b;
+}
+
+.composer[data-composer-style="haiku"] {
+  --composer-accent: #59c9c5;
+  --composer-on-accent: #081b1a;
+}
+
+.composer[data-composer-style="fable"] {
+  --composer-accent: #e48db7;
+  --composer-on-accent: #25101a;
+}
+
+.composer[data-composer-style="claude"] {
+  --composer-accent: #d97757;
+  --composer-on-accent: #21110b;
+}
+
+/* Codex's named models follow their own imagery: a star, then sunlight, earth
+   and moon. Astra is the one hue nothing else in the set holds — the three
+   below it had already taken gold, green and blue. The CLI default is a quiet
+   steel-blue so it remains distinct without pretending to know which named
+   model the CLI chose. */
+.composer[data-composer-style="astra"],
+.composer[data-composer-style="pi-astra"] {
+  --composer-accent: #d76bf0;
+  --composer-on-accent: #1d0a24;
+}
+
+.composer[data-composer-style="sol"],
+.composer[data-composer-style="pi-sol"] {
+  --composer-accent: #f1b84b;
+  --composer-on-accent: #211807;
+}
+
+.composer[data-composer-style="terra"],
+.composer[data-composer-style="pi-terra"] {
+  --composer-accent: #78c892;
+  --composer-on-accent: #0a1d10;
+}
+
+.composer[data-composer-style="luna"],
+.composer[data-composer-style="pi-luna"] {
+  --composer-accent: #84a9ff;
+  --composer-on-accent: #0c1528;
+}
+
+.composer[data-composer-style="codex"],
+.composer[data-composer-style="pi"] {
+  --composer-accent: #8eb3c3;
+  --composer-on-accent: #0d191e;
+}
+
+/* Antigravity: one voice for every model it serves. */
+.composer[data-composer-style="antigravity"] {
+  --composer-accent: #6fa2f7;
+  --composer-on-accent: #0b1626;
+}
+
+/* Work the turn left running behind it — see components/Background.
+   It has no row of its own: the pieces below sit ON the status line above the
+   prompt box (`.composer-hint`), in front of that line's clock and after its
+   words. A row of its own is a line of chrome parked in the chat for as long as
+   the build takes, and it said in words what one dot says.
+
+   Quiet on purpose — no border and no fill. */
+
+/* The one moving thing on the line, and the whole of what it says: a still dot
+   reads as punctuation. Warn-coloured to match the card's own `in background`
+   chip, so the two are visibly the same news. Inline-block because the line
+   around it is text that ellipsises, not a flex row — a bare span would take no
+   width at all. */
+.bgwork-dot {
+  display: inline-block;
+  vertical-align: middle;
+  /* Lifted by the half-pixel that puts a 6px dot on the middle of an 11.5px
+     line rather than a hair below it. */
+  margin: -1px 6px 0 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  animation: bgwork-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes bgwork-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bgwork-dot {
+    animation: none;
+  }
+}
+
+/* What is running, at the end of the line. A shade brighter than the rest of
+   it: the words in front are the same every turn, this is the news. It is also
+   the part that gives way — the line ellipsises at its right edge, so on a
+   phone a long description is what gets cut, and the dot and the clock in front
+   of it are both short and both survive. */
+.bgwork-said {
+  color: var(--fg-2);
+}
+
+.bgwork-time {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A job the agent registered with the host says how far it is in its own
+   numbers (`lib/jobs`). Not a second moving thing: the bar only moves when the
+   job reports, and its width eases there. The fill is the accent while the job
+   is in flight, and muted grey once it has said nothing for ten minutes; the
+   dot then stands still too. */
+.bgwork-dot[data-stale] {
+  background: var(--fg-3);
+  animation: none;
+}
+
+.job-progress[data-stale] {
+  color: var(--fg-3);
+}
+
+.job-phase {
+  color: var(--fg-2);
+}
+
+.job-progress[data-stale] .job-phase {
+  color: var(--fg-3);
+}
+
+.job-meter {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+  width: 44px;
+  height: 4px;
+  margin: -1px 5px 0 0;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--bg-2);
+}
+
+.job-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--accent) 55%, var(--bg-2));
+  transition: width 200ms ease-out;
+}
+
+.job-progress[data-stale] .job-fill {
+  background: color-mix(in srgb, var(--fg-3) 60%, var(--bg-2));
+}
+
+.job-percent {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .job-fill {
+    transition: none;
+  }
+}
+
+/* The turn's own clock. Tabular figures because it is not rolled any more and
+   nothing else is holding its width: a proportional `1` would let the whole
+   line breathe in and out once a second, which is the fidget the roll was
+   removed to stop. */
+.working-clock {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A live metric changes by turning its digit, not replacing the whole label.
+   Counts, durations, usage, and percentages share this small motion; the rest
+   of their sentence stays still, so the changing figure is easy to find. */
+@keyframes roll-digit-up {
+  0% {
+    transform: translateY(0);
+  }
+  /* Past the stop, then back, then past it by less: a wheel with a spring
+     behind it rather than a slide that stops dead. One cell is 33.333% of the
+     three-cell stack, and what shows past the stop is the wheel's next face. */
+  56% {
+    transform: translateY(-38.4%);
+  }
+  74% {
+    transform: translateY(-31.1%);
+  }
+  88% {
+    transform: translateY(-34.4%);
+  }
+  100% {
+    transform: translateY(-33.3333%);
+  }
+}
+
+@keyframes roll-digit-down {
+  /* The old digit is the third face of a downward stack. */
+  0% {
+    transform: translateY(-66.6667%);
+  }
+  56% {
+    transform: translateY(-28.2%);
+  }
+  74% {
+    transform: translateY(-35.5%);
+  }
+  88% {
+    transform: translateY(-32.2%);
+  }
+  100% {
+    transform: translateY(-33.3333%);
+  }
+}
+
+/* And then it stays subtly bright a beat longer than it moved. `filter` keeps
+   semantic colours such as added/removed lines intact. */
+@keyframes roll-flash {
+  0%,
+  46% {
+    filter: brightness(1.25);
+  }
+  100% {
+    filter: none;
+  }
+}
+
+/* The number, as a row of wheels. `tabular-nums` keeps every digit the same
+   width, so a turn never nudges the words after it. */
+.roll {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.roll-text,
+.roll-static {
+  display: inline;
+}
+
+.roll.is-fresh {
+  animation: roll-flash 1460ms ease-out both;
+}
+
+/* One wheel. Everything outside the window is clipped, which is what makes the
+   cells above and below it a wheel rather than a column of numbers. */
+.roll-digit {
+  display: inline-block;
+  overflow: hidden;
+  height: 1.35em;
+  line-height: 1.35em;
+}
+
+.roll-stack {
+  display: block;
+  animation: roll-digit-up 560ms cubic-bezier(0.33, 0, 0.2, 1) both;
+}
+
+.roll-stack.is-down {
+  animation-name: roll-digit-down;
+}
+
+/* A fixed height, not one taken from the glyph inside: the cell above a new
+   leading digit is EMPTY — the 1 in 10 rolls up out of nothing — and an empty
+   cell that collapsed would drag the whole stack out of step. */
+.roll-cell {
+  display: block;
+  height: 1.35em;
+  line-height: 1.35em;
+}
+
+/* The number as one thing, for a reader who cannot see it turn. The wheels
+   themselves are `aria-hidden`; without this the row would be read out a digit
+   at a time, each with the two faces on either side of it. */
+.roll-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Anyone who has asked not to be moved gets the colour and none of the turn —
+   the wheel is simply already at its stop. */
+@media (prefers-reduced-motion: reduce) {
+  .roll-stack {
+    animation: none;
+    transform: translateY(-33.3333%);
+  }
+}
+
+/* ---- The right column: the panels beside the chat ---------------------- */
+/* One column, two panels. The rail brought its own border and fill when it was
+   the only thing here; inside the column those belong to the column. */
+/* Cards that look like they are floating, in a column that holds its own
+   space. Not `position: fixed` and not a float: the column is a real column and
+   the conversation ends where it begins — nothing is ever underneath these.
+   What makes them read as floating is that they are inset from the edges, on
+   the page's own background, with a shadow under each. */
+.side {
+  flex: 0 0 auto;
+  width: 14.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 8px;
+  background: transparent;
+}
+
+.side > * {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+/* Sized to what it holds, not to the window. A card stretched from the top bar
+   to the floor with two rows in it stops reading as a card and starts reading
+   as a second sidebar; grown only as far as its rows, it stays the light thing
+   parked in the corner that the shadow says it is. It still shrinks — a long
+   list gives way to the height there is and scrolls inside `.rail-list`. */
+.side .rail {
+  flex: 0 1 auto;
+  width: auto;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+}
+
+/* On a phone the column cannot be a column: 14.5rem of a 24rem screen is the
+   conversation. So it stops taking width and becomes a sheet anchored to the
+   right edge, the way the git and files panels do at this width — the strip of
+   chat left showing is what says this is on top of your work. There is nothing
+   to slide: the ✕ and the top bar's count mount and unmount it. */
+@media (max-width: 700px) {
+  .side {
+    position: absolute;
+    inset: 0 0 0 auto;
+    /* Above the views and below the project drawer (20) and its scrim (10),
+       the same rung the git sheet sits on. */
+    z-index: 5;
+    width: min(72vw, 15.5rem);
+  }
+}
+

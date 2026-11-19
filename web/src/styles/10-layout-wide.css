@@ -1,0 +1,92 @@
+/* ---- Wider screens: the drawer becomes a column ----------------------- */
+@media (min-width: 860px) {
+  .app {
+    flex-direction: row;
+  }
+
+  .shell-main {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .menu {
+    display: none;
+  }
+
+  /* The sidebar is a column here, and every project row in it carries its own
+     +. A second one in the top bar would be the same button twice. */
+  .new-chat {
+    display: none;
+  }
+
+  .sidebar {
+    display: flex;
+    /* `relative`, not `static`: the resize handle is positioned against this
+       edge, and a static column is not something to position against. */
+    position: relative;
+    transform: none;
+    box-shadow: none;
+    width: var(--nav-w);
+    flex: 0 0 auto;
+    /* It slides out of the row rather than narrowing to nothing. The width is
+       never touched, so nothing inside it reflows on the way — a column of
+       project names squashing as it leaves is what made this a `display: none`
+       for so long. The negative margin below is the only thing that changes,
+       and it does two jobs on one clock: it carries the column left, and it is
+       the space the chat grows into behind it. `.app` already clips its own
+       overflow, so the part that has left is simply not drawn. */
+    transition: margin-left 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* Put away, and the chat has the width. The way back is the project name in
+     the top bar, which gets its caret — and its click — back the moment this
+     is on. */
+  .app.nav-shut .sidebar {
+    margin-left: calc(-1 * var(--nav-w));
+    /* Out of the tab order once it has finished leaving, which is the one thing
+       `display: none` used to do for free. The delay is the slide's length on
+       the way out and gone on the way back, so the column is reachable from the
+       first frame of its return. */
+    visibility: hidden;
+    transition:
+      margin-left 260ms cubic-bezier(0.22, 1, 0.36, 1),
+      visibility 0s linear 260ms;
+  }
+
+}
+
+/* ---- Full-width chat layout ------------------------------------------ */
+/* This is deliberately a layout mode, not the browser Fullscreen API. The
+   top bar and browser chrome stay exactly where they are; only the chat gets
+   the body width. Side panes stay mounted and retain their state, ready to
+   return when this mode is toggled back off. */
+.app.chat-wide .rail-toggle,
+.app.chat-wide .sfp-toggle,
+.app.chat-wide .gitp-toggle {
+  display: none;
+}
+
+.app.chat-wide .side,
+.app.chat-wide .gitp-panel,
+.app.chat-wide .sfp-panel,
+.app.chat-wide .fpanel,
+.app.chat-wide .gitp-scrim,
+.app.chat-wide .fpanel-scrim {
+  display: none;
+}
+
+/* Above it the project list is a real column, so reclaim its actual width. */
+@media (min-width: 860px) {
+  .app.chat-wide .sidebar {
+    margin-left: calc(-1 * var(--nav-w));
+    visibility: hidden;
+    pointer-events: none;
+    transition:
+      margin-left 260ms cubic-bezier(0.22, 1, 0.36, 1),
+      visibility 0s linear 260ms;
+  }
+}
+

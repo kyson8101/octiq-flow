@@ -1,0 +1,1004 @@
+/* ---- App settings ------------------------------------------------------
+   A real settings workspace rather than another long drawer. The navigation
+   owns the categories; the content side only scrolls the page being edited.
+   It is a page of the workspace column, like Projects: the sidebar stays
+   where it is and the title sits in the one top bar (WorkspaceHeader). */
+.settings-page {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-0);
+}
+
+.settings-version {
+  display: block;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-layout {
+  width: min(1120px, 100%);
+  min-height: 0;
+  flex: 1 1 auto;
+  align-self: center;
+  display: flex;
+}
+
+.settings-nav {
+  width: 244px;
+  flex: 0 0 244px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-6) var(--space-4);
+  border-right: 1px solid var(--border);
+}
+
+.settings-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.settings-nav-item {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Pointer hover only: a touch leaves :hover stuck on the tab it tapped. */
+@media (hover: hover) {
+  .settings-nav-item:hover {
+    background: var(--bg-1);
+    color: var(--fg-0);
+  }
+}
+
+.settings-nav-item.is-on {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.settings-nav-item > svg {
+  flex: 0 0 auto;
+}
+
+.settings-nav-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settings-nav-copy > span {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-nav-copy small {
+  overflow: hidden;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-nav-foot {
+  margin: auto 10px 0;
+  padding-top: var(--space-6);
+  color: var(--fg-3);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.settings-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 40px 48px 64px;
+}
+
+.settings-section {
+  width: min(100%, 760px);
+  margin: 0 auto;
+}
+
+.settings-section-head {
+  min-height: 64px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-6);
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-section-head h2 {
+  margin: 0;
+  color: var(--fg-0);
+  font-size: var(--text-title);
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+.settings-section-head p {
+  max-width: 62ch;
+  margin: 7px 0 0;
+  color: var(--fg-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.settings-primary {
+  min-height: var(--control-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.settings-primary:hover {
+  filter: brightness(1.07);
+}
+
+.memory-vault { display: grid; gap: 24px; }
+.memory-vault label { display: block; color: var(--fg-1); font-size: 13px; }
+.memory-vault input:not([type="checkbox"]) { width: 100%; min-width: 0; padding: 9px 11px; background: var(--bg-0); color: var(--fg-1); border: 1px solid var(--border); border-radius: 6px; font: inherit; }
+.vault-connect, .vault-search { display: grid; gap: 9px; }
+.vault-input-row { display: flex; gap: 8px; align-items: center; }
+.vault-input-row input { flex: 1; }
+.vault-button { padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--fg-1); background: var(--bg-1); font: inherit; cursor: pointer; }
+.vault-button:hover { background: var(--bg-2); }
+.memory-vault button:disabled { opacity: .5; cursor: default; }
+.memory-vault :is(button, input):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.vault-help { margin: 0; font-size: 12px; line-height: 1.6; color: var(--fg-2); }
+.vault-access { display: grid; gap: 10px; padding: 18px 0; border-block: 1px solid var(--border); }
+.vault-access > button { justify-self: start; }
+.memory-vault .vault-write-toggle { display: flex; align-items: center; gap: 10px; }
+.vault-write-toggle input { accent-color: var(--accent); }
+.vault-search h3, .vault-note h3 { margin: 0 0 6px; color: var(--fg-1); font-size: 14px; overflow-wrap: anywhere; }
+.vault-results { display: grid; gap: 8px; }
+.vault-result { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 12px 0; text-align: left; border: 0; border-bottom: 1px solid var(--border); color: var(--fg-1); background: transparent; cursor: pointer; }
+.vault-result strong { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.vault-result small { color: var(--fg-2); }
+.vault-result span { grid-column: 1 / -1; color: var(--fg-2); font-size: 12px; overflow-wrap: anywhere; }
+.vault-note pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow: auto; padding: 14px; color: var(--fg-1); background: var(--bg-0); border-radius: 6px; font-size: 12px; line-height: 1.7; }
+@media (max-width: 520px) {
+  .vault-input-row { flex-wrap: wrap; }
+  .vault-input-row input { flex-basis: 100%; }
+}
+
+.settings-control-row {
+  min-height: 76px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-control-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-control-copy h3 {
+  margin: 0;
+  color: var(--fg-0);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-control-copy p,
+.settings-note {
+  margin: 4px 0 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.settings-note {
+  max-width: 68ch;
+  margin-top: var(--space-4);
+}
+
+.settings-section > .set-warn {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border));
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+
+.settings-empty {
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  color: var(--fg-3);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.settings-empty strong {
+  color: var(--fg-1);
+  font-size: 13px;
+}
+
+.settings-appearance .thm-grid {
+  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+  gap: 12px;
+}
+
+.settings-appearance .thm-shot {
+  height: 76px;
+}
+
+/* Chat width: the same tiles as the themes, each a page with its column drawn
+   at that width, so the choices compare side by side. */
+.settings-chat-width {
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+
+.settings-chat-width h3 {
+  margin: 0;
+  color: var(--fg-0);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-chat-width .settings-note {
+  margin: 4px 0 var(--space-4);
+}
+
+.cw-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: 10px;
+}
+
+.cw-shot {
+  display: flex;
+  justify-content: center;
+  height: 44px;
+  padding: 6px 0;
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+}
+
+.cw-column {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fg-2) 26%, transparent);
+  transition: background-color 160ms ease-out;
+}
+
+.cw.is-on .cw-column {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.cw-size {
+  margin-top: -5px;
+  padding-left: 1px;
+  color: var(--fg-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* WebKit lays a select's chosen option out as text inside it and counts that
+   text toward the scroll width of whatever scrolls around the select, however
+   narrow the select itself is drawn. A lead's role or a long project name in
+   one let the whole of Settings pan sideways on an iPhone. Clipped, the text
+   stays in the select's own box. */
+.settings-page select {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 16px on a phone or tablet: anything smaller and iOS Safari zooms the page
+   when a field takes focus, then leaves it zoomed and panning. One rule for
+   every Settings form; a desktop keeps its compact fields. */
+@media (max-width: 700px), (pointer: coarse) {
+  .settings-page :is(input:not([type="checkbox"], [type="radio"], [type="range"]), select, textarea) {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 700px) {
+  .settings-layout {
+    flex-direction: column;
+  }
+
+  /* Every section on screen at once, in one row of icons. A strip scrolling
+     sideways with its scrollbar hidden left the later sections past the edge
+     of a 375px phone, a clipped icon the only hint they existed (feedback
+     f3fab989); seven names wrapped into three rows. Each keeps its name for
+     assistive tech, and the picked one is the heading under the row. */
+  .settings-nav {
+    width: auto;
+    flex: 0 0 auto;
+    display: block;
+    padding: 4px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .settings-nav-list {
+    flex-direction: row;
+    gap: 2px;
+  }
+
+  .settings-nav-item {
+    position: relative;
+    /* Equal shares of the row: 48px each for seven on a 375px phone, and
+       still inside a 320px one. */
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+    min-height: 44px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .settings-nav-copy {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .settings-nav-copy small,
+  .settings-nav-foot {
+    display: none;
+  }
+
+  .settings-content {
+    padding: 26px 16px 48px;
+  }
+
+  .settings-section-head {
+    gap: var(--space-4);
+    margin-bottom: var(--space-5);
+  }
+
+  .settings-section-head h2 {
+    font-size: 21px;
+  }
+
+  .settings-project-path {
+    font-size: 10px;
+  }
+
+  .settings-appearance .thm-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ---- Project settings --------------------------------------------------
+   Lives in the same slide-out shell as the file panel (.panel), so the two
+   feel like one drawer that shows different things. */
+.set-body {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 18px 16px 32px;
+}
+
+.set-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.set-label {
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--fg-3);
+}
+
+.set-hint {
+  margin: -2px 0 4px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg-2);
+}
+
+.settings-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+}
+
+.settings-project,
+.settings-project-new {
+  width: 100%;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-project {
+  min-height: 58px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.settings-project:last-child {
+  border-bottom: 0;
+}
+
+.settings-project:hover,
+.settings-project-new:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.settings-project:focus-visible,
+.settings-project-new:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.settings-project-new {
+  justify-content: center;
+  border-style: dashed;
+  color: var(--fg-2);
+}
+
+.settings-project-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-project-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-project-path {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.settings-project-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.settings-project > svg {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+}
+
+.settings-project > .project-avatar { flex: 0 0 auto; }
+
+.project-icon-editor {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+}
+
+.project-icon-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.project-initial-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 76px;
+  align-items: center;
+  gap: 12px;
+  margin-top: 5px;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+.project-initial-input {
+  min-width: 0;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.project-color-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--control-md) minmax(100px, 120px) auto;
+  align-items: center;
+  gap: 6px 8px;
+  margin-top: 1px;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+.project-color-picker {
+  width: var(--control-md);
+  height: var(--control-md);
+  padding: 3px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  cursor: pointer;
+}
+
+.project-color-picker::-webkit-color-swatch-wrapper { padding: 0; }
+.project-color-picker::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--r-sm) - 3px);
+}
+
+.project-color-picker::-moz-color-swatch {
+  border: 0;
+  border-radius: calc(var(--r-sm) - 3px);
+}
+
+.project-color-picker:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.project-color-code {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  text-transform: lowercase;
+}
+
+.project-color-code[aria-invalid="true"] { border-color: var(--danger); }
+
+.project-color-error {
+  grid-column: 2 / -1;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.project-icon-note { margin-top: 1px; }
+
+/* An on/off row, built like the effort switch it borrows its shape from
+   (.eff-switch) so the two read as the same control in two places. */
+.set-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  align-self: flex-start;
+  padding: 7px 12px 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.set-switch:hover {
+  background: var(--bg-2);
+}
+
+.set-switch-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  transition: background 0.15s ease;
+}
+
+.set-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--fg-3);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.set-switch.is-on .set-switch-track {
+  background: var(--accent);
+}
+
+.set-switch.is-on .set-switch-track::after {
+  transform: translateX(12px);
+  background: var(--accent-fg);
+}
+
+.set-switch.is-on .set-switch-text {
+  color: var(--fg-0);
+}
+
+.set-warn {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--warn);
+}
+
+.set-input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font: inherit;
+  /* 16px stops iOS zooming the page when the field takes focus. */
+  font-size: 16px;
+  min-height: var(--control-md);
+}
+
+.set-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.set-env {
+  min-height: 4.5em;
+  resize: vertical;
+  white-space: pre;
+  font-family: var(--mono, Menlo, monospace);
+  font-size: 13px;
+}
+
+.set-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+}
+
+.set-row + .set-row {
+  margin-top: 6px;
+}
+
+/* The path is the content here, so it gets the room and truncates from the
+   LEFT — the end of a path says which folder it is, the start rarely does. */
+.set-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  /* Truncate from the LEFT — the end of a path is the half that identifies it.
+     The RTL box makes the overflow fall off the start; the <bdi> inside keeps
+     the path's own left-to-right order, without which the leading "/" would be
+     drawn at the far end. */
+  direction: rtl;
+  text-align: left;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-1);
+}
+
+.set-row-btn {
+  flex: 0 0 auto;
+  padding: 6px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--fg-0);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.set-row-btn:hover:not(:disabled) {
+  background: var(--border-strong);
+}
+
+.set-row-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.set-row-btn.is-quiet {
+  background: transparent;
+  color: var(--fg-2);
+}
+
+.set-row-btn.is-danger {
+  border-color: rgba(255, 69, 58, 0.4);
+  background: rgba(255, 69, 58, 0.12);
+  color: var(--danger);
+}
+
+.set-row-btn.is-danger:hover:not(:disabled) {
+  background: rgba(255, 69, 58, 0.22);
+}
+
+.set-order {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.set-order-at {
+  flex: 1 1 auto;
+  color: var(--fg-3);
+  font-size: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.set-project-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-1);
+  font-size: 13px;
+}
+
+.set-project-state {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  font-size: 11px;
+}
+
+.set-choose {
+  padding: 10px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  cursor: pointer;
+}
+
+.set-choose:hover {
+  border-color: var(--accent);
+  color: var(--fg-0);
+}
+
+.set-empty {
+  padding: 10px 11px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  font-size: 13px;
+  color: var(--fg-3);
+}
+
+.set-add {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.set-add .set-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.set-sibling-add .set-input {
+  font-family: inherit;
+}
+
+.set-danger {
+  display: flex;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.set-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-3);
+}
+
+/* ---- Folder picker -----------------------------------------------------
+   A dialog rather than a native file chooser: the native one would open on the
+   machine running OctiqFlow, not on the phone that asked for it. */
+.fp-picker {
+  position: fixed;
+  z-index: 160;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(520px, 94vw);
+  max-height: min(78dvh, 640px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-0);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.fp-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 12px 8px 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.fp-picker-title {
+  flex: 1 1 auto;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.fp-picker-path {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fp-picker-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font-family: var(--mono);
+  font-size: 16px;
+}
+
+.fp-picker-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.fp-picker-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 6px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.fp-picker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  /* Comfortably tappable: this list is meant to be walked on a phone. */
+  padding: var(--space-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-height: var(--control-touch);
+}
+
+.fp-picker-row:hover {
+  background: var(--bg-1);
+  color: var(--fg-0);
+}
+
+.fp-picker-row svg {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+}
+
+.fp-picker-row.is-up .fp-picker-name {
+  color: var(--fg-2);
+}
+
+.fp-picker-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fp-picker-empty {
+  padding: 18px 12px;
+  font-size: 13px;
+  color: var(--fg-3);
+}
+
+.fp-picker-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.fp-picker-here {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  /* Truncate from the LEFT — the end of a path is the half that identifies it.
+     The RTL box makes the overflow fall off the start; the <bdi> inside keeps
+     the path's own left-to-right order, without which the leading "/" would be
+     drawn at the far end. */
+  direction: rtl;
+  text-align: left;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-2);
+}
+

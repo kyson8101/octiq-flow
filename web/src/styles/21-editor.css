@@ -1,0 +1,443 @@
+/* ---- Main views -------------------------------------------------------- */
+.main[hidden] {
+  display: none;
+}
+
+/* ---- Editor mode -------------------------------------------------------
+   Phone shape by default: the tree is a slide-over on top of the file, the way
+   the project drawer sits on top of the chat. It only becomes a column once
+   there is room for a project sidebar, a tree AND a readable line of code. */
+.ws {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  /* Read by the editor's own theme (components/CodeEditor.tsx). 16px is not a
+     taste: below it, iOS Safari zooms the page the moment the text takes focus
+     and leaves you panning a document that no longer fits the screen. */
+  --ws-code-size: 16px;
+}
+
+.ws-tree-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  background: rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.ws.is-browsing .ws-tree-scrim {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ws-tree {
+  position: absolute;
+  z-index: 14;
+  inset: 0 auto 0 0;
+  width: min(82vw, 300px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  transform: translateX(-102%);
+  transition: transform 0.2s ease;
+}
+
+.ws.is-browsing .ws-tree {
+  transform: translateX(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-tree,
+  .ws-tree-scrim {
+    transition: none;
+  }
+}
+
+.ws-filter {
+  flex: 0 0 auto;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ws-filter-input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font: inherit;
+  /* Same reason as --ws-code-size: a smaller field zooms iOS on focus. */
+  font-size: 16px;
+}
+
+.ws-filter-input::placeholder {
+  color: var(--fg-3);
+}
+
+.ws-filter-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.ws-tree-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  -webkit-overflow-scrolling: touch;
+}
+
+.ws-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 34px;
+  padding-block: 5px;
+  padding-inline-end: 10px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 13px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.ws-row svg {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+}
+
+.ws-row:hover {
+  background: var(--bg-1);
+}
+
+/* The chosen file: a tint across the whole row and a heavier name. Never a
+   stripe down its left edge. */
+.ws-row.is-on {
+  background: var(--accent-tint);
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.ws-row.is-on svg {
+  color: var(--accent);
+}
+
+.ws-row-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Which folder a filter hit came from, under its name. */
+.ws-row-where {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--fg-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-twisty {
+  display: inline-flex;
+  flex: 0 0 auto;
+  transition: transform 0.14s ease;
+}
+
+.ws-twisty.is-open {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-twisty {
+    transition: none;
+  }
+}
+
+.ws-tree-msg {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+/* ---- Editor mode: the file itself ------------------------------------- */
+.ws-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.ws-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
+}
+
+.ws-files-btn,
+.ws-save,
+.ws-mini-btn {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ws-files-btn,
+.ws-save {
+  padding: 6px 11px;
+  font-size: 12px;
+}
+
+.ws-files-btn:hover,
+.ws-save:hover:not(:disabled),
+.ws-mini-btn:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.ws-save:not(:disabled) {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.ws-save:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ws-tabs {
+  display: flex;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.ws-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.ws-tab {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+}
+
+/* The open file: filled and outlined all round, with a bolder name. */
+.ws-tab.is-on {
+  background: var(--bg-2);
+  border-color: var(--border-strong);
+}
+
+.ws-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 44vw;
+  padding: 6px 3px 6px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.ws-tab.is-on .ws-tab-btn {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.ws-tab-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.ws-tab-close {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ws-tab-close:hover {
+  background: var(--bg-1);
+  color: var(--fg-0);
+}
+
+.ws-path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 4px 8px 4px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ws-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--fg-3);
+  overflow: hidden;
+  white-space: nowrap;
+  /* Truncate from the LEFT — the end of a path is the half that identifies it.
+     Same trick as .panel-path: the RTL box drops the overflow off the start,
+     and the <bdi> inside keeps the path reading left to right. */
+  direction: rtl;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.ws-mini-btn {
+  padding: 3px 9px;
+  font-size: 11px;
+}
+
+.ws-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* One open file. It is also what SCROLLS: a long markdown file is taller than
+   the pane, and with nothing here to hold it the overflow went all the way up
+   to `.app` — which is `overflow-x: hidden`, and a box with one axis hidden
+   scrolls the other. So reading down a README scrolled the whole SHELL, taking
+   the top bar, the tab strip and the project sidebar off the top of the window
+   with it. The scroll is per tab rather than on `.ws-body` so each file comes
+   back where you left it, like its draft and its undo history. The editor is
+   unaffected: CodeMirror scrolls inside `.ws-cm`, which never overflows. */
+.ws-doc {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.ws-doc[hidden] {
+  display: none;
+}
+
+.ws-cm {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ws-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+.ws-image img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.ws-video {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding: 16px;
+  background: #080808;
+}
+
+.ws-video video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.ws-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  padding: 28px 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--fg-3);
+}
+
+/* Room for a project sidebar, a file tree AND a readable line of code. Below
+   this the tree stays a slide-over, which is why the breakpoint is wider than
+   the one that docks the project drawer. */
+@media (min-width: 980px) {
+  .ws {
+    /* 15px, not the 13px this was: 13 is a comfortable size for Latin code and
+       too small to tell 请 from 情 at a glance. Same number the same files are
+       read at in VS Code. */
+    --ws-code-size: 15px;
+  }
+
+  .ws-tree {
+    position: static;
+    width: 252px;
+    flex: 0 0 auto;
+    transform: none;
+    box-shadow: none;
+  }
+
+  .ws-tree-scrim,
+  .ws-files-btn {
+    display: none;
+  }
+
+  .ws-filter-input {
+    font-size: 13px;
+  }
+
+  .ws-tab-btn {
+    max-width: 200px;
+  }
+}
+

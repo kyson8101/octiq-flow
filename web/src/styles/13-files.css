@@ -1,0 +1,959 @@
+/* ---- One file's row ---------------------------------------------------- */
+/* Used by the session files panel. It used to hang under each reply, indented
+   by the width of the Copy button it shared a row with — which is what made a
+   list of files look like it started in the middle of nowhere. In a column of
+   its own it starts where every other row in that column starts. */
+.file {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  width: 100%;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file:hover {
+  background: var(--bg-1);
+}
+
+.file-icon {
+  flex: 0 0 auto;
+  align-self: center;
+  display: inline-flex;
+  color: var(--fg-3);
+}
+
+.file.is-image .file-icon {
+  color: var(--accent);
+}
+
+.file-name {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  color: var(--fg-0);
+}
+
+/* The folder part, quieter than the filename and the first thing to go when
+   the row runs out of room. */
+.file-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  /* Truncate from the LEFT — the end of a path is the half that identifies it.
+     The RTL box makes the overflow fall off the start; the <bdi> inside keeps
+     the path's own left-to-right order, without which the leading "/" would be
+     drawn at the far end. */
+  direction: rtl;
+  text-align: left;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+/* When the file was last written. Fixed to the row's right edge, so a column
+   of stamps lines up and can be read down rather than hunted for; tabular
+   figures keep the digits from shuffling as the times change. It never
+   shrinks — the folder beside it is the part that gives way, because a
+   half-drawn date is worth less than a half-drawn path. */
+.file-time {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+
+/* ---- Session files panel ----------------------------------------------- */
+/* The column itself borrows the git panel's layout, phone sheet and resizer —
+   see `.gitp-panel`, which names both. Only what is different lives here. */
+
+/* The bar button. Wider than a plain icon button because it carries a count,
+   and sized to sit level with the git toggle beside it. */
+.sfp-toggle {
+  width: auto;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  color: var(--fg-1);
+}
+
+.sfp-toggle.is-on {
+  border-color: var(--border);
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.sfp-count {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The name box and the type dropdown share one row. The box takes what is
+   left, because a folder path needs the room and a type is four characters. */
+.sfp-filter {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sfp-filter input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font: inherit;
+  font-size: 12px;
+}
+
+.sfp-filter input:focus,
+.sfp-type:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Capped so a long list of kinds cannot push the name box out of the panel,
+   and floored so ".yaml (12)" still fits without the native arrow sitting on
+   top of it. */
+.sfp-type {
+  flex: 0 1 auto;
+  max-width: 42%;
+  min-width: 96px;
+  padding: 6px 4px 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* The way back out of a filter that hid everything, offered where the missing
+   rows would have been. */
+.sfp-clear {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* Tighter than the git panel's body: these are single-line rows, and padding
+   sized for a file's diff wastes most of a phone screen on air. */
+.sfp-body {
+  padding: 6px;
+}
+
+.sfp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* The row is the file button PLUS the two buttons that copy without opening
+   it. They are siblings rather than children because a button inside a button
+   is not something a browser will draw — see `PinRow`. */
+.sfp-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+/* A pinned row is two lines: the file, then the agent's reason for it. The
+   row wraps rather than being a nested column, so the name/folder/stamp line
+   keeps the exact layout every other `.file` row in the app has. */
+.sfp-pin {
+  flex-wrap: wrap;
+  /* `.file` is `width: 100%`, which beside a sibling would push it off the
+     edge. Both of these let it give way instead — the folder inside it is
+     already the part built to be truncated. */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Copy the path, copy the contents. Pinned to the row's right edge and level
+   with the FIRST line of it, not floating down the middle of a wrapped one. */
+.sfp-acts {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-top: 2px;
+}
+
+/* Quiet until the row is hovered, and never hidden outright: a phone has no
+   hover, and this column exists to be read on one. The width is reserved on
+   every row whatever the state, so nothing moves under the cursor. */
+.sfp-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.sfp-row:hover .sfp-act,
+.sfp-act:focus-visible {
+  opacity: 1;
+}
+
+.sfp-act:hover {
+  border-color: var(--border);
+  background: var(--bg-1);
+  color: var(--fg-1);
+}
+
+/* What it did. Green for a copy that landed, amber for one that had nothing to
+   copy or only got half the file, red for one the browser refused — each
+   spelled out in the button's own title, which is where the sentence goes. */
+.sfp-act.is-done {
+  opacity: 1;
+  color: var(--ok);
+}
+
+.sfp-act.is-warn {
+  opacity: 1;
+  color: var(--warn);
+}
+
+.sfp-act.is-failed {
+  opacity: 1;
+  color: var(--danger);
+}
+
+/* Nothing here will ever be hovered, so the resting state has to be readable
+   on its own. */
+@media (hover: none) {
+  .sfp-act {
+    opacity: 0.7;
+  }
+}
+
+/* `.file-icon` centres itself, which is right on a one-line row and wrong on a
+   wrapped one — it would drift to the middle of both lines. Baseline puts it
+   back beside the name.
+
+   Every row here was CHOSEN — a pin is the only way into this column — and the
+   accent is what says so against the quiet grey `.file-icon` gives file rows
+   everywhere else in the app. Deliberately not a bar down the left edge. */
+.sfp-pin .file-icon {
+  align-self: baseline;
+  color: var(--accent);
+}
+
+/* The agent's tag for the row — a word or two, cut to 24 characters in
+   lib/pins. A quiet fill rather than a colour: the labels are the agent's own
+   words with no fixed vocabulary behind them, so there is nothing for a palette
+   to mean, and a column of five different colours would imply there was. */
+.sfp-label {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 4px;
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--fg-1);
+}
+
+/* What the agent said the file is FOR. Full width, so it sits under the row
+   rather than fighting the folder for the space left over, and indented past
+   the icon so it reads as belonging to the name above it. */
+.sfp-why {
+  flex: 0 0 100%;
+  /* The icon (13px) plus the row's gap (7px). */
+  padding-left: 20px;
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-2);
+}
+
+/* The line worth landing on. A signpost beside the reason, not a link — see
+   the note in SessionFiles about why clicking opens the file instead. */
+.sfp-line {
+  font-family: var(--mono);
+  color: var(--fg-3);
+}
+
+/* ---- Image viewer ------------------------------------------------------ */
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.88);
+}
+
+.viewer-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* Three-value shorthand is top / left-right / bottom, so the status bar's
+     height was being added BELOW this bar rather than above it — the row sat
+     under the clock and carried the dead space underneath. */
+  padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
+}
+
+.viewer-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+.viewer-close,
+.viewer-btn {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+/* Zoom out, how far in, zoom in — one group, so the three read as one control
+   and not as three loose buttons sharing a bar with the file's name. */
+.viewer-zoom {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.viewer-btn {
+  font-size: 17px;
+  line-height: 1;
+}
+
+/* The level, and the way back to a whole picture. It says `1x` when there is
+   nowhere to go back to, and goes quiet to say so. */
+.viewer-level {
+  flex: 0 0 auto;
+  min-width: 44px;
+  height: 32px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.viewer-btn:hover:not(:disabled),
+.viewer-level:hover:not(:disabled) {
+  background: var(--bg-2);
+}
+
+.viewer-btn:disabled,
+.viewer-level:disabled {
+  color: var(--fg-3);
+  cursor: default;
+}
+
+/* Where the picture is dragged around.
+ *
+ * It fills the viewer so a pan can start anywhere, which also means a click
+ * that misses the picture still lands on something that lets it through to the
+ * backdrop and closes. `touch-action: none` is what makes a pinch reach the
+ * component at all — left to itself the browser takes both fingers and scrolls
+ * the page with them. */
+.viewer-stage {
+  flex: 1 1 auto;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.viewer-stage.is-zoomed {
+  cursor: grab;
+}
+
+.viewer-stage.is-zoomed:active {
+  cursor: grabbing;
+}
+
+.viewer-pdf {
+  width: min(900px, 100%);
+  height: 82vh;
+  border: 0;
+  border-radius: var(--r-md);
+  /* The browser's PDF reader paints its own grey; white keeps a page with a
+     transparent background from showing the backdrop through it. */
+  background: #fff;
+}
+
+.viewer-img {
+  max-width: 100%;
+  max-height: 82vh;
+  object-fit: contain;
+  border-radius: var(--r-md);
+  /* The centre, because the pan is measured from the centre of the stage — an
+     origin anywhere else would make the zoom arithmetic in lib/zoom wrong. */
+  transform-origin: center center;
+  /* A dragged picture must not also be a picture being dragged INTO something
+     else, and a pan across it must not select it. */
+  -webkit-user-drag: none;
+  user-select: none;
+  /* A checkerboard so a transparent PNG reads as transparent, not as black. */
+  background-color: var(--bg-1);
+  background-image:
+    linear-gradient(45deg, var(--bg-2) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--bg-2) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--bg-2) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--bg-2) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.viewer-error {
+  padding: 10px 14px;
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--danger);
+  font-size: 13px;
+}
+
+/* ---- Slash command menu ------------------------------------------------ */
+.slash {
+  max-width: var(--chat-column);
+  width: 100%;
+  margin: 0 auto 6px;
+  max-height: 40vh;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.slash-head {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.slash-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+}
+
+.slash-item {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.slash-item.is-on {
+  background: var(--accent-tint);
+  color: var(--fg-0);
+}
+
+/* The @ project menu shares the slash menu's list: a character opens a list,
+   then arrows and Tab choose. */
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The readable project name beside its compact @ token. */
+.slash-note {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  font-size: 10.5px;
+  color: var(--fg-3);
+}
+
+/* ---- File panel (slides out from the right) --------------------------- */
+.panel-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.panel {
+  position: fixed;
+  z-index: 151;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(620px, 94vw);
+  display: flex;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--bg-0);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  animation: panel-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes panel-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel {
+    animation: none;
+  }
+}
+
+/* Phone: the panel IS the screen. The 6vw strip of chat that 94vw leaves on
+   the left is not enough to read or tap, so it only costs width — and a
+   markdown file wants every column a phone has. Close is the × in the head,
+   not the scrim, so nothing is lost by covering it. The slide-in still comes
+   from the right, so it still reads as a sheet that will go away again. */
+@media (max-width: 700px) {
+  .panel {
+    left: 0;
+    width: 100%;
+    border-left: 0;
+    box-shadow: none;
+  }
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: var(--space-4);
+  padding-top: calc(10px + env(safe-area-inset-top));
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+}
+
+.panel-id {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.panel-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font);
+  font-size: var(--text-lg);
+  color: var(--fg-0);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+/* Unsaved work, said quietly. */
+.panel-dirty {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.panel-path {
+  font-size: 10.5px;
+  color: var(--fg-3);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  /* Truncate from the LEFT — the end of a path is the half that identifies it.
+     The RTL box makes the overflow fall off the start; the <bdi> inside keeps
+     the path's own left-to-right order, without which the leading "/" would be
+     drawn at the far end. */
+  direction: rtl;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+/* Copy the path, copy the file. Icons rather than words: the header already
+   carries two labelled buttons and a close, and a name long enough to need the
+   room. Grouped tight so the pair reads as one thing beside them. */
+.panel-acts {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.panel-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.panel-act:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* What it did, in the same three colours the files column uses — green for a
+   copy that landed, amber for one that had nothing or only half a file, red
+   for one the browser refused. The sentence is in the button's own title. */
+.panel-act.is-done {
+  color: var(--ok);
+}
+
+.panel-act.is-warn {
+  color: var(--warn);
+}
+
+.panel-act.is-failed {
+  color: var(--danger);
+}
+
+.panel-btn {
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  min-height: var(--control-sm);
+}
+
+.panel-btn:hover:not(:disabled) {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.panel-btn.is-primary:not(:disabled) {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.panel-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.panel-close {
+  flex: 0 0 auto;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+
+.panel-close:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.panel-error,
+.panel-warn {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-error {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--fg-0);
+}
+
+.panel-warn {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--fg-1);
+}
+
+.panel-inline-btn {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.panel-inline-btn:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-prose {
+  padding: 16px 18px 40px;
+}
+
+/* An html file, drawn as the page it is — the frame fills whichever body it is
+   in, the chat dock's or an editor tab's.
+
+   White, and not the app's background: a document's canvas is white in every
+   other browser window, and a page that sets no background of its own would
+   otherwise be read as dark grey under its own black text. */
+.panel-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.panel-unsupported {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 32px 24px;
+  text-align: center;
+}
+
+.panel-unsupported-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.panel-unsupported-copy strong {
+  color: var(--fg-1);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.panel-unsupported-copy span {
+  color: var(--fg-3);
+  font-size: 12.5px;
+}
+
+.native-open {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+}
+
+.native-open-btn {
+  min-height: var(--control-md);
+  padding: 0 15px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.native-open-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.native-open-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.native-open-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.native-open-note,
+.native-open-status,
+.native-open-error {
+  margin: 0;
+  font-size: 11.5px;
+}
+
+.native-open-note {
+  color: var(--fg-3);
+}
+
+.native-open-status {
+  color: var(--ok);
+}
+
+.native-open-error {
+  max-width: 42ch;
+  color: var(--danger);
+}
+
+/* ---- Quoting a highlight into the prompt box -------------------------- */
+
+/* Follows the selection, in viewport coordinates, sitting just above it and
+   centred on it — `translate` rather than maths in the component, so the anchor
+   the component gives is simply "where the text is". */
+.quote-btn {
+  position: fixed;
+  z-index: 200;
+  transform: translate(-50%, calc(-100% - 9px));
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-0);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  animation: quote-in 0.12s ease-out;
+}
+
+.quote-btn:hover {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
+.quote-btn-plus {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--accent);
+}
+
+/* On the fill on hover, so it cannot be the accent any more — see the theme
+   notes: an accent can be a pale yellow, and it would vanish. */
+.quote-btn:hover .quote-btn-plus {
+  color: inherit;
+}
+
+/* Which lines are going in. Said on the button rather than after the fact,
+   because a quote from rendered markdown sometimes has no line to name and the
+   difference is worth seeing BEFORE the click. */
+.quote-btn-at {
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.quote-btn:hover .quote-btn-at {
+  color: inherit;
+  opacity: 0.75;
+}
+
+@keyframes quote-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-100% - 3px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quote-btn {
+    animation: none;
+  }
+}
+
+/* Said before the choice, not after it: switching providers opens a new chat;
+   a model change within one provider resumes this conversation next turn. */
+.picker-note {
+  padding: 6px 10px 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-3);
+}
+

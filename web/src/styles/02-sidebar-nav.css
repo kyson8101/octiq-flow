@@ -1,0 +1,750 @@
+/* ---- Task-oriented chat navigation -----------------------------------
+   Projects are execution context now, not folders in the primary hierarchy.
+   Every row therefore spends its three lines on the task title, the latest
+   agent response, and the project that owns the workspace. */
+/* The column runs the full height of the window, so its first row sits level
+   with the workspace's top bar (48px plus the same safe-area inset) and names
+   the app. Everything under it is spent on chats: the places are one tight
+   list of small rows, and the chat list takes all the height that is left. */
+.task-sidebar .sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: calc(48px + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) 6px 0 14px;
+}
+.sidebar-logo { flex: 0 0 auto; width: 20px; height: 20px; border-radius: 5px; }
+.task-sidebar .sidebar-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg-0);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.task-sidebar .sidebar-version {
+  margin-left: 3px;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+.sidebar-collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  transition:
+    background 140ms ease-out,
+    color 140ms ease-out;
+}
+.sidebar-collapse:hover { background: var(--bg-2); color: var(--fg-0); }
+.sidebar-collapse:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* New task, Search chats, Projects, Agents, Settings: one list of 30px rows
+   with no gap between them. New task leads it and is the only one drawn in
+   the primary ink; the rest are quieter so there is still one obvious action. */
+.sidebar-places {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 2px 6px 8px;
+  list-style: none;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-place {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 140ms ease-out,
+    color 140ms ease-out;
+}
+.sidebar-place svg { flex: 0 0 16px; width: 16px; height: 16px; }
+.sidebar-place > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-place:hover { background: var(--bg-2); color: var(--fg-0); }
+.sidebar-place[aria-current="page"] { background: var(--accent-tint); color: var(--fg-0); }
+.sidebar-place:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sidebar-place.sidebar-new-chat { color: var(--fg-0); font-weight: 550; }
+
+/* Recent's heading carries the view picker on its own line, so the list
+   below never moves when the view changes or the first chat is ticked. */
+.sidebar-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+.sidebar-section-head .sidebar-section-heading { margin-bottom: 0; }
+.sidebar .sidebar-section-head .sidebar-filter-trigger {
+  width: auto;
+  height: 24px;
+  gap: 4px;
+  padding: 0 6px 0 9px;
+  border-radius: 999px;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11px;
+  transition:
+    background 140ms ease-out,
+    color 140ms ease-out;
+}
+.sidebar-filter-trigger svg { transition: transform 160ms ease-out; }
+.sidebar-filter-trigger[aria-expanded="true"] svg { transform: rotate(180deg); }
+.sidebar-dropdown button[role="menuitemradio"]::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: transparent;
+}
+.sidebar-dropdown button[aria-checked="true"] { color: var(--fg-0); }
+.sidebar-dropdown button.has-separator { position: relative; margin-top: 9px; }
+.sidebar-dropdown button.has-separator::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  right: 6px;
+  left: 6px;
+  height: 1px;
+  background: var(--border);
+}
+.sidebar-dropdown button[aria-checked="true"]::after { background: var(--accent); }
+.sidebar-chat-section > .sidebar-empty { margin-top: 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-filter-trigger svg { transition: none; }
+}
+
+.task-chat-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
+  overscroll-behavior: contain;
+}
+.task-chat-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 6px 12px;
+}
+.sidebar-chat-section + .sidebar-chat-section { margin-top: 12px; }
+.sidebar-section-heading {
+  margin: 0 8px 6px;
+  color: var(--fg-3);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.task-chat-list {
+  padding: 0;
+}
+
+.task-chat-list .chat-row + .chat-row { margin-top: 2px; }
+.task-chat-list .chat {
+  --chat-project-color: var(--fg-3);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  background: linear-gradient(
+    108deg,
+    color-mix(in srgb, var(--chat-project-color) 16%, var(--bg-sunken)) 0%,
+    color-mix(in srgb, var(--chat-project-color) 6%, var(--bg-sunken)) 58%,
+    var(--bg-sunken) 100%
+  );
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+.task-chat-list .chat:hover {
+  background: linear-gradient(
+    108deg,
+    color-mix(in srgb, var(--chat-project-color) 21%, var(--bg-1)) 0%,
+    color-mix(in srgb, var(--chat-project-color) 8%, var(--bg-1)) 62%,
+    var(--bg-1) 100%
+  );
+}
+.task-chat-list .chat.is-on {
+  background: linear-gradient(
+    108deg,
+    color-mix(in srgb, var(--chat-project-color) 26%, var(--bg-1)) 0%,
+    color-mix(in srgb, var(--chat-project-color) 11%, var(--bg-1)) 66%,
+    var(--bg-1) 100%
+  );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--chat-project-color) 30%, var(--border));
+}
+/* One of this run's workers is on screen: the run's own row keeps the outline
+   without the wash, so you can still see which main chat the task list is. */
+.task-chat-list .chat.is-worker-on {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--chat-project-color) 30%, var(--border));
+}
+.task-chat-list .chat::after { left: 45px; right: 14px; }
+/* The left gutter holds the tick as well as the state dot now, and holds it at
+   a fixed width whether or not the tick is showing: a control that appears on
+   hover must not be able to move the title it sits beside. */
+/* At least three lines tall, and taller when a run adds its status line: a
+   fixed 78px held four lines (74px) in 62px of room, so they spilled out of
+   both edges and the meta line's chips were cut off at the bottom. */
+.task-chat-list .chat-btn {
+  grid-column: 1;
+  width: 100%;
+  height: auto;
+  min-height: 78px;
+  /* `.sidebar .task-chat-list .chat-btn` in MobileSidebar.css outranks this
+     and carries the same numbers; change both or neither. */
+  padding: 9px 6px 9px 45px;
+}
+.task-chat-list .chat-rename {
+  grid-column: 1 / -1;
+  height: 78px;
+  padding: 0 12px;
+}
+/* The whole cell stays the target — 32px, or 44px for a thumb — but only a
+   circle inside it is painted. Filling the cell put a slab against the row's
+   right edge, twice the size of the dots it was for. */
+.task-chat-list .chat-actions-trigger {
+  --chat-actions-mark: 28px;
+  position: relative;
+  isolation: isolate;
+  grid-column: 2;
+  grid-row: 1;
+}
+.task-chat-list .chat-actions-trigger::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 50%;
+  left: 50%;
+  width: var(--chat-actions-mark);
+  height: var(--chat-actions-mark);
+  border-radius: 50%;
+  background: transparent;
+  transform: translate(-50%, -50%);
+  transition: background-color 140ms ease-out;
+}
+.task-chat-list .chat-actions-trigger:hover,
+.task-chat-list .chat-actions-trigger[aria-expanded="true"] { background: transparent; }
+/* Touch browsers keep :hover on whatever was tapped last, so a closed menu
+   would stay lit. Only a pointer that can hover gets the hover fill. */
+@media (hover: hover) {
+  .task-chat-list .chat-actions-trigger:hover::before { background: var(--bg-2); }
+}
+.task-chat-list .chat-actions-trigger[aria-expanded="true"]::before { background: var(--bg-2); }
+.task-chat-list .chat-actions-trigger:focus-visible { outline: none; }
+.task-chat-list .chat-actions-trigger:focus-visible::before {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.task-chat-list .chat-summary { display: block; }
+.task-chat-list .chat-heading { min-width: 0; }
+.task-chat-list .chat-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 20px;
+}
+.task-chat-list .chat-time { margin-left: auto; font-size: 9.5px; }
+.task-chat-list .chat-snippet {
+  height: 18px;
+  margin: 1px 0 0;
+  padding: 0;
+  font-size: 11.5px;
+  line-height: 18px;
+}
+.task-chat-list .chat:hover .chat-snippet,
+.task-chat-list .chat:focus-within .chat-snippet,
+.task-chat-list .chat.is-pinned .chat-snippet { padding-right: 0; }
+.task-chat-list .chat-workflow-status { margin-top: 1px; line-height: 17px; }
+/* Let the metadata line contain the 28px agent avatar and project chips.
+   A fixed text-line height clips the avatar and undercounts the card's room. */
+.chat-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  height: auto;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+/* Whoever the chat is with sits at the end of the line, so the agent lines up
+   down the list whatever the projects before it take. */
+.chat-meta > .chat-model { margin-left: auto; }
+.chat-project,
+.chat-model {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chat-project { flex: 1 1 auto; }
+.chat-project-name,
+.chat-model > span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.chat-model {
+  flex: 0 1 auto;
+  max-width: 46%;
+  color: var(--fg-2);
+}
+
+/* The one mark on the left of a chat row.
+   ------------------------------------------------------------------
+   It carries the project's logo, whether the chat is running, and whether it
+   has been ticked off — three things that used to be three separate marks
+   squeezed into a 14px gutter, none of them big enough to read.
+
+   Every state is drawn INSIDE the same 30px square, so none of them can move
+   the title beside it. */
+.chat-badge {
+  touch-action: manipulation;
+  position: absolute;
+  left: 7px;
+  top: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  transform: translateY(-50%);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.chat-badge:disabled { pointer-events: none; opacity: 0.4; }
+.chat-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 9px; }
+.chat-badge .project-avatar { transition: opacity 140ms ease-out; }
+
+/* Under the pointer the logo gives way to what clicking it does. The logo
+   stays faintly behind rather than vanishing, so the row keeps its colour and
+   the slot never reads as empty. */
+.chat-badge-tick {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-1);
+  opacity: 0;
+  transition: opacity 140ms ease-out;
+}
+.chat-badge:hover .chat-badge-tick,
+.chat-badge:focus-visible .chat-badge-tick { opacity: 1; }
+.chat-badge:hover .project-avatar,
+.chat-badge:focus-visible .project-avatar { opacity: 0.22; }
+.chat.is-done .chat-badge-tick { color: var(--accent); }
+
+/* Ticked off, pointer elsewhere: a small mark ON the logo. A tint inside an
+   accent ring rather than a disc of accent — at this size a filled one is a
+   bright dot on every finished row, and the accent is a tint here throughout. */
+.chat-badge-check {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-1));
+  box-shadow: 0 0 0 1.25px var(--accent);
+  color: var(--accent);
+  transition: opacity 140ms ease-out;
+}
+.chat-badge:hover .chat-badge-check,
+.chat-badge:focus-visible .chat-badge-check { opacity: 0; }
+
+/* The opposite corner from the tick, and inside the row rather than out on its
+   rounded edge, where it was being clipped. */
+.chat-badge-pin {
+  position: absolute;
+  right: -5px;
+  top: -5px;
+  display: flex;
+  color: var(--fg-2);
+  line-height: 0;
+}
+.chat-badge-pin svg { width: 11px; height: 11px; }
+
+/* The running border: a snake going round the tile, eating.
+   ------------------------------------------------------------------
+   It is the only moving thing in the sidebar, which is what makes a working
+   chat findable when it is not the one on screen. A session that is merely UP
+   gets the same ring, still and grey — green is kept for work in flight.
+   Work in flight is the chat's own turn (`is-busy`) OR one of its tasks
+   executing (`is-tasks-running`), so a main chat idle between turns still
+   goes round while its workers run. Only the ring: the green snippet and time
+   stay the chat's own turn's.
+
+   Three strokes share one rounded-rect path, positioned by `stroke-dashoffset`
+   along a perimeter of
+
+       4 × (30 − 2 × 8) + 2π × 8 = 56 + 50.27 = 106.27
+
+   and every number below is derived from that, so the loop closes seamlessly:
+
+     * the SNAKE is a 22-long dash sliding the whole 106.27 in one lap, evenly;
+     * the PELLET is a dot that does the same lap in FOUR jumps, `steps(4)`,
+       starting a quarter-lap plus one body length ahead — which puts it
+       exactly where the snake's head arrives at the end of each quarter. So
+       the head reaches it precisely as it jumps on, and the snake reads as
+       catching the thing in front of it rather than chasing a fixed light.
+
+   Change the tile's size or corner radius and all five numbers move together:
+   perimeter P, the snake's spare dash P − 22, the pellet's P − 0.1, and the
+   pellet's start −(P/4 + 22) and end −(P/4 + 22 + P). */
+.chat-badge-ring {
+  position: absolute;
+  inset: -1px;
+  width: 32px;
+  height: 32px;
+  pointer-events: none;
+}
+.chat-badge-ring rect {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 1.5;
+  transition: stroke 140ms ease-out;
+}
+/* Softer than the logo's own border, so the two read as a logo with a ring
+   round it rather than a double frame. */
+.chat.is-live .chat-badge-track { stroke: color-mix(in srgb, var(--fg-3) 62%, transparent); }
+/* Under a running snake the track stays, very faintly: without it the lit
+   segment reads as a stray mark rather than as something going round. */
+.chat:is(.is-busy, .is-tasks-running) .chat-badge-track { stroke: color-mix(in srgb, var(--ok) 18%, transparent); }
+.chat:is(.is-busy, .is-tasks-running) .chat-badge-snake {
+  stroke: var(--ok);
+  stroke-linecap: round;
+  stroke-dasharray: 22 84.27;
+  animation: chat-badge-snake 2.2s linear infinite;
+}
+.chat:is(.is-busy, .is-tasks-running) .chat-badge-pellet {
+  stroke: var(--ok);
+  stroke-linecap: round;
+  stroke-width: 2.6;
+  /* A dash of no length at all: the round cap IS the pellet. */
+  stroke-dasharray: 0.1 106.17;
+  /* Two animations, and the second one's duration is why they stay together:
+     the pellet MOVES once a quarter-lap, so the pop that lands it runs on a
+     quarter-lap cycle of its own (2.2 ÷ 4 = 0.55). Both start at the same
+     moment and the ratio is exact, so every wrap of the short one falls on a
+     step of the long one — the food appears exactly where it jumped to, for
+     as many laps as the turn lasts. Keep 2.2 and 0.55 in that ratio. */
+  animation:
+    chat-badge-pellet 2.2s steps(4, end) infinite,
+    chat-badge-bite 0.55s ease-out infinite;
+}
+
+@keyframes chat-badge-snake {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -106.27; }
+}
+
+@keyframes chat-badge-pellet {
+  from { stroke-dashoffset: -48.57; }
+  to { stroke-dashoffset: -154.84; }
+}
+
+/* Food arriving: fades up and grows past its size before settling, the way a
+   thing dropped into place does. There is no matching fade OUT — it is EATEN,
+   so it goes the instant the head reaches it, which is what the wrap from
+   100% back to 0% does for free. The round cap grows along the path as well
+   as across it, so widening the stroke is the whole of the scale. */
+@keyframes chat-badge-bite {
+  0% { stroke-opacity: 0; stroke-width: 0.4; }
+  24% { stroke-opacity: 1; stroke-width: 3.1; }
+  40%, 100% { stroke-opacity: 1; stroke-width: 2.6; }
+}
+
+/* A shut fold holds rows nobody can see; an infinite animation on one is work
+   for nothing, and the count on the parent row already reports them. */
+.chat-children[hidden] .chat-badge-ring rect,
+.chat-fold:not(.is-open) .chat-badge-ring rect { animation: none; }
+
+/* A ticked chat still on screen — the one being read, or the Done view —
+   reads as settled rather than gone. */
+.chat.is-done .chat-btn { opacity: 0.6; }
+.chat.is-done:hover .chat-btn,
+.chat.is-done.is-on .chat-btn { opacity: 0.85; }
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-badge .project-avatar,
+  .chat-badge-tick,
+  .chat-badge-check,
+  .chat-badge-ring rect { transition: none; }
+  /* Still says "working", without anything moving: the whole ring lights. */
+  .chat:is(.is-busy, .is-tasks-running) .chat-badge-track { stroke: var(--ok); }
+  .chat:is(.is-busy, .is-tasks-running) .chat-badge-snake,
+  .chat:is(.is-busy, .is-tasks-running) .chat-badge-pellet { stroke: transparent; animation: none; }
+}
+
+.sidebar-empty {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--fg-3);
+  font-size: 12px;
+  text-align: center;
+}
+.sidebar-empty button {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.hero-start code {
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font: 0.92em var(--mono);
+}
+.hero-route-error {
+  max-width: 52ch;
+  margin: 12px 0 0;
+  color: var(--danger);
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 859.98px), (pointer: coarse) {
+  .sidebar-place { min-height: 40px; }
+  .sidebar-collapse { width: 40px; height: 40px; }
+  .sidebar .sidebar-section-head .sidebar-filter-trigger { width: auto; height: 36px; }
+  .task-chat-list .chat { grid-template-columns: minmax(0, 1fr) 44px; }
+  .task-chat-list .chat-btn { min-height: 82px; }
+  .task-chat-list .chat-rename { height: 82px; }
+  .task-chat-list .chat-actions-trigger { --chat-actions-mark: 32px; }
+}
+
+@media (max-width: 859.98px) {
+  .task-sidebar .task-chat-scroll { overflow-y: auto; }
+  .task-sidebar .task-chat-content { flex: 0 0 auto; overflow-y: visible; }
+
+  /* The places menu is the first thing in the scroller and nothing more: it
+     leaves with the list and is reached again at the top. It used to come
+     back over the rows on every upward scroll. */
+}
+
+@keyframes projects-enter {
+  from { opacity: 0.65; }
+  to { opacity: 1; }
+}
+
+/* The column's right edge, made draggable. It sits ON the dividing line and
+   reaches a few pixels either side of it, the same way the git panel's does —
+   a 1px target is not a target. Only ever rendered where the sidebar is a
+   column; the rule below is the belt to that braces, for the frame in which a
+   window being resized has crossed the breakpoint and React has not heard. */
+.nav-resizer {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  width: 9px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.nav-resizer:hover,
+.nav-resizer:active {
+  background: var(--accent-tint);
+}
+
+@media (max-width: 859.98px) {
+  .nav-resizer {
+    display: none;
+  }
+}
+
+.sidebar-utility-count {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf-sub {
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+.shelf-error {
+  margin: 10px 14px 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--danger-tint, rgba(255, 69, 58, 0.14));
+  color: var(--danger, #ff453a);
+  font-size: 13px;
+}
+
+/* Cards, two across where there is room. Each card IS the button: there is one
+   thing you come here to do, so it does not hide behind a menu. */
+.shelf-grid {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  padding: 14px;
+}
+
+.shelf-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shelf-card:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--bg-2, var(--bg-1));
+}
+
+.shelf-card:disabled {
+  cursor: default;
+}
+
+/* Restored ones stay on screen, marked. A card vanishing under your finger
+   reads as "did that work?". */
+.shelf-card.is-done {
+  opacity: 0.55;
+  border-color: var(--accent-soft-border, var(--border));
+}
+
+.shelf-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.shelf-card-name {
+  min-width: 0;
+  font-weight: 600;
+  color: var(--fg-0);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Truncated from the LEFT: a path is identified by its end. */
+.shelf-card-path {
+  direction: rtl;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.shelf-card-desc {
+  font-size: 12px;
+  color: var(--fg-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.shelf-card-act {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.shelf-card.is-done .shelf-card-act {
+  color: var(--fg-3);
+}
+
+.trash-card-meta {
+  font-size: 11px;
+  color: var(--fg-3);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.proj-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 8px 8px;
+  list-style: none;
+}
+
+/* The project row's own layout lives in the "Project folders" section below —
+   this only keeps the name's truncation, which both used. */
+.proj-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+

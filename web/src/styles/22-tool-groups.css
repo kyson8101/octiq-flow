@@ -1,0 +1,146 @@
+/* ---- Tool groups ------------------------------------------------------ */
+/* A run is one quiet status line, modelled after Codex chat's `Edited files,
+   ran a command` summary. The full cards are only drawn after the reader asks
+   for them, so tool-heavy replies leave room for the agent's actual message. */
+.tool-group {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+.tool-group-head {
+  gap: 8px;
+  min-height: 34px;
+  padding: 5px 4px;
+  border-radius: var(--r-md);
+  color: var(--fg-2);
+}
+
+.tool-group-head:hover {
+  color: var(--fg-1);
+}
+
+.tool-summary-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  color: var(--fg-3);
+}
+
+.tool-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+}
+
+.tool-summary-running {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+/* A folded run may contain both successful and failed calls. Keep both counts
+   on the collapsed row so a single failure does not paint the whole run as a
+   failure, while the failed count remains unmistakable. */
+.tool-group.tool-error .tool-summary-icon {
+  color: var(--danger);
+}
+
+.tool-result-counts {
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.tool-result-success {
+  color: var(--fg-3);
+}
+
+.tool-result-failed {
+  color: var(--danger);
+}
+
+/* Whose failure it was (lib/toolOutcome). A warning — an approval card that
+   expired or was declined, a rate limit — broke nothing, so it wears the
+   warning colour rather than the red of a breakage, on the collapsed count
+   and on the row alike. */
+.tool-result-failed[data-severity="warning"],
+.tool-group.tool-error.is-warning .tool-summary-icon {
+  color: var(--warn);
+}
+
+.tool-outcome {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  white-space: nowrap;
+}
+
+.tool-outcome[data-severity="warning"] {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
+}
+
+/* On a phone the row keeps who — the part that tells OctiqFlow from the
+   provider — and lets the reason go; it is still in the title. */
+@media (max-width: 640px) {
+  .tool-outcome-why {
+    display: none;
+  }
+}
+
+/* The collapsed count has a long form and a short one. On a phone only the
+   short one shows: one count per origin ("8 OctiqFlow · 1 provider"), so the
+   origin — the part that matters — is never the part clipped. */
+.tool-result-long {
+  display: contents;
+}
+
+.tool-result-short {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .tool-result-counts {
+    flex-shrink: 0;
+  }
+
+  .tool-result-long {
+    display: none;
+  }
+
+  .tool-result-short {
+    display: contents;
+  }
+}
+
+/* The only changing text while a chain is active: which call is running now.
+   Finished runs deliberately settle back to just their final sentence. */
+.tool-summary-live {
+  flex: 0 1 38%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-3);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 3px;
+}
+

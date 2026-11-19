@@ -1,0 +1,672 @@
+/* ---- Git panel (a docked right-hand column) -----------------------------
+   A column in the body row, beside <main> — never over it. Opening it takes
+   width from the chat and closing it gives the width back, so a reply stays
+   readable while you stage a file. No scrim and no shadow: both would say this
+   hovers above the page, and it does not. */
+/* The button in the bar is an icon and, at most, two numbers — what is
+   uncommitted and what is unpushed. It named every repo and every branch until
+   now, which is the panel's job: this is the thing you glance at to decide
+   whether to open the panel at all. */
+.gitp-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.gitp-toggle:hover {
+  background: var(--bg-1);
+  color: var(--fg-0);
+}
+
+/* Open reads as a filled pill, never an edge bar: the button has to say
+   "pressed" at a glance while the panel is over the chat. */
+.gitp-toggle.is-on {
+  border-color: var(--border);
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.gitp-badge {
+  min-width: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 17px;
+  text-align: center;
+}
+
+/* Nothing changed, but there are commits nobody else has yet. Quieter than the
+   changed-file count, because it is not asking for anything. */
+.gitp-badge.is-ahead {
+  background: var(--bg-2);
+  color: var(--fg-1);
+}
+
+/* The column. `--gitp-w` is set inline by the drag handle; the fallback is what
+   a first visit gets. The dividing line is the panel's own edge, the same way
+   the sidebar has one — it marks where the layout splits, and marks nothing as
+   selected.
+
+   Three panels share this slot — git, the session's files, and a file you
+   opened — and only one of them is ever worth two columns of chat, so they
+   share the rules rather than each having their own. */
+.gitp-panel,
+.sfp-panel,
+.fpanel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  width: var(--gitp-w, 380px);
+  min-width: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--border);
+  background: var(--bg-0);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Open, the desktop workspace ends in this column. It remains a normal flex
+   item — so the chat genuinely ends at its left edge — while its own body is
+   the only part that scrolls. */
+.gitp-panel.is-persistent {
+  order: 100;
+  align-self: stretch;
+  margin-left: auto;
+}
+
+/* A tablet can be enlarged while its temporary full-width-chat state is still
+   settling. The desktop column wins even during that transition. */
+.app.chat-wide .gitp-panel.is-persistent {
+  display: flex;
+}
+
+/* The drag handle sits ON the dividing line and reaches a few pixels either
+   side of it, because a 1px target is not a target. */
+.gitp-resizer {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 9px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.gitp-resizer:hover,
+.gitp-resizer:active {
+  background: var(--accent-tint);
+}
+
+/* Phone: two columns do not fit. A 300px panel next to a 390px screen leaves
+   the chat at 90px, so instead the panel IS the view while it is open — the
+   chat stays mounted underneath, keeping its scroll, and comes back the moment
+   this closes. Keep the width here in step with PHONE_W in GitPanel.tsx. */
+/* Off the phone the panel is a column and there is nothing to slide, so the
+   scrim does not exist. */
+.gitp-scrim,
+.fpanel-scrim {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  /* Two columns stop fitting here — a 300px panel beside a 390px screen leaves
+     the chat at 90px — so the panel becomes a sheet that slides in from the
+     right edge, the way a sheet on the device does. It is anchored right rather
+     than filling the body: the strip of the view left showing is what says this
+     is on top of your work and will go away again. */
+  .gitp-panel,
+  .sfp-panel,
+  .fpanel {
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: min(88vw, 420px);
+    /* Above the views, and deliberately BELOW the project drawer (20) and its
+       scrim (10): opening the drawer on top of the git panel has to work, and
+       tapping that scrim has to close it. */
+    z-index: 5;
+    border-left: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    transform: translateX(102%);
+    transition: transform 0.2s ease;
+  }
+
+  /* 102% rather than 100%: the shadow is drawn outside the box, and at exactly
+     100% a sliver of it stays on screen down the right edge. */
+  .gitp-panel.is-open,
+  .sfp-panel.is-open,
+  .fpanel.is-open {
+    transform: translateX(0);
+  }
+
+  /* One above the other two: a file is opened FROM them, so it has to land on
+     top of the panel that opened it rather than behind it.
+
+     Card 88 — and it takes the WHOLE width, where the git and session-files
+     panels keep their strip. The strip is deliberate on those: it says "this is
+     on top of your work and will go away again", and tapping it closes. That
+     reasoning holds for a list you glance at. It does not hold for a file you
+     are reading — 88vw of a 390px screen is 343px of code, and the strip costs
+     the one thing the view is for. A picture opened from the same place was
+     already full screen, so this also stops the same gesture having two
+     answers.
+
+     What it costs: with nothing showing behind it there is no scrim left to
+     tap, so the close button is the only way out. It is already there. */
+  .fpanel {
+    z-index: 7;
+    width: 100%;
+  }
+
+  .fpanel-scrim {
+    z-index: 6;
+  }
+
+  .gitp-scrim,
+  .fpanel-scrim {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    background: rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+
+  .gitp-scrim.is-open,
+  .fpanel-scrim.is-open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .gitp-resizer {
+    display: none;
+  }
+
+}
+
+/* Someone who asked the system for less movement gets the sheet without the
+   slide — it still appears and still dims what is behind it. */
+@media (prefers-reduced-motion: reduce) {
+  .gitp-panel,
+  .sfp-panel,
+  .fpanel,
+  .gitp-scrim,
+  .fpanel-scrim {
+    transition: none;
+  }
+}
+
+.gitp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 9px 8px 9px 13px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.gitp-title {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.gitp-project {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+.gitp-btn {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.gitp-btn:hover:not(:disabled) {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.gitp-btn.is-primary:not(:disabled) {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.gitp-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.gitp-close {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+
+.gitp-close:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* What git said, kept verbatim. This is the only record of a push or a pull, so
+   it stays until the next one replaces it. */
+.gitp-op {
+  flex: 0 0 auto;
+  max-height: 34%;
+  overflow: auto;
+  padding: 8px 13px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.gitp-op.is-busy {
+  color: var(--fg-2);
+}
+
+.gitp-op.is-ok {
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+  color: var(--fg-0);
+}
+
+.gitp-op.is-err {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--fg-0);
+}
+
+.gitp-op-detail {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-2);
+}
+
+.gitp-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Project-wide first, repo detail second. The overview is deliberately compact
+   enough to remain visible above a long branch/file list without becoming a
+   dashboard inside a utility column. */
+.gitp-overview {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+  font-variant-numeric: tabular-nums;
+}
+
+.gitp-overview-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.gitp-overview-item.is-files {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font);
+  color: var(--fg-0);
+}
+
+.gitp-overview-value {
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.gitp-overview-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-3);
+  font-size: 11px;
+}
+
+.gitp-overview-item.is-additions {
+  color: var(--ok);
+}
+
+.gitp-overview-item.is-deletions {
+  color: var(--danger);
+}
+
+.gitp-note {
+  padding: 14px 13px;
+  font-size: 12.5px;
+  color: var(--fg-3);
+}
+
+.gitp-note.is-err {
+  color: var(--danger);
+}
+
+.gitp-repo + .gitp-repo {
+  border-top: 1px solid var(--border);
+}
+
+.gitp-repo-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 13px 5px;
+}
+
+.gitp-repo-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.gitp-branch {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 15ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font-size: 11.5px;
+}
+
+/* A native select, so a phone gets its own branch wheel — a hand-built menu
+   here would only be a worse copy of the one the OS already has. */
+.gitp-branch-pick {
+  font-family: inherit;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.gitp-branch-pick:disabled {
+  opacity: 0.5;
+}
+
+.gitp-sync {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gitp-behind {
+  color: var(--warn);
+}
+
+.gitp-ahead {
+  color: var(--ok);
+}
+
+.gitp-ops {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 13px 9px;
+}
+
+.gitp-mode {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.gitp-clean {
+  padding: 0 13px 10px;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+.gitp-files {
+  margin: 0;
+  padding: 0 0 6px;
+  list-style: none;
+}
+
+.gitp-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 13px;
+}
+
+.gitp-file:hover {
+  background: var(--bg-1);
+}
+
+/* The open file is tinted, not barred: a left edge marker is the one thing this
+   app never uses to say "current". */
+.gitp-file.is-open {
+  background: var(--accent-tint);
+}
+
+.gitp-check {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.gitp-file-btn {
+  display: grid;
+  grid-template-columns: 13px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gitp-st {
+  width: 13px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.gitp-st.is-add,
+.gitp-st.is-new {
+  color: var(--ok);
+}
+
+.gitp-st.is-del {
+  color: var(--danger);
+}
+
+.gitp-st.is-ren {
+  color: var(--accent);
+}
+
+.gitp-st.is-mod {
+  color: var(--warn);
+}
+
+/* The filename is the primary scan target. The containing path gets a quieter
+   second line, and each line truncates independently without pushing the git
+   change counts off the right edge. */
+.gitp-file-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.gitp-file-path,
+.gitp-file-name {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+}
+
+.gitp-file-name {
+  color: var(--fg-0);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.gitp-file-path {
+  color: var(--fg-3);
+  font-size: 10.5px;
+  line-height: 1.3;
+}
+
+.gitp-counts {
+  display: flex;
+  gap: 5px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gitp-add-n {
+  color: var(--ok);
+}
+
+.gitp-del-n {
+  color: var(--danger);
+}
+
+.gitp-bin {
+  color: var(--fg-3);
+}
+
+/* The diff scrolls sideways INSIDE its own box: one long line must never make
+   the whole panel scroll, least of all on a phone. */
+.gitp-diff {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 6px;
+  max-height: 46vh;
+  overflow: auto;
+  padding: 6px 0;
+  background: var(--bg-sunken);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.gitp-line {
+  padding: 0 13px;
+  color: var(--fg-2);
+}
+
+.gitp-line.is-add {
+  background: rgba(48, 209, 88, 0.14);
+  color: var(--fg-0);
+}
+
+.gitp-line.is-del {
+  background: rgba(255, 69, 58, 0.14);
+  color: var(--fg-0);
+}
+
+.gitp-line.is-hunk {
+  color: var(--fg-3);
+}
+
+.gitp-commit {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 9px 13px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.gitp-msg {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 9px;
+  resize: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font: inherit;
+  /* 16px is what stops iOS zooming the page when this takes focus. */
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.gitp-msg:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.gitp-commit .gitp-btn {
+  padding: 8px 12px;
+}
+

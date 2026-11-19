@@ -1,0 +1,879 @@
+/* ---- The thought, while it is being had ------------------------------- */
+/* Two lines of it, pinned to the newest words: `column-reverse` puts the end
+   of the text at the bottom of the box and lets the older lines run off the
+   top, where the mask fades them out rather than cutting them. */
+.think-live {
+  display: flex;
+  flex-direction: column-reverse;
+  max-width: var(--chat-column);
+  max-height: 32px;
+  margin: 0 auto 6px;
+  padding: 0 12px;
+  overflow: hidden;
+  color: var(--fg-3);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  mask-image: linear-gradient(to bottom, transparent, #000 14px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 14px);
+}
+
+.composer-box {
+  position: relative;
+  max-width: var(--chat-column);
+  margin: 0 auto;
+  padding: var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.composer-box:focus-within {
+  border-color: var(--focus);
+  box-shadow: var(--focus-ring);
+}
+
+/* The agent's execution context, chosen before the first send. It tucks under
+   the prompt instead of becoming another toolbar inside it: message controls
+   answer "what am I sending?", while this strip answers "where will it run?".
+   The inset exposes the prompt's lower corners and keeps the prompt primary. */
+.work-location {
+  position: relative;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 28px);
+  max-width: calc(var(--chat-column) - 28px);
+  min-height: 42px;
+  margin: -1px auto 0;
+  padding: 7px 10px 6px;
+  border: 1px solid var(--border);
+  border-top-color: color-mix(in srgb, var(--border) 58%, transparent);
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+  background: var(--bg-sunken);
+  color: var(--fg-2);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.09);
+}
+
+.work-location-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--fg-2);
+}
+
+.work-location .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.work-location-field > svg,
+.worktree-choice > svg {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+}
+
+.work-location-field select {
+  min-width: 0;
+  max-width: 190px;
+  padding: 3px 18px 3px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.work-location-field.is-branch select {
+  max-width: 230px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 450;
+}
+
+.work-location-field select:focus-visible,
+.worktree-choice:has(input:focus-visible) {
+  outline: 1px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+.work-location-field select:disabled {
+  cursor: default;
+  opacity: 1;
+  -webkit-text-fill-color: var(--fg-2);
+}
+
+.work-location-field.is-muted {
+  color: var(--fg-3);
+}
+
+.work-location-divider {
+  align-self: stretch;
+  width: 1px;
+  background: var(--border);
+}
+
+.work-location-spacer {
+  flex: 1 1 auto;
+  min-width: 4px;
+}
+
+.worktree-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-height: 26px;
+  color: var(--fg-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.worktree-choice input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--composer-accent);
+}
+
+.worktree-choice:has(input:disabled) {
+  cursor: default;
+  color: var(--fg-3);
+}
+
+.worktree-choice.is-active,
+.worktree-choice.is-active > svg {
+  color: color-mix(in srgb, var(--composer-accent) 80%, var(--fg-1));
+}
+
+.work-location-error {
+  max-width: 22ch;
+  overflow: hidden;
+  color: var(--warn);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 560px) {
+  .work-location {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1.35fr);
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 5px;
+    width: calc(100% - 20px);
+    max-width: calc(var(--chat-column) - 20px);
+    padding-inline: 9px;
+  }
+
+  .work-location-field {
+    width: 100%;
+  }
+
+  .work-location-field.is-branch {
+    grid-column: 3;
+  }
+
+  .work-location-field select,
+  .work-location-field.is-branch select {
+    width: 100%;
+    max-width: none;
+  }
+
+  .work-location-spacer {
+    display: none;
+  }
+
+  .worktree-choice {
+    grid-column: 1 / -1;
+    margin-left: 21px;
+  }
+
+  /* On a phone the branch already explains why this action is unavailable.
+     Keeping a disabled checkbox beneath it turned the compact location strip
+     into a three-row card whenever General was selected. */
+  .worktree-choice:has(input:disabled) {
+    display: none;
+  }
+
+  .work-location-error {
+    grid-column: 1 / -1;
+  }
+}
+
+.composer-input-wrap {
+  position: relative;
+}
+
+.composer-input {
+  display: block;
+  width: 100%;
+  /* Two lines at rest, and room for a long prompt or a pasted stack trace
+     before it starts scrolling inside itself. */
+  min-height: 46px;
+  max-height: 420px;
+  padding: 2px 4px;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg-0);
+  font-family: inherit;
+  /* 16px: anything smaller makes iOS Safari zoom the page on focus. */
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+.composer-input::placeholder {
+  color: var(--fg-3);
+}
+
+/* A software keyboard has no Up/Down keys for sent-message history. Its touch
+   equivalent joins the eyebrow's right edge rather than covering the input. */
+.composer-history {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .composer-history {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+  }
+
+  .history-step {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--fg-3);
+    cursor: pointer;
+  }
+
+  .history-step:active:not(:disabled) {
+    background: color-mix(in srgb, var(--composer-accent) 10%, var(--bg-2));
+    color: var(--fg-0);
+  }
+
+  .history-step:focus-visible {
+    outline: 1px solid var(--composer-accent);
+    outline-offset: 1px;
+  }
+
+  .history-step:disabled {
+    opacity: 0.28;
+    cursor: default;
+  }
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* Above the box, not in the button row: it is a sentence, and a sentence in a
+   row of 36px buttons gets whatever is left, which on a phone was eight
+   characters and an ellipsis. */
+/* The eyebrow above the box: what the keys do on the left, what kind of chat
+   this is on the right. One row that was already here. */
+.composer-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: var(--chat-column);
+  margin: 0 auto 5px;
+  padding: 0 13px;
+  font-size: 11.5px;
+  color: var(--fg-3);
+  /* Idle and working companions occupy the same full-body slot. */
+  min-height: 30px;
+}
+
+/* The words take what is left and cut, rather than pushing the mode off the
+   end — a running turn writes a whole sentence in here. */
+.composer-hint-said {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The chat waits on the person: the agent is parked on a card. Said where
+   "thinking…" was, in the decision colour and never the accent, which is a
+   turn in flight and is not what this is. */
+.working-waits {
+  color: var(--decide);
+}
+
+/* The page does not know yet whether the chat waits (a reload, before the
+   lists of what waits have answered). Nothing is asked, so it is not the
+   decision colour; nothing is known to run, so it is not the accent. The
+   lists usually answer within a moment of the page loading, so the words
+   come in only after one: an ordinary reload shows the stopped clock and
+   then what the chat is doing, and never these words for a blink. */
+.working-waits.is-unknown {
+  color: var(--fg-2);
+  animation-delay: 400ms;
+  animation-fill-mode: backwards;
+}
+
+/* Beside "Could not check what waits on you": asks the lists again. A text
+   button in reading ink, since it is no decision and no problem of the
+   turn's. Its target is taller than its words, for a finger. */
+.working-recheck {
+  position: relative;
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-1);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 140ms ease-out;
+}
+.working-recheck::before { content: ""; position: absolute; inset: -10px -6px; }
+.working-recheck:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--r-sm); }
+@media (hover: hover) { .working-recheck:hover { color: var(--fg-0); } }
+@media (prefers-reduced-motion: reduce) { .working-recheck { transition: none; } }
+
+/* Holds the place the status line used to take in the row, so Send stays at
+   the right end of it. */
+.composer-gap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Three pickers side by side on a wide bar; one sheet on a narrow one. The
+   wrapper is `display: contents` so it is invisible to the desktop layout —
+   the pickers stay direct flex children of the row. */
+.composer-settings {
+  display: contents;
+}
+
+.composer-row .settings-toggle {
+  display: none;
+}
+
+/* Agents mode: who you are talking to, where an ordinary chat has its model
+   pickers. Not a control — the agent's registration owns its settings — so it
+   reads as a label: no caret, no hover. */
+.composer-identity {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 52%;
+  padding: 4px 2px;
+  color: var(--fg-2);
+  font-size: 12px;
+  cursor: default;
+}
+.composer-identity > svg { flex: 0 0 auto; }
+/* Shrinks last, and only for a name too long for the row: whole, it ran under
+   Send on a phone. The chip's title still carries it in full. */
+.composer-identity-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-0);
+  font-weight: 500;
+}
+/* What this chat runs at, `opus · high · Auto`: small quiet text beside the
+   name. It is what gives way: on a narrow composer, or in a wider font, it
+   is cut short (and then gone) before the name loses a letter. Of its two
+   parts the access is the last to go, because it is the one that says what
+   the agent may do: `opus la… · Plan`, then `· Plan`.
+   It is a disclosure and not a picker: a press, a tap or Enter shows the
+   three values whole. Its target is the whole chip (`::before`, placed by
+   the chip and so not cut with the text), which leaves something to press
+   when the text itself has no room. */
+.composer-identity-runs {
+  display: inline-flex;
+  flex: 0 100000 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: start;
+  white-space: nowrap;
+  cursor: pointer;
+  /* The target is the chip; a tap's flash on the text alone would say less. */
+  -webkit-tap-highlight-color: transparent;
+  transition: color 130ms ease-out;
+}
+.composer-identity-runs::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.composer-identity-runs:hover, .composer-identity-runs[aria-expanded="true"] { background: none; color: var(--fg-1); }
+/* The ring is the chip's: the text may be a few pixels wide. */
+.composer-identity-runs:focus-visible { outline: none; }
+.composer-identity:has(> .composer-identity-runs:focus-visible) {
+  border-radius: var(--r-sm);
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.composer-identity-rest, .composer-identity-access {
+  min-width: 0;
+  overflow: hidden;
+  white-space: pre;
+  text-overflow: ellipsis;
+}
+.composer-identity-rest { flex: 0 100000 auto; }
+.composer-identity-access { flex: 0 1 auto; }
+/* The three values whole, and the last turn's receipt: read-only. */
+.composer-identity-sheet {
+  gap: 6px;
+  min-width: 200px;
+  padding: 10px 12px;
+  color: var(--fg-1);
+  font-size: 12px;
+  cursor: default;
+  white-space: normal;
+}
+.composer-identity-sheet dl { display: grid; gap: 4px; margin: 0; }
+.composer-identity-sheet dl > div { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; }
+.composer-identity-sheet dt { color: var(--fg-3); }
+.composer-identity-sheet dd { margin: 0; overflow-wrap: anywhere; color: var(--fg-0); }
+.composer-identity-sheet p { margin: 0; color: var(--fg-2); }
+.composer-identity-sheet-note { padding-top: 6px; border-top: 1px solid var(--border); color: var(--fg-3); font-size: 11px; line-height: 1.45; }
+@media (prefers-reduced-motion: reduce) {
+  .composer-identity-runs { transition: none; }
+}
+/* A finger gets the chip and the room above and under it. */
+@media (hover: none), (any-pointer: coarse) {
+  .composer-identity-runs::before { inset: -8px 0; }
+}
+.composer-identity[data-removed] .composer-identity-name {
+  color: var(--fg-2);
+  text-decoration: line-through;
+  text-decoration-color: var(--fg-3);
+}
+
+/* A composer too narrow for its row at ANY window width: the same fold as a
+   phone's. A chat column beside the run panel and a side column is about
+   340px on a 1280px window, the window's own width said "desktop", and the
+   row's overflow landed on Send, drawn past the composer's right edge. The
+   row is measured (`lib/composerFit`), never assumed from a font. */
+.composer-row.is-tight .composer-settings {
+  display: none;
+}
+.composer-row.is-tight .settings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+/* No control of the row is drawn outside it. Folded, what is left can still
+   be wider than a very narrow column, so everything but Send gives way: the
+   settings button is cut, then the chip, and Send stays whole at the end. */
+.composer-row { min-width: 0; }
+.composer-row .settings-toggle { overflow: hidden; white-space: nowrap; }
+/* The sheet that button opens is a phone's: across the foot of the window.
+   On a wide window it is a card at the foot of it. */
+@media (min-width: 701px) {
+  .sheet.settings-sheet {
+    right: auto;
+    left: 50%;
+    width: min(440px, calc(100vw - 24px));
+    translate: -50% 0;
+    border: 1px solid var(--border);
+    border-bottom: 0;
+  }
+}
+
+@media (max-width: 700px) {
+  .composer-identity { max-width: 60%; }
+  /* At 360px the three pickers, the attach button and Send needed 358px in a
+     334px box, and the overflow landed on Send — the one control that must
+     never move. The pickers collapse into one button here. */
+  .composer-settings {
+    display: none;
+  }
+
+  .composer-row .settings-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  /* The hint stays. It already shrinks to nothing when the bar is tight, and
+     it is the spring that holds Send against the right edge — hiding it dropped
+     Send into the middle of the bar. It also still has something to say here:
+     "working…" and the activity line matter more on a phone, not less. */
+
+}
+
+.sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+/* Anchored to the bottom, where a thumb is, and above the keyboard's own inset.
+   A COLUMN, not one scrolling box: the options scroll inside `.sheet-body` and
+   `.sheet-foot` stays put, so Done — the only way out of the sheet other than
+   the scrim — is on screen whatever the phone's height.
+
+   The SHELL, shared: card 90 split the one settings sheet into two — settings,
+   and who is in the chat — and both rise from the same edge to the same shape.
+   What each adds to it is below, under its own class. */
+.sheet {
+  position: fixed;
+  z-index: 41;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 82vh;
+  overflow: hidden;
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+}
+
+/* `min-height: 0` is what makes the scroll happen: without it a flex child
+   refuses to shrink below its content, so the sheet grows past its own
+   max-height and pushes Done off the screen again — the bug this shape is
+   here to fix. `overscroll-behavior` keeps a flick at the end of the list
+   from scrolling the chat behind the scrim. */
+.sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sheet-group + .sheet-group {
+  margin-top: 8px;
+}
+
+.sheet-head {
+  padding: 1px 4px 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+/* ---- Compact scale, and only in here ------------------------------------
+   The controls are dropdowns on a desktop, where each opens alone and has
+   room to breathe. The sheet is narrower and its rows are thumb targets, so a
+   few pixels of padding give way here — never the hint text, which is the part
+   that says what the row does.
+
+   There is less in here than there was: the sheet used to stack all three
+   controls on one screen and needed a tighter scale for every one of them.
+   Each has a page of its own now, so only the model tabs still ask. */
+.settings-sheet .mp {
+  gap: 6px;
+}
+
+.settings-sheet .mp-tab {
+  padding: 5px 8px;
+}
+
+/* ---- The sheet's chrome, and its pages ----------------------------------
+   ONE bar, and it never scrolls: a title, with a single button at its left —
+   an X on the root, a back chevron on a page. The settings sheet used to
+   carry a Done in a foot under the scroller instead, which was a second
+   commit surface for a list where every row already takes effect on the tap
+   that chooses it. The room sheet still has its Done: it holds ONE thing and
+   has no pages, so it needs a way out and not a title bar. */
+.sheet-nav {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  margin-bottom: 2px;
+}
+
+.sheet-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.sheet-nav-btn {
+  position: absolute;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.sheet-nav-btn:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* The sheet holds ITS height while the pages inside it change. A page that
+   resized the sheet under your thumb would move the row you were reaching for
+   — and the back button with it — every time you opened one. So a short page
+   leaves space at the bottom rather than pulling the sheet down over it. */
+.settings-sheet {
+  height: min(82vh, 620px);
+}
+
+/* A page arrives from the side it comes from: forward from the right, back
+   from the left, so returning is visibly the reverse of going in. Short and
+   ease-out, and it moves nothing outside the sheet. */
+.sheet-page {
+  animation: sheet-page-in 0.19s ease-out;
+}
+
+.sheet-page.is-back {
+  animation-name: sheet-page-back;
+}
+
+@keyframes sheet-page-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes sheet-page-back {
+  from {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet-page {
+    animation: none;
+  }
+}
+
+/* A block of rows with hairlines between them — the shape a phone draws a
+   list in. An outline rather than a fill: the sheet is already `--bg-1`, and
+   the only tone above it is the one a row hovers to. */
+.sheet-card,
+.mp-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+/* Drawn as a line ON the row rather than as its border: `.picker-item` sets
+   `border: 0` and would win the tie on specificity, and a hairline that starts
+   where the words start — rather than cutting the whole card in two — is what
+   makes a list read as one block of rows. */
+.sheet-card > * + *::before,
+.mp-list > * + *::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 11px;
+  right: 0;
+  height: 1px;
+  background: var(--border);
+}
+
+.sheet-card > .picker-item,
+.mp-list > .picker-item {
+  border-radius: 0;
+  padding: 9px 30px 9px 11px;
+}
+
+/* Its own rule would sit under the line the card already draws there. */
+.sheet-card > .picker-item.is-bypass {
+  margin-top: 0;
+  border-top: 0;
+  padding-right: 11px;
+}
+
+/* Inside a card the tick is what says "this one", so the tint under it would
+   be saying it twice — and on a phone a filled row reads as one being
+   pressed rather than one already chosen. */
+.sheet-card > .picker-item.is-on,
+.mp-list > .picker-item.is-on {
+  background: transparent;
+}
+
+/* A row that says what a setting is on and opens the page that changes it. */
+.sheet-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 11px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.sheet-link:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.sheet-link-name {
+  font-weight: 500;
+}
+
+/* The value, and then the chevron: the answer reads before the affordance. */
+.sheet-link-value {
+  margin-left: auto;
+  color: var(--fg-2);
+}
+
+.sheet-link-caret {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+}
+
+/* The sentence under a page's list. Not a `.picker-note`: that one is a menu's
+   first row with a seam under it, this is the last word on a whole page. */
+.sheet-foot-note {
+  padding: 10px 4px 2px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg-3);
+}
+
+/* Outside the scroll. The rule is the seam the options slide under, so it is
+   clear there is more above rather than the list just stopping. */
+.sheet-foot {
+  flex: 0 0 auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.sheet-done {
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--accent-fg);
+  cursor: pointer;
+}
+
+/* Send belongs to the selected model; Stop remains a neutral control with its
+   existing red hover because it describes an action, not an identity. */
+.composer .send:not(.stop) {
+  background: var(--composer-accent);
+  color: var(--composer-on-accent);
+  box-shadow: 0 3px 12px color-mix(in srgb, var(--composer-accent) 24%, transparent);
+  transition:
+    filter 120ms ease,
+    transform 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.composer .send:not(.stop):hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow: 0 5px 16px color-mix(in srgb, var(--composer-accent) 32%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-box,
+  .composer .send:not(.stop) {
+    transition: none;
+  }
+
+  .composer .send:not(.stop):hover:not(:disabled) {
+    transform: none;
+  }
+}
+
+.send:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+

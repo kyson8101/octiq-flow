@@ -1,0 +1,907 @@
+/* ---- Model picker ----------------------------------------------------- */
+.picker {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+/* Plain text, no pill. There are four of these in a row now — model, access,
+   effort, attach — and four outlined capsules read as a toolbar competing with
+   the message you are writing. The words alone are enough; hovering is what
+   shows they are controls. */
+.picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.picker-btn:hover {
+  background: transparent;
+  color: var(--fg-0);
+}
+
+.picker-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The model is the one toolbar setting that carries the profile colour at
+   rest. Access keeps its safety ladder and effort keeps its neutral meter;
+   their focused and selected states still inherit the scoped accent above. */
+.composer .model-trigger {
+  color: color-mix(in srgb, var(--composer-accent) 84%, var(--fg-1));
+  font-weight: 600;
+}
+
+.composer .model-trigger:hover {
+  color: var(--composer-accent);
+}
+
+.picker-caret {
+  font-size: 9px;
+  color: var(--fg-3);
+}
+
+.picker-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.picker-menu {
+  position: absolute;
+  z-index: 41;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 232px;
+  max-width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+}
+
+/* Label above its hint, both flush left. They used to sit on one row with the
+   hint pushed right, which made every hint that did not fit wrap into a ragged
+   second line hanging off the right edge — "thinks longer, costs / more". A
+   stacked row reads in one pass and never wraps against itself. */
+.picker-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  /* Room on the right for the tick, kept whether one is there or not — a
+     label that shifted sideways when it became the chosen one would make
+     every pick look like a layout bug. */
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.picker-item:hover:not(:disabled) {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* An agent whose CLI this machine does not have. Still listed — the list is
+   what the app can drive — but plainly unavailable. */
+.picker-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.picker-item.is-on {
+  background: var(--accent-tint);
+  color: var(--fg-0);
+}
+
+/* A model row, which is the one kind of picker row with a face on it. The
+   robot spans both text lines rather than sitting on the first — it belongs to
+   the row, the way the tick on the other side does. Its own margin is dropped:
+   the grid owns the spacing here. */
+.picker-item.has-robot {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 9px;
+  align-items: center;
+}
+
+.picker-item.has-robot .mascot {
+  grid-row: 1 / span 2;
+  margin: 0;
+}
+
+.picker-name {
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.picker-model {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--fg-3);
+}
+
+/* Centred on the row rather than on its first line, because a row is two
+   lines and the mark belongs to both. */
+.picker-tick {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  color: var(--accent);
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* ---- Effort meter -------------------------------------------------------
+   Effort is a SCALE, and it used to be a dropdown — the one control that hides
+   a scale. You saw the word you were on and nothing about what sat above it,
+   and moving two levels meant opening a menu and aiming at a row.
+
+   So the button IS a meter (bars filled to the level, readable from the bar
+   without opening anything) and what opens is a slider along the rungs: one
+   drag crosses the whole range, arrow keys step it, and every level stays
+   named on screen the entire time. */
+.eff-btn {
+  gap: 5px;
+  /* The meter and its word are one reading; a bar tight enough to break
+     "Very high" in half should shrink something else. */
+  white-space: nowrap;
+}
+
+.eff-bars rect {
+  fill: var(--fg-3);
+  transition: fill 0.15s ease;
+}
+
+.eff-bars rect.is-lit {
+  fill: var(--fg-2);
+}
+
+.picker-btn:hover .eff-bars rect.is-lit {
+  fill: var(--fg-0);
+}
+
+/* Auto: every bar lit, none of them a claim about how hard it will think. */
+.eff-bars.is-auto rect.is-lit {
+  fill: var(--accent);
+}
+
+.picker-menu.is-effort {
+  min-width: 256px;
+  max-width: 292px;
+  gap: 0;
+  padding: 8px;
+}
+
+.eff {
+  --eff-thumb: 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The level in full, and what it costs you. A tick label under the track can
+   carry "V.high"; only this line can carry "for problems worth the wait". */
+.eff-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 2px 9px;
+}
+
+.eff-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--fg-0);
+}
+
+.eff-hint {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--fg-3);
+}
+
+.eff-slide {
+  position: relative;
+  height: var(--eff-thumb);
+}
+
+/* The track is drawn HERE, not by the input: the input's own track paints over
+   everything under it, which would swallow the rung dots. The input is left
+   holding only the thumb. Inset by half a thumb on each side — that is exactly
+   how far the thumb's centre travels. */
+.eff-track {
+  position: absolute;
+  left: calc(var(--eff-thumb) / 2);
+  right: calc(var(--eff-thumb) / 2);
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 999px;
+  background: var(--bg-2);
+}
+
+.eff-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.12s ease, background 0.15s ease;
+}
+
+/* One per rung, so the track reads as steps rather than a continuous dial —
+   which is what it is. */
+.eff-stop {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: var(--fg-3);
+}
+
+.eff-stop.is-past {
+  background: var(--bg-0);
+  opacity: 0.55;
+}
+
+.eff-range {
+  position: relative;
+  width: 100%;
+  height: var(--eff-thumb);
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.eff-range:focus {
+  outline: none;
+}
+
+.eff-range::-webkit-slider-runnable-track {
+  height: var(--eff-thumb);
+  background: transparent;
+}
+
+.eff-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--eff-thumb);
+  height: var(--eff-thumb);
+  border: 0;
+  border-radius: 50%;
+  background: var(--fg-0);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+.eff-range::-moz-range-track {
+  height: var(--eff-thumb);
+  border: 0;
+  background: transparent;
+}
+
+.eff-range::-moz-range-thumb {
+  width: var(--eff-thumb);
+  height: var(--eff-thumb);
+  border: 0;
+  border-radius: 50%;
+  background: var(--fg-0);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+.eff-range:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.eff-range:focus-visible::-moz-range-thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Every rung named, at its own position, and clickable: the ends of a scale
+   are where you most often want to land, and dragging there is slower than
+   saying so. The two ends align to the edges instead of centring on their
+   stop — a centred "Ultra" would hang off the panel. */
+.eff-marks {
+  position: relative;
+  height: 15px;
+  margin: 5px calc(var(--eff-thumb) / 2) 0;
+}
+
+.eff-mark {
+  position: absolute;
+  top: 0;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: 10px;
+  line-height: 15px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.eff-mark:hover {
+  color: var(--fg-1);
+}
+
+.eff-mark.is-on {
+  color: var(--fg-0);
+  font-weight: 500;
+}
+
+/* While Auto is on the slider still shows a level — the one turning Auto off
+   returns to — so it has to look like a memory rather than the current answer. */
+.eff.is-auto .eff-fill {
+  background: var(--fg-3);
+}
+
+.eff.is-auto .eff-range::-webkit-slider-thumb {
+  background: var(--fg-2);
+}
+
+.eff.is-auto .eff-range::-moz-range-thumb {
+  background: var(--fg-2);
+}
+
+/* Not a rung, so not on the slider: every other level says how hard to think,
+   this one says stop deciding. Putting it at an end of the scale would claim
+   it is the least or the most of something. */
+.eff-auto {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.eff-auto:hover {
+  background: var(--bg-2);
+}
+
+.eff-auto-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.eff-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  transition: background 0.15s ease;
+}
+
+.eff-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--fg-3);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.eff-auto.is-on .eff-switch {
+  background: var(--accent);
+}
+
+.eff-auto.is-on .eff-switch::after {
+  transform: translateX(12px);
+  background: var(--accent-fg);
+}
+
+/* A 14px thumb is a mouse target, not a thumb one. */
+@media (pointer: coarse) {
+  .eff {
+    --eff-thumb: 22px;
+  }
+
+  .eff-mark {
+    font-size: 11px;
+  }
+}
+
+
+/* A slider still under your thumb must not read as the setting. The fill goes
+   hollow while it is being moved and fills in on release, which is the moment
+   the level is actually sent. */
+.eff.is-draft .eff-fill {
+  background: var(--accent-tint);
+}
+
+.eff.is-draft .eff-mark.is-on {
+  color: var(--fg-0);
+  background: var(--accent-tint);
+}
+
+
+/* ---- Ultracode: the quake ---------------------------------------------
+   Pulling the effort slider all the way to Ultracode is the biggest thing
+   this control can do, so for two seconds the app says so: it shakes, and
+   its palette runs through six colours before settling back.
+
+   Two rules make it survivable. The shake is translate ONLY — no rotate, no
+   scale — and the palette moves through the custom properties rather than a
+   filter, so BOTH can be undone exactly for one subtree. That subtree is the
+   slider: the control your finger is on holds still and keeps its real
+   colours while everything around it comes loose. `ultra-still` is
+   `ultra-quake` negated frame for frame, and `.eff` sets the palette back to
+   the base values by hand. The two animations start in the same frame, so
+   they stay in step. */
+@keyframes ultra-quake {
+  0% { transform: translate3d(0px, 0px, 0); }
+  4.17% { transform: translate3d(11.68px, -8.73px, 0); }
+  8.33% { transform: translate3d(-7.35px, -4.17px, 0); }
+  12.5% { transform: translate3d(-5.87px, 6.58px, 0); }
+  16.67% { transform: translate3d(9.18px, 1.76px, 0); }
+  20.83% { transform: translate3d(-3.41px, -6.54px, 0); }
+  25% { transform: translate3d(-10.1px, -1.98px, 0); }
+  29.17% { transform: translate3d(6.58px, 6.45px, 0); }
+  33.33% { transform: translate3d(1.88px, -0.47px, 0); }
+  37.5% { transform: translate3d(-7.39px, -3.82px, 0); }
+  41.67% { transform: translate3d(2.44px, 0.1px, 0); }
+  45.83% { transform: translate3d(6.37px, 3.12px, 0); }
+  50% { transform: translate3d(-4.12px, -1.03px, 0); }
+  54.17% { transform: translate3d(-1.91px, -3.81px, 0); }
+  58.33% { transform: translate3d(4.26px, 1.3px, 0); }
+  62.5% { transform: translate3d(-2.46px, 2.51px, 0); }
+  66.67% { transform: translate3d(-2.19px, -1px, 0); }
+  70.83% { transform: translate3d(2.83px, -2.13px, 0); }
+  75% { transform: translate3d(-0.39px, 0.48px, 0); }
+  79.17% { transform: translate3d(-1.71px, 0.98px, 0); }
+  83.33% { transform: translate3d(0.73px, -0.48px, 0); }
+  87.5% { transform: translate3d(0.55px, -0.6px, 0); }
+  91.67% { transform: translate3d(-0.49px, 0.32px, 0); }
+  95.83% { transform: translate3d(-0.02px, 0.13px, 0); }
+  100% { transform: translate3d(0px, 0px, 0); }
+}
+
+@keyframes ultra-still {
+  0% { transform: translate3d(-0px, -0px, 0); }
+  4.17% { transform: translate3d(-11.68px, 8.73px, 0); }
+  8.33% { transform: translate3d(7.35px, 4.17px, 0); }
+  12.5% { transform: translate3d(5.87px, -6.58px, 0); }
+  16.67% { transform: translate3d(-9.18px, -1.76px, 0); }
+  20.83% { transform: translate3d(3.41px, 6.54px, 0); }
+  25% { transform: translate3d(10.1px, 1.98px, 0); }
+  29.17% { transform: translate3d(-6.58px, -6.45px, 0); }
+  33.33% { transform: translate3d(-1.88px, 0.47px, 0); }
+  37.5% { transform: translate3d(7.39px, 3.82px, 0); }
+  41.67% { transform: translate3d(-2.44px, -0.1px, 0); }
+  45.83% { transform: translate3d(-6.37px, -3.12px, 0); }
+  50% { transform: translate3d(4.12px, 1.03px, 0); }
+  54.17% { transform: translate3d(1.91px, 3.81px, 0); }
+  58.33% { transform: translate3d(-4.26px, -1.3px, 0); }
+  62.5% { transform: translate3d(2.46px, -2.51px, 0); }
+  66.67% { transform: translate3d(2.19px, 1px, 0); }
+  70.83% { transform: translate3d(-2.83px, 2.13px, 0); }
+  75% { transform: translate3d(0.39px, -0.48px, 0); }
+  79.17% { transform: translate3d(1.71px, -0.98px, 0); }
+  83.33% { transform: translate3d(-0.73px, 0.48px, 0); }
+  87.5% { transform: translate3d(-0.55px, 0.6px, 0); }
+  91.67% { transform: translate3d(0.49px, -0.32px, 0); }
+  95.83% { transform: translate3d(0.02px, -0.13px, 0); }
+  100% { transform: translate3d(-0px, -0px, 0); }
+}
+
+/* Everything moves... */
+body.is-ultra #root {
+  animation: ultra-quake 2s linear 1 both;
+  will-change: transform;
+}
+
+body.is-ultra {
+  animation: ultra-hue 2s linear 1 both;
+}
+
+/* ...except the slider, which is put back exactly where it was. */
+body.is-ultra .eff {
+  animation: ultra-still 2s linear 1 both;
+  --accent: #0a84ff;
+  --accent-tint: rgba(10, 132, 255, 0.16);
+  --bg-0: #1c1c1e;
+  --bg-1: #2c2c2e;
+  --bg-2: #3a3a3c;
+  --bg-sunken: #232325;
+  --ok: #30d158;
+  --warn: #ff9f0a;
+  --danger: #ff453a;
+}
+
+/* Asked for less motion, the colours still run — that is the part that says
+   which level you landed on — and the shaking does not happen at all. */
+@media (prefers-reduced-motion: reduce) {
+  body.is-ultra #root,
+  body.is-ultra .eff {
+    animation: none;
+  }
+}
+
+@keyframes ultra-hue {
+  0% {
+    --accent: #0a84ff;
+    --accent-tint: rgba(10, 132, 255, 0.16);
+    --bg-0: #1c1c1e;
+    --bg-1: #2c2c2e;
+    --bg-2: #3a3a3c;
+    --bg-sunken: #232325;
+    --ok: #30d158;
+    --warn: #ff9f0a;
+    --danger: #ff453a;
+  }
+  14% {
+    --accent: #ff2d95;
+    --accent-tint: rgba(255, 45, 149, 0.22);
+    --bg-0: #2a0f2b;
+    --bg-1: #3d1440;
+    --bg-2: #552060;
+    --bg-sunken: #33123a;
+    --ok: #ff5ec7;
+    --warn: #ff2d95;
+    --danger: #ff8a3d;
+  }
+  30% {
+    --accent: #00e5ff;
+    --accent-tint: rgba(0, 229, 255, 0.22);
+    --bg-0: #04222b;
+    --bg-1: #06333f;
+    --bg-2: #0a4657;
+    --bg-sunken: #052832;
+    --ok: #5cffd8;
+    --warn: #00e5ff;
+    --danger: #4dd2ff;
+  }
+  46% {
+    --accent: #ffb000;
+    --accent-tint: rgba(255, 176, 0, 0.22);
+    --bg-0: #2b1c00;
+    --bg-1: #3d2800;
+    --bg-2: #553800;
+    --bg-sunken: #332000;
+    --ok: #ffe14d;
+    --warn: #ffb000;
+    --danger: #ff7a00;
+  }
+  62% {
+    --accent: #a05cff;
+    --accent-tint: rgba(160, 92, 255, 0.22);
+    --bg-0: #170f3d;
+    --bg-1: #221656;
+    --bg-2: #301f75;
+    --bg-sunken: #1b1246;
+    --ok: #c79bff;
+    --warn: #a05cff;
+    --danger: #ff5cf0;
+  }
+  78% {
+    --accent: #30ff9a;
+    --accent-tint: rgba(48, 255, 154, 0.22);
+    --bg-0: #052a1c;
+    --bg-1: #083d29;
+    --bg-2: #0b5539;
+    --bg-sunken: #063221;
+    --ok: #30ff9a;
+    --warn: #b6ff30;
+    --danger: #00e5ff;
+  }
+  90% {
+    --accent: #ff453a;
+    --accent-tint: rgba(255, 69, 58, 0.22);
+    --bg-0: #2b0d0b;
+    --bg-1: #3d1210;
+    --bg-2: #551a16;
+    --bg-sunken: #330f0d;
+    --ok: #ff9f0a;
+    --warn: #ff453a;
+    --danger: #ff453a;
+  }
+  100% {
+    --accent: #0a84ff;
+    --accent-tint: rgba(10, 132, 255, 0.16);
+    --bg-0: #1c1c1e;
+    --bg-1: #2c2c2e;
+    --bg-2: #3a3a3c;
+    --bg-sunken: #232325;
+    --ok: #30d158;
+    --warn: #ff9f0a;
+    --danger: #ff453a;
+  }
+}
+
+/* ---- Model picker: a tab per agent, a tile per model ------------------
+   Replaces a seven-row list that spent its left column repeating the agent's
+   name. The agent lives in the tabs now, so the panel holds only the thing
+   being picked: the models, as a grid read in one pass instead of a column
+   walked down. */
+.picker-menu.is-models {
+  width: 380px;
+  min-width: 304px;
+  max-width: calc(100vw - 24px);
+  gap: 8px;
+  padding: 8px;
+}
+
+.mp {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* A segmented control, not more picker rows: the agents are a choice BETWEEN,
+   not a settings list. */
+.mp-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+}
+
+.mp-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: calc(var(--r-sm) - 2px);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.mp-tab:hover:not(:disabled) {
+  color: var(--fg-0);
+}
+
+.mp-tab.is-on {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.mp-tab:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.mp-tab:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.mp-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Lit = this machine has the CLI. Hollow = it does not, which is also why that
+   tab is unpickable. */
+.mp-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.mp-dot.is-off {
+  background: transparent;
+  border: 1px solid var(--fg-3);
+}
+
+/* Which agent the chat is on, readable from the other tab too. */
+.mp-tab-now {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* Wider than it was: a tile now carries a robot as well as a name, and a
+   column narrow enough to ellipsise "Sonnet" is a column that has stopped
+   doing its job. */
+.mp-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  max-height: min(52vh, 430px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+/* A heading over a stretch of one upstream's models (Pi), as wide as the grid. */
+.mp-group {
+  grid-column: 1 / -1;
+  padding: 6px 2px 0;
+  font-size: 11px;
+  color: var(--fg-2);
+}
+.mp-group:first-child { padding-top: 0; }
+.mp-catalog-why { color: var(--fg-1); }
+
+.mp-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.mp-card:hover:not(:disabled) {
+  background: var(--bg-2);
+  border-color: var(--border-strong);
+}
+
+.mp-card:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* A full outline plus a tick, never an edge strip. */
+.mp-card.is-on {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--fg-0);
+}
+
+.mp-card:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The tile's own spacing, not the status line's — the robot there is nudged up
+   a pixel to sit on a line of text, and there is no line of text here. */
+.mp-card .mascot {
+  margin: 0;
+}
+
+.mp-card-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+.mp-card-tick {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--accent);
+}
+
+/* Provider catalogs can name more models than the compact grid should spend
+   the whole screen on. The exact-id row is the durable escape hatch for an
+   older, organization-specific, or newly released model that discovery did
+   not return. It reads like one compact command rather than another card. */
+.mp-exact {
+  display: flex;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.mp-exact input {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 31px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  outline: 0;
+  background: var(--bg-sunken);
+  color: var(--fg-0);
+  font: 11px var(--mono);
+}
+
+.mp-exact input::placeholder { color: var(--fg-3); }
+.mp-exact input:focus { border-color: var(--accent); }
+.mp-exact.is-error input { border-color: var(--danger); }
+
+.mp-exact button,
+.mp-catalog button {
+  flex: 0 0 auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mp-exact button { padding: 0 9px; }
+.mp-exact button:hover:not(:disabled),
+.mp-catalog button:hover { border-color: var(--accent); color: var(--fg-0); }
+.mp-exact button:focus-visible,
+.mp-catalog button:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.mp-exact button:disabled { opacity: 0.45; cursor: default; }
+
+.mp-catalog {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.mp-catalog.is-warn { color: var(--warn); }
+.mp-catalog button { padding: 3px 7px; }
+
+.mp-note {
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-3);
+}
+
+.mp-note.is-warn {
+  color: var(--warn);
+}
+

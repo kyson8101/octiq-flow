@@ -1,0 +1,179 @@
+/* ---- Card 79: the decision an ask_user call made ----------------------
+   Outside the fold, because it is not detail — it is a thing that was decided,
+   and the card that asked for it is long gone by the time anyone reads back.
+   Indented under the row it answers, the way a reply is.
+
+   And on a rail, because indentation alone does not say WHAT it is indented
+   under: a transcript is already a column of four left edges, and a fifth one
+   floating free reads as another thing that happened rather than as this row's
+   answer. The line drops from the middle of the row's icon — 10px is half the
+   20px `.tool-icon` — and the text still lands on the row's own label at
+   `--tool-pad + --tool-indent`, once the rail and the air after it are taken
+   off. The bottom is short on purpose: `.msg-body`'s 10px gap already
+   separates this card from the next, and padding the rail past its last line
+   leaves the line dangling under nothing. */
+/* A picture Codex made or looked at, under its call, on the same rail as an
+   answer. */
+.tool-picture {
+  margin-left: calc(var(--tool-pad) + 10px);
+  padding: 4px 14px 4px calc(var(--tool-indent) - 11px);
+  border-left: 1px solid var(--border);
+}
+
+.tool-answer {
+  margin-left: calc(var(--tool-pad) + 10px);
+  padding: 4px 14px 4px calc(var(--tool-indent) - 11px);
+  border-left: 1px solid var(--border);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+/* Whole, and wrapped. A question cut off at the width of a row is half a
+   question, and it is always the first half — the half that says what was
+   being decided — that gets cut. */
+.tool-answer-q {
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+}
+
+.tool-answer-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 3px;
+}
+
+.tool-answer-mark {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  opacity: 0.7;
+}
+
+/* The person's own words. The one thing on a tool card that a person wrote, so
+   it reads at full strength rather than as another muted argument. */
+.tool-answer-said {
+  min-width: 0;
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* No answer is not an answer. Said in the app's own words, never the machine
+   sentence that came back — "The question timed out" on this line would read
+   as a decision to time out. */
+.tool-answer-none {
+  min-width: 0;
+  color: var(--fg-3);
+  font-style: italic;
+}
+
+/* Several decisions from one call read as a LIST, not a paragraph. */
+.tool-answer-item + .tool-answer-item {
+  margin-top: 6px;
+}
+
+/* ---- Card 80: the CLI reporting on a command it answered itself -------
+   `/model`, `/status` and their like never reach the model. What comes back is
+   neither a reply nor anything anybody typed, so it is drawn as neither: a
+   quiet line across the conversation, in the same family as the compaction
+   rule directly above it in this file, because they are the same KIND of
+   thing — something that happened, rather than something someone said. */
+/* NOT `.notice` — that name was already taken, by the amber warning banner
+   `.notices` draws at the top of a chat. Two rules under one name is one of
+   them silently winning, and the loser was the warning. */
+.cli-note {
+  margin: 6px 0;
+  padding: 5px 10px;
+  border-radius: var(--r-sm, 6px);
+  background: var(--bg-1);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Somebody else's words, handed over by the harness ----------------
+   A subagent's final report, or another Claude session on this machine. A
+   THIRD voice in a conversation that has room for two, and the whole failure
+   it replaces was drawing it as one of them: a page of `<agent-message …>` on
+   the reader's own side, with "Sent" underneath.
+
+   So it is neither bubble. A rule was wrong too — that is the compaction's
+   shape, and a compaction is a moment, while this is something a stranger
+   SAID. It gets the quietest thing that can still hold words: a bordered
+   block, named along the top, with a stripe down the side saying the voice is
+   from outside. */
+.peer-note {
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  /* The one mark that separates it from every other quiet block in the
+     transcript: a voice standing outside the conversation. */
+  border-left: 2px solid var(--border-strong);
+  border-radius: var(--r-sm, 6px);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+
+/* The whole row is the handle. A 10px chevron is not something you can hit on
+   a phone — the same reason `.compacted-label.is-button` is drawn this way. */
+.peer-note-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-3);
+  text-align: left;
+  cursor: pointer;
+}
+
+.peer-note-head:hover,
+.peer-note.is-open .peer-note-head {
+  background: var(--bg-2);
+  color: var(--fg-2);
+}
+
+/* Who said it does NOT shrink. It is the information on this row; the quoted
+   line beside it is the preview, and a preview gives up its width first. */
+.peer-note-who {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+}
+
+/* Cut rather than wrapped: the row is a label, and a label three lines tall
+   has stopped being one. */
+.peer-note-opening {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Written here rather than in the markup so the narrow layout can drop it
+   without the separator being left behind. */
+.peer-note-opening::before {
+  content: " · ";
+}
+
+.peer-note-body {
+  padding: 4px 12px 10px;
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+/* A phone has no width to spend on a preview, and cutting it after four words
+   says less than leaving it out. The name alone still says who is talking. */
+@media (max-width: 700px) {
+  .peer-note-opening {
+    display: none;
+  }
+}
+

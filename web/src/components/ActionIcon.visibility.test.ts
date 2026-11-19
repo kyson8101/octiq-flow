@@ -19,7 +19,7 @@ describe("action glyph and visible-label CSS", () => {
           if (selector.includes("[hidden]") || selector.includes(".team-row-action-text")) continue;
           // Touch-only prose actions keep their names in aria-label/title;
           // desktop popovers still show the shared label.
-          if (path === "../styles.css" && selector.trim() === ".prose-file-action > .action-label") continue;
+          if (path === "../styles/05-prose.css" && selector.trim() === ".prose-file-action > .action-label") continue;
           if (!actionSelector.test(selector)) continue;
           expect(declarations, `${path}: ${selector.trim()}`).not.toMatch(hidden);
         }
