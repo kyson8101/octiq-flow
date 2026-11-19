@@ -1888,6 +1888,151 @@ pub(crate) mod tests {
         cleanup(&[id]);
     }
 
+    /// Keeps `list()` and the rest of this module's functions to a profile
+    /// of this test's own.
+    fn alone(name: &str) -> (crate::test_dir::TestDir, impl Sized) {
+        let home = crate::test_dir::TestDir::new(name);
+        let pin = crate::profile::started_in(&home);
+        (home, pin)
+    }
+
+    #[test]
+    fn a_trashed_chat_is_not_listed_and_a_live_one_is() {
+        let _own = alone("listed-trash");
+        let (live, trashed) = ("listed-live", "listed-trashed");
+        upsert(meta(live, 1)).unwrap();
+        upsert(meta(trashed, 1)).unwrap();
+        assert_eq!(listed(trashed), Ok(true));
+        assert!(trash(trashed, None, None).unwrap());
+        assert_eq!(listed(live), Ok(true), "a chat that is not in the trash");
+        assert_eq!(listed(trashed), Ok(false), "a chat in the trash");
+        assert_eq!(listed("listed-never-made"), Ok(false));
+        let ids = listed_ids().unwrap();
+        assert!(ids.contains(live) && !ids.contains(trashed), "{ids:?}");
+    }
+
+    #[test]
+    fn the_browser_cannot_make_a_lead_thread_but_may_save_the_one_the_host_made() {
+        let _own = alone("lead-guard");
+        let id = "lead-agent-1";
+        let error = upsert(meta(id, 1)).unwrap_err();
+        assert!(error.contains("reserved for the host"), "{error}");
+        assert!(!list().iter().any(|c| c.id == id), "nothing was made");
+
+        let host_made = ChatMeta {
+            lead_of: Some("agent-1".into()),
+            cwd: Some("/repo".into()),
+            ..meta(id, 1)
+        };
+        ensure_lead(host_made).unwrap();
+        // The page's own save of it goes through, and cannot move what the
+        // host fixed.
+        upsert(ChatMeta {
+            title: "renamed".into(),
+            cwd: Some("/elsewhere".into()),
+            project_id: "p9".into(),
+            ..meta(id, 2)
+        })
+        .unwrap();
+        let found = list().into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(found.title, "renamed");
+        assert_eq!(found.lead_of.as_deref(), Some("agent-1"));
+        assert_eq!(found.cwd.as_deref(), Some("/repo"));
+        assert_eq!(found.project_id, "p1");
+    }
+
+    #[test]
+    fn a_native_id_is_taken_from_the_chat_by_a_forget_or_by_its_own_revocation_only() {
+        let _own = alone("native-current");
+        let (id, key) = ("native-current", "chat:native-current");
+        let session = || list().into_iter().find(|c| c.id == id).unwrap().session_id;
+        upsert(ChatMeta {
+            session_id: Some("cur-1".into()),
+            ..meta(id, 1)
+        })
+        .unwrap();
+        // Revoking an id that is not the chat's current one leaves it be.
+        revoke_late_session(key, "unrelated").unwrap();
+        assert_eq!(session().as_deref(), Some("cur-1"));
+        // A forget clears the current id whatever ids it names.
+        forget_sessions(key, vec!["older".into()]).unwrap();
+        assert_eq!(session(), None);
+        let revoked = forgotten_sessions(key).unwrap();
+        assert!(revoked.contains("cur-1") && revoked.contains("older"));
+        // Revoking the current id by name clears it too.
+        upsert(ChatMeta {
+            session_id: Some("cur-2".into()),
+            ..meta(id, 2)
+        })
+        .unwrap();
+        assert_eq!(session().as_deref(), Some("cur-2"));
+        revoke_late_session(key, "cur-2").unwrap();
+        assert_eq!(session(), None);
+        assert!(forgotten_sessions(key).unwrap().contains("cur-2"));
+    }
+
+    #[test]
+    fn a_save_carrying_an_older_read_mark_cannot_rewind_one_and_a_newer_one_moves_it() {
+        let _own = alone("read-both-some");
+        let id = "read-both-some";
+        let read_at = || list().into_iter().find(|c| c.id == id).unwrap().read_at;
+        upsert(meta(id, 100)).unwrap();
+        mark_read(id, 500).unwrap();
+        upsert(ChatMeta {
+            read_at: Some(200),
+            ..meta(id, 100)
+        })
+        .unwrap();
+        assert_eq!(read_at(), Some(500), "an older mark rides in on a save");
+        upsert(ChatMeta {
+            read_at: Some(900),
+            ..meta(id, 100)
+        })
+        .unwrap();
+        assert_eq!(read_at(), Some(900), "a newer one is taken");
+    }
+
+    #[test]
+    fn a_preview_of_exactly_the_longest_length_is_kept_whole() {
+        let at_the_limit = "é".repeat(PREVIEW_MAX_CHARS);
+        assert_eq!(bounded_preview(&at_the_limit), at_the_limit);
+        let one_over = "é".repeat(PREVIEW_MAX_CHARS + 1);
+        let cut = bounded_preview(&one_over);
+        assert_eq!(cut, format!("{}…", "é".repeat(PREVIEW_MAX_CHARS)));
+    }
+
+    #[test]
+    fn the_lift_moves_only_a_listed_chat_that_is_at_read() {
+        let _own = alone("lift-read");
+        let level = |id: &str| {
+            list()
+                .into_iter()
+                .chain(deleted())
+                .find(|c| c.id == id)
+                .unwrap()
+                .access
+        };
+        for (id, access) in [
+            ("lift-read", "read"),
+            ("lift-edits", "edits"),
+            ("lift-trashed", "read"),
+        ] {
+            upsert(ChatMeta {
+                access: Some(access.into()),
+                ..meta(id, 1)
+            })
+            .unwrap();
+        }
+        trash("lift-trashed", None, None).unwrap();
+        assert_eq!(lift_read("lift-read", "auto"), Ok(true));
+        assert_eq!(level("lift-read").as_deref(), Some("auto"));
+        assert_eq!(lift_read("lift-edits", "auto"), Ok(false));
+        assert_eq!(level("lift-edits").as_deref(), Some("edits"));
+        assert_eq!(lift_read("lift-trashed", "auto"), Ok(false));
+        assert_eq!(level("lift-trashed").as_deref(), Some("read"));
+        assert_eq!(lift_read("lift-never-made", "auto"), Ok(false));
+    }
+
     #[test]
     fn marking_read_never_moves_backwards() {
         let id = "test-index-read-monotonic";
