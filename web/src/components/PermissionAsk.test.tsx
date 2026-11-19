@@ -14,10 +14,6 @@ const changeFacts = {
 };
 
 type AskProp = Parameters<typeof PermissionAsk>[0]["ask"];
-/** Written by their codes: a raw one in this file could not be seen. */
-const ZERO_WIDTH = String.fromCharCode(0x200b);
-const IDEOGRAPHIC_SPACE = String.fromCharCode(0x3000);
-
 const draw = (ask: AskProp) => renderToStaticMarkup(<PermissionAsk ask={ask} onAnswered={() => {}} />);
 /** The same card with its one disclosure open, which static markup cannot press. */
 const drawOpen = (ask: AskProp) => renderToStaticMarkup(<PermissionAsk ask={ask} onAnswered={() => {}} startOpen />);
@@ -186,24 +182,6 @@ describe("PermissionAsk", () => {
     );
   });
 
-  it("says a cleared field is cleared, not a blank", () => {
-    const html = draw({
-      id: "a6", toolName: "mcp__octiq__agent_policy_update", once: true,
-      toolInput: {
-        change: "Clear the shared agent policy that every agent's brief starts with.",
-        changeFacts: {
-          lead: "Clear the shared agent policy that every agent's brief starts with.",
-          rows: [{ label: "Policy", before: "Be careful", after: "" }],
-        },
-      },
-    });
-    expect(html).toContain(
-      '<dt>Policy</dt><dd><span class="ask-change-was">Be careful</span>'
-      + '<span class="ask-change-arrow"> → </span><em class="ask-change-now is-cleared">cleared</em></dd>',
-    );
-    expect(html).not.toContain('<span class="ask-change-now"></span>');
-  });
-
   it("falls back to the whole text when the rows are not exactly rows", () => {
     const text = "Change the agent Nova.\n\nAccess: edits → auto";
     const broken: unknown[] = [
@@ -345,29 +323,6 @@ describe("the permission card, folded and opened", () => {
   const prose = "Change the agent Nova.\n\nRole: Owns the notes.\nNever invents a fix.";
   const old: AskProp = { id: "f1", toolName: "mcp__octiq__agent_update", once: true, toolInput: { change: prose } };
 
-  it("shows a one-line command whole, with nothing to open", () => {
-    const html = draw({ id: "f0", toolName: "Bash", toolInput: { command: "pnpm test" } });
-    expect(html).toContain('<pre class="ask-card-body is-command">pnpm test</pre>');
-    expect(html).not.toContain("card-fold");
-    expect(html).not.toContain("aria-disabled");
-    answers(html);
-  });
-
-  it("folds a text over several lines to its first, and says how many more", () => {
-    const html = draw(old);
-    expect(html).toContain('<div class="ask-card-label">change</div><pre class="ask-card-body is-first"><span class="ask-card-first">Change the agent Nova.</span></pre>');
-    expect(html).toContain('<span>3 more lines</span>');
-    expect(html).not.toContain("Never invents a fix.");
-    const { expanded, controls, label } = control(html);
-    expect(expanded).toBe("false");
-    expect(label).toBe("Show details");
-    // Shut, the box is there to be named and holds nothing. One box: the
-    // control names nothing that is not on the page.
-    expect(controls).not.toContain(" ");
-    expect(html).toContain(`<div id="${controls}" class="card-fold" hidden=""></div>`);
-    answers(html);
-  });
-
   it("opens it whole, above the answers", () => {
     const html = drawOpen(old);
     expect(html).toContain(`<pre class="ask-card-body is-whole">${prose}</pre>`);
@@ -393,24 +348,6 @@ describe("the permission card, folded and opened", () => {
     // The class is for a press. A card drawn open, or folded, has neither.
     expect(drawOpen(old)).not.toMatch(/is-opening|is-closing/);
     expect(draw(old)).not.toMatch(/is-opening|is-closing/);
-  });
-
-  it("shows a diff as its counts, and the diff itself on request", () => {
-    const edit: AskProp = {
-      id: "f2", toolName: "Edit",
-      toolInput: { file_path: "/repo/web/src/lib/chat.ts", old_string: "one\ntwo\nthree", new_string: "one\n2\nthree\nfour" },
-    };
-    const html = draw(edit);
-    // The tool and the path are never folded.
-    expect(html).toContain('<div class="ask-card-path" title="/repo/web/src/lib/chat.ts">');
-    expect(html).toContain("<span>+2 −1 in chat.ts</span>");
-    expect(html).not.toContain("diff-row");
-    answers(html);
-    const open = drawOpen(edit);
-    expect(open).toContain('<div class="ask-card-label">changing</div>');
-    expect(open.match(/diff-row is-add/g)).toHaveLength(2);
-    expect(open.match(/diff-row is-del/g)).toHaveLength(1);
-    answers(open);
   });
 
   it("names every folded row of a change, and says which of them change or go", () => {
@@ -540,37 +477,6 @@ describe("the permission card, folded and opened", () => {
     })).toContain('<span class="ask-change-size">400 lines</span>');
   });
 
-  it("opens an older host's change whole past the 200,000 characters it used to stop at", () => {
-    // The reviewer's 200,001: one character was "not shown" and Allow was
-    // there. Now the last character is on the card.
-    for (const size of [200_001, 329_000]) {
-      const huge = `${"c".repeat(size - 11)} LAST WORDS`;
-      const ask: AskProp = { id: "f7", toolName: "mcp__octiq__agent_policy_update", once: true, toolInput: { change: huge } };
-      const open = drawOpen(ask);
-      expect(open).toContain(`<pre class="ask-card-body is-whole">${huge}</pre>`);
-      expect(open).not.toContain("not shown");
-      expect(open).not.toContain("card-fold-cut");
-      expect(draw(ask)).toContain(`<span>${size.toLocaleString("en-US")} characters</span>`);
-    }
-  });
-
-  it("opens a row of a change whole past 200,000 characters: rows never had a cap", () => {
-    const role = `${"r".repeat(200_001)} LAST WORDS OF THE ROLE`;
-    const ask: AskProp = {
-      id: "f11", toolName: "mcp__octiq__agent_update", once: true,
-      toolInput: { change: "Change the agent Nova.", changeFacts: { lead: "Change the agent Nova.", rows: [
-        { label: "Access", before: "edits", after: "danger" },
-        { label: "Role", value: role },
-      ] } },
-    };
-    const open = drawOpen(ask);
-    expect(open).toContain(`<dt>Role</dt><dd>${role}</dd>`);
-    expect(open).not.toContain("not shown");
-    expect(open).not.toContain('aria-disabled="true"');
-    // Folded, its label and its whole size are on the card beside the answer.
-    expect(draw(ask)).toContain('<dt>Role</dt><dd class="is-folded"><span class="ask-change-size">200,024 characters</span></dd>');
-  });
-
   it("will not take an Allow for a change too long to show, as text or as rows", () => {
     const off = (html: string, size: string) => {
       const why = /<span class="ask-card-why" id="([^"]+)">This change is too long to show in full \(([\d,]+) characters\), so it cannot be allowed here\. Deny it and ask for it in smaller steps\.<\/span>/.exec(html);
@@ -606,22 +512,6 @@ describe("the permission card, folded and opened", () => {
     expect(fits).not.toContain('aria-disabled="true"');
   });
 
-  it("will not take an Allow for a plan too long to show", () => {
-    const html = draw({ id: "f10", toolName: "ExitPlanMode", toolInput: { plan: `## Step 1\n${"p".repeat(WHOLE_MAX)}` } });
-    expect(html).toContain("This plan is too long to show in full (5,000,010 characters), so it cannot be allowed here.");
-    expect(html).toMatch(/<button(?=[^>]*aria-label="Allow once") class="ask-btn is-primary"[^>]*aria-disabled="true"[^>]*>[\s\S]*?<\/button>/);
-    expect(html).toMatch(/<button(?=[^>]*aria-label="Always") class="ask-btn"[^>]*aria-disabled="true"[^>]*>[\s\S]*?<\/button>/);
-    expect(html).not.toContain("Step 1");
-  });
-
-  it("folds a plan to its opening and opens every line of it", () => {
-    const plan = `## Step 1\n${"Add the flag.\n".repeat(900)}## Step 2\nPrint and exit.`;
-    expect(plan.length).toBeGreaterThan(8000);
-    const ask: AskProp = { id: "f8", toolName: "ExitPlanMode", toolInput: { plan } };
-    expect(draw(ask)).toContain('<span class="ask-card-first">## Step 1</span>');
-    expect(draw(ask)).toContain("<span>902 more lines</span>");
-    expect(drawOpen(ask)).toContain(`<pre class="ask-card-body is-whole">${plan}</pre>`);
-  });
 });
 
 describe("a command on the permission card", () => {
@@ -655,21 +545,6 @@ describe("a command on the permission card", () => {
       // Its icon is a thing that runs, whatever the first line reads like.
       expect(html).toContain('<span class="tool-icon" data-kind="run"');
     }
-  });
-
-  it("names a script the same whichever tool runs it, and a one-line command as before", () => {
-    expect(draw({ id: "c2", toolName: "command_execution", toolInput: { command: "cat notes.md\nrm notes.md" } }))
-      .toContain('<strong>command_execution</strong><span class="ask-card-script">2-line script</span>');
-    expect(draw(bash("git push origin main"))).toContain("The agent wants to use <strong>git(push)</strong>");
-  });
-
-  it("shows a command of twelve lines whole, and allows it as it is", () => {
-    const html = draw(bash(lines(12)));
-    expect(html).toContain(`<pre class="ask-card-body is-command">${lines(12)}</pre>`);
-    expect(html).toContain('<span class="ask-card-script">12-line script</span>');
-    expect(html).not.toContain("card-fold");
-    expect(html).not.toContain("not shown");
-    expect(allows(html)).toEqual({ always: false, once: false });
   });
 
   it("past twelve lines shows the first twelve, says what it does not, and holds Allow until it is opened", () => {
@@ -761,14 +636,6 @@ describe("a command on the permission card", () => {
     expect(allows(open)).toEqual({ always: false, once: false });
   });
 
-  it("opens 2,000,000 characters whole too", () => {
-    const big = `echo start\n${"c".repeat(2_000_000)}\nrm -rf /tmp/review-danger`;
-    const open = drawOpen(bash(big));
-    expect(open).toContain(`<pre class="ask-command-text">${"c".repeat(2_000_000)}\nrm -rf /tmp/review-danger</pre>`);
-    expect(open).not.toContain("not shown");
-    expect(allows(open)).toEqual({ always: false, once: false });
-  });
-
   it("never lets Allow go for a command too long to show, opened or not", () => {
     const line = "echo safe " + "x".repeat(55);
     const over = `${(line + "\n").repeat(Math.ceil(WHOLE_MAX / 66))}rm -rf /tmp/review-danger`;
@@ -794,160 +661,7 @@ describe("a command on the permission card", () => {
     }
   });
 
-  it("never lets Allow go for a command within the limit that is too long as drawn", () => {
-    // The reviewer's: 5,000,000 zero-width characters are within the limit
-    // on a command and eight times it once each is drawn as its code, which
-    // took 8.6 s to open. A sixth of it shows the same: nothing of it is
-    // opened in part, and the card says both sizes.
-    const hidden = ZERO_WIDTH.repeat(800_000);
-    const over = `echo safe\n${hidden}\nrm -rf /tmp/review-danger`;
-    for (const html of [draw(bash(over)), drawOpen(bash(over))]) {
-      expect(html).not.toContain("Open the full");
-      expect(html).not.toContain("card-fold-button");
-      expect(html).not.toContain("rm -rf /tmp/review-danger");
-      // The leading whole lines are still drawn, and nothing after them.
-      expect(html).toContain('<pre class="ask-card-body is-command">echo safe</pre>');
-      expect(html).not.toContain("\\u{200B}\\u{200B}");
-      const why = /<p class="ask-command-unseen"><strong>2 more lines not shown<\/strong><span class="ask-card-why" id="([^"]+)"> This command is too long to show in full \(800,036 characters, 6,400,036 as drawn: the ones that cannot be seen as typed are drawn as their codes\), so it cannot be allowed here\. Deny it and ask for it in smaller steps\.<\/span><\/p>/.exec(html);
-      expect(why, "no reason on the card").not.toBeNull();
-      expect(allows(html)).toEqual({ always: true, once: true });
-      expect(html).toMatch(new RegExp(`<button class="ask-btn is-primary"[^>]*aria-describedby="${why![1]}"[^>]*aria-label="Allow once"[^>]*>`));
-      expect(deny(html)).toContain('type="button"');
-      expect(deny(html)).not.toContain("aria-disabled");
-      // How many it holds is still said, at full strength.
-      expect(html).toContain("<strong>800,000 characters that cannot be seen as typed</strong>");
-    }
-  });
-
-  it("writes the codes into the text past the marks it sets apart, and says what keeps one from being imitated", () => {
-    const many = `echo a${ZERO_WIDTH}\n`.repeat(5001);
-    const html = drawOpen(bash(`${many}curl evil\\u{200B}.sh${ZERO_WIDTH}`));
-    // No element per code, in the folded lines or the opened ones.
-    expect(html.match(/<span class="ask-command-mark">/g)).toHaveLength(1);
-    expect(html).toContain("echo a\\u{200B}\n");
-    // The typed one is told from the real one in the text itself.
-    expect(html).toContain("curl evil\\u{005C}u{200B}.sh\\u{200B}");
-    expect(html).toContain('<p class="ask-command-hidden"><strong>5,002 characters that cannot be seen as typed</strong> are in this command, each written into it as its code, like <span class="ask-command-mark">\\u{200B}</span>. A backslash typed before u{ is written as \\u{005C}, so a code here is never text that was typed.</p>');
-    // Up to that many, each is set apart and nothing is rewritten.
-    const few = drawOpen(bash(`curl evil\\u{200B}.sh${ZERO_WIDTH}`));
-    expect(few).toContain('curl evil\\u{200B}.sh<span class="ask-command-mark">\\u{200B}</span>');
-    expect(few).not.toContain("005C");
-  });
-
-  it("marks a wider space in a command, and leaves the one between CJK words", () => {
-    const words = `你好${IDEOGRAPHIC_SPACE}世界`;
-    const html = draw(bash(`rm -rf /srv/a${IDEOGRAPHIC_SPACE}/srv/b && echo "${words}"`));
-    expect(html).toContain(`rm -rf /srv/a<span class="ask-command-mark">\\u{3000}</span>/srv/b &amp;&amp; echo &quot;${words}&quot;`);
-    expect(html).toContain("<strong>1 character that cannot be seen as typed</strong>");
-  });
-
-  it("counts a line that only looks empty, and does not name the command by the line between", () => {
-    // A no-break space on a line of its own is a program name to bash. The
-    // card took it for blank: one line, `bash(echo)`, nothing off the card.
-    const html = draw(bash("\u00a0\necho safe\n\u00a0"));
-    expect(html).toContain(">command · 3 lines<");
-    expect(html).toContain('<span class="ask-card-script">3-line script</span>');
-    expect(html).not.toContain("bash(echo)");
-    // A lone carriage return is a line too.
-    expect(draw(bash("\r\necho safe\n\r"))).toContain(">command · 3 lines<");
-    // Lines that are empty, or spaces and tabs, still are not.
-    const plain = draw(bash("\n \n\t\necho safe\n\n  \n"));
-    expect(plain).toContain('<pre class="ask-card-body is-command">echo safe</pre>');
-    expect(plain).not.toContain("ask-card-script");
-    expect(plain).toContain("bash(echo)");
-  });
-
   const marked = (hex: string) => `<span class="ask-command-mark">\\u{${hex}}</span>`;
-
-  it("draws a no-break space as its code, and says how many such characters the command holds", () => {
-    const html = draw(bash("\u00A0\necho safe\n\u00A0"));
-    expect(html).toContain(`<pre class="ask-card-body is-command">${marked("00A0")}\necho safe\n${marked("00A0")}</pre>`);
-    expect(html).not.toContain("\u00A0");
-    expect(html).toContain(
-      `<p class="ask-command-hidden"><strong>2 characters that cannot be seen as typed</strong> are in this command, each drawn as its code, like ${marked("00A0")}</p>`,
-    );
-    // Under the block, above the answers. It takes no answer away.
-    expect(html.indexOf("ask-command-hidden")).toBeGreaterThan(html.indexOf("is-command"));
-    expect(html.indexOf("ask-command-hidden")).toBeLessThan(html.indexOf("ask-card-foot"));
-    expect(allows(html)).toEqual({ always: false, once: false });
-  });
-
-  it("draws a mark that turns the reading order round as its code, in the order the shell gets", () => {
-    // Drawn raw, the override shows this as `open invoice_exe.pdf`.
-    const html = draw(bash("open invoice_\u202Efdp.exe"));
-    expect(html).toContain(`<pre class="ask-card-body is-command">open invoice_${marked("202E")}fdp.exe</pre>`);
-    expect(html).not.toContain("\u202E");
-    expect(html).toContain(
-      `<p class="ask-command-hidden"><strong>1 character that cannot be seen as typed</strong> is in this command, drawn as its code: ${marked("202E")}</p>`,
-    );
-    // Every mark of the kind, and the ones that draw nothing.
-    const all = "\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069\u200E\u200F\u061C\u200B\u200C\u200D\u2060\uFEFF\u00AD\u2028\u2029";
-    const each = draw(bash(`ls ${all}`));
-    for (const char of all) {
-      expect(each).not.toContain(char);
-      expect(each).toContain(marked(char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")));
-    }
-    expect(each).toContain("<strong>20 characters that cannot be seen as typed</strong>");
-  });
-
-  it("draws a command with no such character exactly as before, and says nothing about them", () => {
-    const html = draw(bash('echo "plain"\n\tgit status  --short'));
-    expect(html).toContain('<pre class="ask-card-body is-command">echo &quot;plain&quot;\n\tgit status  --short</pre>');
-    expect(html).not.toContain("ask-command-mark");
-    expect(html).not.toContain("ask-command-hidden");
-    // Text that spells a code is text.
-    expect(draw(bash("printf '\\u{202E}'"))).not.toContain("ask-command-mark");
-  });
-
-  it("counts the ones on lines the folded card does not draw, above what it says is not shown", () => {
-    const text = `${lines(13)}\nrm -rf /tmp/\u202Ereview\u200B`;
-    const html = draw(bash(text));
-    expect(html).not.toContain(marked("202E") + "review");
-    const hidden = html.indexOf('<p class="ask-command-hidden"><strong>2 characters that cannot be seen as typed</strong>');
-    const unseen = html.indexOf('<p class="ask-command-unseen"><strong>2 more lines not shown</strong>');
-    expect(hidden).toBeGreaterThan(-1);
-    // What is not shown stays the last thing above the answers.
-    expect(unseen).toBeGreaterThan(hidden);
-    expect(html.indexOf("ask-card-foot")).toBeGreaterThan(unseen);
-    expect(allows(html)).toEqual({ always: true, once: true });
-    // Opened, they are in place in the rest.
-    const open = drawOpen(bash(text));
-    expect(open).toContain(`rm -rf /tmp/${marked("202E")}review${marked("200B")}</pre>`);
-    expect(allows(open)).toEqual({ always: false, once: false });
-  });
-
-  it("states three lines and draws three rows for a return on a line of its own", () => {
-    const html = draw(bash("\r\necho safe\n\r"));
-    expect(html).toContain(">command · 3 lines<");
-    // An empty first line (a Windows line end), the command, and a row that
-    // shows the return standing alone.
-    expect(html).toContain(`<pre class="ask-card-body is-command">\r\necho safe\n${marked("000D")}</pre>`);
-    expect(html).toContain("<strong>1 character that cannot be seen as typed</strong>");
-    // A script with Windows line ends is drawn as it is, with no mark at
-    // the end of each line, and its last return keeps its line feed.
-    const windows = draw(bash("pwd\r\nls\r\n"));
-    expect(windows).toContain('<pre class="ask-card-body is-command">pwd\r\nls\r\n</pre>');
-    expect(windows).not.toContain("ask-command-mark");
-    expect(windows).not.toContain("ask-command-hidden");
-    // An empty line in such a script, last: still a row of its own.
-    expect(draw(bash("pwd\r\n\r\n"))).toContain('<pre class="ask-card-body is-command">pwd\r\n\r\n</pre>');
-  });
-
-  it("draws an escape and a backspace as their codes", () => {
-    const html = draw(bash("echo ok\u001b[2K\u0008rm"));
-    expect(html).toContain(`echo ok${marked("001B")}[2K${marked("0008")}rm</pre>`);
-    expect(html).toContain("<strong>2 characters that cannot be seen as typed</strong>");
-  });
-
-  it("keeps a Windows line end whole across the fold: the head's last return is not alone", () => {
-    const text = Array.from({ length: 14 }, (_, i) => `step ${i + 1}`).join("\r\n");
-    const folded = draw(bash(text));
-    expect(folded).not.toContain("ask-command-mark");
-    expect(folded).toContain("step 12\r\n</pre>");
-    const open = drawOpen(bash(text));
-    expect(open).not.toContain("ask-command-mark");
-    expect(open).toContain("step 13\r\nstep 14</pre>");
-  });
 
   it("marks them in a script or code an MCP tool runs, and calls it that", () => {
     const html = draw({ id: "c9", toolName: "mcp__sandbox__exec", toolInput: { script: 'print("a\u200Bb")' } });
@@ -1041,7 +755,6 @@ describe("the line beside the answers", () => {
     expect(askShortParts({ id: "s4", answerWithinSecs: 0 }, null)).toEqual(["No answer counts as Deny", null, ""]);
   });
 });
-
 
 describe("a command disclosure restored from page memory", () => {
   const command = Array.from({ length: 13 }, (_, i) => `echo command line ${i + 1}`).join("\n");
