@@ -254,6 +254,14 @@ fn all_limited_providers_hold_before_reservation_without_spending_retries() {
     for agent in [ChatAgent::Codex, ChatAgent::Claude, ChatAgent::Antigravity] {
         chats.failover.limited(agent, None, Some(now + 600), now);
     }
+    // Pi on `anthropic/…` is its own account (`pi-anthropic`); without this the
+    // result would depend on whether `pi` is installed on the machine.
+    chats.failover.limited(
+        ChatAgent::Pi,
+        Some("anthropic/claude-opus-5-5"),
+        Some(now + 600),
+        now,
+    );
     let before = task_now(&store, &task.id);
     let count = attempts_of(&store, &task.id)[0].execution.retry_count;
     for by in [StartedBy::Coordinator, StartedBy::Recovery(&first.id)] {
