@@ -121,6 +121,18 @@ fn world() -> World {
     }
 }
 
+/// The card most tests start from: chat `s1` asks Mango to take over,
+/// request `r1`, and the store holds it pending.
+fn pending_ask(w: &World) -> Handover {
+    request(
+        &w.store,
+        &FakeHost::of(w),
+        source("chat:s1"),
+        ask("Mango", "r1"),
+    )
+    .unwrap()
+}
+
 fn source(chat: &str) -> Source {
     Source {
         chat_key: chat.into(),
@@ -470,13 +482,7 @@ fn a_named_checkout_of_another_repository_is_refused_never_adopted() {
 #[test]
 fn a_request_is_pending_with_the_recipients_registered_settings() {
     let w = world();
-    let record = request(
-        &w.store,
-        &FakeHost::of(&w),
-        source("chat:s1"),
-        ask("Mango", "r1"),
-    )
-    .unwrap();
+    let record = pending_ask(&w);
     assert_eq!(record.status, Status::Pending);
     assert_eq!(record.to.agent_id.as_deref(), Some(w.scoped.id.as_str()));
     assert_eq!(record.settings.model.as_deref(), Some("sonnet"));
@@ -538,13 +544,7 @@ fn the_same_request_id_answers_with_the_same_handover() {
 #[test]
 fn confirm_starts_exactly_one_chat_on_the_recipients_registered_settings() {
     let w = world();
-    let record = request(
-        &w.store,
-        &FakeHost::of(&w),
-        source("chat:s1"),
-        ask("Mango", "r1"),
-    )
-    .unwrap();
+    let record = pending_ask(&w);
     // The registry changes after the card was drawn: confirm uses what is
     // registered NOW, never what the card (or the caller) said.
     let current = team::save(
@@ -612,13 +612,7 @@ fn confirm_starts_exactly_one_chat_on_the_recipients_registered_settings() {
 #[test]
 fn a_failed_start_keeps_the_chat_id_and_the_worktree_for_the_retry() {
     let w = world();
-    let record = request(
-        &w.store,
-        &FakeHost::of(&w),
-        source("chat:s1"),
-        ask("Mango", "r1"),
-    )
-    .unwrap();
+    let record = pending_ask(&w);
     let host = FakeHost::of(&w);
     *host.fail_start.lock().unwrap() = true;
     let error = confirm(&w.store, &record.id, &host).unwrap_err();
@@ -643,13 +637,7 @@ fn a_failed_start_keeps_the_chat_id_and_the_worktree_for_the_retry() {
 #[test]
 fn decline_creates_nothing_and_cannot_be_confirmed_afterwards() {
     let w = world();
-    let record = request(
-        &w.store,
-        &FakeHost::of(&w),
-        source("chat:s1"),
-        ask("Mango", "r1"),
-    )
-    .unwrap();
+    let record = pending_ask(&w);
     let declined = decline(&w.store, &record.id).unwrap();
     assert_eq!(declined.status, Status::Declined);
     assert_eq!(declined.target_chat_key, None);
@@ -667,13 +655,7 @@ fn decline_creates_nothing_and_cannot_be_confirmed_afterwards() {
 #[test]
 fn a_removed_recipient_is_refused_at_confirm() {
     let w = world();
-    let record = request(
-        &w.store,
-        &FakeHost::of(&w),
-        source("chat:s1"),
-        ask("Mango", "r1"),
-    )
-    .unwrap();
+    let record = pending_ask(&w);
     team::delete(&w.team, &w.scoped.id).unwrap();
     let host = FakeHost::of(&w);
     let error = confirm(&w.store, &record.id, &host).unwrap_err();
@@ -873,13 +855,7 @@ fn a_chat_coordinating_a_live_run_cannot_hand_over() {
 fn a_confirm_racing_a_decline_has_exactly_one_winner() {
     for _ in 0..8 {
         let w = world();
-        let record = request(
-            &w.store,
-            &FakeHost::of(&w),
-            source("chat:s1"),
-            ask("Mango", "r1"),
-        )
-        .unwrap();
+        let record = pending_ask(&w);
         let host = std::sync::Arc::new(FakeHost::of(&w));
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let (store, id, h, b) = (
@@ -912,13 +888,7 @@ fn a_confirm_racing_a_decline_has_exactly_one_winner() {
 #[test]
 fn a_pending_card_restored_after_a_restart_is_confirmable_exactly_once() {
     let w = world();
-    let record = request(
-        &w.store,
-        &FakeHost::of(&w),
-        source("chat:s1"),
-        ask("Mango", "r1"),
-    )
-    .unwrap();
+    let record = pending_ask(&w);
     // The restart: no waiter, no memory, only the file.
     WAITERS.lock().unwrap().clear();
     let restored = list(&w.store).unwrap();
@@ -938,13 +908,7 @@ fn a_pending_card_restored_after_a_restart_is_confirmable_exactly_once() {
 #[test]
 fn the_record_survives_a_restart_and_a_late_decision_goes_by_continuation() {
     let w = world();
-    let record = request(
-        &w.store,
-        &FakeHost::of(&w),
-        source("chat:s1"),
-        ask("Mango", "r1"),
-    )
-    .unwrap();
+    let record = pending_ask(&w);
     // A restart is a new process reading the same file: nothing is cached.
     let bytes = fs::read(&w.store).unwrap();
     fs::write(&w.store, &bytes).unwrap();
@@ -977,13 +941,7 @@ fn the_record_survives_a_restart_and_a_late_decision_goes_by_continuation() {
 #[tokio::test]
 async fn a_waiting_tool_gets_the_decision_and_nothing_is_sent_twice() {
     let w = world();
-    let record = request(
-        &w.store,
-        &FakeHost::of(&w),
-        source("chat:s1"),
-        ask("Mango", "r1"),
-    )
-    .unwrap();
+    let record = pending_ask(&w);
     let waiting = tokio::spawn(wait(
         w.store.clone(),
         record.id.clone(),
@@ -1008,13 +966,7 @@ async fn a_waiting_tool_gets_the_decision_and_nothing_is_sent_twice() {
 #[tokio::test]
 async fn a_tool_that_times_out_says_pending_and_leaves_the_decision_to_a_continuation() {
     let w = world();
-    let record = request(
-        &w.store,
-        &FakeHost::of(&w),
-        source("chat:s1"),
-        ask("Mango", "r1"),
-    )
-    .unwrap();
+    let record = pending_ask(&w);
     let text = wait(
         w.store.clone(),
         record.id.clone(),
@@ -1162,13 +1114,7 @@ fn a_head_that_advanced_on_the_same_branch_is_refreshed_not_refused() {
 fn a_start_whose_record_could_not_be_saved_is_never_declined_or_started_twice() {
     for recovered_by in ["retry", "restart"] {
         let w = world();
-        let record = request(
-            &w.store,
-            &FakeHost::of(&w),
-            source("chat:s1"),
-            ask("Mango", "r1"),
-        )
-        .unwrap();
+        let record = pending_ask(&w);
         let host = FakeHost::of(&w);
         *host.break_store.lock().unwrap() = Some(w.store.clone());
         assert!(confirm(&w.store, &record.id, &host).is_err());
@@ -1206,13 +1152,7 @@ fn a_start_whose_record_could_not_be_saved_is_never_declined_or_started_twice() 
 #[test]
 fn a_start_a_restart_cut_off_before_the_chat_is_retried_and_never_declined() {
     let w = world();
-    let record = request(
-        &w.store,
-        &FakeHost::of(&w),
-        source("chat:s1"),
-        ask("Mango", "r1"),
-    )
-    .unwrap();
+    let record = pending_ask(&w);
     let host = FakeHost::of(&w);
     *host.fail_start.lock().unwrap() = true;
     confirm(&w.store, &record.id, &host).unwrap_err();
@@ -1237,13 +1177,7 @@ fn a_start_a_restart_cut_off_before_the_chat_is_retried_and_never_declined() {
 #[test]
 fn a_start_that_keeps_failing_can_be_given_up_once_no_chat_was_started() {
     let w = world();
-    let record = request(
-        &w.store,
-        &FakeHost::of(&w),
-        source("chat:s1"),
-        ask("Mango", "r1"),
-    )
-    .unwrap();
+    let record = pending_ask(&w);
     let host = FakeHost::of(&w);
     *host.fail_start.lock().unwrap() = true;
     // Abandoning is for a confirmed handover only.
@@ -1293,13 +1227,7 @@ fn a_start_that_keeps_failing_can_be_given_up_once_no_chat_was_started() {
 #[test]
 fn a_start_that_may_have_happened_cannot_be_given_up_and_a_retry_finishes_it() {
     let w = world();
-    let record = request(
-        &w.store,
-        &FakeHost::of(&w),
-        source("chat:s1"),
-        ask("Mango", "r1"),
-    )
-    .unwrap();
+    let record = pending_ask(&w);
     let host = FakeHost::of(&w);
     *host.break_store.lock().unwrap() = Some(w.store.clone());
     confirm(&w.store, &record.id, &host).unwrap_err();

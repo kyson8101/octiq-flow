@@ -276,9 +276,7 @@ fn approve_removes_only_listed_merged_worktrees_and_keeps_changed_control() {
     finish(&store, &later);
     let tap = crate::bus::tap::Tap::on(&card.id);
     let progress = ProgressProbe::new();
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     progress.assert_progress(&card, &result, &tap);
     assert!(
         !Path::new(&first.cwd).exists(),
@@ -363,18 +361,14 @@ fn mission_close_uses_original_guards_and_binds_membership_and_head() {
     assert!(matches!(card.items[0].kind, Kind::Mission));
     assert_eq!(card.items[0].worktrees[0].ignored_file_count, Some(0));
     repo.commit(&first.cwd, "later.txt", "mission changed");
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     assert_eq!(result.items[0].status, "kept");
     assert!(result.items[0].reason.contains("HEAD changed"));
     assert!(Path::new(&first.cwd).exists());
     repo.git(&["merge", "--ff-only", &first.branch]);
     repo.git(&["push", "origin", "main"]);
     let card = ask(&store, &run).unwrap();
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
     assert!(!Path::new(&first.cwd).exists());
     assert_eq!(
@@ -470,9 +464,7 @@ fn swept_task_uses_the_kept_head_and_current_base_without_rebuilding() {
     store.lifespan_record_swept(&first.cwd, 100).unwrap();
     let card = ask(&store, &run).unwrap();
     assert_eq!(card.items[0].worktrees[0].ignored_file_count, None);
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
     assert!(!Path::new(&first.cwd).exists());
 }
@@ -486,9 +478,7 @@ fn a_recovered_open_gate_after_the_card_is_kept_by_the_original_cleanup_guard() 
     finish(&store, &held);
     let card = ask(&store, &run).unwrap();
     recovered_gate(&store, &run, &task.id);
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     assert!(!Path::new(&safe.cwd).exists());
     assert!(Path::new(&held.cwd).exists());
     let kept = result
@@ -565,9 +555,7 @@ fn a_non_coordinator_person_chat_proposes_a_finished_run_and_nothing_is_removed(
     assert!(Path::new(&first.cwd).exists(), "a proposal removes nothing");
     // The coordinator's own request is a different chat's card.
     assert_eq!(ask(&store, &run).unwrap().chat_key, "chat:master");
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
     assert!(!Path::new(&first.cwd).exists());
     // The result goes to the chat that asked, and is deliverable there.
@@ -674,9 +662,7 @@ fn a_named_run_that_stopped_being_finished_is_kept_on_the_answer() {
     set_status(&store, &run, RunStatus::Completed);
     let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
     set_status(&store, &run, RunStatus::Running);
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     assert_eq!(result.items[0].status, "kept");
     assert!(
         result.items[0].reason.contains("running"),
@@ -693,9 +679,7 @@ fn a_mission_with_no_checkout_closes_on_approval_when_nothing_is_at_stake() {
     let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
     assert!(matches!(card.items[0].kind, Kind::Mission));
     assert!(card.items[0].worktrees.is_empty());
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
     assert_eq!(
         store.snapshot(Some(&run.id)).unwrap().runs[0].status,
@@ -717,9 +701,7 @@ fn a_mission_whose_folder_is_gone_closes_even_with_no_saved_delivery() {
         .is_empty());
     let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
     assert!(matches!(card.items[0].kind, Kind::Mission));
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
     assert_eq!(
         store.snapshot(Some(&run.id)).unwrap().runs[0].status,
@@ -750,9 +732,7 @@ fn a_merged_mission_whose_folder_and_branch_are_both_gone_closes() {
     assert!(listed[0].close_eligible, "{:?}", listed[0].close_blocker);
     let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
     assert!(matches!(card.items[0].kind, Kind::Mission));
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
     let saved = store.snapshot(Some(&run.id)).unwrap().runs[0].clone();
     assert_eq!(saved.status, RunStatus::Closed);
@@ -811,6 +791,22 @@ fn delivery_json(store: &OrchestrationStore, run: &Run) -> String {
     serde_json::to_string(&saved.mission_delivery).unwrap()
 }
 
+/// The person approves `card`.
+fn approve(store: &OrchestrationStore, card: &Asked) -> Settled {
+    store
+        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
+        .unwrap()
+}
+
+/// The person approves `card` and the first item is kept, for a reason
+/// containing `why`.
+fn approve_and_keep(store: &OrchestrationStore, card: &Asked, why: &str) -> Settled {
+    let result = approve(store, card);
+    assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
+    assert!(result.items[0].reason.contains(why), "{:?}", result.items);
+    result
+}
+
 fn nothing_was_closed_or_deleted(store: &OrchestrationStore, run: &Run, before: &str) {
     let saved = store.snapshot(Some(&run.id)).unwrap().runs[0].clone();
     assert_ne!(saved.status, RunStatus::Closed);
@@ -845,9 +841,7 @@ fn alias_after_the_card(pack: bool) {
     if pack {
         repo.git(&["pack-refs", "--all"]);
     }
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
     nothing_was_closed_or_deleted(&store, &run, &before);
     assert_eq!(
@@ -908,15 +902,7 @@ fn a_folder_and_branch_recreated_at_the_same_head_after_the_card_are_kept() {
     assert_eq!(delivery_json(&store, &run), before);
     let root = first.cwd.trim_end_matches(['/', '\\']).to_string();
     repo.git(&["worktree", "add", "-b", &first.branch, &root, "main"]);
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
-    assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
-    assert!(
-        result.items[0].reason.contains("appeared or went"),
-        "{}",
-        result.items[0].reason
-    );
+    approve_and_keep(&store, &card, "appeared or went");
     assert!(
         Path::new(&root).exists(),
         "the new worktree was not removed"
@@ -959,15 +945,7 @@ fn a_folder_and_branch_made_again_while_a_gone_mission_closes_are_not_recorded_r
                 .unwrap();
         }))
     });
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
-    assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
-    assert!(
-        result.items[0].reason.contains("appeared or went"),
-        "{}",
-        result.items[0].reason
-    );
+    approve_and_keep(&store, &card, "appeared or went");
     assert!(Path::new(&root).exists());
     nothing_was_closed_or_deleted(&store, &run, &before);
 }
@@ -1043,15 +1021,7 @@ fn a_folder_made_again_during_the_last_branch_lookup_keeps_a_gone_mission() {
             std::fs::create_dir_all(&path).unwrap();
         }))
     });
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
-    assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
-    assert!(
-        result.items[0].reason.contains("appeared or went"),
-        "{}",
-        result.items[0].reason
-    );
+    approve_and_keep(&store, &card, "appeared or went");
     assert!(Path::new(&root).exists());
     nothing_was_closed_or_deleted(&store, &run, &before);
 }
@@ -1075,15 +1045,7 @@ fn a_folder_made_again_during_the_last_branch_lookup_keeps_a_swept_task() {
             std::fs::create_dir_all(&path).unwrap();
         }))
     });
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
-    assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
-    assert!(
-        result.items[0].reason.contains("appeared or went"),
-        "{}",
-        result.items[0].reason
-    );
+    approve_and_keep(&store, &card, "appeared or went");
     assert!(Path::new(&first.cwd).exists());
     assert_ne!(
         task_workspace_state(&store, &run, &task.id),
@@ -1111,15 +1073,7 @@ fn a_folder_and_branch_made_again_during_a_swept_task_cleanup_are_not_recorded_c
                 .unwrap();
         }))
     });
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
-    assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
-    assert!(
-        result.items[0].reason.contains("appeared or went"),
-        "{}",
-        result.items[0].reason
-    );
+    approve_and_keep(&store, &card, "appeared or went");
     assert!(
         Path::new(&first.cwd).exists(),
         "the new folder was not touched"
@@ -1140,9 +1094,7 @@ fn a_folder_that_went_after_the_card_is_kept_too() {
     let card = ask_named(&store, "chat:person", &[&run]).unwrap().unwrap();
     let root = first.cwd.trim_end_matches(['/', '\\']).to_string();
     crate::git_ops::lifespan::remove(&repo.root, &root, false).unwrap();
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
     assert_ne!(
         store.snapshot(Some(&run.id)).unwrap().runs[0].status,
@@ -1165,9 +1117,7 @@ fn a_swept_task_whose_branch_is_gone_too_is_cleaned_from_its_merged_delivery() {
     assert!(!branch_exists(&repo, &first.branch));
     let card = ask(&store, &run).expect("a card for the swept task");
     assert_eq!(card.items.len(), 1, "{:?}", card.items);
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
     let state = task_workspace_state(&store, &run, &task.id);
     assert_eq!(state, WorkspaceState::Cleaned);
@@ -1260,15 +1210,7 @@ fn a_run_level_gate_opened_during_the_proof_keeps_the_task_folder() {
         // Isolate the gate: the status alone must not be what keeps it.
         set_status(&s, &r, RunStatus::Completed);
     });
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
-    assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
-    assert!(
-        result.items[0].reason.contains("open decision"),
-        "{:?}",
-        result.items
-    );
+    approve_and_keep(&store, &card, "open decision");
     assert!(Path::new(&first.cwd).exists());
 }
 
@@ -1286,9 +1228,7 @@ fn a_worker_started_in_another_task_during_the_proof_keeps_the_task_folder() {
         let _ = prepare(&s, &r);
         set_status(&s, &r, RunStatus::Completed);
     });
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
     assert!(
         result.items[0].reason.contains("worker"),
@@ -1314,15 +1254,7 @@ fn a_run_level_gate_opened_during_the_proof_keeps_the_mission_open() {
             .unwrap();
         set_status(&s, &r, RunStatus::Completed);
     });
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
-    assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
-    assert!(
-        result.items[0].reason.contains("open decision"),
-        "{:?}",
-        result.items
-    );
+    approve_and_keep(&store, &card, "open decision");
     assert!(Path::new(&first.cwd).exists());
     assert_ne!(
         store.snapshot(Some(&run.id)).unwrap().runs[0].status,
@@ -1371,15 +1303,7 @@ fn a_run_level_gate_opened_after_the_delivery_read_keeps_a_gone_mission_open() {
             .unwrap();
         set_status(&s, &r, RunStatus::Completed);
     });
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
-    assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
-    assert!(
-        result.items[0].reason.contains("open decision"),
-        "{:?}",
-        result.items
-    );
+    approve_and_keep(&store, &card, "open decision");
     assert_ne!(
         store.snapshot(Some(&run.id)).unwrap().runs[0].status,
         RunStatus::Closed
@@ -1405,9 +1329,7 @@ fn a_gate_opened_after_the_branch_delete_keeps_the_mission_open_but_records_what
             .unwrap();
         set_status(&s, &r, RunStatus::Completed);
     });
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
+    let result = approve(&store, &card);
     // The folder did go, so the host says so, with the refusal as the reason.
     assert_eq!(result.items[0].status, "removed", "{:?}", result.items);
     assert!(
@@ -1448,15 +1370,7 @@ fn a_run_level_gate_opened_after_the_delivery_read_keeps_a_mission_with_no_check
             .unwrap();
         set_status(&s, &r, RunStatus::Stopped);
     });
-    let result = store
-        .answer_workspace_cleanup(&ChatManager::default(), &card.id, true)
-        .unwrap();
-    assert_eq!(result.items[0].status, "kept", "{:?}", result.items);
-    assert!(
-        result.items[0].reason.contains("open decision"),
-        "{:?}",
-        result.items
-    );
+    approve_and_keep(&store, &card, "open decision");
     assert_ne!(
         store.snapshot(Some(&run.id)).unwrap().runs[0].status,
         RunStatus::Closed
