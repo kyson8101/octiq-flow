@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn completed_missions_and_retained_validation_paths_stay_managed() {

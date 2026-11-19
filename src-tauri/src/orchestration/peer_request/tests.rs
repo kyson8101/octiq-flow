@@ -1,4 +1,3 @@
-
 use super::super::agent_work::AgentWork;
 use super::super::tests::{launch_for, run, running_worker_on};
 use super::*;

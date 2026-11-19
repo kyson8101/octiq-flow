@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn agent(id: &str, team: Option<&str>, project: Option<&str>) -> TeamAgent {

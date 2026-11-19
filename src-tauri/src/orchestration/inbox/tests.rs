@@ -1,4 +1,3 @@
-
 use super::super::tests::{run, running_worker};
 use super::*;
 fn ping(store: &OrchestrationStore, run: &Run, worker: &Attempt, kind: &str, body: &str) {

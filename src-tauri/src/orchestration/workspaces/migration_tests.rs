@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn version_one_is_migrated_and_new_records_cannot_be_silently_overwritten_by_an_old_backend() {
