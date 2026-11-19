@@ -11061,6 +11061,51 @@ mod tests {
         test_toml_string as toml_string,
     };
 
+    /// Every production source file of this module, agent_chat.rs first:
+    /// `(file name, text)` with LF line ends. Test files and the test-only
+    /// helper files are left out, and agent_chat.rs is cut at its inline
+    /// `mod tests` when it still has one.
+    pub(super) fn production_sources() -> Vec<(String, String)> {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![("agent_chat.rs".to_string(), src.join("agent_chat.rs"))];
+        let mut children: Vec<_> = std::fs::read_dir(src.join("agent_chat"))
+            .map(|dir| {
+                dir.filter_map(|entry| entry.ok())
+                    .map(|entry| entry.path())
+                    .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        children.sort();
+        for path in children {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if name.ends_with("tests.rs") || name == "test_support.rs" || name == "stand_in.rs" {
+                continue;
+            }
+            files.push((name, path));
+        }
+        files
+            .into_iter()
+            .map(|(name, path)| {
+                let text = std::fs::read_to_string(&path)
+                    .unwrap()
+                    .replace("\r\n", "\n");
+                let text = match text.find("\n#[cfg(test)]\nmod tests {") {
+                    Some(at) => text[..at].to_string(),
+                    None => text,
+                };
+                (name, text)
+            })
+            .collect()
+    }
+
+    pub(super) fn production_source() -> String {
+        production_sources()
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect()
+    }
+
     #[test]
     fn index_change_carries_only_the_canonical_visible_entry_and_tombstone() {
         let home = crate::test_dir::TestDir::new("index-event");
@@ -11103,8 +11148,8 @@ mod tests {
     /// whose key is not its chat's would each be a launch path that skips it.
     #[test]
     fn every_agent_launch_decides_front_desk_by_the_chat_key_in_one_place() {
-        let source = include_str!("agent_chat.rs");
-        let production = &source[..source.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        let source = production_source();
+        let production = source.as_str();
         assert_eq!(production.matches("provider.build_command(").count(), 1);
         assert_eq!(
             production
@@ -20630,8 +20675,8 @@ mod auto_plan_tests {
 
     #[test]
     fn auto_plan_observed_source_never_regrants_launch_evidence() {
-        let source = include_str!("agent_chat.rs").replace("\r\n", "\n");
-        let production = source.split("\n#[cfg(test)]\nmod tests {").next().unwrap();
+        let source = super::tests::production_source();
+        let production = source.as_str();
         let observed = production
             .split("if observed.turn_opened && !session.busy {")
             .nth(1)
@@ -20672,7 +20717,12 @@ mod auto_plan_tests {
                 "approval must not acquire {forbidden}"
             );
         }
-        let chat = include_str!("agent_chat.rs");
+        let sources = super::tests::production_sources();
+        let chat = sources
+            .iter()
+            .find(|(_, text)| text.contains("impl CleanTurnEnd {"))
+            .map(|(_, text)| text.as_str())
+            .unwrap();
         let evidence = chat
             .split("impl CleanTurnEnd {")
             .nth(1)
