@@ -524,16 +524,6 @@
   gap: 6px;
 }
 
-/* The readable project name beside its compact @ token. */
-.slash-note {
-  margin-left: auto;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--bg-2);
-  font-size: 10.5px;
-  color: var(--fg-3);
-}
-
 /* ---- File panel (slides out from the right) --------------------------- */
 .panel-scrim {
   position: fixed;

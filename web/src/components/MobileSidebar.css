@@ -59,11 +59,6 @@
 .sidebar-dropdown button.is-danger { color: var(--danger); }
 .sidebar-dropdown button:disabled { opacity: 0.4; cursor: default; }
 
-.sidebar .proj-node { --sib-rail: 6px; }
-.sidebar .proj-name { flex: 0 1 auto; font-size: 13px; font-weight: 500; }
-.sidebar .proj-count { margin-left: 0; background: transparent; padding: 0; color: var(--fg-2); }
-.sidebar .proj-count.is-busy { color: var(--ok); }
-.sidebar .proj-btn { gap: 8px; }
 .sidebar .chat { display: grid; grid-template-columns: minmax(0, 1fr) 32px; align-items: center; }
 .sidebar .chat-btn { grid-column: 1; width: 100%; height: 56px; padding: 7px 8px 7px 27px; }
 .sidebar .chat-rename { grid-column: 1 / -1; height: 56px; padding-left: 27px; }
@@ -81,13 +76,6 @@
   .sidebar .chat { grid-template-columns: minmax(0, 1fr) 44px; }
   .sidebar .chat-btn { -webkit-touch-callout: none; user-select: none; }
   .sidebar .chat-rename-input { font-size: 16px; }
-  .sidebar .chat-more { height: 44px; }
-}
-
-@media (max-width: 859.98px) {
-  .sidebar .proj-list { overscroll-behavior: contain; padding: 2px 8px 8px; }
-  .sidebar .proj-btn { height: 40px; }
-  .sidebar .proj-node { --sib-mid: 22px; }
 }
 
 /* The primary list is task-first now; these more specific rules keep the

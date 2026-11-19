@@ -96,10 +96,6 @@
   }
   .projects-screen .projects-return > span { display: none; }
   .projects-screen .projects-return-icon { display: block; }
-
-  .projects-screen .proj-list { padding-top: 4px; }
-  .projects-screen .proj-btn { height: 44px; }
-  .projects-screen .proj-node { --sib-mid: 22px; }
 }
 
 .work-location { flex-wrap: wrap; }

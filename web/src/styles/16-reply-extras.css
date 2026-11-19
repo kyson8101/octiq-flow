@@ -24,31 +24,6 @@
   flex: 0 0 auto;
 }
 
-.msg-unsent {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  color: var(--fg-1);
-  font-size: 12px;
-}
-
-.msg-unsent button {
-  min-height: 36px;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--fg-0);
-  background: var(--bg-2);
-  font: inherit;
-  cursor: pointer;
-}
-
-.msg-unsent button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 .msg-copy {
   display: inline-flex;
   align-items: center;

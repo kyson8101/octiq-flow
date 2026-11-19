@@ -674,25 +674,8 @@
 /* Claude's auto-mode card, compact: what was blocked and why in the heading,
    the start of the line, one quiet "nothing ran", one next step. Everything
    else opens under Details. */
-.safety-card.is-compact .safety-card-head {
-  align-items: flex-start;
-}
-
 .safety-card.is-compact .safety-card-icon {
   margin-top: 1px;
-}
-
-.safety-card-heading {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.safety-card-reason {
-  font-size: 12.5px;
-  line-height: 1.4;
-  color: var(--fg-2);
 }
 
 /* The START of the line, two lines at most: the head of a command says what

@@ -451,8 +451,7 @@
   background: var(--bg-1);
 }
 
-.settings-project,
-.settings-project-new {
+.settings-project {
   width: 100%;
   min-height: 46px;
   display: flex;
@@ -480,23 +479,15 @@
   border-bottom: 0;
 }
 
-.settings-project:hover,
-.settings-project-new:hover {
+.settings-project:hover {
   border-color: var(--border-strong);
   background: var(--bg-2);
   color: var(--fg-0);
 }
 
-.settings-project:focus-visible,
-.settings-project-new:focus-visible {
+.settings-project:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
-}
-
-.settings-project-new {
-  justify-content: center;
-  border-style: dashed;
-  color: var(--fg-2);
 }
 
 .settings-project-copy {

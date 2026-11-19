@@ -490,8 +490,7 @@
 
 /* A shut fold holds rows nobody can see; an infinite animation on one is work
    for nothing, and the count on the parent row already reports them. */
-.chat-children[hidden] .chat-badge-ring rect,
-.chat-fold:not(.is-open) .chat-badge-ring rect { animation: none; }
+.chat-children[hidden] .chat-badge-ring rect { animation: none; }
 
 /* A ticked chat still on screen — the one being read, or the Done view —
    reads as settled rather than gone. */
@@ -594,21 +593,6 @@
   .nav-resizer {
     display: none;
   }
-}
-
-.sidebar-utility-count {
-  position: absolute;
-  top: 1px;
-  right: 1px;
-  min-width: 14px;
-  padding: 0 3px;
-  border-radius: 999px;
-  background: var(--bg-2);
-  color: var(--fg-2);
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 14px;
-  font-variant-numeric: tabular-nums;
 }
 
 .shelf-sub {
@@ -716,25 +700,6 @@
 .trash-card-meta {
   font-size: 11px;
   color: var(--fg-3);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.proj-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  margin: 0;
-  padding: 0 8px 8px;
-  list-style: none;
-}
-
-/* The project row's own layout lives in the "Project folders" section below —
-   this only keeps the name's truncation, which both used. */
-.proj-name {
-  flex: 1 1 auto;
-  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;

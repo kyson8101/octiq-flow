@@ -808,26 +808,6 @@
   color: var(--fg-3);
 }
 
-/* Outside the scroll. The rule is the seam the options slide under, so it is
-   clear there is more above rather than the list just stopping. */
-.sheet-foot {
-  flex: 0 0 auto;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
-
-.sheet-done {
-  width: 100%;
-  padding: 10px;
-  border: 0;
-  border-radius: var(--r-md);
-  background: var(--accent);
-  color: var(--accent-fg);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
 .send {
   display: inline-flex;
   align-items: center;

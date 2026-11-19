@@ -1,5 +1,4 @@
 /* ---- Thinking --------------------------------------------------------- */
-.thinking-head,
 .tool-head {
   display: flex;
   align-items: center;
@@ -25,19 +24,9 @@
   border-radius: var(--r-md);
 }
 
-.thinking-head:hover,
 .tool-head:hover {
   background: var(--bg-1);
   color: var(--fg-2);
-}
-
-.thinking-body {
-  padding: 8px 12px;
-  border-left: 2px solid var(--border);
-  margin-left: 10px;
-  color: var(--fg-2);
-  font-size: 13px;
-  white-space: pre-wrap;
 }
 
 /* Holds the row and, where the row leads somewhere else, the fold beside it.
@@ -150,8 +139,7 @@
 /* The edit tint is stated once and worn twice: by the icon of a card that
    changed a file, and by the chip for that file in a folded run's tally. The
    two are the same claim at two sizes, so they are the same colour. */
-.tool-icon[data-kind="edit"],
-.tool-tally-item[data-kind="edit"] {
+.tool-icon[data-kind="edit"] {
   --tint: #ff9f0a;
 }
 .tool-icon[data-kind="run"] {
