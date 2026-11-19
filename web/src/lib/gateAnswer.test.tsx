@@ -191,82 +191,37 @@ function local(source: string, name: string): string {
   return source.slice(at, end < 0 ? undefined : at + 1 + end);
 }
 
-/** Every way the panel could send a gate's answer without its guards. Empty
- *  when there is none. */
-function unguardedGateAnswers(source: string): string[] {
+/** Ways a gate's answer could be sent from somewhere the behaviour tests do
+ *  not press (`components/OrchestrationPanel.controls.test.tsx` presses
+ *  `GateAnswer` and `resolveRunGate`): a second sender of the person's door,
+ *  or the gate's controls drawn outside the one component. Empty when there
+ *  is none. No count is pinned: the rule is that nothing else exists. */
+function strayGateSenders(source: string): string[] {
   const problems: string[] = [];
   const answer = local(source, "GateAnswer");
   if (!answer) return ["no GateAnswer component"];
   const outside = source.replace(answer, "");
-
-  // One place sends the person's door, inside the one-at-a-time sender.
-  const sends = [...source.matchAll(/"orchestration_gate_resolve"/g)];
-  if (sends.length !== 1) problems.push(`the person's door is named ${sends.length} times`);
   const sender = local(source, "resolveRunGate");
-  if (!sender.includes('"orchestration_gate_resolve"')) problems.push("the person's door is sent outside resolveGate");
-  if (!/const sent = await once\(gateFlight\(gate\.id\), async \(\) => \{/.test(sender)) problems.push("resolveGate does not hold the gate while its answer is out");
-  if (sender.indexOf("once(gateFlight(") > sender.indexOf("bridge.invoke(") || sender.indexOf("once(gateFlight(") > sender.indexOf("onOpenChat(")) {
-    problems.push("resolveRunGate sends before it takes the gate");
-  }
-  if (!/if \(door === "person"\) \{\s*await bridge\.invoke\("orchestration_gate_resolve"/.test(sender)) problems.push("the person's door is not chosen by the gate's door");
-
-  // The sender is reached from one prop, and that prop is called in one
-  // place: the guarded handler.
-  if ((source.replace(sender, "").match(/\bresolveRunGate\(/g) ?? []).length !== 2) problems.push("resolveRunGate must serve exactly the panel and chat");
+  if (!sender.includes('"orchestration_gate_resolve"')) problems.push("the person's door is not sent by resolveRunGate");
+  if (source.replace(sender, "").includes('"orchestration_gate_resolve"')) problems.push("the person's door is sent outside resolveRunGate");
   if (/\bonResolve\(/.test(outside)) problems.push("onResolve is called outside GateAnswer");
-  const calls = answer.match(/\bonResolve\(/g) ?? [];
-  if (calls.length !== 1) problems.push(`GateAnswer calls onResolve ${calls.length} times`);
-  if (!/if \(off \|\| !text\.trim\(\) \|\| repeatsAnother\(event\)\) \{\s*event\.preventDefault\(\);\s*return;\s*\}\s*onResolve\(gate, text, door\);/.test(answer)) {
-    problems.push("the handler does not refuse an answer in flight, an empty one and a repeated press before it sends");
-  }
-  if (!/const flying = useInFlight\(gateFlight\(gate\.id\)\);/.test(answer) || !/const off = busy \|\| flying;/.test(answer)) {
-    problems.push("the controls are not off while an answer is out");
-  }
-
-  // Every button of the gate goes through that handler and drops a held key.
-  const drawn = [...answer.matchAll(/<button\b[\s\S]*?>/g)].map((match) => match[0]);
-  if (drawn.length !== 2) problems.push(`GateAnswer draws ${drawn.length} kinds of button`);
-  for (const button of drawn) {
-    if (!/onClick=\{answer\((option|value)\)\}/.test(button)) problems.push(`a button answers without the handler: ${button}`);
-    if (!button.includes("onKeyDown={dropHeld}")) problems.push(`a button keeps a held key: ${button}`);
-    if (!/aria-disabled=\{off \|\|/.test(button)) problems.push(`a button is not off while an answer is out: ${button}`);
-    if (/\bdisabled=/.test(button.replace(/aria-disabled=/g, ""))) problems.push(`a button is removed from the keyboard: ${button}`);
-  }
-  // No other control of a gate is drawn anywhere else.
   if (/className="orch-gate-(options|write)"/.test(outside)) problems.push("a gate's controls are drawn outside GateAnswer");
   return problems;
 }
 
 describe("every control that answers a gate", () => {
-  it("is drawn by the one guarded component, and sent by the one sender", () => {
-    expect(unguardedGateAnswers(panelSource)).toEqual([]);
+  it("is drawn by the one component, and the person's door has one sender", () => {
+    expect(strayGateSenders(panelSource)).toEqual([]);
   });
 
-  it("fails that scan for an answer sent without a guard", () => {
-    const mutate = (from: string | RegExp, to: string) => {
+  it("fails that scan for a second sender, or controls drawn outside the component", () => {
+    const mutate = (from: string, to: string) => {
       const next = panelSource.replace(from, to);
-      expect(next, String(from)).not.toBe(panelSource);
-      return unguardedGateAnswers(next);
+      expect(next, from).not.toBe(panelSource);
+      return strayGateSenders(next);
     };
-    // The option button as it was: straight to the sender.
-    expect(mutate("onKeyDown={dropHeld} onClick={answer(option)}>{option}</button>", "onClick={() => onResolve(gate, option, door)}>{option}</button>"))
-      .toEqual(expect.arrayContaining([expect.stringContaining("GateAnswer calls onResolve 2 times"), expect.stringContaining("a button answers without the handler")]));
-    // A held key left to repeat.
-    expect(mutate("onKeyDown={dropHeld} onClick={answer(value)}", "onClick={answer(value)}")).toEqual([expect.stringContaining("a button keeps a held key")]);
-    // The repeated press let through.
-    expect(mutate("if (off || !text.trim() || repeatsAnother(event)) {", "if (off || !text.trim()) {")).toEqual([expect.stringContaining("the handler does not refuse")]);
-    // The in-flight state back in the panel alone.
-    expect(mutate("const off = busy || flying;", "const off = busy;")).toEqual([expect.stringContaining("not off while an answer is out")]);
-    // The sender without its hold.
-    expect(mutate("const sent = await once(gateFlight(gate.id), async () => {", "const sent = await (async () => {"))
-      .toEqual(expect.arrayContaining([expect.stringContaining("does not hold the gate")]));
-    // The person's door for any failure gate, whoever it waits on.
-    expect(mutate('if (door === "person") {\n      await bridge.invoke("orchestration_gate_resolve"', 'if (isFailureGate(gate)) {\n          await bridge.invoke("orchestration_gate_resolve"'))
-      .toEqual([expect.stringContaining("not chosen by the gate's door")]);
-    // A second sender of the person's door, written into the row.
     expect(mutate('<p className="orch-gate-door" id={noteId}>{note}</p>', '<p className="orch-gate-door" id={noteId}>{note}</p><button onClick={() => void bridge.invoke("orchestration_gate_resolve", {})}>Answer</button>'))
-      .toEqual(expect.arrayContaining([expect.stringContaining("named 2 times")]));
-    // The controls drawn again where they were.
+      .toEqual([expect.stringContaining("outside resolveRunGate")]);
     expect(mutate("{!readOnly && <GateAnswer gate={gate}", '{!readOnly && <div className="orch-gate-options"><button onClick={() => onResolve(gate, "x", "person")}>x</button></div>}{!readOnly && <GateAnswer gate={gate}'))
       .toEqual(expect.arrayContaining([expect.stringContaining("onResolve is called outside GateAnswer"), expect.stringContaining("drawn outside GateAnswer")]));
   });

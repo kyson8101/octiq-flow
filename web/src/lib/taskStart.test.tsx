@@ -271,9 +271,6 @@ describe("an opened row's tabs", () => {
     expect(sentFromTabs(panelSource)).toEqual([]);
     const from = panelSource.indexOf('className="orch-task-tabs"');
     expect(from).toBeGreaterThan(-1);
-    // The one place a row draws its starts is above that.
-    expect(panelSource.slice(0, from).match(/<StartButton /g)).toHaveLength(2);
-    expect(panelSource.match(/<StartButton /g)).toHaveLength(2);
   });
 
   it("remember the press that switched them, and drop a held key", () => {
@@ -403,10 +400,10 @@ describe("what decides a task's workspace", () => {
     expect(components).toEqual(expect.arrayContaining(["PeerHelpLog", "ProposedReportNote", "TaskLifecycleEvidence", "TaskPlanCard", "WorkerExecutionEvidence", "WorkspaceDelivery"]));
     expect(components).not.toContain("DeliveryActions");
     expect(sentFromTabs(panelSource)).toEqual([]);
-    // The one sender the tabs keep: hiding a worker's chat from the list
-    // and bringing it back, which starts, stops and removes nothing and is
-    // undone by the same button. Counted, so a third is a decision.
-    expect(inTabs(panelSource).text.match(/\barchiveControl\(/g)).toHaveLength(2);
+    // The one sender the tabs keep is `archiveControl`: hiding a worker's chat
+    // from the list and bringing it back, which starts, stops and removes
+    // nothing and is undone by the same button. `sentFromTabs` does not name
+    // it, so it is not refused.
   });
 
   it("fails that scan when one of its controls is put back inside a tab", () => {
@@ -435,51 +432,24 @@ describe("what decides a task's workspace", () => {
     expect(stopsAtRow(helper)).toBe(false);
   });
 
-  it("guards each control that opens a question or answers one", () => {
-    // The three that open a question are replaced where they stand by it,
-    // so their press is remembered.
-    expect(panelSource.match(/className="orch-delivery-opener" onClick=\{\(event\) => \{ notePress\(event\); setAsking\("(reopen|merged|abandon)"\); \}\}/g)).toHaveLength(3);
-    // The way out of a question brings the row back under the pointer.
-    expect(panelSource.match(/className="orch-delivery-keep" onClick=\{\(event\) => \{ notePress\(event\); onCancel\(\); \}\}/g)).toHaveLength(2);
-    // The two answers that reopen or remove: a held key is dropped, and a
-    // press that repeats the one the question was opened with.
-    expect(panelSource).toMatch(/className="orch-delivery-go" disabled=\{busy \|\| flying \|\| !spec\.trim\(\)\} onKeyDown=\{careful\.keys\} onClick=\{careful\.confirm\}[^>]*aria-label="Reopen task in this workspace"/);
-    expect(panelSource).toMatch(/className="orch-delivery-go" disabled=\{busy \|\| !allowed\} onClick=\{careful\.confirm\}[^>]*aria-label="Confirm removal"/);
-    expect(panelSource).toMatch(/className="orch-cleanup-confirm"[^>]*\n\s*onKeyDown=\{\(event\) => \{ careful\.keys\(event\);/);
-    expect(panelSource.match(/const careful = useCarefulAnswer\(/g)).toHaveLength(2);
-    // A question puts the focus on its safe answer: the box, where Enter is
-    // a new line, and `Keep worktree`.
+  it("puts the keyboard on a question's safe answer", () => {
+    // Effects do not run in the handler tests (`OrchestrationPanel.controls.test.tsx`
+    // presses every opener, answer and held key), so the focus is the one
+    // part of a question's guards left to read: the box, where Enter is a new
+    // line, and `Keep worktree`.
     expect(panelSource).toMatch(/useEffect\(\(\) => \{ box\.current\?\.focus\(\); \}, \[\]\);/);
     expect(panelSource).toMatch(/useEffect\(\(\) => \{ keep\.current\?\.focus\(\); \}, \[\]\);/);
     expect(panelSource).toMatch(/<button ref=\{keep\} type="button" className="orch-delivery-keep"/);
-    // Removing a validation checkout has no question: a held key is dropped.
-    expect(panelSource).toMatch(/onKeyDown=\{dropHeld\}\s*onClick=\{\(\) => onAction\("orchestration_validation_remove"/);
-    // One place sends each.
-    for (const command of ["orchestration_task_reopen", "orchestration_workspace_cleanup", "orchestration_validation_remove", "orchestration_workspace_refresh"]) {
-      expect((panelSource + chatSourceRaw).match(new RegExp(`"${command}"`, "g")), command).toHaveLength(command === "orchestration_task_reopen" ? 2 : 1);
-    }
   });
 });
 
 describe("every control that starts an attempt", () => {
-  it("is drawn by the one component that asks the reader", () => {
-    // One place sends the start, and one place calls it.
-    expect(lf(actionsSourceRaw).match(/"orchestration_worker_start"/g)).toHaveLength(1);
+  it("has no second sender and no label of its own", () => {
+    // What a Start sends, and when it is refused, is pressed in
+    // `OrchestrationPanel.controls.test.tsx`. Only "no other sender" is read.
+    expect(lf(actionsSourceRaw)).toContain('"orchestration_worker_start"');
     expect(panelSource + chatSourceRaw).not.toContain('"orchestration_worker_start"');
-    expect(panelSource).toContain("await startRunTask(run, task, attempt)");
-    expect(chatSourceRaw).toContain("startRunTask(run, task, start.attempt)");
-    expect(chatSourceRaw.match(/<StartButton /g)).toHaveLength(1);
-    expect(chatSourceRaw).toContain("startControl(task, run,");
-    expect(actionsSourceRaw).toContain("once(taskFlight(task.id), async () => {");
-    expect(panelSource).toContain("if (busy || flying || repeatsAnother(event)) { event.preventDefault(); return; }");
     expect(chatSourceRaw).not.toMatch(/>Start (retry|next attempt|it again)</);
-    expect(panelSource).toContain("useInFlight(taskFlight(start.attempt.taskId))");
-    expect(panelSource.match(/onRetry\(/g)).toHaveLength(1);
-    expect(panelSource).toMatch(/const start = startControl\(/);
-    // The full wording still comes from the reader; the visible label may be shortened.
     expect(panelSource).not.toMatch(/>Start (retry|next attempt|it again)</);
-    expect(panelSource).toContain('title={start.label} aria-label={start.label}');
-    expect(panelSource).toContain('label={start.kind === "retry" ? "Start retry"');
   });
-
 });

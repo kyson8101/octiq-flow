@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  chatStrip, contextPercent, countsAsWork, dismissStrip, figuresLabel, GROUP_FOLDED, GROUP_ORDER, groupHeading, minutesLabel, parseDismissed, rowStep, runProgress, shownRows,
+  chatStrip, contextPercent, taskReading, countsAsWork, dismissStrip, figuresLabel, GROUP_FOLDED, GROUP_ORDER, groupHeading, minutesLabel, parseDismissed, rowStep, runProgress, shownRows,
   STEP_STALE_MS, stepAtLabel, stepOneLine, stepsLabel, stripHidden, stripRun, tasksLabel, tokensLabel, usageTotal, type ProgressRow, type Waiting,
 } from "./runProgress";
 import { chatSnapshot } from "./chatWorkflow";
-import { UNSAID_NOTE } from "./runWaits";
+import { NO_WAITS, UNSAID_NOTE } from "./runWaits";
 import type {
   Awaits, NativeDecision, OrchestrationAttempt, OrchestrationGate, OrchestrationRun, OrchestrationSnapshot, OrchestrationTask,
 } from "./orchestration";
@@ -968,5 +968,19 @@ describe("hiding the strip", () => {
     expect(parseDismissed("{")).toEqual([]);
     expect(parseDismissed(null)).toEqual([]);
     expect(parseDismissed("\"x\"")).toEqual([]);
+  });
+});
+
+describe("a failed task whose Start is queued for capacity", () => {
+  // Loss prevented: a stopped or closed run keeps showing a queued retry as
+  // owed work, when a stopped run retries nothing.
+  const queued = () => task("Queued retry", "failed", { slotWait: { reason: "host", ahead: 1, running: 2, limit: 2 } });
+  it("is planned while its run is live", () => {
+    expect(taskReading({ status: "running" }, queued(), undefined, NO_WAITS, null).state).toBe("planned");
+  });
+  it("is history once its run is stopped or closed", () => {
+    for (const status of ["stopped", "closed"] as const) {
+      expect(taskReading({ status }, queued(), undefined, NO_WAITS, null).state, status).not.toBe("planned");
+    }
   });
 });
