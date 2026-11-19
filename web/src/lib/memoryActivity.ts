@@ -13,6 +13,8 @@
 // A line is one operation, keyed by its id. The same id arriving again (a
 // replayed transcript, a reconnect, a retried call) updates that line in place;
 // only the receipt's own evidence moves it, from uncertain to saved.
+import { chatIdOf } from "./chatKey";
+import { str } from "./jsonNarrow";
 
 export type MemoryStatus = "saved" | "failed" | "uncertain" | "refused";
 
@@ -41,7 +43,6 @@ export type MemoryActivity = {
   source?: { chatKey: string; taskId?: string; taskTitle?: string; runId?: string };
 };
 
-const str = (v: unknown) => (typeof v === "string" ? v : "");
 const obj = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 const opt = (v: unknown) => str(v) || undefined;
@@ -103,7 +104,4 @@ export function earlierState(a: MemoryActivity): string | undefined {
   return `Earlier change under this request: ${a.earlier.status.replace("_", " ")}`;
 }
 
-/** The chat id in a host chat key (`chat:<id>`). */
-export function chatIdOf(key: string): string {
-  return key.startsWith("chat:") ? key.slice(5) : key;
-}
+export { chatIdOf };

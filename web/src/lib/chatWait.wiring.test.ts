@@ -13,6 +13,7 @@ import chatWait from "./chatWait.ts?raw";
 import pendingActions from "./pendingActions.ts?raw";
 import requests from "./useChatRequests.ts?raw";
 import chatState from "./chat.ts?raw";
+import chatSharedState from "./chatShared.ts?raw";
 import turnClockRaw from "./turnClock.ts?raw";
 import restoredParkRaw from "./restoredPark.ts?raw";
 import { lf } from "./sourceText";
@@ -220,7 +221,7 @@ describe("a turn's waits", () => {
     expect(app).not.toMatch(/setTurnWaits|useState<[^>]*TurnWaits|noteWaits\(/);
     expect(chatState).toMatch(/turnStartedAt\?: number;[\s\S]{0,700}?turnWaits\?: TurnWaits;/);
     // A turn that is over takes both with it.
-    expect(chatState).toMatch(/const turnOver = \{\s*turnStartedAt: undefined,\s*turnWaits: undefined,/);
+    expect(chatSharedState).toMatch(/const turnOver = \{\s*turnStartedAt: undefined,\s*turnWaits: undefined,/);
   });
 });
 

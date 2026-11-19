@@ -43,10 +43,9 @@ import {
   sameCommand,
 } from "./skillRun";
 import { readCodexEvent } from "./codexEvents";
-import { readPiEvent, type PiContent, type PiRead } from "./piEvents";
-import { readAntigravityEvent, type AntigravityDenial, type AntigravityRead } from "./antigravityEvents";
+import { readPiEvent } from "./piEvents";
+import { readAntigravityEvent } from "./antigravityEvents";
 import { type AccessLevel } from "./agentProviders";
-import { antigravityAccessNeed } from "./accessRequest";
 import { parseLocalOutput } from "./localCommand";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
 import { parsePeerMessages, type PeerMessage } from "./peerMessage";
@@ -59,6 +58,24 @@ import { answeredMessageId, QUESTION_ANSWERED, readQuestionAnswered, type Questi
 import { taskLabel, type BackgroundTask } from "./background";
 import { outcomeOfResult, readOutcome, type ToolOutcome } from "./toolOutcome";
 import { noticeTurnId } from "./hostNotice";
+import {
+  asObj,
+  asStr,
+  codexTurnStarted,
+  describeFailure,
+  sameBlock,
+  stopIfRunning,
+  takePending,
+  turnOver,
+  withStreamCard,
+  type Json,
+} from "./chatShared";
+import { foldCodex } from "./chatCodex";
+import { foldPi } from "./chatPi";
+import { foldAntigravity } from "./chatAntigravity";
+import { reduceClaudeStream } from "./chatClaudeStream";
+
+export { describeFailure };
 
 /** The one line a turn the CLIENT sent is drawn as, or `undefined` for one a
  *  person typed.
@@ -518,11 +535,6 @@ export const emptyChat = (): ChatState => ({
  *  bubble. */
 const INTERRUPT_MARKER = /^\[Request interrupted by user(?: for tool use)?\]$/;
 
-/** A call still in flight when the stop landed, marked as ended. Everything
- *  else on the message is left exactly as it is. */
-const stopIfRunning = (b: Block): Block =>
-  b.kind === "tool" && b.state === "running" ? { ...b, state: "stopped" } : b;
-
 /** What the CLI stamps where a model name goes on a message IT wrote — the
  *  answer to a local command, an interrupt notice. No model wrote it, so it is
  *  never the model this session is on. */
@@ -551,44 +563,6 @@ const CONFIG_MODEL = /^\/config\s+(?:\S+\s+)*?model=(\S+)/;
  *  own, so without this it becomes a bubble of words nobody typed. The CLI is
  *  talking to the model about the attachment; it is not part of the message. */
 const IMAGE_NOTE = /\[Image:[^\]]*\]/g;
-
-/** Turn an agent's error text into something worth reading.
- *
- *  Running out of quota is the failure that actually happens, and both agents
- *  report it as a wall of prose with links in it. It is not a bug and there is
- *  nothing to debug — the answer is "wait, or buy more" — so it gets said
- *  plainly instead of being dropped into the notices with everything else. */
-export function describeFailure(agent: "claude" | "codex" | "pi" | "antigravity", raw: string): Failure {
-  const text = raw.trim();
-  const outOfCredit =
-    /usage limit|session limit|weekly limit|out of credits|quota|rate.?limit|purchase more credits|upgrade to pro/i.test(
-      text,
-    );
-
-  if (outOfCredit) {
-    // "try again at Aug 20th, 2026 11:37 AM" — the one fact that matters.
-    // Claude says the same thing the short way when it is the SESSION limit
-    // rather than the account's: "· resets 2:40am (Asia/Kuala_Lumpur)".
-    const when =
-      /try again (?:at|after|on)\s+([^.()]+)/i.exec(text)?.[1]?.trim() ??
-      /resets\s+([^.·]+)/i.exec(text)?.[1]?.trim();
-    return {
-      title:
-        agent === "codex"
-          ? "Your Codex account is out of credits"
-          : agent === "pi"
-            ? "Pi's model provider is out of credits or quota"
-            : agent === "antigravity"
-            ? "You have used up your Antigravity quota"
-            : "You have hit your Claude usage limit",
-      detail: when ? `It comes back at ${when}.` : text,
-      link: /https?:\/\/[^\s)]+/.exec(text)?.[0],
-      outOfCredit: true,
-    };
-  }
-
-  return { title: "The agent stopped with an error", detail: text || undefined };
-}
 
 /** The agent's own status words, said the way a person would.
  *
@@ -621,12 +595,7 @@ function describeStatus(status: string): string | undefined {
   }
 }
 
-type Json = Record<string, unknown>;
-
-const asObj = (v: unknown): Json => (v && typeof v === "object" ? (v as Json) : {});
 const asArr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
-const asStr = (v: unknown): string => (typeof v === "string" ? v : "");
-
 /** How much context a turn was holding, from its `usage` block.
  *
  *  The sum of every input the model saw plus what it wrote: fresh input, the
@@ -642,18 +611,6 @@ function contextFrom(raw: unknown): number | undefined {
     n(u.cache_read_input_tokens) +
     n(u.output_tokens);
   return total > 0 ? total : undefined;
-}
-
-/** Append to the last block when it is the same kind, else start a new one.
- *  Streaming text arrives in many small pieces; one block per piece would
- *  render as a stack of fragments. */
-function appendText(blocks: Block[], kind: "text" | "thinking", text: string): Block[] {
-  const last = blocks[blocks.length - 1];
-  if (last && last.kind === kind) {
-    const merged = { ...last, text: last.text + text } as Block;
-    return [...blocks.slice(0, -1), merged];
-  }
-  return [...blocks, { kind, text } as Block];
 }
 
 /** The seat named on an event, if any.
@@ -673,40 +630,6 @@ function readSpeaker(raw: unknown): Speaker | undefined {
   const name = asStr(o.name);
   if (!id && !name) return { id: "", name: "Unknown", agent: "" };
   return { id, name: name || "Unknown", agent: asStr(o.agent) };
-}
-
-/** The message being written BY THIS WRITER, or a fresh one. A `stream_event`
- *  can arrive before `message_start` in principle, so this never assumes one
- *  exists.
- *
- *  Keyed on the parent AND the seat, because "the last streaming message" is not
- *  one thing once more than one writer is going: two subagents stream at the
- *  same time with the main agent's own half-written message above both, and in
- *  a room two SEATS do the same. Matching on only one axis folds two voices
- *  into one bubble. */
-function withClaudeCurrent(
-  state: ChatState,
-  parent: string | undefined,
-  speaker: Speaker | undefined,
-  fn: (m: Message) => Message,
-): ChatState {
-  const idx = state.messages
-    .map((m) => m.streaming && m.parent === parent && m.speaker?.id === speaker?.id)
-    .lastIndexOf(true);
-  if (idx < 0) {
-    const seeded: Message = {
-      id: `m${state.messages.length}`,
-      role: "assistant",
-      blocks: [],
-      streaming: true,
-      parent,
-      speaker,
-    };
-    return { ...state, messages: [...state.messages, fn(seeded)] };
-  }
-  const next = [...state.messages];
-  next[idx] = fn(next[idx]);
-  return { ...state, messages: next };
 }
 
 /** True while the model is reasoning rather than writing — the stretch with
@@ -755,38 +678,6 @@ export const turnOutput = (s: ChatState): number => (s.turnTokens ?? 0) + (s.tur
  *  the prose and tool arguments in flight — and it is emptied the moment a
  *  message reports its real count, so this goes quiet on its own. */
 export const turnOutputApprox = (s: ChatState): boolean => (s.turnDraft ?? 0) > 0;
-
-/** Four characters a token, the usual rough English rule. Only ever used for
- *  the message in flight, and only until its real count arrives. */
-const asTokens = (text: string): number => text.length / 4;
-
-/** Nothing is running: every meter the status line reads goes quiet together. */
-const turnOver = {
-  turnStartedAt: undefined,
-  turnWaits: undefined,
-  turnTokens: undefined,
-  turnDraft: undefined,
-  status: undefined,
-  activity: undefined,
-  // A compaction cannot outlive the turn it happened in, and neither can the
-  // summary it owes: whatever the next turn brings, it is not that.
-  compactingSince: undefined,
-  awaitingSummary: undefined,
-  // An outcome held for a call that never drew a card belonged to this turn;
-  // the next turn reuses Codex's item ids, and must not inherit it.
-  pendingOutcomes: undefined,
-} as const;
-
-/** Two blocks say the same thing, so the second is a copy rather than news.
- *
- *  A tool is identified by its `tool_use` id; prose by its text. This is what
- *  lets an `assistant` event be merged onto a message the partials already
- *  built without doubling every block. */
-function sameBlock(a: Block, b: Block): boolean {
-  if (a.kind !== b.kind) return false;
-  if (a.kind === "tool") return b.kind === "tool" && a.id === b.id;
-  return "text" in a && "text" in b && a.text === b.text;
-}
 
 /** The task types that are actually an agent: a `Task` subagent, and a whole
  *  dynamic workflow run. Everything else the harness tracks on this channel —
@@ -2004,47 +1895,6 @@ function foldToolResults(state: ChatState, content: unknown[], envelope: Json): 
   return next;
 }
 
-/** Put a failure or warning of the agent's stream itself — not of any tool —
- *  on the last main-agent message, as one "Agent stream" row in the activity
- *  card, where its origin is drawn. A repeat of the same row (Codex sends an
- *  `error` and a `turn.failed` for one failure; a warning repeats as it
- *  retries) updates it instead of adding another, live or replayed. */
-function withStreamCard(
-  messages: Message[],
-  prefix: "agent-error" | "agent-warning",
-  message: string,
-  result: string,
-  outcome: ToolOutcome | undefined,
-): Message[] {
-  const next = [...messages];
-  let last = next.at(-1);
-  if (!last || last.role !== "assistant" || last.parent || last.speaker) {
-    last = { id: `m${next.length}`, role: "assistant", blocks: [], streaming: false };
-    next.push(last);
-  }
-  const blocks = [...last.blocks];
-  const previous = blocks.at(-1);
-  const id = `${prefix}-${last.id}`;
-  const card: Block = {
-    kind: "tool", id, name: "Agent stream", argsJson: "", args: {},
-    result, state: "error",
-    ...(outcome ? { outcome } : {}),
-  };
-  if (previous?.kind === "tool" && previous.id === id) {
-    // A repeat with no words keeps the words it had, and takes an origin
-    // only if it had none.
-    blocks[blocks.length - 1] = message
-      ? { ...card, ...(!outcome && previous.outcome ? { outcome: previous.outcome } : {}) }
-      : previous.outcome || !outcome
-        ? previous
-        : { ...previous, outcome };
-  } else {
-    blocks.push(card);
-  }
-  next[next.length - 1] = { ...last, blocks };
-  return next;
-}
-
 /** The origin on the "Agent stream" error row the last message ends with, if
  *  it does — the one a failure this same turn already put there. */
 function streamCardOutcome(messages: Message[]): ToolOutcome | undefined {
@@ -2089,15 +1939,6 @@ function withOutcome(state: ChatState, id: string, outcome: ToolOutcome): ChatSt
     return { ...state, messages };
   }
   return { ...state, pendingOutcomes: { ...state.pendingOutcomes, [id]: outcome } };
-}
-
-/** The outcome waiting for call `id`, and the state without it: it belongs to
- *  the one card drawn for it next, and to no other. */
-function takePending(state: ChatState, id: string): [ToolOutcome | undefined, ChatState] {
-  const outcome = state.pendingOutcomes?.[id];
-  if (!outcome) return [undefined, state];
-  const { [id]: _taken, ...rest } = state.pendingOutcomes!;
-  return [outcome, { ...state, pendingOutcomes: Object.keys(rest).length ? rest : undefined }];
 }
 
 /** The newest Skill call in the conversation, whichever message it is on. */
@@ -2240,624 +2081,6 @@ function hashText(text: string): string {
   return (h >>> 0).toString(36);
 }
 
-/** Put a Codex event into the conversation.
- *
- *  Everything here lands in the same shapes the rest of the app already draws —
- *  a text block, a tool card — so a Codex seat reads like any other agent rather
- *  than like a second kind of thing that happens to be in the same window.
- *
- *  The one wrinkle is the CARD KEY. Codex numbers its items `item_0`, `item_1`
- *  from zero **every turn**, so the ids repeat, and matching a `completed` to
- *  the first card with that id would have the second turn's output land on the
- *  first turn's card. So a completion is matched to the last card with that id
- *  that is still RUNNING — a finished card is never reopened, and a completion
- *  with nothing running simply appends. */
-function foldCodex(
-  state: ChatState,
-  read: ReturnType<typeof readCodexEvent> & object,
-  parent: string | undefined,
-  speaker: Speaker | undefined,
-): ChatState {
-  if (read.kind === "done") {
-    // The turn is over. Nothing may be left looking like it is still writing,
-    // and no card may spin for the rest of the conversation over work that
-    // ended here.
-    //
-    // Whose turn it was decides how far that goes. A SEAT's full stop ends the
-    // seat's turn and nothing else — the host may be part-way through one of
-    // its own, and it is the one that asked. A Codex chat with no seats at all
-    // is the other case: this IS its full stop, the same thing Claude's
-    // `result` is, and a chat left saying it is working after it has finished
-    // is what `lib/carryOn` draws the cut-turn notice for.
-    const mine = !speaker && !parent;
-    return {
-      ...state,
-      ...(mine ? { ...turnOver, busy: false, stopping: false } : {}),
-      messages: state.messages.map((m) =>
-        m.streaming && m.parent === parent && m.speaker?.id === speaker?.id
-          ? finishCodexMessage(m)
-          : m,
-      ),
-    };
-  }
-
-  if (read.kind === "say") {
-    return withCodexCurrent(state, parent, speaker, (m) => {
-      const lastTool = [...m.blocks].reverse().find((b) => b.kind === "tool");
-      if (read.text.trim() && lastTool?.kind === "tool") m = { ...m, textAfterTool: lastTool.id };
-      const superseded = m.codexCandidate ? [m.codexCandidate] : [];
-      const progress = [...(m.progress ?? []), ...superseded];
-
-      if (read.phase === "commentary") {
-        return { ...m, progress: [...progress, read.text], codexCandidate: undefined };
-      }
-      if (read.phase === "final_answer") {
-        return {
-          ...m,
-          progress: progress.length ? progress : undefined,
-          codexCandidate: undefined,
-          blocks: [...m.blocks, { kind: "text", text: read.text }],
-        };
-      }
-
-      return {
-        ...m,
-        progress: progress.length ? progress : undefined,
-        codexCandidate: read.text,
-      };
-    });
-  }
-
-  const key = `codex:${speaker?.id ?? "host"}:${read.id}`;
-  // The last card with this key that has NOT finished. See the note above on
-  // why "the last unfinished one" and not "the first one".
-  const open = state.messages
-    .flatMap((m) => m.blocks)
-    .filter((b) => b.kind === "tool" && b.id === key && b.state === "running").length > 0;
-
-  // The host's word on this call, when it came before the card did: Codex can
-  // ask for approval ahead of `item.started`. It is this card's and no other's.
-  const [pending, rest] = takePending(state, read.id);
-  state = rest;
-  // What the card says about whose failure it was. A success says nothing,
-  // whatever was held for it; a call still running keeps what is waiting for
-  // its failure.
-  const outcomeOf = (had: ToolOutcome | undefined): ToolOutcome | undefined =>
-    read.state === "done" ? undefined : (read.outcome ?? pending ?? had);
-
-  if (open) {
-    return {
-      ...state,
-      messages: state.messages.map((m) => ({
-        ...m,
-        blocks: m.blocks.map((b) => {
-          if (!(b.kind === "tool" && b.id === key && b.state === "running")) return b;
-          const { outcome: had, ...card } = b;
-          const outcome = outcomeOf(had);
-          return {
-            ...card,
-            state: read.state,
-            args: read.args,
-            argsJson: JSON.stringify(read.args),
-            ...(read.result !== undefined ? { result: read.result } : {}),
-            ...(read.details !== undefined ? { details: read.details } : {}),
-            ...(outcome ? { outcome } : {}),
-          };
-        }),
-      })),
-    };
-  }
-
-  const outcome = outcomeOf(undefined);
-  return withCodexCurrent(state, parent, speaker, (m) => ({
-    ...m,
-    blocks: [
-      ...m.blocks,
-      {
-        kind: "tool",
-        id: key,
-        name: read.name,
-        args: read.args,
-        argsJson: JSON.stringify(read.args),
-        state: read.state,
-        ...(read.result !== undefined ? { result: read.result } : {}),
-        ...(read.details !== undefined ? { details: read.details } : {}),
-        ...(outcome ? { outcome } : {}),
-      },
-    ],
-  }));
-}
-
-/** Pi's JSON stream folded into the same message and tool shapes as the other
- * runtimes. Pi may be carrying a Codex model, but its event names, session id,
- * usage block and tool lifecycle are its own. */
-function foldPi(
-  state: ChatState,
-  read: PiRead,
-  event: Json,
-  parent: string | undefined,
-  speaker: Speaker | undefined,
-  now: number,
-): ChatState {
-  if (read.kind === "session") {
-    if (parent || speaker) return state;
-    return { ...state, sessionId: read.id, cwd: read.cwd || state.cwd };
-  }
-
-  if (read.kind === "turn") return codexTurnStarted(state, event, parent, speaker, now);
-
-  if (read.kind === "delta") {
-    return withCodexCurrent(state, parent, speaker, (message) => ({
-      ...message,
-      blocks: appendText(message.blocks, read.block, read.text),
-    }));
-  }
-
-  if (read.kind === "tool") {
-    const key = `pi:${speaker?.id ?? "host"}:${read.id}`;
-    const open = state.messages.some((message) =>
-      message.blocks.some(
-        (block) => block.kind === "tool" && block.id === key && block.state === "running",
-      ),
-    );
-    if (open) {
-      return {
-        ...state,
-        messages: state.messages.map((message) => ({
-          ...message,
-          blocks: message.blocks.map((block) =>
-            block.kind === "tool" && block.id === key && block.state === "running"
-              ? {
-                  ...block,
-                  name: read.name || block.name,
-                  args: read.args ?? block.args,
-                  argsJson: JSON.stringify(read.args ?? block.args ?? {}),
-                  state: read.state,
-                  ...(read.result !== undefined ? { result: read.result } : {}),
-                  ...(read.details !== undefined ? { details: read.details } : {}),
-                  ...(read.outcome ? { outcome: read.outcome } : {}),
-                }
-              : block,
-          ),
-        })),
-      };
-    }
-    return withCodexCurrent(state, parent, speaker, (message) => ({
-      ...message,
-      blocks: [
-        ...message.blocks,
-        {
-          kind: "tool",
-          id: key,
-          name: read.name,
-          args: read.args,
-          argsJson: JSON.stringify(read.args ?? {}),
-          state: read.state,
-          ...(read.result !== undefined ? { result: read.result } : {}),
-          ...(read.details !== undefined ? { details: read.details } : {}),
-          ...(read.outcome ? { outcome: read.outcome } : {}),
-        },
-      ],
-    }));
-  }
-
-  if (read.kind === "message") {
-    const blocks = read.content.map((content): Block => piBlock(content, speaker));
-    const idx = state.messages
-      .map((message) =>
-        message.streaming && message.parent === parent && message.speaker?.id === speaker?.id,
-      )
-      .lastIndexOf(true);
-    let messages = state.messages;
-    if (idx >= 0) {
-      const next = [...messages];
-      const current = next[idx];
-      const fresh = blocks.filter((block) => !current.blocks.some((had) => sameBlock(had, block)));
-      next[idx] = {
-        ...current,
-        blocks: fresh.length ? [...current.blocks, ...fresh] : current.blocks,
-        streaming: false,
-      };
-      messages = next;
-    } else if (blocks.length) {
-      messages = [
-        ...messages,
-        {
-          id: `m${messages.length}`,
-          role: "assistant",
-          blocks,
-          streaming: false,
-          parent,
-          speaker,
-        },
-      ];
-    }
-
-    const used = !parent && !speaker ? piContextFrom(read.usage) : undefined;
-    const next: ChatState = {
-      ...state,
-      messages,
-      ...(used ? { contextTokens: used } : {}),
-      ...(!parent && !speaker && read.model ? { model: read.model } : {}),
-      ...(read.error
-        ? { ...turnOver, busy: false, stopping: false, failure: describeFailure("pi", read.error) }
-        : {}),
-    };
-    if (!read.aborted) return next;
-    const stopped = messages[idx >= 0 ? idx : messages.length - 1];
-    return { ...next, ...turnOver, busy: false, stopping: false, stoppedAt: stopped?.id };
-  }
-
-  // `agent_end` is Pi's full stop. As with Codex, end only this writer when it
-  // belongs to a room seat; the host's full stop ends the visible turn.
-  const mine = !speaker && !parent;
-  return {
-    ...state,
-    ...(mine ? { ...turnOver, busy: false, stopping: false } : {}),
-    messages: state.messages.map((message) =>
-      message.streaming && message.parent === parent && message.speaker?.id === speaker?.id
-        ? { ...message, streaming: false, blocks: message.blocks.map(stopIfRunning) }
-        : message,
-    ),
-  };
-}
-
-/** Antigravity's stream folded into the same message and tool shapes. Its
- * words arrive in pieces on its model-call steps, a tool is one step reported
- * running and then done, and its `result` is the full stop. */
-function foldAntigravity(
-  state: ChatState,
-  read: AntigravityRead,
-  event: Json,
-  parent: string | undefined,
-  speaker: Speaker | undefined,
-  now: number,
-): ChatState {
-  const mine = !speaker && !parent;
-  if (read.kind === "session") {
-    if (!mine) return state;
-    return { ...state, sessionId: read.id };
-  }
-
-  if (read.kind === "turn") {
-    // The person has said what comes next; a refusal before it asks nothing.
-    const started = codexTurnStarted(state, event, parent, speaker, now);
-    return mine && started.accessNeed ? { ...started, accessNeed: undefined } : started;
-  }
-
-  const say = (current: ChatState, text: string) =>
-    withCodexCurrent(current, parent, speaker, (message) => ({
-      ...message,
-      blocks: appendText(message.blocks, "text", text),
-    }));
-
-  if (read.kind === "delta") return say(state, read.text);
-
-  if (read.kind === "call") {
-    const next = read.text ? say(state, read.text) : state;
-    if (!mine || !read.usage) return next;
-    // Each model call reports its own tokens; the turn's output is their sum,
-    // and the last call's input is what the context now holds.
-    const held = read.usage.input + read.usage.output;
-    return {
-      ...next,
-      turnTokens: (next.turnTokens ?? 0) + read.usage.output,
-      ...(held ? { contextTokens: held } : {}),
-    };
-  }
-
-  if (read.kind === "tool") {
-    const key = `antigravity:${speaker?.id ?? "host"}:${read.id}`;
-    const outcome = readOutcome(event.octiq_outcome);
-    const settled = (block: Block): Block =>
-      block.kind === "tool"
-        ? {
-            ...block,
-            state: read.state,
-            ...(read.result !== undefined ? { result: read.result } : {}),
-            ...(outcome ? { outcome } : {}),
-          }
-        : block;
-    // Step numbers start again in a new conversation, so only a call still
-    // running can be this one.
-    const open = state.messages.some((message) =>
-      message.blocks.some(
-        (block) => block.kind === "tool" && block.id === key && block.state === "running",
-      ),
-    );
-    if (open) {
-      return {
-        ...state,
-        messages: state.messages.map((message) => ({
-          ...message,
-          blocks: message.blocks.map((block) =>
-            block.kind === "tool" && block.id === key && block.state === "running"
-              ? settled(block)
-              : block,
-          ),
-        })),
-      };
-    }
-    return withCodexCurrent(state, parent, speaker, (message) => ({
-      ...message,
-      blocks: [
-        ...message.blocks,
-        settled({
-          kind: "tool",
-          id: key,
-          name: read.name,
-          args: read.args,
-          argsJson: JSON.stringify(read.args ?? {}),
-          state: read.state,
-        }),
-      ],
-    }));
-  }
-
-  // The full stop. As with Pi, end only this writer when it belongs to a
-  // room seat; the host's full stop ends the visible turn.
-  const outcome = readOutcome(event.octiq_outcome);
-  let messages = state.messages.map((message) =>
-    message.streaming && message.parent === parent && message.speaker?.id === speaker?.id
-      ? { ...message, streaming: false, blocks: message.blocks.map(stopIfRunning) }
-      : message,
-  );
-  let failure = state.failure;
-  if (mine && read.failed) {
-    const said: Failure = {
-      ...describeFailure("antigravity", read.error ?? ""),
-      ...(outcome ? { outcome } : {}),
-    };
-    failure = said.outOfCredit ? said : { ...said, inline: true };
-    if (!said.outOfCredit) {
-      messages = withStreamCard(messages, "agent-error", said.detail ?? "", said.detail || said.title, said.outcome);
-    }
-  }
-  let accessNeed = state.accessNeed;
-  // A shorter list than last time is a conversation that started over.
-  const seen = state.antigravityDenied ?? 0;
-  const fresh = mine ? (read.denied.length >= seen ? read.denied.slice(seen) : read.denied) : [];
-  if (fresh.length) {
-    // Nobody could be asked, so Antigravity refused and ended the turn. The
-    // refused calls fail where they are, and the turn's ask for more access
-    // is the access card, as an agent's own request_access is.
-    messages = markAntigravityRefused(messages, fresh, outcome);
-    accessNeed = antigravityAccessNeed(fresh, read.access);
-  }
-  return {
-    ...state,
-    ...(accessNeed ? { accessNeed } : {}),
-    ...(mine ? { antigravityDenied: read.denied.length } : {}),
-    ...(mine
-      ? {
-          ...turnOver,
-          busy: false,
-          stopping: false,
-          ...(read.durationMs !== undefined ? { lastDurationMs: read.durationMs } : {}),
-        }
-      : {}),
-    messages,
-    failure,
-  };
-}
-
-/** A call Antigravity refused can come back as a step that simply finished
- *  with nothing to show, or as a failed one: agy 1.2.16 reports it either
- *  way. The turn's `result` says which kinds it refused, so this turn's
- *  finished, silent calls of that kind are what was refused, and are shown
- *  as failed rather than ticked. */
-function markAntigravityRefused(
-  messages: Message[],
-  denied: readonly AntigravityDenial[],
-  outcome: ToolOutcome | undefined,
-): Message[] {
-  const actions = new Set(denied.map((denial) => denial.action));
-  const refused = (name: string) =>
-    [...actions].some((action) => ANTIGRAVITY_ACTION_TOOLS[action]?.(name));
-  const next = [...messages];
-  for (let i = next.length - 1; i >= 0; i -= 1) {
-    const message = next[i];
-    if (message.role === "user") {
-      if (waitingForCodex(message)) continue;
-      break;
-    }
-    if (message.parent || message.speaker) continue;
-    next[i] = {
-      ...message,
-      blocks: message.blocks.map((block) =>
-        block.kind === "tool" && block.state === "done" && !block.result && refused(block.name)
-          ? {
-              ...block,
-              state: "error" as const,
-              result: "Antigravity refused this call: nobody could approve it at this access level.",
-              ...(outcome && !block.outcome ? { outcome } : {}),
-            }
-          : block,
-      ),
-    };
-  }
-  return next;
-}
-
-/** The built-in tools (agy 1.2.16's init list) that need each permission
- *  Antigravity names in `denied_actions`. */
-const ANTIGRAVITY_ACTION_TOOLS: Record<string, (name: string) => boolean> = {
-  command: (name) => name === "run_command" || name === "send_command_input",
-  mcp: (name) => name === "call_mcp_tool" || /^mcp_/.test(name),
-  write_file: (name) =>
-    ["write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file", "notebook_edit"].includes(name),
-  read_file: (name) => ["view_file", "list_dir", "find_by_name", "grep_search"].includes(name),
-  read_url: (name) => name === "read_url_content",
-};
-
-function piBlock(content: PiContent, speaker: Speaker | undefined): Block {
-  if (content.kind === "text" || content.kind === "thinking") return content;
-  return {
-    kind: "tool",
-    id: `pi:${speaker?.id ?? "host"}:${content.id}`,
-    name: content.name,
-    args: content.args,
-    argsJson: JSON.stringify(content.args ?? {}),
-    state: "running",
-  };
-}
-
-function piContextFrom(raw: Record<string, unknown>): number | undefined {
-  const amount = (value: unknown) => (typeof value === "number" && value >= 0 ? value : 0);
-  const total =
-    amount(raw.input) + amount(raw.cacheRead) + amount(raw.cacheWrite) + amount(raw.output);
-  return total > 0 ? total : undefined;
-}
-
-/** A host turn Codex has not accepted yet.
- *
- * These messages deliberately remain in `messages`: every existing caller can
- * still render, cancel and persist them. Their position carries the state — all
- * waiting turns live at the tail of the transcript until their matching
- * `turn.started` moves one into the conversation. Claude does not use this
- * rule; its own user echo is its acceptance signal. */
-function waitingForCodex(message: Message): boolean {
-  return (
-    message.role === "user" &&
-    !message.echo &&
-    !message.takenUp &&
-    !message.queueLost &&
-    message.delivery !== "unknown" &&
-    !message.to
-  );
-}
-
-/** Add to the Codex turn that is currently speaking.
- *
- * Unlike Claude, Codex sends whole items inside a turn. A queued user message
- * may arrive between those items, but it has not joined the conversation yet:
- * keep updating the active assistant message above it so every waiting turn
- * remains at the bottom. When no Codex message is open, seed one immediately
- * before that waiting tail. */
-function withCodexCurrent(
-  state: ChatState,
-  parent: string | undefined,
-  speaker: Speaker | undefined,
-  fn: (m: Message) => Message,
-): ChatState {
-  const idx = state.messages
-    .map((m) => m.streaming && m.parent === parent && m.speaker?.id === speaker?.id)
-    .lastIndexOf(true);
-  const waitingTail =
-    !parent &&
-    !speaker &&
-    idx >= 0 &&
-    state.messages.slice(idx + 1).every(waitingForCodex);
-
-  if (idx >= 0 && (idx === state.messages.length - 1 || waitingTail)) {
-    const messages = [...state.messages];
-    messages[idx] = fn(messages[idx]);
-    return { ...state, messages };
-  }
-
-  const messages = state.messages.map((m, i) =>
-    i === idx ? finishCodexMessage(m) : m,
-  );
-  const seeded = fn({
-    id: `m${state.messages.length}`,
-    role: "assistant",
-    blocks: [],
-    streaming: true,
-    parent,
-    speaker,
-  });
-  const waitingAt =
-    !parent && !speaker ? messages.findIndex(waitingForCodex) : -1;
-  if (waitingAt < 0) return { ...state, messages: [...messages, seeded] };
-
-  const next = [...messages];
-  next.splice(waitingAt, 0, seeded);
-  return { ...state, messages: next };
-}
-
-/** Close one Codex message without losing the answer candidate that only the
- * turn boundary can identify as final. */
-function finishCodexMessage(message: Message): Message {
-  const candidate = message.codexCandidate?.trim();
-  return {
-    ...message,
-    streaming: false,
-    codexCandidate: undefined,
-    blocks: [
-      ...message.blocks.map(stopIfRunning),
-      ...(candidate ? [{ kind: "text" as const, text: candidate }] : []),
-    ],
-  };
-}
-
-/** Codex's native turn has accepted its prompt.
- *
- * Claude proves this by replaying the user message and stamps its uuid in
- * `echo`. Codex deliberately sends no such item, so leave that identity field
- * alone and record the equivalent fact separately. A seat's `turn.started`
- * belongs to the seat, not the host chat; it must never claim the host's most
- * recent message or light the host's working state. */
-function codexTurnStarted(
-  state: ChatState,
-  event: Json,
-  parent: string | undefined,
-  speaker: Speaker | undefined,
-  now: number,
-): ChatState {
-  if (parent || speaker) return state;
-
-  // New backends stamp the exact browser-generated id onto `turn.started`.
-  // Older transcripts have no stamp, so fall back to the provider's real queue
-  // contract: turns are dispatched FIFO. The previous newest-first
-  // guess inverted two queued messages on screen — it marked the later one as
-  // active while Codex was actually answering the earlier one.
-  const turnId = asStr(event.octiq_user_turn_id);
-  const at = turnId
-    ? state.messages.findIndex(
-        (m) =>
-          m.role === "user" &&
-          !m.echo &&
-          !m.takenUp &&
-          !m.to &&
-          m.turnId === turnId,
-      )
-    : state.messages.findIndex(
-        (m) => m.role === "user" && !m.echo && !m.takenUp && !m.queueLost && !m.to,
-      );
-
-  // Starting a new turn seals whatever the previous Codex turn left open.
-  // Remove the accepted prompt from the waiting tail, then place it after all
-  // settled conversation entries and before every message still queued. The
-  // next Codex item is inserted at that same boundary by `withCodexCurrent`.
-  const closed = state.messages.map((m) => {
-    // A later native turn cannot own an earlier unacknowledged dispatch.
-    // This also repairs old transcripts whose stopped launches had no receipt.
-    if (turnId && m.turnId !== turnId && m.role === "user" && !m.to
-      && !m.echo && !m.takenUp && m.delivery === "dispatched") {
-      return { ...m, delivery: "unknown" as const, queueLost: undefined, hostFailed: undefined };
-    }
-    return m.streaming && !m.parent && !m.speaker
-      ? finishCodexMessage(m)
-      : m;
-  });
-  let messages = closed;
-  if (at >= 0) {
-    const accepted: Message = { ...closed[at], takenUp: true, delivery: "dispatched", queueLost: undefined, hostFailed: undefined, queueAction: undefined, queueError: undefined };
-    const remaining = closed.filter((_, i) => i !== at);
-    const settled = remaining.filter((m) => !waitingForCodex(m));
-    const waiting = remaining.filter(waitingForCodex);
-    messages = [...settled, accepted, ...waiting];
-  }
-
-  return {
-    ...state,
-    busy: true,
-    exited: undefined,
-    turnStartedAt: state.turnStartedAt ?? now,
-    messages,
-  };
-}
-
 /** The opening line the agent writes on a compaction summary. Recognised on
  *  its own so a chat RESUMED past a compaction — where the boundary event is
  *  long gone — still reads as a summary rather than as something typed. */
@@ -2988,136 +2211,6 @@ function foldSkillBrief(state: ChatState, brief: string, sourceId: string, uuid:
       },
     ],
   };
-}
-
-function reduceClaudeStream(
-  state: ChatState,
-  ev: Json,
-  parent: string | undefined,
-  speaker: Speaker | undefined,
-  now: number,
-): ChatState {
-  switch (asStr(ev.type)) {
-    case "message_start": {
-      const id = asStr(asObj(ev.message).id) || `m${state.messages.length}`;
-      if (state.messages.some((m) => m.id === id)) return state;
-      // A SEAT writing is not this chat's turn opening. It is a separate
-      // process answering in its own conversation, and its `result` is skipped
-      // further up on purpose — so a seat that raised this flag left it raised
-      // for good, and a chat that says it is working while nothing is running
-      // it is exactly what `lib/carryOn` reads as a turn the backend cut off.
-      const mine = !speaker;
-      return {
-        ...state,
-        busy: mine ? true : state.busy,
-        exited: mine && !parent ? undefined : state.exited,
-        // Only if the turn is not already timed. `addUserTurn` starts the clock
-        // when you press send, which is the honest start — this is for the turn
-        // nobody here started: a resumed session, or a catch-up on a chat that
-        // kept working while the browser was away.
-        turnStartedAt: mine ? state.turnStartedAt ?? now : state.turnStartedAt,
-        messages: [
-          ...state.messages,
-          { id, role: "assistant", blocks: [], streaming: true, parent, speaker, partial: true },
-        ],
-      };
-    }
-
-    case "content_block_start": {
-      const block = asObj(ev.content_block);
-      const kind = asStr(block.type);
-      return withClaudeCurrent(state, parent, speaker, (m) => {
-        if (kind === "tool_use") {
-          return {
-            ...m,
-            blocks: [
-              ...m.blocks,
-              {
-                kind: "tool",
-                id: asStr(block.id),
-                name: asStr(block.name),
-                argsJson: "",
-                args: undefined,
-                state: "running",
-              },
-            ],
-          };
-        }
-        // text / thinking open empty and fill by delta; nothing to add yet.
-        return m;
-      });
-    }
-
-    case "content_block_delta": {
-      const delta = asObj(ev.delta);
-      const kind = asStr(delta.type);
-      if (kind === "text_delta") {
-        const text = asStr(delta.text);
-        state = { ...state, turnDraft: (state.turnDraft ?? 0) + asTokens(text) };
-        return withClaudeCurrent(state, parent, speaker, (m) => ({ ...m, blocks: appendText(m.blocks, "text", text) }));
-      }
-      if (kind === "thinking_delta") {
-        // Not counted here: the agent counts its own thinking on the
-        // `thinking_tokens` channel, and counting the characters too would say
-        // every reasoned token twice.
-        return withClaudeCurrent(state, parent, speaker, (m) => ({ ...m, blocks: appendText(m.blocks, "thinking", asStr(delta.thinking)) }));
-      }
-      if (kind === "input_json_delta") {
-        // A tool's arguments stream in as JSON text. Kept raw until the block
-        // closes: half a JSON document does not parse.
-        state = { ...state, turnDraft: (state.turnDraft ?? 0) + asTokens(asStr(delta.partial_json)) };
-        return withClaudeCurrent(state, parent, speaker, (m) => {
-          const at = m.blocks.map((b) => b.kind).lastIndexOf("tool");
-          if (at < 0) return m;
-          const blocks = [...m.blocks];
-          const tool = blocks[at] as Extract<Block, { kind: "tool" }>;
-          blocks[at] = { ...tool, argsJson: tool.argsJson + asStr(delta.partial_json) };
-          return { ...m, blocks };
-        });
-      }
-      // signature_delta and anything new: nothing to show.
-      return state;
-    }
-
-    case "content_block_stop": {
-      return withClaudeCurrent(state, parent, speaker, (m) => ({
-        ...m,
-        blocks: m.blocks.map((b) => {
-          if (b.kind !== "tool" || b.args !== undefined || !b.argsJson) return b;
-          try {
-            return { ...b, args: JSON.parse(b.argsJson) };
-          } catch {
-            return b; // leave the raw text; the card falls back to showing it
-          }
-        }),
-      }));
-    }
-
-    case "message_delta": {
-      // The first honest count of what this message cost, and it only comes
-      // when the message is over. It REPLACES the estimate rather than adding
-      // to it — the two describe the same writing.
-      const written = asObj(ev.usage).output_tokens;
-      if (typeof written !== "number") return state;
-      return { ...state, turnTokens: (state.turnTokens ?? 0) + written, turnDraft: 0 };
-    }
-
-    case "message_stop":
-      // This writer's message, not everyone's. Ending them all was what let the
-      // first subagent to finish close the bubble a second one was still
-      // writing into, sending the rest of its reply to a fresh bubble below.
-      return {
-        ...state,
-        messages: state.messages.map((m) =>
-          m.streaming && m.parent === parent && m.speaker?.id === speaker?.id
-          ? { ...m, streaming: false }
-          : m,
-        ),
-      };
-
-    default:
-      return state;
-  }
 }
 
 /** Add the user's own turn before the durable protocol event arrives.

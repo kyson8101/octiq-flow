@@ -21,6 +21,7 @@
 // turn (`__fixtures__/codex-seat.jsonl`), not guessed.
 
 import type { ToolState } from "./chat";
+import { obj, str } from "./jsonNarrow";
 import { outcomeOfResult, type ToolOutcome } from "./toolOutcome";
 
 export type CodexRead =
@@ -40,14 +41,6 @@ export type CodexRead =
     }
   /** The turn is over, so nothing may be left looking like it is still writing. */
   | { kind: "done" };
-
-function obj(v: unknown): Record<string, unknown> {
-  return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
-}
-
-function str(v: unknown): string {
-  return typeof v === "string" ? v : "";
-}
 
 /** Codex reports MCP identity as separate `server` and `tool` fields. The rest
  *  of the chat uses the callable's qualified name, so join those fields before

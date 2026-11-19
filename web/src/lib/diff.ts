@@ -20,6 +20,7 @@
 // a line-number gutter, because inventing numbers for it would put a specific,
 // checkable, wrong claim on screen — worse than admitting the offset is not
 // known yet.
+import { obj, str } from "./jsonNarrow";
 
 export type RowKind = "ctx" | "add" | "del" | "gap";
 
@@ -54,8 +55,6 @@ export function isFileTool(name: string): boolean {
 }
 
 type Json = Record<string, unknown>;
-const obj = (v: unknown): Json => (v && typeof v === "object" ? (v as Json) : {});
-const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
 /** The diff a card should draw for one tool call, or null when this call did

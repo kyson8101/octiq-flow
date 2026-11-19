@@ -27,7 +27,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type ReactNode,
 } from "react";
 // Event/subscription callbacks must not chain old App render scopes. Pure
@@ -119,7 +118,7 @@ import { isNoticeTurn } from "./lib/hostNotice";
 import { Arrive } from "./components/Arrive";
 import { useEntry, entryClass, useLateKeys } from "./lib/useArrival";
 import { backgroundCalls } from "./lib/background";
-import { callCommands, isJobTurn, jobCalls, runningJobs, runningSignature } from "./lib/jobs";
+import { isJobTurn } from "./lib/jobs";
 import { jobFeed, readChatJobs } from "./lib/jobFeed";
 import { MOBILE, useMedia, WIDE, WORKFLOW_SPLIT } from "./lib/media";
 import { useDrawerSwipe } from "./lib/swipe";
@@ -138,21 +137,20 @@ import {
   MODELS,
   modelFromId,
   modelFromReported,
-  parseCommandCache,
   providerCommands,
   providerFor,
   type AccessLevel,
-  type CommandCache,
   type Effort,
   type ModelChoice,
   type Provider,
 } from "./lib/agentProviders";
 import { Connect } from "./components/Connect";
 import { ConnectionStatus } from "./components/ConnectionStatus";
+import { convOf, keyFor, personaReader, projectNameReader, readLocation, taskContextReader, useJobCalls, userTurnId, withJobCalls, writeLocation, type BranchList, type Workspace } from "./lib/appHelpers";
 import { SessionSearch } from "./components/SessionSearch";
 import { importSession, isUnder, replaySession, type HistorySession } from "./lib/history";
 import { hostPreview, latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
-import { Sidebar, type Project } from "./components/Sidebar";
+import { Sidebar } from "./components/Sidebar";
 import { recallNavigationOrientation, schedulingReading, useAgentLanes } from "./lib/agentLanes";
 import { leadThreadAgent, leadsOnlyMode, newConversationLead, type LeadHistoryEntry } from "./lib/leadThreads";
 import { leadActionToken, openConfirmedLeadThread, useLeadThreads } from "./lib/leadThreadFeed";
@@ -162,7 +160,7 @@ import { ChatSearchPage } from "./components/ChatSearchPage";
 const DiskPage = lazy(() => import("./components/DiskPage"));
 import { WorkspaceSlotsContext, type WorkspaceSlots } from "./components/WorkspaceHeader";
 import type { ChatSearchHit } from "./lib/chatSearch";
-import { loadAgents, type AgentInstall } from "./lib/agentInstalls";
+import { useInstalledAgents } from "./lib/useInstalledAgents";
 import { ShelvedProjects } from "./components/ShelvedProjects";
 import { DeletedChats } from "./components/DeletedChats";
 import { FeedbackInbox } from "./components/FeedbackInbox";
@@ -176,16 +174,16 @@ import { pendingPlan, type LeadRecord } from "./lib/agentsDashboard";
 import { crossProjectChatKeys } from "./lib/conversationProjects";
 import {
   agentIdentity, conversationRecipient, conversationRecipients, leadSettings, loadFrontDesk, loadHead, loadHome,
-  loadLeads, loadTeam, loadUnfinishedDeskChats, onTeamChanged, recallAgentsMode, rememberAgentsMode, taskBrief,
+  loadLeads, loadTeam, onTeamChanged, recallAgentsMode, rememberAgentsMode, taskBrief,
   type TeamAgent, type UnfinishedDeskChat,
 } from "./lib/agentsMode";
 import { ContinueDesk } from "./components/ContinueDesk";
 import {
-  FRONT_DESK_GREETING, continuableDeskChats, currentFrontDesk, directRecipients, frontDeskExecution, frontDeskText,
+  FRONT_DESK_GREETING, currentFrontDesk, directRecipients, frontDeskExecution, frontDeskText,
   newChatLead,
 } from "./lib/frontDesk";
 import { autoExecution, headCoordination, type ExecutionOverrides } from "./lib/agentExecution";
-import { keepAssignees, personaFor, senderName, type Assignees, type Persona } from "./lib/agentPersona";
+import { keepAssignees, personaFor, senderName, type Assignees } from "./lib/agentPersona";
 import type { LaunchPlan } from "./lib/taskEnvironment";
 import { AgentRosterContext, ChatPersonaContext } from "./lib/agentRoster";
 
@@ -265,7 +263,6 @@ import {
 import { startOrSend } from "./lib/startOrSend";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage, unconfirmedSend } from "./lib/messageQueue";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
-import { readChatRoute, replaceChatRoute, type ChatRoute } from "./lib/chatRoute";
 import {
   resolveNotificationConversation,
   type NotificationTarget,
@@ -275,14 +272,9 @@ import { ensureGeneralProject } from "./lib/generalProject";
 import type { WorkLocationBranches } from "./components/WorkLocation";
 import { modelHandoff } from "./lib/modelHandoff";
 import { filterVisibleChatNotices, shouldShowChatStatus } from "./lib/chatStatus";
-import {
-  branchesByProject,
-  projectGitPaths,
-  projectPrimaryPaths,
-  PROJECT_GIT_CHANGED_EVENT,
-} from "./lib/projectGit";
-import type { WorkspaceGitStatus } from "./lib/workspaceContext";
-import { singleFlight } from "./lib/singleFlight";
+import { useProjectBranches } from "./lib/useProjectBranches";
+import { useCommandCatalog } from "./lib/useCommandCatalog";
+import { useContinuableDeskChats } from "./lib/useContinuableDeskChats";
 import { FocusFontSizeControl, FocusModeButton, focusFontStyle, useFocusFontSize, useFocusMode } from "./components/FocusMode";
 import {
   PullRequestsDashboard,
@@ -291,22 +283,6 @@ import {
 import type { PrAgentLaunch, PrPreparedAgentChat } from "./lib/pullRequests";
 import { chatWidthStyle, savedChatWidth, saveChatWidth, type ChatWidthId } from "./lib/chatWidth";
 import "./components/FocusMode.css";
-
-type Workspace = Project & {
-  paths?: string[];
-  shelved?: boolean;
-  description?: string;
-  /** The project's saved commands, straight from the store. Read through
-   *  `parseCommands` where they are drawn — see the terminal drawer. */
-  actions?: unknown;
-};
-
-type BranchList = {
-  is_repo: boolean;
-  current: string;
-  branches: string[];
-  is_worktree: boolean;
-};
 
 type PreparedWorkspace = {
   cwd: string;
@@ -321,22 +297,6 @@ const NO_BRANCHES: WorkLocationBranches = {
   branches: [],
   isWorktree: false,
 };
-
-/** The process key for a conversation. Derived from the conversation id rather
- *  than random, so an event coming back from the server says which conversation
- *  it belongs to without a lookup table, and so one conversation can never end
- *  up with two processes. */
-const keyFor = (conversationId: string) => `chat:${conversationId}`;
-const convOf = (key: string) => (key.startsWith("chat:") ? key.slice(5) : null);
-
-/** One send's identity across the optimistic browser bubble and the durable
- *  Codex prompt event the backend emits after accepting it. */
-function userTurnId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `user-${crypto.randomUUID()}`;
-  }
-  return `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
 
 /** How long a deleted chat can be brought back. Long enough to see the ring on
  *  its row start to empty and press it again; short enough that the agent a
@@ -396,31 +356,11 @@ const EMPTY: ChatState = emptyChat();
 
 const CHOICE_KEY = "octiq.v2.model";
 const ACCESS_KEY = "octiq.v2.access";
-const CMDS_KEY = "octiq.v2.commands";
 const EFFORT_KEY = "octiq.v2.effort";
 /** Whether new chats start clean. Kept here rather than per project: it is a
  *  way of working, not a property of the code you are working on. */
 const LITE_KEY = "octiq.v2.lite";
 const TERM_KEY = "octiq.v2.terminalOpen";
-/** What the address bar says you are looking at.
- *
- *  The hash rather than the path: every path is served the same page, and
- *  `?token=…` already owns the query string (it is read once and stripped).
- *  A hash needs no server route and survives a reload.
- *
- *  Shape: #/p/<projectSlug>/c/<chatId> — the project half is the label's slug
- *  (see `lib/projectSlug`), so the link says where it goes rather than a UUID
- *  that says nothing. Older saved links carry the raw workspace id instead —
- *  both forms are resolved against the workspace list once it arrives (the
- *  `list_workspaces` handler below), never here: this function only returns
- *  the raw decoded token. The chat half is dropped for a project with nothing
- *  open yet. */
-function readLocation(): ChatRoute { return readChatRoute(location.hash); }
-
-function writeLocation(project: string | null, chat: string | null, beside: string | null = null): void {
-  replaceChatRoute(location, history, { project: project ?? undefined, chat: chat ?? undefined, beside: beside ?? undefined });
-}
-
 /** The chat that was on screen when the page was last left. */
 const LAST_KEY = "octiq.v2.lastChat";
 /** The task chat last opened beside its main chat (lib/chatBeside), for a
@@ -476,63 +416,9 @@ const RUN_CHATS_KEY = "octiq.v2.runChats";
 /** How long the panel's slide-out takes. Kept in step with the transition in
  *  styles.css; it only decides when the closed panel leaves the DOM. */
 const GIT_SLIDE_MS = 220;
-const NO_JOB_CALLS: ReadonlyMap<string, string> = new Map();
-
-/** Which card of a chat started which of its running jobs, by call id → job
- *  id (`lib/jobs.jobCalls`). Matched again only when a job of the chat starts
- *  or ends, or the transcript changes while one runs: a job's progress moves
- *  nothing here, and a chat with no running job costs one string compare. */
-function useJobCalls(chatKey: string | null, messages: readonly Message[]): ReadonlyMap<string, string> {
-  const signature = useSyncExternalStore(jobFeed.subscribe, () => runningSignature(jobFeed.snapshot()));
-  const live = !!chatKey && signature.includes(`\u0000${chatKey}\u0000`);
-  return useMemo(() => {
-    if (!live || !chatKey) return NO_JOB_CALLS;
-    const matched = jobCalls(callCommands(messages), runningJobs(jobFeed.snapshot(), chatKey));
-    if (matched.size === 0) return NO_JOB_CALLS;
-    return new Map([...matched].map(([call, held]) => [call, held.job.id]));
-  }, [live, chatKey, signature, live ? messages : null]);
-}
-
-/** The running calls with the job cards among them. */
-function withJobCalls(calls: Set<string>, jobs: ReadonlyMap<string, string>): Set<string> {
-  if (jobs.size === 0) return calls;
-  const out = new Set(calls);
-  for (const id of jobs.keys()) out.add(id);
-  return out;
-}
-
-// Render-time readers need the current render (event callbacks use the
-// committed cell). Build them outside App so they cannot retain App's scope.
-function personaReader(agentsMode: boolean, leads: LeadRecord[], roster: TeamAgent[], assignees: Assignees) {
-  return (chatKey: string) => agentsMode ? personaFor(chatKey, leads, roster, assignees) : null;
-}
-function projectNameReader(workspaces: Workspace[], shelved: Workspace[]) {
-  const names = new Map([...workspaces, ...shelved].map(item => [item.id, item.name]));
-  return (id: string) => names.get(id);
-}
-function taskContextReader(orchestration: typeof EMPTY_ORCHESTRATION, conversations: Conversation[], workspaces: Workspace[], shelved: Workspace[]) {
-  return (id: string, chatPersona: Persona | null, model: ModelChoice) => {
-    const key = keyFor(id);
-    const attempt = orchestration.attempts
-      .filter((candidate) => candidate.workerChatKey === key)
-      .sort((a, b) => b.createdAt - a.createdAt)[0];
-    const task = attempt ? orchestration.tasks.find((candidate) => candidate.id === attempt.taskId) : undefined;
-    const held = conversations.find((conversation) => conversation.id === id);
-    const names = new Map([...workspaces, ...shelved].map((workspace) => [workspace.id, workspace.name]));
-    return {
-      launch: held?.launch ?? null,
-      worker: task ? { task, attempt } : null,
-      projectName: (projectId: string) => names.get(projectId),
-      persona: chatPersona,
-      runsOn: chatPersona ? `${providerFor(model.agent).name} ${model.model}` : undefined,
-    };
-  };
-}
-
 export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [projectBranches, setProjectBranches] = useState<Record<string, string>>({});
   const [projectId, setProjectId] = useState<string | null>(null);
   const [shelved, setShelved] = useState<Workspace[]>([]);
   // Whether the project list has been answered at all. Until it has, a chat's
@@ -547,9 +433,6 @@ export default function App() {
   const [shelfOpen, setShelfOpen] = useState(false);
   const [deletedChats, setDeletedChats] = useState<DeletedIndexEntry[]>([]);
   const [trashOpen, setTrashOpen] = useState(false);
-  /** Which agent CLIs this machine has. Asked once on arrival: it decides what
-   *  the model picker may offer, so it is not only the Agents page's business. */
-  const [agents, setAgents] = useState<AgentInstall[]>([]);
   /** What the address bar asked for on arrival. Read once: after this the URL
    *  follows the app, not the other way round. */
   const opened = useRef(readLocation());
@@ -1352,51 +1235,7 @@ export default function App() {
 
   useEffect(loadWorkspaces, [loadWorkspaces]);
 
-  /** Keep one Git watcher for the whole project list and annotate each chat's
-   *  project with the branch checked out at its primary path. The watcher is
-   *  server-owned, so a reconnect installs it again. */
-  useEffect(() => {
-    if (conn !== "open") return;
-    const projects = [...workspaces, ...shelved];
-    const watchedPaths = projectGitPaths(projects);
-    const primaryPaths = projectPrimaryPaths(projects);
-    let live = true;
-
-    // One read at a time: `git-status-changed` can arrive every second, and a
-    // read of every project can take longer than that.
-    const read = singleFlight(async () => {
-      if (primaryPaths.length === 0) {
-        setProjectBranches({});
-        return;
-      }
-      await bridge
-        .invoke<WorkspaceGitStatus[]>("git_status_summary", { paths: primaryPaths })
-        .then((statuses) => {
-          if (live) setProjectBranches(branchesByProject(projects, statuses ?? []));
-        })
-        .catch(() => {
-          if (live) setProjectBranches({});
-        });
-    });
-    const refresh = () => { read(); };
-
-    // Replaces the server's previous watcher with the complete project set.
-    // A project can contain additional repositories, so watch every folder even
-    // though the sidebar label itself comes only from the primary path.
-    bridge.invoke("git_watch_paths", { paths: watchedPaths }).catch(() => {});
-    read();
-    window.addEventListener("focus", refresh);
-    const offWatch = bridge.on("git-status-changed", () => {
-      window.dispatchEvent(new CustomEvent(PROJECT_GIT_CHANGED_EVENT));
-      read();
-    });
-
-    return () => {
-      live = false;
-      window.removeEventListener("focus", refresh);
-      offWatch();
-    };
-  }, [conn, workspaces, shelved]);
+  const projectBranches = useProjectBranches(conn, workspaces, shelved);
 
   /** Return the ordinary persisted workspace used when a task has no reliable
    * project clue. It is created lazily, on the first such send, so existing
@@ -1426,27 +1265,7 @@ export default function App() {
     return result.project;
   }, [workspaces, shelved, homeId]);
 
-  /** Ask the backend which agent CLIs resolve on this machine.
-   *
-   *  Fails SOFT, to an empty list: a backend too old to know this command still
-   *  has to be usable, and "we could not ask" must never read as "nothing is
-   *  installed". Everything downstream treats an empty list as "no answer" and
-   *  offers every agent, exactly as it did before this page existed. */
-  const loadAgentList = useCallback((refresh?: boolean) => {
-    loadAgents(refresh === true)
-      .then((list) => setAgents(list ?? []))
-      .catch(() => setAgents([]));
-  }, []);
-
-  useEffect(loadAgentList, [loadAgentList]);
-
-  /** The agents this machine has, or undefined while we have no answer.
-   *  Undefined and empty mean different things downstream — "could not ask" vs
-   *  "asked, has none" — so they are kept apart rather than both being []. */
-  const installed: Provider[] | undefined = useMemo(
-    () => (agents.length > 0 ? agents.filter((a) => a.installed).map((a) => a.id) : undefined),
-    [agents],
-  );
+  const installed = useInstalledAgents();
 
   // An unavailable CLI never changes a conversation's provider. The composer
   // shows availability; only the host's durable fallback policy may switch it.
@@ -2029,47 +1848,6 @@ export default function App() {
     if (visibleRef.current === id) { setChoice(next); setEffort(payload.effort ?? "auto"); setAccess(payload.access); }
   }), []);
 
-  // The commands a session reports at startup, kept per PROJECT AND PROVIDER.
-  // A provider owns its command syntax: Claude's `/compact` must not show up
-  // after the same project is switched to Codex (or a future provider).
-  const [commands, setCommands] = useState<CommandCache>(() => {
-    try {
-      return parseCommandCache(JSON.parse(localStorage.getItem(CMDS_KEY) || "{}"));
-    } catch {
-      return {};
-    }
-  });
-  /** Codex has no command catalog in its exec stream. Remember which projects
-   * this page has already asked its app-server about, while still refreshing
-   * once after a browser reload even when localStorage can draw an old list. */
-  const codexSkillsLoaded = useRef(new Set<string>());
-  const codexSkillsPending = useRef(new Set<string>());
-  const [codexSkillsStatus, setCodexSkillsStatus] = useState<Record<string, string>>({});
-
-  // Claude's command list comes from the session's startup announcement and is
-  // cached per provider from then on. Codex has no corresponding exec event;
-  // `loadCodexSkills` below fills its side lazily from the app-server instead.
-  // Read startup lists from every loaded chat, not only the visible one — a
-  // chat working in the background is just as good a source.
-  useEffect(() => {
-    setCommands((prev) => {
-      let next = prev;
-      for (const [id, s] of Object.entries(chats)) {
-        const pid = meta.current[id]?.projectId;
-        const agent = modelFromId(meta.current[id]?.modelId ?? null)?.agent;
-        if (!pid || !agent || !s.commands?.length) continue;
-        const before = prev[pid]?.[agent];
-        if (before?.length === s.commands.length && before.every((command, i) => command === s.commands![i])) {
-          continue;
-        }
-        next = { ...next, [pid]: { ...next[pid], [agent]: s.commands } };
-      }
-      if (next === prev) return prev;
-      remember(CMDS_KEY, JSON.stringify(next));
-      return next;
-    });
-  }, [chats]);
-
   // Save every loaded conversation as it grows, the background ones included:
   // an answer that arrived while you were elsewhere has to survive a reload the
   // same as one you watched. Storing on every delta would serialise the whole
@@ -2221,40 +1999,7 @@ export default function App() {
     () => workspaces.find((w) => w.id === projectId) ?? null,
     [workspaces, projectId],
   );
-  const loadCodexSkills = useCallback((force = false) => {
-    if (choice.agent !== "codex" || !projectId || !project?.primary_path) return;
-    const key = `${projectId}:codex`;
-    if (codexSkillsPending.current.has(key) || (!force && codexSkillsLoaded.current.has(key))) return;
-    codexSkillsLoaded.current.add(key);
-    codexSkillsPending.current.add(key);
-    setCodexSkillsStatus((previous) => ({ ...previous, [key]: "loading" }));
-
-    bridge
-      .invoke<unknown>("codex_skills", { cwd: project.primary_path })
-      .then((value) => {
-        const skills = Array.isArray(value)
-          ? value.filter((skill): skill is string => typeof skill === "string")
-          : [];
-        setCommands((previous) => {
-          const next = {
-            ...previous,
-            [projectId]: { ...previous[projectId], codex: skills },
-          };
-          remember(CMDS_KEY, JSON.stringify(next));
-          return next;
-        });
-      })
-      .then(() => {
-        setCodexSkillsStatus((previous) => ({ ...previous, [key]: "" }));
-      })
-      .catch(() => {
-        setCodexSkillsStatus((previous) => ({ ...previous, [key]: "Could not load skills. Try again." }));
-        // A reconnect or a newly installed Codex should get another chance the
-        // next time the slash menu is opened.
-        codexSkillsLoaded.current.delete(key);
-      })
-      .finally(() => codexSkillsPending.current.delete(key));
-  }, [choice.agent, project, projectId]);
+  const { commands, codexSkillsStatus, loadCodexSkills } = useCommandCatalog({ chats, meta, agent: choice.agent, projectId, project });
   const taskList = useMemo(() => byTask(conversations), [conversations]);
   const searchChats = useCallback(
     (query: string) => bridge.invoke<ChatSearchHit[]>("chat_search", { query, limit: 50 }),
@@ -4883,23 +4628,8 @@ export default function App() {
     }
     return record;
   }, [decideHandover, openHandoverChat, notGoing, dropTravel]);
-  // The way back to a front-desk conversation left before it routed: no list
-  // shows one, so the new-chat screen offers it. Asked for each time that
-  // screen shows the front desk; a route confirmed since drops out at once.
-  const [unfinishedDesk, setUnfinishedDesk] = useState<UnfinishedDeskChat[]>([]);
   const deskOnScreen = newTask && !!frontDesk;
-  useEffect(() => {
-    if (!deskOnScreen || conn !== "open") return;
-    let alive = true;
-    void loadUnfinishedDeskChats().then((chats) => { if (alive) setUnfinishedDesk(chats); });
-    return () => { alive = false; };
-  }, [deskOnScreen, frontDesk?.id, conn]);
-  const deskChatsToContinue = useMemo(() => {
-    const routedFrom = new Set(
-      handovers.filter((h) => isRoute(h) && h.status === "confirmed").map((h) => h.sourceChatKey),
-    );
-    return continuableDeskChats(unfinishedDesk, frontDesk, routedFrom);
-  }, [unfinishedDesk, frontDesk, handovers]);
+  const { deskChatsToContinue, setUnfinishedDesk } = useContinuableDeskChats(deskOnScreen, frontDesk, conn, handovers);
   const continueDeskChat = useCallback(async (desk: UnfinishedDeskChat) => {
     if (!frontDesk) return;
     const id = chatIdOf(desk.chatKey);
