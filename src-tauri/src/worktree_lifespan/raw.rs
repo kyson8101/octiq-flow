@@ -896,36 +896,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(test)]
-#[test]
-#[ignore = "explicit exact-SHA timing on a fresh disposable clone"]
-fn time_full_proof_on_fresh_clone() {
-    use crate::test_dir::TestDir;
-    let source = std::env::var("OCTIQ_RAW_PROOF_SOURCE").expect("source checkout for timing");
-    let home = TestDir::new("raw-timing").canonicalized();
-    let target = home.join("clone");
-    let status = std::process::Command::new("git")
-        .args([
-            "clone",
-            "--quiet",
-            "--no-local",
-            "--depth=1",
-            &source,
-            target.to_str().unwrap(),
-        ])
-        .status()
-        .unwrap();
-    assert!(status.success());
-    let root = target.to_str().unwrap();
-    let head = git::text(root, &["rev-parse", "HEAD"]).unwrap();
-    let paths = git::git(root, &["ls-tree", "-r", "-z", "--name-only", "HEAD"]).unwrap();
-    let start = Instant::now();
-    let proof = verify(root, &head, false, cfg!(windows)).unwrap();
-    println!(
-        "FULL_PROOF_TIMING sha={head} paths={} seconds={:.6}",
-        paths.split(|b| *b == 0).filter(|p| !p.is_empty()).count(),
-        start.elapsed().as_secs_f64()
-    );
-    assert_eq!(proof.unrestorable, 0);
-}

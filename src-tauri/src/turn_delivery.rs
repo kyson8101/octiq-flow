@@ -758,36 +758,6 @@ mod tests {
         assert!(ask("td-asks", &["a"]).is_ok());
     }
 
-    /// Timing on a copy of a real record: `OCTIQ_TD_COPY=<file> cargo test
-    /// --lib -- --ignored --nocapture measured_on_a_copy`. The copy goes into
-    /// a scratch profile; the original is never opened.
-    #[test]
-    #[ignore = "reads a file named by OCTIQ_TD_COPY"]
-    fn measured_on_a_copy() {
-        let Ok(copy) = std::env::var("OCTIQ_TD_COPY") else {
-            return;
-        };
-        let home = TestDir::new("turn-delivery-measure");
-        let _profile = crate::profile::started_in(&home);
-        let key = listed_chat("td-measure");
-        let path = crate::transcript::path_for(&key).unwrap();
-        std::fs::copy(&copy, &path).unwrap();
-        let wanted = std::env::var("OCTIQ_TD_TURN").unwrap_or_default();
-        for round in 0..3 {
-            let started = std::time::Instant::now();
-            let found = ask(&key, &[wanted.as_str()]).unwrap();
-            let there = started.elapsed();
-            let started = std::time::Instant::now();
-            let absent = ask(&key, &["user-not-in-this-record"]).unwrap();
-            println!(
-                "round {round}: {wanted} -> {:?} in {there:?}; absent -> {:?} in {:?}",
-                found.turns[wanted.as_str()],
-                absent.turns["user-not-in-this-record"].state,
-                started.elapsed()
-            );
-        }
-    }
-
     fn dismiss(key: &str, id: &str) -> Result<bool, String> {
         crate::agent_chat::chat_dismiss_unsent_impl(
             &ChatManager::default(),
