@@ -117,18 +117,6 @@ export function senderName(persona: Persona | null | undefined, providerName: st
   return persona?.name || providerName;
 }
 
-/** A chat's title when it has none of its own yet. A title the person chose,
- *  or one the agent or the first message gave it, always wins. */
-export function personaTitle(
-  title: string | undefined,
-  persona: Persona | null | undefined,
-  fallback: string,
-): string {
-  const own = title?.trim();
-  if (own) return own;
-  return persona ? `Conversation with ${persona.name}` : fallback;
-}
-
 /** "Message Maya…", or the provider prompt an ordinary chat keeps. */
 export function composerPlaceholder(persona: { name: string } | null | undefined, providerName: string): string {
   return persona ? `Message ${persona.name}…` : `Ask ${providerName} to…`;

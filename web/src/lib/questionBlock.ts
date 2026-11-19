@@ -391,14 +391,6 @@ export function saidLines(items: readonly Pick<AskItem, "question" | "answer" | 
     : { label: item.question, answer: item.unanswered ?? "not answered", none: true as const });
 }
 
-/** A bubble line as text: `question: answer`, and no colon after a question
- *  that already ends in a mark of its own. */
-export function saidText(line: Said): string {
-  if (!line.label) return line.answer;
-  const label = line.label.trim();
-  return /[?？:：!！.。]$/.test(label) ? `${label} ${line.answer}` : `${label}: ${line.answer}`;
-}
-
 /* ---- Words --------------------------------------------------------------- */
 
 /** The row above the composer, for question blocks that are out of view. */

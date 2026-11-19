@@ -323,15 +323,6 @@ export function commandSearchTerm(name: string, args: unknown): string {
   return "";
 }
 
-/** How often a CLI appears in the wrapped shell script, including `$()` calls. */
-export function shellCommandCount(name: string, args: unknown, tool: string): number {
-  const envelope = shellEnvelope(name, args);
-  if (!envelope || !/^[A-Za-z0-9_.+-]+$/.test(tool)) return 0;
-  const escaped = tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`(?:^|[^\\w.-])${escaped}(?=\\s)`, "gm");
-  return [...envelope.body.matchAll(pattern)].length;
-}
-
 function cleanShellWord(word: string): string {
   return word.replace(/^["'$(]+|["')\\]+$/g, "");
 }

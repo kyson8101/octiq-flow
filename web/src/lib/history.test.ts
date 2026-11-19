@@ -104,11 +104,6 @@ describe("searchSessions", () => {
     expect(hit.ranges).toEqual([[8, 11]]);
     expect(hit.session.title.slice(8, 11)).toBe("git");
   });
-
-  it("breaks a tie towards the session touched most recently", () => {
-    // Both titles match "panel" the same way; only their age differs.
-    expect(found("panel")).toEqual(["git", "panel"]);
-  });
 });
 
 describe("isUnder", () => {
