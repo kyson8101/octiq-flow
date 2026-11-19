@@ -711,12 +711,6 @@ The MCP server's instructions and each tool description stay under 4,096
 characters (`scripts/mcp/instructions.test.cjs`): Claude Code drops text past
 that limit. Put tool-specific guidance in that tool's description.
 
-Saved state from the retired chat Plan, Preview panel and Settings Sandbox is
-removed once at server startup (`retired_features.rs`): `chats/plan_*.json`,
-`previews/` and `sandboxes/` beneath the pinned profile. Cleanup uses
-`profile::available`, skips redirected chat folders, never follows store
-symlinks or invokes Docker, and logs failures without stopping startup.
-
 ### A chat whose folder was removed is recovered before it starts
 
 A chat remembers the exact folder it ran in, and a task chat's is a linked
