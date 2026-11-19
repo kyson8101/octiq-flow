@@ -221,22 +221,6 @@ export function saveConversations(list: Conversation[]): void {
   }
 }
 
-/** Will opening this conversation land on an EMPTY page?
- *
- *  It will whenever neither copy of it has a word in it: not the one loaded in
- *  this page, and not the one in storage. That is the ordinary state of a chat
- *  held on another device — the list comes from the server, the messages do
- *  not, and they are replayed from the chat's own record after it is opened.
- *
- *  Worth asking because the page for a conversation with no messages is the
- *  page you START one from. Without this, opening a chat from the sidebar on a
- *  phone that has never seen it looks exactly like a chat that was thrown
- *  away — for as long as the replay takes, with nothing on screen admitting
- *  that anything is happening. */
-export function opensBlank(stored: Conversation, loaded?: { messages: Message[] }): boolean {
-  return (loaded?.messages.length ?? 0) === 0 && stored.messages.length === 0;
-}
-
 /** What a chat is called when there is nothing to name it after. A placeholder
  *  rather than a name, and `chatName` is careful never to write it over one. */
 export const UNNAMED = "New chat";
@@ -285,22 +269,6 @@ export function chatName(
   const kept = (had ?? "").trim();
   if (custom && kept) return kept;
   return kept && kept !== UNNAMED ? kept : titleFrom(messages);
-}
-
-/** Group conversations under their project, pinned chats first and then most
- *  recently active. Kept for remaining project-scoped callers; the primary
- *  navigation uses the global task list below. */
-export function byProject(list: Conversation[]): Map<string, Conversation[]> {
-  const out = new Map<string, Conversation[]>();
-  const sorted = [...list].sort(
-    (a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt,
-  );
-  for (const c of sorted) {
-    const bucket = out.get(c.projectId);
-    if (bucket) bucket.push(c);
-    else out.set(c.projectId, [c]);
-  }
-  return out;
 }
 
 /** One task-oriented chat list, independent of project folders.

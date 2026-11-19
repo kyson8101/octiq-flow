@@ -1,7 +1,7 @@
 // The line under the composer while a turn runs.
 import { describe, expect, it } from "vitest";
 
-import { elapsedLabel, tokenLabel, workingLine } from "./working";
+import { elapsedLabel, workingLine } from "./working";
 
 describe("elapsedLabel", () => {
   it("says seconds under a minute", () => {
@@ -22,19 +22,6 @@ describe("elapsedLabel", () => {
 
   it("never counts backwards from a clock that jumped", () => {
     expect(elapsedLabel(-5_000)).toBe("0s");
-  });
-});
-
-describe("tokenLabel", () => {
-  it("keeps a decimal where the counter would otherwise look frozen", () => {
-    expect(tokenLabel(999)).toBe("999");
-    expect(tokenLabel(1_000)).toBe("1.0k");
-    expect(tokenLabel(16_543)).toBe("16.5k");
-  });
-
-  it("rounds once the count is big enough not to need it", () => {
-    expect(tokenLabel(100_400)).toBe("100k");
-    expect(tokenLabel(1_250_000)).toBe("1.3M");
   });
 });
 

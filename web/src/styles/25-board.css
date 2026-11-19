@@ -1,8 +1,0 @@
-/* ── The board ─────────────────────────────────────────────────────────────
-   A page, not a side sheet: four columns need the width. It reuses the `.panel`
-   shell for its head, close button, scrim and slide-in, and only widens it. */
-
-.panel.is-wide {
-  width: 100vw;
-  border-left: none;
-}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { taskBoardFixture } from "./__fixtures__/agentTaskBoard";
 import {
-  attemptIsLive, boardCounts, currentAttempt, pendingDecision, runElapsed, shortBranch, stepCountLabel, stepLabel, taskElapsed, taskProgress,
+  attemptIsLive, boardCounts, currentAttempt, pendingDecision, runElapsed, shortBranch, stepLabel, taskElapsed, taskProgress,
   taskStage, taskStateLabel, taskStepSummary,
 } from "./agentTaskBoard";
 import type { OrchestrationAttempt, OrchestrationTask } from "./orchestration";
@@ -91,7 +91,6 @@ describe("a task row's reported steps", () => {
     const { task, attempt, report } = board();
     const summary = taskStepSummary(task, attempt, report)!;
     expect(summary).toEqual({ done: 2, total: 4, step: "Run focused tests", at: 3, current: true, reportedAt: report.reportedAt });
-    expect(stepCountLabel(summary)).toBe("2/4 steps");
     expect(stepLabel(summary)).toBe("Run focused tests");
     // Host execution never takes the step's place: it is the row's first word.
     const waiting = { ...attempt, execution: { state: "waiting_tool", retryCount: 0, pendingTools: {} } } as OrchestrationAttempt;
@@ -114,7 +113,6 @@ describe("a task row's reported steps", () => {
     const done = { ...task, status: "completed" } as OrchestrationTask;
     expect(taskProgress(done, report).percent).toBe(100);
     const summary = taskStepSummary(done, { ...attempt, status: "completed" }, report)!;
-    expect(stepCountLabel(summary)).toBe("2/4 steps");
     expect(stepLabel(summary)).toBe("Last step: Run focused tests");
     expect(taskStepSummary({ ...done, verdict: "fail" }, { ...attempt, status: "completed" }, report)!.done).toBe(2);
   });
@@ -135,7 +133,6 @@ describe("a task row's reported steps", () => {
     expect(stepLabel(noActive)).toBeNull();
     expect(taskStepSummary(task, attempt, steps([["First", "active"], ["Second", "active"]]))!.step).toBe("First");
     expect(stepLabel(taskStepSummary(task, attempt, steps([["  ", "active"], ["Next", "pending"]]))!)).toBeNull();
-    expect(stepCountLabel(taskStepSummary(task, attempt, steps([["Only", "active"]]))!)).toBe("0/1 step");
   });
 });
 

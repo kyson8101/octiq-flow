@@ -285,20 +285,6 @@ export async function rejectPlan(
   });
 }
 
-/** The conversation to reopen for "Talk to <head>": the newest one handed to
- *  THIS head that still exists. A conversation handed to an earlier head is
- *  never offered under a new one's name. */
-export function headConversation(
-  leads: readonly LeadRecord[],
-  headId: string | null | undefined,
-  exists: (chatKey: string) => boolean,
-): LeadRecord | null {
-  if (!headId) return null;
-  return leads
-    .filter((record) => record.crossProject && record.leadId === headId && exists(record.chatKey))
-    .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
-}
-
 /** Who the person can start a conversation with: every agent reporting
  *  directly to them, in any project. That is an agent with no manager, or one
  *  whose manager is no longer registered (the org chart draws those at the

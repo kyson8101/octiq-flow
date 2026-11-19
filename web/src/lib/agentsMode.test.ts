@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { readDeskRoute, readTaskBrief } from "./taskBrief";
 import {
-  conversationRecipient, conversationRecipients, headConversation, leadOnly, leadSettings, teamModelLabel, teamModels,
+  conversationRecipient, conversationRecipients, leadOnly, leadSettings, teamModelLabel, teamModels,
   type TeamAgent,
 } from "./agentsMode";
 import { titleFrom } from "./store";
@@ -42,24 +42,6 @@ describe("agents mode", () => {
     expect(settings?.effort).toBe("high");
     expect(settings?.access).toBe("auto");
     expect(leadSettings({ ...ada, model: "not-a-model" })).toBeNull();
-  });
-
-  it("reopens only the head's own conversation, newest first", () => {
-    const record = (chatKey: string, leadId: string, createdAt: number, crossProject = true) =>
-      ({ chatKey, leadId, leadName: leadId, projectId: "general", crossProject, createdAt });
-    const leads = [
-      record("chat:old", "ryan", 1),
-      record("chat:new", "ryan", 3),
-      record("chat:gone", "ryan", 9),
-      record("chat:task", "ryan", 5, false),
-      record("chat:maya", "maya", 7),
-    ];
-    const exists = (key: string) => key !== "chat:gone";
-    expect(headConversation(leads, "ryan", exists)?.chatKey).toBe("chat:new");
-    // A new head never inherits the old head's history.
-    expect(headConversation(leads, "maya", exists)?.chatKey).toBe("chat:maya");
-    expect(headConversation(leads, "zed", exists)).toBeNull();
-    expect(headConversation(leads, null, exists)).toBeNull();
   });
 
   it("allows Fable workers, keeps Astra lead only, and never offers Default", () => {

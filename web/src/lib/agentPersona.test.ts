@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  awayFromWarm, composerPlaceholder, keepAssignees, personaFor, personaHue, personaInitials, personaTitle, senderName, WARM_HUES,
+  awayFromWarm, composerPlaceholder, keepAssignees, personaFor, personaHue, personaInitials, senderName, WARM_HUES,
 } from "./agentPersona";
 import type { LeadRecord } from "./agentsDashboard";
 
@@ -73,12 +73,6 @@ describe("persona labels", () => {
     expect(senderName({ name: "Maya" }, "Codex")).toBe("Maya");
     expect(composerPlaceholder(null, "Claude")).toBe("Ask Claude to…");
     expect(composerPlaceholder({ name: "Maya" }, "Claude")).toBe("Message Maya…");
-  });
-
-  it("never replaces a title the chat already has", () => {
-    expect(personaTitle("Fix the bar", { name: "Maya" }, "Chat")).toBe("Fix the bar");
-    expect(personaTitle("  ", { name: "Maya" }, "Chat")).toBe("Conversation with Maya");
-    expect(personaTitle(undefined, null, "Chat")).toBe("Chat");
   });
 
   it("draws stable initials and colours", () => {

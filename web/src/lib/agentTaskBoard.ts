@@ -77,10 +77,6 @@ export function taskStepSummary(task: OrchestrationTask, attempt: OrchestrationA
   };
 }
 
-export function stepCountLabel(summary: TaskStepSummary): string {
-  return `${summary.done}/${summary.total} ${summary.total === 1 ? "step" : "steps"}`;
-}
-
 export function stepLabel(summary: TaskStepSummary): string | null {
   if (!summary.step) return null;
   return summary.current ? summary.step : `Last step: ${summary.step}`;
@@ -149,25 +145,6 @@ export function pendingDecision<D extends { attemptId: string; status: string }>
 
 export function executionNeedsAttention(attempt?: OrchestrationAttempt): boolean {
   return !!attempt?.execution && ["capacity_blocked", "stalled", "disconnected", "failed", "awaiting_report"].includes(attempt.execution.state);
-}
-
-const TASK_PRIORITY: Record<OrchestrationTask["status"], number> = {
-  blocked: 0, failed: 0, running: 1, ready: 2, pending: 3, completed: 4, cancelled: 5,
-};
-
-/** Both task lists put unfinished work first, preserving ledger order among
- *  peers and leaving the shared snapshot untouched. */
-export function sortTasksByActivity(tasks: readonly OrchestrationTask[], attempts: readonly OrchestrationAttempt[]): OrchestrationTask[] {
-  const byId = new Map(attempts.map((attempt) => [attempt.id, attempt]));
-  const priority = (task: OrchestrationTask) => {
-    // A check that failed is a failure, listed with what is blocked or failed.
-    if (checkFailed(task)) return TASK_PRIORITY.failed;
-    // Stale execution evidence must not promote an already settled task.
-    if (isSettled(task) || task.status === "cancelled") return TASK_PRIORITY[task.status];
-    const attempt = task.activeAttemptId ? byId.get(task.activeAttemptId) : undefined;
-    return executionNeedsAttention(attempt) ? 0 : TASK_PRIORITY[task.status];
-  };
-  return [...tasks].sort((a, b) => priority(a) - priority(b));
 }
 
 export function attemptIsExecuting(attempt: OrchestrationAttempt): boolean {

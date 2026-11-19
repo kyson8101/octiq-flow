@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Message } from "../lib/chat";
 import type { Conversation } from "../lib/store";
-import type { OrchestrationSnapshot } from "../lib/orchestration";
+import { workerChatParents, type OrchestrationSnapshot } from "../lib/orchestration";
+import { taskBoardFixture } from "../lib/__fixtures__/agentTaskBoard";
 import { pendingByTask, type PendingAction } from "../lib/pendingActions";
 import { NO_PENDING_ACTIONS, PendingActionsContext, type PendingActionsView } from "./PendingActionBadge";
 import { Sidebar, type Project } from "./Sidebar";
@@ -628,5 +629,35 @@ describe("task-oriented Sidebar", () => {
       const out = html({ conversations: [ticked("b", 500)] });
       expect(out.indexOf('aria-label="Show chats: Active"')).toBeLessThan(out.indexOf("Every chat is ticked off."));
     });
+  });
+});
+
+const workerConversation = (id: string): Conversation => ({ id, projectId: "project", title: `Worker ${id}`, createdAt: 1, updatedAt: 1, messages: [] });
+const workerChats = [workerConversation("main"), workerConversation("w-auth"), workerConversation("w-reader"), workerConversation("w-export")];
+
+describe("Sidebar with a run's workers", () => {
+  it("leaves a run's tasks to the run column and keeps one summary row in the chat list", () => {
+    // The task list opens beside the chat list, so the sidebar no longer
+    // carries a second copy of it: one row for the main chat, with the run's
+    // one-line summary, and no worker transcripts or task rows under it.
+    const snapshot = taskBoardFixture();
+    const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]}
+      conversations={workerChats} chatParents={workerChatParents(snapshot)} currentConversation={null} running={new Set()} busy={new Set()}
+      onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onToggleDone={() => {}} onRename={() => {}}
+      />);
+    expect(out.match(/class="chat-title"/g)).toHaveLength(1);
+    expect(out).not.toContain('class="agent-task');
+    expect(out).not.toContain("chat-children-toggle");
+    expect(out).toContain('class="chat-workflow-status"');
+    expect(out).not.toContain("is-worker-on");
+  });
+  it("outlines the main chat while one of its workers is open", () => {
+    const snapshot = taskBoardFixture();
+    const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]}
+      conversations={workerChats} chatParents={workerChatParents(snapshot)} currentConversation="w-reader" running={new Set()} busy={new Set()}
+      onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onToggleDone={() => {}} onRename={() => {}}
+      />);
+    expect(out.match(/class="chat-title"/g)).toHaveLength(1);
+    expect(out).toContain("is-worker-on");
   });
 });

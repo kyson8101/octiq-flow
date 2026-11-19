@@ -17,24 +17,6 @@ export function provesLiveTurn(raw: unknown): boolean {
   return (event.event as { type?: unknown }).type === "message_start";
 }
 
-/** Count only the current trailing host queue with canonical prompt identities.
- * Historical user messages lacking an echo are not proof of pending work.
- * undefined means the available transcript cannot establish the queue count. */
-export function queuedMessageCount(chat: Pick<import("./chat").ChatState, "messages">): number | undefined {
-  let count = 0;
-  for (let index = chat.messages.length - 1; index >= 0; index--) {
-    const message = chat.messages[index];
-    if (message.queueLost || message.delivery === "dispatched" || message.delivery === "unknown" || message.delivery === "sending") continue;
-    if (message.role !== "user" || message.echo || message.takenUp) break;
-    // Historical targeted messages have different acceptance semantics.
-    if (message.to || !message.turnId) return undefined;
-    count++;
-  }
-  if (count > 0) return count;
-  return chat.messages.some((message) => message.role === "user" && (message.turnId || message.echo || message.takenUp))
-    ? 0
-    : undefined;
-}
 export type ChatQueueState = { live: boolean; queuedTurnIds: string[] };
 
 /** Reconcile transport ownership even while another answer is streaming.

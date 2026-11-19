@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Block } from "./chat";
-import { groupDiff, groupRows, groupSummary, groupTally, type Row, type Tool } from "./toolGroups";
+import { groupRows, groupSummary, type Row, type Tool } from "./toolGroups";
 
 function tool(name: string, id = name + Math.random()): Block {
   return { kind: "tool", id, name, argsJson: "", args: {}, state: "done" };
@@ -249,85 +249,6 @@ describe("groupRows", () => {
   });
 });
 
-describe("groupTally", () => {
-  const bash = (command: string): Block => ({
-    kind: "tool",
-    id: command,
-    name: "Bash",
-    argsJson: "",
-    args: { command },
-    state: "done",
-  });
-
-  const file = (name: string, file_path: string): Block => ({
-    kind: "tool",
-    id: name + file_path + Math.random(),
-    name,
-    argsJson: "",
-    args: { file_path },
-    state: "done",
-  });
-
-  it("counts a shell group by the command that ran", () => {
-    const tools = [bash("python3 x.py"), bash("cd web && ls"), bash("python3 y.py")] as Tool[];
-    expect(groupTally(tools)).toEqual([
-      { label: "python3", count: 2, kind: "run" },
-      { label: "cd", count: 1, kind: "run" },
-    ]);
-  });
-
-  it("keeps the subcommand for the tools whose first word says nothing", () => {
-    const tools = [bash("git status"), bash("git status -s"), bash("pnpm test")] as Tool[];
-    expect(groupTally(tools)).toEqual([
-      { label: "git status", count: 2, kind: "run" },
-      { label: "pnpm test", count: 1, kind: "run" },
-    ]);
-  });
-
-  it("reads past the environment a command was given", () => {
-    expect(groupTally([bash("CI=true /usr/bin/python3 run.py")] as Tool[])).toEqual([
-      { label: "python3", count: 1, kind: "run" },
-    ]);
-  });
-
-  it("names the file a read or an edit went to, not the tool", () => {
-    // "Read ×3 · Edit ×4" is the one thing the row above already said. The
-    // file is what the reader cannot see anywhere else.
-    const tools = [
-      file("Read", "/Users/k/octiq/web/src/lib/chat.ts"),
-      file("Edit", "/Users/k/octiq/web/src/lib/toolGroups.ts"),
-    ] as Tool[];
-    expect(groupTally(tools)).toEqual([
-      { label: "chat.ts", count: 1, kind: "read" },
-      { label: "toolGroups.ts", count: 1, kind: "edit" },
-    ]);
-  });
-
-  it("counts one file once however it was touched, and calls it changed", () => {
-    // Read, edit, read again is one file being worked on, not two things. The
-    // chip takes the edit's colour, because a file that was CHANGED is not the
-    // same news as one that was only read.
-    const tools = [
-      file("Read", "/a/chat.ts"),
-      file("Edit", "/a/chat.ts"),
-      file("Read", "/a/chat.ts"),
-      file("Read", "/a/diff.ts"),
-    ] as Tool[];
-    expect(groupTally(tools)).toEqual([
-      { label: "chat.ts", count: 3, kind: "edit" },
-      { label: "diff.ts", count: 1, kind: "read" },
-    ]);
-  });
-
-  it("counts everything else by the name of the tool", () => {
-    const tools = [tool("Read"), tool("Read"), tool("Grep")] as Tool[];
-    expect(groupTally(tools)).toEqual([
-      { label: "Read", count: 2, kind: "read" },
-      { label: "Grep", count: 1, kind: "search" },
-    ]);
-  });
-});
-
 describe("groupSummary", () => {
   const bash = (command: string): Tool => ({
     kind: "tool",
@@ -382,30 +303,6 @@ describe("groupSummary", () => {
   it("orders every summary by edit, then read, then commands", () => {
     const tools = [bash("pnpm test"), file("Read", "/work/app.ts"), file("Edit", "/work/app.ts")] as Tool[];
     expect(groupSummary(tools).label).toBe("Edited files, read files, ran a command");
-  });
-});
-
-describe("groupDiff", () => {
-  const write = (file_path: string, content: string): Block => ({
-    kind: "tool",
-    id: file_path + content,
-    name: "Write",
-    argsJson: "",
-    args: { file_path, content },
-    state: "done",
-  });
-
-  it("adds up what a folded run changed, so no edit is swallowed silently", () => {
-    const tools = [
-      write("/a/one.ts", "a\nb\nc\n"),
-      tool("Bash"),
-      write("/a/two.ts", "d\ne\n"),
-    ] as Tool[];
-    expect(groupDiff(tools)).toEqual({ added: 5, removed: 0, files: 2 });
-  });
-
-  it("says nothing when a run changed nothing", () => {
-    expect(groupDiff([tool("Bash"), tool("Read"), tool("Grep")] as Tool[])).toBeNull();
   });
 });
 

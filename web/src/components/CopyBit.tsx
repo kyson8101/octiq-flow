@@ -110,7 +110,3 @@ export function TextIcon() {
     </svg>
   );
 }
-
-export function TickIcon() {
-  return <ActionIcon name="allow" />;
-}

@@ -68,7 +68,6 @@ import { runWaits } from "./runWaits";
 import { reopenControl, STOPPED_LABEL } from "./taskHold";
 import { OrchestrationPanel } from "../components/OrchestrationPanel";
 import { RunProgressStrip } from "../components/RunProgressStrip";
-import { drawnStatus } from "../components/TaskMeter";
 import agentsCss from "../components/AgentsDashboard.css?raw";
 import workflowBarCss from "../components/ChatWorkflowBar.css?raw";
 import missionCss from "../components/MissionPage.css?raw";
@@ -498,8 +497,6 @@ describe("a failure's colour is the danger colour on every sheet that draws one"
 
   it("the board that is not on any page draws a failed check as a failure too", () => {
     const [task] = hostFacts.planAfterCheckFailed().tasks;
-    expect(drawnStatus(task)).toBe("failed");
-    expect(drawnStatus({ ...task, verdict: "pass" })).toBe("completed");
     expect(boardCounts([task])).toMatchObject({ done: 0, total: 1, blocked: 1 });
   });
 });
@@ -1073,9 +1070,7 @@ const COMPLETED: Allowed = {
   "./agentsDashboard.ts": { uses: 1, why: "a RUN that is over has no plan waiting" },
   "./missionPage.ts": { uses: 1, why: "a RUN that has ended hands no task on" },
   "../components/OrchestrationPanel.tsx": { uses: 1, why: "a RUN that completed offers to archive its workers" },
-  "../components/TaskMeter.tsx": { uses: 1, why: "the mark for a status its caller chose with drawnStatus, which turns a failed check into failed first" },
   "./chat.ts": { uses: 4, why: "a tool call's own status and a provider turn's end in a transcript, not a task acceptance" },
-  "./taskEvidence.ts": { uses: 1, why: "the rows of an agent's own todo list" },
   "./codexEvents.ts": { uses: 1, why: "a Codex stream item's status" },
   "./chatComplete.ts": { uses: 2, why: "the chat-completed event" },
   "./useChatCompletions.ts": { uses: 1, why: "the chat-completed event" },
