@@ -1075,7 +1075,6 @@ const COMPLETED: Allowed = {
   "../components/OrchestrationPanel.tsx": { uses: 1, why: "a RUN that completed offers to archive its workers" },
   "../components/TaskMeter.tsx": { uses: 1, why: "the mark for a status its caller chose with drawnStatus, which turns a failed check into failed first" },
   "./chat.ts": { uses: 4, why: "a tool call's own status and a provider turn's end in a transcript, not a task acceptance" },
-  "./taskEvidence.ts": { uses: 1, why: "the rows of an agent's own todo list" },
   "./codexEvents.ts": { uses: 1, why: "a Codex stream item's status" },
   "./chatComplete.ts": { uses: 2, why: "the chat-completed event" },
   "./useChatCompletions.ts": { uses: 1, why: "the chat-completed event" },
