@@ -230,33 +230,11 @@ fn real_git_clean_dirty_untracked_operation_detached_and_kept_branch() {
     a.branch = None;
     a.owner.kind = "validation".into();
     let c = r.checkout();
-    let o = observe(
-        &a,
-        &c,
-        &Settings::default(),
-        &BTreeSet::new(),
-        &known(),
-        &crate::agent_chat::ChatManager::default(),
-        old(),
-        false,
-        ignored::inventory,
-    )
-    .unwrap();
+    let o = observe_idle(&a, &c);
     assert!(o.removable);
     git::text(&r.work, &["commit", "--allow-empty", "-m", "unreferenced"]).unwrap();
     let c = r.checkout();
-    let o = observe(
-        &a,
-        &c,
-        &Settings::default(),
-        &BTreeSet::new(),
-        &known(),
-        &crate::agent_chat::ChatManager::default(),
-        old(),
-        false,
-        ignored::inventory,
-    )
-    .unwrap();
+    let o = observe_idle(&a, &c);
     assert_eq!(o.item.state, "abandoned");
 }
 #[test]
@@ -619,6 +597,36 @@ impl Repo {
         svc
     }
 }
+/// `a` observed as an old, unpinned checkout with known usage, no running
+/// build and the default settings.
+fn observe_idle(a: &Allocation, checkout: &Checkout) -> Observation {
+    observe(
+        a,
+        checkout,
+        &Settings::default(),
+        &BTreeSet::new(),
+        &known(),
+        &crate::agent_chat::ChatManager::default(),
+        old(),
+        false,
+        ignored::inventory,
+    )
+    .unwrap()
+}
+
+/// Archive the folder `preview` was made for, expecting exactly what the
+/// preview saw.
+fn archive_previewed(svc: &Services, state: &Store, preview: &Item) -> Result<Archive, String> {
+    archive_checked(
+        svc,
+        state,
+        &checks(),
+        &preview.key,
+        &preview.head,
+        &preview.status_hash,
+    )
+}
+
 fn checks() -> Checks {
     Checks {
         windows: false,
@@ -857,15 +865,7 @@ fn archive_api_rejects_stale_preview_and_roundtrips_its_record_and_new_branch() 
             Ok(())
         })
         .unwrap();
-    let a = archive_checked(
-        &svc,
-        &state,
-        &checks(),
-        &preview.key,
-        &preview.head,
-        &preview.status_hash,
-    )
-    .unwrap();
+    let a = archive_previewed(&svc, &state, &preview).unwrap();
     assert!(gone(&r.work));
     assert_eq!(state.saved().unwrap().archives.len(), 1);
     assert!(state.saved().unwrap().intents.is_empty());
@@ -1159,15 +1159,7 @@ fn ignored_change_invalidates_archive_preview_and_confirmed_archive_excludes_it(
     let preview = r.observe(now(), &known()).item;
     state.inner.lock().unwrap().items = vec![preview.clone()];
     r.write("works/final.mp4", "changed!");
-    let error = archive_checked(
-        &svc,
-        &state,
-        &checks(),
-        &preview.key,
-        &preview.head,
-        &preview.status_hash,
-    )
-    .unwrap_err();
+    let error = archive_previewed(&svc, &state, &preview).unwrap_err();
     assert!(error.contains("staging changed"));
     assert!(Path::new(&r.work).join("works/final.mp4").exists());
     r.age(15);
@@ -1175,15 +1167,7 @@ fn ignored_change_invalidates_archive_preview_and_confirmed_archive_excludes_it(
     assert_ne!(preview.status_hash, fresh.status_hash);
     assert_eq!(fresh.ignored_files, Some(1));
     state.inner.lock().unwrap().items = vec![fresh.clone()];
-    let archive = archive_checked(
-        &svc,
-        &state,
-        &checks(),
-        &fresh.key,
-        &fresh.head,
-        &fresh.status_hash,
-    )
-    .unwrap();
+    let archive = archive_previewed(&svc, &state, &fresh).unwrap();
     assert!(gone(&r.work));
     assert!(git::git(
         &r.root,
@@ -1205,18 +1189,7 @@ fn detached_validation_obeys_ignored_original_guard() {
     let mut a = r.allocation();
     a.owner.kind = "validation".into();
     a.branch = None;
-    let o = observe(
-        &a,
-        &r.checkout(),
-        &Settings::default(),
-        &BTreeSet::new(),
-        &known(),
-        &crate::agent_chat::ChatManager::default(),
-        old(),
-        false,
-        ignored::inventory,
-    )
-    .unwrap();
+    let o = observe_idle(&a, &r.checkout());
     assert_eq!(o.item.state, "abandoned");
     assert!(!o.removable);
     assert!(require_no_at_stake_ignored(&r.work)
@@ -1420,18 +1393,7 @@ fn m2_content_budget_withholds_large_untracked_file_in_words() {
     let r = Repo::new();
     let f = fs::File::create(Path::new(&r.work).join("media.bin")).unwrap();
     f.set_len(3 * 1024 * 1024 * 1024).unwrap();
-    let o = observe(
-        &r.allocation(),
-        &r.checkout(),
-        &Settings::default(),
-        &BTreeSet::new(),
-        &known(),
-        &crate::agent_chat::ChatManager::default(),
-        old(),
-        false,
-        ignored::inventory,
-    )
-    .unwrap();
+    let o = observe_idle(&r.allocation(), &r.checkout());
     assert_eq!(o.item.state, "abandoned");
     assert!(o.item.status_hash.is_empty());
     assert!(o.item.why.contains("2 GiB total limit"), "{}", o.item.why);
@@ -1519,14 +1481,7 @@ exec /usr/bin/git "$@"
             fs::write(&release, "release").unwrap();
         });
         let error = with_git_wrapper(&r._home, &script, || {
-            archive_checked(
-                &svc,
-                &state,
-                &checks(),
-                &preview.key,
-                &preview.head,
-                &preview.status_hash,
-            )
+            archive_previewed(&svc, &state, &preview)
         })
         .unwrap_err();
         mover.join().unwrap();
@@ -1680,15 +1635,7 @@ fn archive_large_64mib_untracked_preview_and_final_disk_compare() {
     let preview = r.observe(now(), &known()).item;
     assert_eq!(preview.state, "abandoned");
     state.inner.lock().unwrap().items = vec![preview.clone()];
-    let archive = archive_checked(
-        &svc,
-        &state,
-        &checks(),
-        &preview.key,
-        &preview.head,
-        &preview.status_hash,
-    )
-    .unwrap();
+    let archive = archive_previewed(&svc, &state, &preview).unwrap();
     assert!(gone(&r.work));
     assert_eq!(
         git::text(
@@ -1735,15 +1682,7 @@ fn h5_lossy_clean_filter_keeps_automatic_and_archive_folder() {
     r.age(30);
     let preview = r.observe(now(), &known()).item;
     state.inner.lock().unwrap().items = vec![preview.clone()];
-    let error = archive_checked(
-        &svc,
-        &state,
-        &checks(),
-        &preview.key,
-        &preview.head,
-        &preview.status_hash,
-    )
-    .unwrap_err();
+    let error = archive_previewed(&svc, &state, &preview).unwrap_err();
     assert!(
         error.contains("At least 1 tracked file cannot be restored byte for byte"),
         "{error}"
@@ -1853,15 +1792,7 @@ fn h7_hidden_index_edits_are_abandoned_and_archive_restores_raw_bytes() {
         sweep_checked(&svc, &state, &checks()).unwrap();
         assert!(!gone(&r.work));
         state.inner.lock().unwrap().items = vec![preview.clone()];
-        let archive = archive_checked(
-            &svc,
-            &state,
-            &checks(),
-            &preview.key,
-            &preview.head,
-            &preview.status_hash,
-        )
-        .unwrap();
+        let archive = archive_previewed(&svc, &state, &preview).unwrap();
         let restored = restore_from(&svc, &state, &archive.key).unwrap();
         assert_eq!(
             fs::read(Path::new(restored["path"].as_str().unwrap()).join("tracked")).unwrap(),
@@ -1932,14 +1863,7 @@ exec /usr/bin/git "$@"
             fs::write(&release, "go").unwrap();
         });
         let error = with_git_wrapper(&r._home, &script, || {
-            archive_checked(
-                &svc,
-                &state,
-                &checks(),
-                &preview.key,
-                &preview.head,
-                &preview.status_hash,
-            )
+            archive_previewed(&svc, &state, &preview)
         })
         .unwrap_err();
         writer.join().unwrap();
@@ -1990,14 +1914,7 @@ exec /usr/bin/git "$@"
             fs::write(&release, "go").unwrap();
         });
         let error = with_git_wrapper(&r._home, &script, || {
-            archive_checked(
-                &svc,
-                &state,
-                &checks(),
-                &preview.key,
-                &preview.head,
-                &preview.status_hash,
-            )
+            archive_previewed(&svc, &state, &preview)
         })
         .unwrap_err();
         writer.join().unwrap();
@@ -2616,15 +2533,7 @@ fn config_worktree_settings_are_kept_at_every_removal_door_and_empty_is_a_contro
     r.age(30);
     let preview = r.observe(now(), &known()).item;
     store.inner.lock().unwrap().items = vec![preview.clone()];
-    let error = archive_checked(
-        &svc,
-        &store,
-        &checks(),
-        &preview.key,
-        &preview.head,
-        &preview.status_hash,
-    )
-    .unwrap_err();
+    let error = archive_previewed(&svc, &store, &preview).unwrap_err();
     assert!(
         error.contains("config.worktree") && error.contains("archive ref"),
         "{error}"
