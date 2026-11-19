@@ -74,6 +74,7 @@ import { foldCodex } from "./chatCodex";
 import { foldPi } from "./chatPi";
 import { foldAntigravity } from "./chatAntigravity";
 import { reduceClaudeStream } from "./chatClaudeStream";
+import { stampTimes } from "./messageTime";
 
 export { describeFailure };
 
@@ -276,6 +277,14 @@ export type ReplyTarget = { id: string; preview: string };
 
 export type Message = {
   id: string;
+  /** When this message was recorded, epoch ms (`lib/messageTime`): the host's
+   *  `octiq_at` stamp, else the provider's own timestamp, else absent. A
+   *  person's message carries its own line's time, a reply the time of its
+   *  last line. Absent on a record older than the stamp, and nothing is drawn. */
+  at?: number;
+  /** `at` is this browser's clock for a message it has just sent, until the
+   *  host's own line for the turn replaces it. */
+  atLocal?: boolean;
   /** The provider/host ended this turn. Kept on its last reply for replay. */
   turnEnd?: { status: "completed" | "failed" | "stopped"; durationMs?: number };
   role: "user" | "assistant";
@@ -865,8 +874,13 @@ function agentStatus(raw: unknown): Partial<AgentRun> {
  *  and the clock is an argument so a replay of a captured stream lands on the
  *  same numbers every time. */
 export function reduceChat(state: ChatState, raw: unknown, now: number = Date.now(), source: "live" | "replay" = "live"): ChatState {
-  const next = reduceEvent(state, raw, now, source);
+  // The time goes on last, so the message a full stop marks is dated by it too.
+  return stampTimes(state, reduceStamped(state, raw, now, source), asObj(raw));
+}
+
+function reduceStamped(state: ChatState, raw: unknown, now: number, source: "live" | "replay"): ChatState {
   const e = asObj(raw);
+  const next = reduceEvent(state, raw, now, source);
   if (next === state) return next;
   const ended = ["result", "turn.completed", "turn.failed"].includes(asStr(e.type));
   if (e.parent_tool_use_id || (!ended && !(state.busy && !next.busy))) return next;
@@ -2255,6 +2269,9 @@ export function addUserTurn(
       {
         id: turnId ? `u:${turnId}` : `u${state.messages.length}`,
         role: "user",
+        // The browser's clock until the host's own line for this turn arrives
+        // and replaces it (`stampTimes`).
+        ...(now >= 946_684_800_000 ? { at: now, atLocal: true } : {}),
         blocks: [{ kind: "text", text }],
         streaming: false,
         ...(attachments.length ? { attachments } : {}),

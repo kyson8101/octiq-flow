@@ -1,0 +1,62 @@
+/* The time under a message. Quiet grey, never the accent (that is a turn in
+   flight), and a line of its own height so a time arriving moves nothing. */
+.message-time {
+  appearance: none;
+  background: none;
+  border: 0;
+  margin: 0;
+  padding: 0 4px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  min-height: 16px;
+  max-width: 100%;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+  border-radius: var(--radius-sm, 4px);
+}
+.message-time time { display: block; overflow: hidden; text-overflow: ellipsis; }
+.message-time:hover, .message-time.is-open { color: var(--fg-2); }
+.message-time:focus-visible { outline: 2px solid var(--fg-2); outline-offset: 1px; }
+.message-time.is-open { cursor: pointer; }
+
+/* A time alone under your own message (nothing to say about its delivery). */
+.message-delivery-time { padding-inline: 4px; min-height: 0; }
+.message-delivery-time::after { display: none; }
+.message-delivery-time .message-delivery-line { min-height: 20px; }
+
+/* Under an answer bubble. */
+.msg-answer .message-time { display: block; margin-inline-start: auto; }
+
+/* In the line under a reply, beside Copy. */
+.msg-foot .message-time { align-self: center; }
+
+/* The line between two days. */
+.day-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  color: var(--fg-3);
+  font-size: 11px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.day-divider::before, .day-divider::after {
+  content: "";
+  flex: 1 1 0;
+  min-width: 12px;
+  height: 1px;
+  background: color-mix(in srgb, var(--fg-3) 30%, transparent);
+}
+.day-divider span { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* A finger needs 44px; the row it sits in already is. */
+@media (hover: none), (any-pointer: coarse) {
+  .message-time { min-height: 44px; min-width: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  .message-time time { display: inline; }
+}
