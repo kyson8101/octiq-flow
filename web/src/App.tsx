@@ -174,12 +174,12 @@ import { pendingPlan, type LeadRecord } from "./lib/agentsDashboard";
 import { crossProjectChatKeys } from "./lib/conversationProjects";
 import {
   agentIdentity, conversationRecipient, conversationRecipients, leadSettings, loadFrontDesk, loadHead, loadHome,
-  loadLeads, loadTeam, loadUnfinishedDeskChats, onTeamChanged, recallAgentsMode, rememberAgentsMode, taskBrief,
+  loadLeads, loadTeam, onTeamChanged, recallAgentsMode, rememberAgentsMode, taskBrief,
   type TeamAgent, type UnfinishedDeskChat,
 } from "./lib/agentsMode";
 import { ContinueDesk } from "./components/ContinueDesk";
 import {
-  FRONT_DESK_GREETING, continuableDeskChats, currentFrontDesk, directRecipients, frontDeskExecution, frontDeskText,
+  FRONT_DESK_GREETING, currentFrontDesk, directRecipients, frontDeskExecution, frontDeskText,
   newChatLead,
 } from "./lib/frontDesk";
 import { autoExecution, headCoordination, type ExecutionOverrides } from "./lib/agentExecution";
@@ -274,6 +274,7 @@ import { modelHandoff } from "./lib/modelHandoff";
 import { filterVisibleChatNotices, shouldShowChatStatus } from "./lib/chatStatus";
 import { useProjectBranches } from "./lib/useProjectBranches";
 import { useCommandCatalog } from "./lib/useCommandCatalog";
+import { useContinuableDeskChats } from "./lib/useContinuableDeskChats";
 import { FocusFontSizeControl, FocusModeButton, focusFontStyle, useFocusFontSize, useFocusMode } from "./components/FocusMode";
 import {
   PullRequestsDashboard,
@@ -4627,23 +4628,8 @@ export default function App() {
     }
     return record;
   }, [decideHandover, openHandoverChat, notGoing, dropTravel]);
-  // The way back to a front-desk conversation left before it routed: no list
-  // shows one, so the new-chat screen offers it. Asked for each time that
-  // screen shows the front desk; a route confirmed since drops out at once.
-  const [unfinishedDesk, setUnfinishedDesk] = useState<UnfinishedDeskChat[]>([]);
   const deskOnScreen = newTask && !!frontDesk;
-  useEffect(() => {
-    if (!deskOnScreen || conn !== "open") return;
-    let alive = true;
-    void loadUnfinishedDeskChats().then((chats) => { if (alive) setUnfinishedDesk(chats); });
-    return () => { alive = false; };
-  }, [deskOnScreen, frontDesk?.id, conn]);
-  const deskChatsToContinue = useMemo(() => {
-    const routedFrom = new Set(
-      handovers.filter((h) => isRoute(h) && h.status === "confirmed").map((h) => h.sourceChatKey),
-    );
-    return continuableDeskChats(unfinishedDesk, frontDesk, routedFrom);
-  }, [unfinishedDesk, frontDesk, handovers]);
+  const { deskChatsToContinue, setUnfinishedDesk } = useContinuableDeskChats(deskOnScreen, frontDesk, conn, handovers);
   const continueDeskChat = useCallback(async (desk: UnfinishedDeskChat) => {
     if (!frontDesk) return;
     const id = chatIdOf(desk.chatKey);
