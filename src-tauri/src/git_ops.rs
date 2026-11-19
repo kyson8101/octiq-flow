@@ -780,35 +780,50 @@ mod tests {
     /// works on a machine with no global git config.
     /// The repository sits one level down, so the `.worktrees` folder git
     /// work puts beside it goes when the guard drops too.
-    fn temp_repo(name: &str) -> Option<crate::test_dir::TestPath> {
+    fn temp_repo(name: &str) -> crate::test_dir::TestPath {
         let dir = crate::test_dir::TestPath::new(&format!("gitops-test-{name}"), "repo");
-        std::fs::create_dir_all(&dir).ok()?;
-        let git = |args: &[&str]| {
-            Command::new("git")
+        std::fs::create_dir_all(&dir).expect("temp_repo: create the repo folder");
+        let git = |step: &str, args: &[&str]| {
+            let out = Command::new("git")
                 .arg("-C")
                 .arg(&dir)
                 .args(args)
                 .output()
-                .ok()
-                .filter(|o| o.status.success())
+                .unwrap_or_else(|e| panic!("temp_repo: git {step} could not run: {e}"));
+            assert!(
+                out.status.success(),
+                "temp_repo: git {step} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         };
-        git(&["init", "-q"])?;
-        git(&["config", "user.email", "test@octiqflow.local"])?;
-        git(&["config", "user.name", "OctiqFlow Test"])?;
+        git("init", &["init", "-q"]);
+        git(
+            "config user.email",
+            &["config", "user.email", "test@octiqflow.local"],
+        );
+        git(
+            "config user.name",
+            &["config", "user.name", "OctiqFlow Test"],
+        );
         // Commit hooks from a global template would run during these tests.
-        git(&["config", "core.hooksPath", "/dev/null"]);
-        std::fs::write(dir.join("kept.txt"), "one\n").ok()?;
-        std::fs::write(dir.join("gone.txt"), "two\n").ok()?;
-        git(&["add", "-A"])?;
-        git(&["commit", "-qm", "init"])?;
-        Some(dir)
+        git(
+            "config core.hooksPath",
+            &["config", "core.hooksPath", "/dev/null"],
+        );
+        git(
+            "config commit.gpgsign",
+            &["config", "commit.gpgsign", "false"],
+        );
+        std::fs::write(dir.join("kept.txt"), "one\n").expect("temp_repo: write kept.txt");
+        std::fs::write(dir.join("gone.txt"), "two\n").expect("temp_repo: write gone.txt");
+        git("add", &["add", "-A"]);
+        git("commit", &["commit", "-qm", "init"]);
+        dir
     }
 
     #[test]
     fn commit_takes_only_the_ticked_files() {
-        let Some(dir) = temp_repo("only") else {
-            return; // no usable git on this machine
-        };
+        let dir = temp_repo("only");
         let root = dir.to_string_lossy().into_owned();
 
         // Three kinds of change at once, but only two are ticked.
@@ -838,9 +853,7 @@ mod tests {
 
     #[test]
     fn commit_leaves_work_staged_outside_the_panel_alone() {
-        let Some(dir) = temp_repo("staged") else {
-            return;
-        };
+        let dir = temp_repo("staged");
         let root = dir.to_string_lossy().into_owned();
 
         // The user staged one file in a terminal, then commits ANOTHER file here.
@@ -868,9 +881,7 @@ mod tests {
 
     #[test]
     fn commit_rejects_an_empty_message_or_no_files() {
-        let Some(dir) = temp_repo("guards") else {
-            return;
-        };
+        let dir = temp_repo("guards");
         let root = dir.to_string_lossy().into_owned();
         std::fs::write(dir.join("kept.txt"), "changed\n").unwrap();
 
@@ -883,9 +894,7 @@ mod tests {
 
     #[test]
     fn commit_handles_a_rename_already_staged_by_git_mv() {
-        let Some(dir) = temp_repo("rename") else {
-            return;
-        };
+        let dir = temp_repo("rename");
         let root = dir.to_string_lossy().into_owned();
         Command::new("git")
             .arg("-C")
@@ -917,9 +926,7 @@ mod tests {
 
     #[test]
     fn switch_moves_head_to_another_local_branch() {
-        let Some(dir) = temp_repo("switch") else {
-            return;
-        };
+        let dir = temp_repo("switch");
         let root = dir.to_string_lossy().into_owned();
         Command::new("git")
             .arg("-C")
@@ -940,9 +947,7 @@ mod tests {
 
     #[test]
     fn switch_to_the_current_branch_changes_nothing() {
-        let Some(dir) = temp_repo("switch-same") else {
-            return;
-        };
+        let dir = temp_repo("switch-same");
         let root = dir.to_string_lossy().into_owned();
         let branch = run_git(&root, &["branch", "--show-current"])
             .unwrap()
@@ -963,18 +968,14 @@ mod tests {
 
     #[test]
     fn switch_rejects_an_empty_branch_name() {
-        let Some(dir) = temp_repo("switch-empty") else {
-            return;
-        };
+        let dir = temp_repo("switch-empty");
         let err = git_switch_branch(dir.to_string_lossy().into_owned(), "   ".into()).unwrap_err();
         assert!(err.contains("Pick a branch"), "{err}");
     }
 
     #[test]
     fn switch_reports_gits_own_refusal() {
-        let Some(dir) = temp_repo("switch-refused") else {
-            return;
-        };
+        let dir = temp_repo("switch-refused");
         let root = dir.to_string_lossy().into_owned();
         let err = git_switch_branch(root, "no-such-branch".into()).unwrap_err();
         // git's own words, not ours — the panel shows this line verbatim.
@@ -983,9 +984,7 @@ mod tests {
 
     #[test]
     fn prepare_switches_the_selected_checkout_before_chat_start() {
-        let Some(dir) = temp_repo("prepare-switch") else {
-            return;
-        };
+        let dir = temp_repo("prepare-switch");
         let root = dir.to_string_lossy().into_owned();
         Command::new("git")
             .arg("-C")
@@ -1011,9 +1010,7 @@ mod tests {
 
     #[test]
     fn prepare_creates_a_task_branch_in_a_linked_worktree() {
-        let Some(dir) = temp_repo("prepare-worktree") else {
-            return;
-        };
+        let dir = temp_repo("prepare-worktree");
         let root = dir.to_string_lossy().into_owned();
         let base = current_branch(&root).unwrap();
 
@@ -1078,9 +1075,7 @@ mod tests {
 
     #[test]
     fn a_removed_worktree_is_restored_without_overwriting_anything() {
-        let Some(dir) = temp_repo("restore-worktree") else {
-            return;
-        };
+        let dir = temp_repo("restore-worktree");
         let root = dir.to_string_lossy().into_owned();
         let prepared = git_prepare_chat_workspace(
             root.clone(),
@@ -1128,18 +1123,14 @@ mod tests {
 
     #[test]
     fn pull_without_an_upstream_says_to_push_first() {
-        let Some(dir) = temp_repo("noupstream") else {
-            return;
-        };
+        let dir = temp_repo("noupstream");
         let err = git_pull(dir.to_string_lossy().into_owned(), "rebase".into()).unwrap_err();
         assert!(err.contains("Push it first"), "{err}");
     }
 
     #[test]
     fn push_without_a_remote_says_so() {
-        let Some(dir) = temp_repo("noremote") else {
-            return;
-        };
+        let dir = temp_repo("noremote");
         let err = git_push(dir.to_string_lossy().into_owned()).unwrap_err();
         assert!(err.contains("no remote"), "{err}");
     }
