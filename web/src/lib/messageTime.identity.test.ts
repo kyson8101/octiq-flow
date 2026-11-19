@@ -106,6 +106,37 @@ describe("finding 4: a Codex reply ahead of five queued prompts is dated", () =>
   });
 });
 
+describe("finding 8: only real acceptance ends the turn, never \"not waiting\"", () => {
+  for (const state of ["failed", "unknown"]) {
+    it(`a ${state} queued prompt behind a streaming reply leaves it the full stop's time`, () => {
+      const s = feed([
+        { type: "user", uuid: "first", octiq_user_turn: true, octiq_at: T, message: { content: "first" } },
+        { type: "turn.started", octiq_user_turn_id: "first", octiq_at: T + 1 },
+        { type: "item.completed", item: { id: "a", type: "agent_message", text: "answer" }, octiq_at: T + 2 },
+        { type: "user", uuid: "queued", octiq_user_turn: true, octiq_at: T + 3, message: { content: "queued" } },
+        { type: "octiq_user_turn_delivery", uuid: "queued", state, octiq_at: T + 4 },
+        { type: "turn.completed", octiq_at: T + 600_000 },
+      ]);
+      expect(replies(s)).toHaveLength(1);
+      expect(replies(s)[0].at).toBe(T + 600_000);
+    });
+  }
+
+  it("an older finished reply still keeps its time once a newer prompt is accepted", () => {
+    const s = feed([
+      { type: "user", uuid: "old", octiq_user_turn: true, octiq_at: T, message: { content: "old" } },
+      { type: "turn.started", octiq_user_turn_id: "old", octiq_at: T + 1 },
+      { type: "item.completed", item: { id: "a", type: "agent_message", text: "old answer" }, octiq_at: T + 2 },
+      { type: "turn.completed", octiq_at: T + 3 },
+      { type: "user", uuid: "new", octiq_user_turn: true, octiq_at: T + 10, message: { content: "new" } },
+      { type: "turn.started", octiq_user_turn_id: "new", octiq_at: T + 11 },
+      { type: "item.completed", item: { id: "b", type: "agent_message", text: "new answer" }, octiq_at: T + 12 },
+      { type: "turn.completed", octiq_at: T + 600_000 },
+    ]);
+    expect(replies(s).map((m) => m.at)).toEqual([T + 3, T + 600_000]);
+  });
+});
+
 describe("finding 7: Yesterday is a calendar day, not 24 hours", () => {
   const where = { timeZone: "America/New_York" };
   it("the day after a spring-forward is not Yesterday two days on", () => {

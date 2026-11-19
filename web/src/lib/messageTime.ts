@@ -97,11 +97,13 @@ function sameMessage(a: Message, b: Message): boolean {
   return true;
 }
 
-/** A person's message that is waiting to be taken up (the shape
- *  `chatShared.waitingForCodex` reads, without importing it: that module
- *  imports the reducer which imports this one). */
-function waiting(m: Message): boolean {
-  return m.role === "user" && !m.echo && !m.takenUp && !m.queueLost && m.delivery !== "unknown" && !m.to;
+/** A person's message the agent has really accepted: it echoed the prompt
+ *  (`echo`) or began that exact turn (`takenUp`). Only this ends the turn
+ *  before it. "Not waiting" is no evidence: a queued prompt that failed, went
+ *  unknown or was lost was never taken up, and the reply still streaming
+ *  ahead of it is the current one. */
+function accepted(m: Message): boolean {
+  return m.role === "user" && (!!m.echo || !!m.takenUp);
 }
 
 function turnIdOf(e: Json): string {
@@ -123,7 +125,7 @@ function turnIdOf(e: Json): string {
  *    what a reader compares with their own clock, and the full stop moves it
  *    forward. Only a reply the line made or changed, and only while it is the
  *    current one (still streaming, or the newest reply after the last turn
- *    the agent accepted), is dated. A finished reply of an earlier turn keeps
+ *    the agent accepted, by echo or turn start), is dated. A finished reply of an earlier turn keeps
  *    its time whatever later line copies it.
  *
  *  Returns `next` itself when nothing changes. */
@@ -174,11 +176,12 @@ function stampUser(prev: ChatState, next: ChatState, e: Json, time: EventTime): 
 
 function stampReply(prev: ChatState, next: ChatState, time: EventTime): ChatState {
   const list = next.messages;
-  // The current turn is everything after the last message the agent accepted.
-  // Queued prompts sit at its end and are not a boundary, so a reply placed
-  // ahead of five of them is still inside.
+  // The current turn is everything after the last message the agent accepted
+  // (echo or turn start, never "not waiting"). Queued, failed and unknown
+  // prompts sit at its end and are not a boundary, so a reply placed ahead of
+  // them is still inside.
   let from = list.length - 1;
-  while (from >= 0 && !(list[from].role === "user" && !waiting(list[from]))) from--;
+  while (from >= 0 && !accepted(list[from])) from--;
   from += 1;
   let newest = -1;
   for (let i = list.length - 1; i >= from; i--) {
