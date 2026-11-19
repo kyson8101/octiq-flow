@@ -27,7 +27,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type ReactNode,
 } from "react";
 // Event/subscription callbacks must not chain old App render scopes. Pure
@@ -119,7 +118,7 @@ import { isNoticeTurn } from "./lib/hostNotice";
 import { Arrive } from "./components/Arrive";
 import { useEntry, entryClass, useLateKeys } from "./lib/useArrival";
 import { backgroundCalls } from "./lib/background";
-import { callCommands, isJobTurn, jobCalls, runningJobs, runningSignature } from "./lib/jobs";
+import { isJobTurn } from "./lib/jobs";
 import { jobFeed, readChatJobs } from "./lib/jobFeed";
 import { MOBILE, useMedia, WIDE, WORKFLOW_SPLIT } from "./lib/media";
 import { useDrawerSwipe } from "./lib/swipe";
@@ -149,10 +148,11 @@ import {
 } from "./lib/agentProviders";
 import { Connect } from "./components/Connect";
 import { ConnectionStatus } from "./components/ConnectionStatus";
+import { convOf, keyFor, personaReader, projectNameReader, readLocation, taskContextReader, useJobCalls, userTurnId, withJobCalls, writeLocation, type BranchList, type Workspace } from "./lib/appHelpers";
 import { SessionSearch } from "./components/SessionSearch";
 import { importSession, isUnder, replaySession, type HistorySession } from "./lib/history";
 import { hostPreview, latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
-import { Sidebar, type Project } from "./components/Sidebar";
+import { Sidebar } from "./components/Sidebar";
 import { recallNavigationOrientation, schedulingReading, useAgentLanes } from "./lib/agentLanes";
 import { leadThreadAgent, leadsOnlyMode, newConversationLead, type LeadHistoryEntry } from "./lib/leadThreads";
 import { leadActionToken, openConfirmedLeadThread, useLeadThreads } from "./lib/leadThreadFeed";
@@ -185,7 +185,7 @@ import {
   newChatLead,
 } from "./lib/frontDesk";
 import { autoExecution, headCoordination, type ExecutionOverrides } from "./lib/agentExecution";
-import { keepAssignees, personaFor, senderName, type Assignees, type Persona } from "./lib/agentPersona";
+import { keepAssignees, personaFor, senderName, type Assignees } from "./lib/agentPersona";
 import type { LaunchPlan } from "./lib/taskEnvironment";
 import { AgentRosterContext, ChatPersonaContext } from "./lib/agentRoster";
 
@@ -265,7 +265,6 @@ import {
 import { startOrSend } from "./lib/startOrSend";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage, unconfirmedSend } from "./lib/messageQueue";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
-import { readChatRoute, replaceChatRoute, type ChatRoute } from "./lib/chatRoute";
 import {
   resolveNotificationConversation,
   type NotificationTarget,
@@ -292,22 +291,6 @@ import type { PrAgentLaunch, PrPreparedAgentChat } from "./lib/pullRequests";
 import { chatWidthStyle, savedChatWidth, saveChatWidth, type ChatWidthId } from "./lib/chatWidth";
 import "./components/FocusMode.css";
 
-type Workspace = Project & {
-  paths?: string[];
-  shelved?: boolean;
-  description?: string;
-  /** The project's saved commands, straight from the store. Read through
-   *  `parseCommands` where they are drawn — see the terminal drawer. */
-  actions?: unknown;
-};
-
-type BranchList = {
-  is_repo: boolean;
-  current: string;
-  branches: string[];
-  is_worktree: boolean;
-};
-
 type PreparedWorkspace = {
   cwd: string;
   branch: string;
@@ -321,22 +304,6 @@ const NO_BRANCHES: WorkLocationBranches = {
   branches: [],
   isWorktree: false,
 };
-
-/** The process key for a conversation. Derived from the conversation id rather
- *  than random, so an event coming back from the server says which conversation
- *  it belongs to without a lookup table, and so one conversation can never end
- *  up with two processes. */
-const keyFor = (conversationId: string) => `chat:${conversationId}`;
-const convOf = (key: string) => (key.startsWith("chat:") ? key.slice(5) : null);
-
-/** One send's identity across the optimistic browser bubble and the durable
- *  Codex prompt event the backend emits after accepting it. */
-function userTurnId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `user-${crypto.randomUUID()}`;
-  }
-  return `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
 
 /** How long a deleted chat can be brought back. Long enough to see the ring on
  *  its row start to empty and press it again; short enough that the agent a
@@ -402,25 +369,6 @@ const EFFORT_KEY = "octiq.v2.effort";
  *  way of working, not a property of the code you are working on. */
 const LITE_KEY = "octiq.v2.lite";
 const TERM_KEY = "octiq.v2.terminalOpen";
-/** What the address bar says you are looking at.
- *
- *  The hash rather than the path: every path is served the same page, and
- *  `?token=…` already owns the query string (it is read once and stripped).
- *  A hash needs no server route and survives a reload.
- *
- *  Shape: #/p/<projectSlug>/c/<chatId> — the project half is the label's slug
- *  (see `lib/projectSlug`), so the link says where it goes rather than a UUID
- *  that says nothing. Older saved links carry the raw workspace id instead —
- *  both forms are resolved against the workspace list once it arrives (the
- *  `list_workspaces` handler below), never here: this function only returns
- *  the raw decoded token. The chat half is dropped for a project with nothing
- *  open yet. */
-function readLocation(): ChatRoute { return readChatRoute(location.hash); }
-
-function writeLocation(project: string | null, chat: string | null, beside: string | null = null): void {
-  replaceChatRoute(location, history, { project: project ?? undefined, chat: chat ?? undefined, beside: beside ?? undefined });
-}
-
 /** The chat that was on screen when the page was last left. */
 const LAST_KEY = "octiq.v2.lastChat";
 /** The task chat last opened beside its main chat (lib/chatBeside), for a
@@ -476,59 +424,6 @@ const RUN_CHATS_KEY = "octiq.v2.runChats";
 /** How long the panel's slide-out takes. Kept in step with the transition in
  *  styles.css; it only decides when the closed panel leaves the DOM. */
 const GIT_SLIDE_MS = 220;
-const NO_JOB_CALLS: ReadonlyMap<string, string> = new Map();
-
-/** Which card of a chat started which of its running jobs, by call id → job
- *  id (`lib/jobs.jobCalls`). Matched again only when a job of the chat starts
- *  or ends, or the transcript changes while one runs: a job's progress moves
- *  nothing here, and a chat with no running job costs one string compare. */
-function useJobCalls(chatKey: string | null, messages: readonly Message[]): ReadonlyMap<string, string> {
-  const signature = useSyncExternalStore(jobFeed.subscribe, () => runningSignature(jobFeed.snapshot()));
-  const live = !!chatKey && signature.includes(`\u0000${chatKey}\u0000`);
-  return useMemo(() => {
-    if (!live || !chatKey) return NO_JOB_CALLS;
-    const matched = jobCalls(callCommands(messages), runningJobs(jobFeed.snapshot(), chatKey));
-    if (matched.size === 0) return NO_JOB_CALLS;
-    return new Map([...matched].map(([call, held]) => [call, held.job.id]));
-  }, [live, chatKey, signature, live ? messages : null]);
-}
-
-/** The running calls with the job cards among them. */
-function withJobCalls(calls: Set<string>, jobs: ReadonlyMap<string, string>): Set<string> {
-  if (jobs.size === 0) return calls;
-  const out = new Set(calls);
-  for (const id of jobs.keys()) out.add(id);
-  return out;
-}
-
-// Render-time readers need the current render (event callbacks use the
-// committed cell). Build them outside App so they cannot retain App's scope.
-function personaReader(agentsMode: boolean, leads: LeadRecord[], roster: TeamAgent[], assignees: Assignees) {
-  return (chatKey: string) => agentsMode ? personaFor(chatKey, leads, roster, assignees) : null;
-}
-function projectNameReader(workspaces: Workspace[], shelved: Workspace[]) {
-  const names = new Map([...workspaces, ...shelved].map(item => [item.id, item.name]));
-  return (id: string) => names.get(id);
-}
-function taskContextReader(orchestration: typeof EMPTY_ORCHESTRATION, conversations: Conversation[], workspaces: Workspace[], shelved: Workspace[]) {
-  return (id: string, chatPersona: Persona | null, model: ModelChoice) => {
-    const key = keyFor(id);
-    const attempt = orchestration.attempts
-      .filter((candidate) => candidate.workerChatKey === key)
-      .sort((a, b) => b.createdAt - a.createdAt)[0];
-    const task = attempt ? orchestration.tasks.find((candidate) => candidate.id === attempt.taskId) : undefined;
-    const held = conversations.find((conversation) => conversation.id === id);
-    const names = new Map([...workspaces, ...shelved].map((workspace) => [workspace.id, workspace.name]));
-    return {
-      launch: held?.launch ?? null,
-      worker: task ? { task, attempt } : null,
-      projectName: (projectId: string) => names.get(projectId),
-      persona: chatPersona,
-      runsOn: chatPersona ? `${providerFor(model.agent).name} ${model.model}` : undefined,
-    };
-  };
-}
-
 export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
