@@ -1259,15 +1259,53 @@ fn a_dropped_session_on_the_held_runtime_keeps_the_chats_own_baseline() {
 }
 
 #[test]
-fn the_ordinary_pickers_start_with_a_page_handoff_is_the_persons_choice_and_is_recorded() {
+fn a_start_with_a_page_handoff_and_an_older_runtime_changes_nothing_and_records_nothing() {
+    // H2: a tab picked Codex with the ordinary picker, then another tab
+    // switched the chat to Opus. The first tab's Send carries a non-empty
+    // `handoff`. A start never carries a choice: the chat stays on Opus,
+    // nothing is recorded as the person's, and the page's history is unused.
     let w = World::new();
     let stub = crate::test_dir::TestDir::new("runtime-picker-claude");
     clis_that_start(&stub);
     let chat = w.chat();
     w.switch(&chat, ChatAgent::Codex, "gpt-5.6-sol", Some("high"))
         .unwrap();
-    // changeModel: chat_retarget, then a start with the page's own handoff.
+    w.switch(&chat, ChatAgent::Claude, "claude-opus-5-5", Some("high"))
+        .unwrap();
+    let switched = events(&chat, "octiq_provider_switched").len();
+    let recovered = events(&chat, "octiq_registered_recovered").len();
     let started = stale_start(
+        &w,
+        &chat,
+        ChatAgent::Codex,
+        "gpt-5.6-sol",
+        Some("[{\"role\":\"assistant\",\"text\":\"Ready.\"}]"),
+        None,
+    );
+    assert_eq!(started, Ok(()));
+    assert_eq!(
+        started_as(&w, &chat),
+        (ChatAgent::Claude, Some("claude-opus-5-5".into())),
+        "the recorded runtime, whatever the start carries"
+    );
+    assert_eq!(
+        events(&chat, "octiq_provider_switched").len(),
+        switched,
+        "a start records no change of runtime"
+    );
+    assert_eq!(events(&chat, "octiq_registered_recovered").len(), recovered);
+    let found = recorded(&chat.key).unwrap();
+    assert_eq!(
+        found.current.as_ref().map(|c| c.agent),
+        Some(ChatAgent::Claude)
+    );
+    // The same with a handoff and the page agreeing with a Codex record.
+    end_process(&w.manager, &chat.key).unwrap();
+    w.switch(&chat, ChatAgent::Codex, "gpt-5.6-sol", Some("high"))
+        .unwrap();
+    let switched = events(&chat, "octiq_provider_switched").len();
+    w.manager.starts.lock().unwrap().remove(&chat.key);
+    let _ = stale_start(
         &w,
         &chat,
         ChatAgent::Claude,
@@ -1275,28 +1313,81 @@ fn the_ordinary_pickers_start_with_a_page_handoff_is_the_persons_choice_and_is_r
         Some("[{\"role\":\"user\",\"text\":\"earlier\"}]"),
         None,
     );
+    assert_eq!(started_as(&w, &chat).0, ChatAgent::Codex);
+    assert_eq!(events(&chat, "octiq_provider_switched").len(), switched);
+    end_process(&w.manager, &chat.key).unwrap();
+}
+
+#[test]
+fn the_retarget_of_a_registered_chat_is_refused_in_words_that_name_the_switch() {
+    let w = World::new();
+    let chat = w.chat();
+    let before = w.start(&chat);
+    let refused = chat_retarget_impl(&w.manager, chat.key.clone()).unwrap_err();
+    assert!(
+        refused.contains("chat_switch_runtime") && refused.contains("registered"),
+        "{refused}"
+    );
+    assert_eq!(
+        w.start(&chat).session_id,
+        before.session_id,
+        "nothing was ended or forgotten"
+    );
+}
+
+#[test]
+fn an_unregistered_chats_picker_still_retargets_and_its_start_carries_the_choice() {
+    let w = World::new();
+    let stub = crate::test_dir::TestDir::new("runtime-plain-clis");
+    clis_that_start(&stub);
+    let key = format!("chat:plain-{}", uuid::Uuid::new_v4().simple());
+    w.manager.remember_start(
+        &key,
+        StartContext {
+            defaults: None,
+            cwd: "/tmp/project".into(),
+            agent: ChatAgent::Claude,
+            model: Some("claude-opus-5-5".into()),
+            access: Some(Access::Full),
+            extra_dirs: None,
+            env: None,
+            effort: Some("high".into()),
+            lite: None,
+            session_id: Some("claude-session-1".into()),
+        },
+    );
+    assert!(!is_registered_chat(&key).unwrap());
+    chat_retarget_impl(&w.manager, key.clone()).unwrap();
+    assert!(w.manager.start_context(&key).is_none());
+    // The picker's next start (the page's agent and history) runs as asked.
+    let chat = Chat {
+        key: key.clone(),
+        id: key.trim_start_matches("chat:").into(),
+    };
+    let started = stale_start(
+        &w,
+        &chat,
+        ChatAgent::Codex,
+        "gpt-5.6-sol",
+        Some("[{\"role\":\"user\",\"text\":\"earlier\"}]"),
+        None,
+    );
     assert_eq!(started, Ok(()));
-    assert_eq!(
-        started_as(&w, &chat),
-        (ChatAgent::Claude, Some("claude-opus-5-5".into())),
-        "an explicit choice is not overridden"
-    );
-    let found = recorded(&chat.key).unwrap();
-    assert!(found.last_by_person, "recorded as the person's");
-    assert_eq!(
-        found.current.as_ref().map(|c| c.agent),
-        Some(ChatAgent::Claude)
-    );
-    assert_eq!(
-        found.baseline.as_ref().map(|c| c.agent),
-        Some(ChatAgent::Claude)
-    );
-    // A later stale tab that still says Codex cannot undo it.
-    end_process(&w.manager, &chat.key).unwrap();
-    w.manager.starts.lock().unwrap().remove(&chat.key);
-    let _ = stale_start(&w, &chat, ChatAgent::Codex, "gpt-5.6-sol", None, None);
-    assert_eq!(started_as(&w, &chat).0, ChatAgent::Claude);
-    end_process(&w.manager, &chat.key).unwrap();
+    assert_eq!(started_as(&w, &chat).0, ChatAgent::Codex);
+    wait_idle(&w, &chat);
+}
+
+#[test]
+fn the_queue_state_says_whether_a_chat_belongs_to_a_registered_agent() {
+    let w = World::new();
+    let chat = w.chat();
+    let state =
+        serde_json::to_value(chat_queue_state_impl(&w.manager, &chat.key).unwrap()).unwrap();
+    assert_eq!(state["registered"], true);
+    let plain =
+        serde_json::to_value(chat_queue_state_impl(&w.manager, "chat:not-registered").unwrap())
+            .unwrap();
+    assert_eq!(plain["registered"], false);
 }
 
 #[test]

@@ -113,7 +113,7 @@ import { ChatNotices } from "./components/ChatNotices";
 import { RemovedFolderBanner } from "./components/RemovedFolderBanner";
 import { RuntimeRows } from "./components/RuntimeRows";
 import { useRuntimeSwitch } from "./lib/useRuntimeSwitch";
-import { refOf, runtimeSwitchable, sameRuntime } from "./lib/runtimeSwitch";
+import { picksThroughSwitch, refOf, runtimeSwitchable, sameRuntime } from "./lib/runtimeSwitch";
 import { ChatStatus } from "./components/ChatStatus";
 import { ChatQuestionsContext, QuestionWaitingRow, type ChatQuestions } from "./components/InlineQuestions";
 import { isAnswerTurn } from "./lib/questionBlock";
@@ -2348,20 +2348,31 @@ export default function App() {
   }) ? conversationId : null;
   const runtimeNow = runtimeSwitch.runtimeOf(runtimeChat);
   const runtimeRefusal = runtimeSwitch.refusalOf(runtimeChat);
+  // A model or effort pick in a registered agent's chat is a runtime switch,
+  // whatever agents mode is: the host says which chats are registered
+  // (`chat_queue_state`), and for them `chat_switch_runtime` is the only way
+  // the runtime changes. A start never carries a choice, so the ordinary
+  // picker's retarget plus handoff is not used for these chats.
+  const switchChat = conversationId && !workerChat && picksThroughSwitch({
+    registered: runtimeSwitch.registeredOf(conversationId),
+    saved: !!openRecord,
+    started: chat.messages.length > 0,
+  }) ? conversationId : null;
+  const switchPending = runtimeSwitch.runtimeOf(switchChat)?.pending;
   const pickRuntime = useCallback((model: ModelChoice) => {
-    if (!runtimeChat) return;
+    if (!switchChat) return;
     const asked = refOf(model, effort);
     // The runtime already running is no change, unless a switch is waiting:
     // picking it takes that back.
-    if (sameRuntime(asked, refOf(choice, effort)) && !runtimeNow?.pending) return;
-    void askRuntime(runtimeChat, asked, "sheet");
-  }, [runtimeChat, effort, choice, runtimeNow?.pending, askRuntime]);
+    if (sameRuntime(asked, refOf(choice, effort)) && !switchPending) return;
+    void askRuntime(switchChat, asked, "sheet");
+  }, [switchChat, effort, choice, switchPending, askRuntime]);
   const pickRuntimeEffort = useCallback((next: Effort) => {
-    if (!runtimeChat) return;
+    if (!switchChat) return;
     const asked = refOf(choice, next);
-    if (sameRuntime(asked, refOf(choice, effort)) && !runtimeNow?.pending) return;
-    void askRuntime(runtimeChat, asked, "sheet");
-  }, [runtimeChat, effort, choice, runtimeNow?.pending, askRuntime]);
+    if (sameRuntime(asked, refOf(choice, effort)) && !switchPending) return;
+    void askRuntime(switchChat, asked, "sheet");
+  }, [switchChat, effort, choice, switchPending, askRuntime]);
   // The chat on screen counts as read, and stays that way for as long as it
   // is the one on screen — this covers both opening it (its own `updatedAt`
   // is already older than `now`) and it picking up NEW activity while being
@@ -4438,6 +4449,18 @@ export default function App() {
     [conversationId, endSession, choice.agent, tellSession],
   );
 
+  // The pickers' own entry points. In a registered agent's chat a pick is a
+  // runtime switch the host decides (`pickRuntime`); the page's `choice` and
+  // `effort` move only on its word. Anywhere else it is the ordinary picker.
+  const pickModel = useCallback(
+    (c: ModelChoice) => (switchChat ? pickRuntime(c) : changeModel(c)),
+    [switchChat, pickRuntime, changeModel],
+  );
+  const pickEffort = useCallback(
+    (e: Effort) => (switchChat ? pickRuntimeEffort(e) : changeEffort(e)),
+    [switchChat, pickRuntimeEffort, changeEffort],
+  );
+
   /** What a level is called, in the words of the agent THAT chat runs — the one
    *  on screen may by then be showing another. */
   const accessLabel = useCallback((id: string, level: AccessLevel) => {
@@ -5686,7 +5709,7 @@ export default function App() {
                   {workspaces.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select></label>
                 <label>Main agent<select aria-label="Main agent" value={choice.id} onChange={(event) => {
-                  const model = MODELS.find((item) => item.id === event.target.value); if (model) changeModel(model);
+                  const model = MODELS.find((item) => item.id === event.target.value); if (model) pickModel(model);
                 }}>
                   {MODELS.filter((item) => item.flag && (!installed || installed.includes(item.agent))).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}
                 </select></label>
@@ -6124,7 +6147,7 @@ export default function App() {
             draftStore={composerDrafts.current}
             focusOn={focusBox}
             choice={choice}
-            onChoice={changeModel}
+            onChoice={pickModel}
             started={chat.messages.length > 0}
             access={access}
             onAccess={changeAccess}
@@ -6152,7 +6175,7 @@ export default function App() {
             background={chat.background}
             jobChat={conversationId ? keyFor(conversationId) : undefined}
             effort={effort}
-            onEffort={changeEffort}
+            onEffort={pickEffort}
             lite={lite}
             onLite={changeLite}
             /* Only when there is a process to end. With nothing running the

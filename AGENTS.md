@@ -328,8 +328,13 @@ use a 15-minute cooldown. Registered agent defaults and identity do not change.
   `byPerson`/`handoffOwed`, `octiq_runtime_handoff_taken`); `homeRuntime` is
   derived from that record, never from cooldowns. The host's recorded
   runtime beats a stale tab's `chat_start` after a person's switch and after
-  automatic failover; a start carrying a page `handoff` (the ordinary picker)
-  is the person's own choice and is recorded as such. The first prompt of any
+  automatic failover. **For a registered chat the runtime changes only through
+  `chat_switch_runtime`, when the person presses: no start, send or retarget
+  carries a choice, and a page `handoff` is discarded** (a non-empty page field
+  is not fresh authorization; the host builds any history itself).
+  `chat_retarget` is refused for a registered chat, `chat_queue_state.registered`
+  tells the page, and the page sends every model or effort pick of such a chat
+  to the host whatever agents mode is. The first prompt of any
   fresh session after a provider change, automatic or not, carries the
   agent's full brief (`team::identity_brief`) outside the JSON history. Check
   it with `node scripts/test-runtime-switch.mjs`.

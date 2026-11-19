@@ -26,9 +26,12 @@
 //   10 A stale tab after an automatic failover and a restart (the cooldowns
 //      are empty, the tab still names Opus): the host's recorded runtime
 //      wins, the fresh Codex session gets the history and the brief, and
-//      Claude is never started. The ordinary picker's start (a page handoff)
-//      is the person's own choice and is recorded, so a stale tab after it
-//      cannot undo it. Asserted on the actual CLI launches and prompts.
+//      Claude is never started. Asserted on the actual CLI launches and prompts.
+//   11 A stale picker intent (a start naming Codex with the page's own
+//      handoff, after a newer switch to Opus): the chat stays on the
+//      recorded runtime, the page's history is unused, nothing is recorded as
+//      the person's, and the picker's `chat_retarget` of a registered chat is
+//      refused in words that name `chat_switch_runtime`.
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -356,25 +359,42 @@ try {
   await wait("Codex idle", idle);
   // Back to Opus is an explicit choice; a stale tab then cannot undo it.
   assert.equal((await invoke("chat_switch_runtime", { key, agent: "claude", model: "opus", effort: "high" })).state, "switched");
-  // The ordinary picker (agents mode off): retarget, then a start carrying the page's own handoff.
-  await invoke("chat_switch_runtime", { key, agent: "codex", model: "gpt-5.6-sol", effort: "high" });
-  await send("CODEX_AGAIN to run on Codex first.", "t14", { agent: "codex", model: "gpt-5.6-sol" });
-  await wait("Codex answered", idle);
-  await invoke("chat_retarget", { key });
-  const claudeStarts = providerCalls("claude").filter((c) => c.argv).length;
-  await invoke("chat_start", { key, cwd, agent: "claude", model: "opus", effort: "high", access: "auto", prompt: "PICKER_CHOICE", turnId: "t15",
-    handoff: JSON.stringify([{ role: "user", text: "earlier turn from the page" }]) });
-  const picked = await wait("the picker's choice started Claude", () => providerCalls("claude").filter((c) => c.argv).length > claudeStarts && messages("claude").find((m) => m.includes("PICKER_CHOICE")));
-  assert.match(picked, /earlier turn from the page/, "the page's own handoff is used");
-  assert.equal((await indexRow()).modelId, "claude:opus", "recorded as the person's choice");
+  // ---- 11: a stale picker intent cannot undo a newer switch (H2) -----------------
+  // Tab A picked Codex with the ordinary picker and has not sent. Tab B then
+  // switched the chat to Opus through the host. Tab A's plain Send is a
+  // chat_start that still names Codex and carries the page's own handoff.
+  // The reviewer's request, replayed. A start never carries a choice.
+  const byPerson = () => events.filter((e) => e.event === "chat-provider-switch" && e.payload.key === key && e.payload.byPerson).length;
   await wait("Claude idle", idle);
+  const refused = await invoke("chat_retarget", { key }).then(() => null, (error) => String(error.message));
+  assert.match(refused ?? "", /chat_switch_runtime/, "the picker's retarget of a registered chat is refused in words that name the switch");
+  assert.match(refused ?? "", /registered/);
+  const registeredFact = (await state()).registered;
+  assert.equal(registeredFact, true, "the host says the chat is registered, with no roster on the page");
   await restart();
+  const personSwitches = byPerson();
   const codexTurnsBefore = providerCalls("codex").filter((c) => c.method === "turn/start").length;
-  await send("STALE_AFTER_PICKER", "t16", { agent: "codex", model: "gpt-5.6-sol" });
-  await wait("Claude got the stale tab's message", () => messages("claude").some((m) => m.includes("STALE_AFTER_PICKER")), 60_000);
-  assert.equal(providerCalls("codex").filter((c) => c.method === "turn/start").length, codexTurnsBefore, "the picker's choice was not undone");
-  assert.equal((await indexRow()).modelId, "claude:opus");
-  results.scene10 = { stale: stale.length, picked: picked.length };
+  const claudeStarts = providerCalls("claude").filter((c) => c.argv).length;
+  await invoke("chat_start", { key, cwd, agent: "codex", model: "gpt-5.6-sol", effort: "high", access: "auto", prompt: "STALE_PAGE_PICKER_SEND", turnId: "t15",
+    handoff: JSON.stringify([{ role: "assistant", text: "Ready." }]), resume: null });
+  const picked = await wait("Claude (the recorded runtime) got the stale tab's message", () => providerCalls("claude").filter((c) => c.argv).length > claudeStarts && messages("claude").find((m) => m.includes("STALE_PAGE_PICKER_SEND")), 60_000);
+  assert.equal(providerCalls("codex").filter((c) => c.method === "turn/start").length, codexTurnsBefore, "Codex never started: the page's pick is not a choice");
+  assert.ok(!picked.includes("Ready."), "the page-built handoff is not used");
+  assert.equal(byPerson(), personSwitches, "a start records nothing as the person's");
+  assert.equal((await indexRow()).modelId, "claude:opus", "the newer switch stands");
+  await wait("Claude idle", idle);
+  // The same replay on a chat whose record says Codex: the page may name Opus.
+  await invoke("chat_switch_runtime", { key, agent: "codex", model: "gpt-5.6-sol", effort: "high" });
+  await restart();
+  const claudeStartsB = providerCalls("claude").filter((c) => c.argv).length;
+  await invoke("chat_start", { key, cwd, agent: "claude", model: "opus", effort: "high", access: "auto", prompt: "STALE_OPUS_WITH_HANDOFF", turnId: "t16",
+    handoff: JSON.stringify([{ role: "user", text: "earlier turn from the page" }]), resume: null });
+  const staleOpus = await wait("Codex got it", () => messages("codex").find((m) => m.includes("STALE_OPUS_WITH_HANDOFF")), 60_000);
+  assert.ok(!staleOpus.includes("earlier turn from the page"), "the page's history is never used");
+  assert.equal(providerCalls("claude").filter((c) => c.argv).length, claudeStartsB, "Claude was not started");
+  assert.equal((await indexRow()).modelId.startsWith("codex:"), true);
+  results.scene10 = { stale: stale.length };
+  results.scene11 = { picked: picked.length, staleOpus: staleOpus.length, refused };
   results.pass = true;
 } catch (error) {
   results.pass = false; results.error = String(error.stack ?? error);

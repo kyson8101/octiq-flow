@@ -3944,15 +3944,19 @@ fn chat_start_with_user_turn(
     };
     let registered_chat = registered.is_some();
     // What the host recorded of this chat's runtime. For a registered chat
-    // the record wins over the page: a stale tab or a cache that still names
-    // an older runtime must not undo the person's switch or an automatic
-    // failover. Going back is an explicit choice (`chat_switch_runtime`).
-    // The exception is a start that carries the page's own `handoff`: that
-    // is the ordinary model picker's explicit choice (`chat_retarget`, then
-    // this start), recorded below as the person's. A runtime the record
-    // holds that is itself invalid or limited is not forced: the preset
-    // recovery and the failover routing below decide.
-    let explicit_choice = handoff.as_deref().is_some_and(|h| !h.trim().is_empty());
+    // the runtime changes ONLY through `chat_switch_runtime`, at the moment
+    // the person presses: no start carries a choice, whatever it holds. The
+    // record wins over the page, so a stale tab, a cache or a page-built
+    // `handoff` that still names an older runtime cannot undo the person's
+    // switch or an automatic failover. A runtime the record holds that is
+    // itself invalid or limited is not forced: the preset recovery and the
+    // failover routing below decide.
+    if registered_chat {
+        // The page's history is data from one tab at one moment; the host's
+        // own `provider_history` is built below whenever a fresh session
+        // needs one.
+        handoff = None;
+    }
     let recorded_runtime = if registered_chat {
         runtime_switch::recorded(&key)?
     } else {
@@ -3960,15 +3964,13 @@ fn chat_start_with_user_turn(
     };
     let page_runtime = (agent, model.clone(), effort.clone());
     let mut host_runtime_won = false;
-    if !explicit_choice {
-        if let Some(runtime) = recorded_runtime.current_runtime().filter(|runtime| {
-            crate::agent_provider::validate_model(runtime.agent, runtime.model.as_deref()).is_ok()
-        }) {
-            agent = runtime.agent;
-            model = runtime.model.clone();
-            effort = runtime.effort.clone();
-            host_runtime_won = page_runtime != (agent, model.clone(), effort.clone());
-        }
+    if let Some(runtime) = recorded_runtime.current_runtime().filter(|runtime| {
+        crate::agent_provider::validate_model(runtime.agent, runtime.model.as_deref()).is_ok()
+    }) {
+        agent = runtime.agent;
+        model = runtime.model.clone();
+        effort = runtime.effort.clone();
+        host_runtime_won = page_runtime != (agent, model.clone(), effort.clone());
     }
     let source = crate::provider_failover::Settings {
         agent,
@@ -3983,15 +3985,6 @@ fn chat_start_with_user_turn(
     {
         return Ok(());
     }
-    let preset_runtime = registered
-        .as_ref()
-        .map(|preset| crate::provider_failover::Settings {
-            agent: preset.agent,
-            model: Some(preset.model.clone()),
-            effort: preset.effort.clone(),
-            access: source.access,
-        })
-        .unwrap_or_else(|| source.clone());
     let mut defaults = registered
         .map(|preset| crate::provider_failover::Settings {
             agent: preset.agent,
@@ -4233,27 +4226,6 @@ fn chat_start_with_user_turn(
             provider_switch::announce_runtime_change_with(&manager, &key, &requested_source, &source,
                 "octiq_registered_recovered", "Recovered this chat's compatible provider and exact model in a fresh session. Earlier transcript and settings remain in the record.", previous_resume.as_deref(),
                 if keeps_baseline { json!({ "keepsBaseline": true }) } else { Value::Null }, None)?;
-        } else if explicit_choice && registered_chat {
-            // The ordinary picker's choice is the person's own: record it, so a
-            // later stale tab cannot undo it.
-            let current = recorded_runtime.current_runtime();
-            let changed = match current {
-                Some(current) => !runtime_switch::same_choice(current, &source),
-                None => !runtime_switch::same_choice(&source, &preset_runtime),
-            };
-            if changed {
-                provider_switch::announce_runtime_change_with(
-                    &manager,
-                    &key,
-                    current.unwrap_or(&preset_runtime),
-                    &source,
-                    "octiq_provider_switched",
-                    "Switched with the model picker by your choice. The registration is unchanged.",
-                    previous_resume.as_deref(),
-                    json!({ "byPerson": true, "handoffOwed": false, "sessionKept": false }),
-                    None,
-                )?;
-            }
         }
     } else if recovered {
         if let Some(start) = previous_start {
@@ -9553,12 +9525,38 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
     Ok(())
 }
 
+/// Whether this chat belongs to a registered agent (a lead's thread, or a
+/// front desk): the chats whose runtime only `chat_switch_runtime` changes.
+/// Derived from the roster, never from the page.
+pub(crate) fn is_registered_chat(key: &str) -> Result<bool, String> {
+    if key.starts_with("chat:orch-") {
+        return Ok(false);
+    }
+    Ok(crate::team::defaults_for_chat(&crate::team::default_path(), key)?.is_some())
+}
+
+/// What `chat_retarget` says to a registered agent's chat.
+pub(crate) const REGISTERED_RETARGET: &str = "This chat belongs to a registered agent, so the model picker cannot retarget it. Change its provider, model or effort with chat_switch_runtime (the runtime sheet); that is the only way, and it keeps the conversation.";
+
 /// End only the host provider process so the same application conversation can
 /// continue on another model. The old native session cannot be resumed by the
 /// backend during the handoff; the next browser send supplies a fresh start
 /// context for the selected provider. Permissions, access, and the transcript
 /// belong to the user conversation and remain intact.
 pub fn chat_retarget_impl(manager: &ChatManager, key: String) -> Result<(), String> {
+    // A registered agent's chat changes its runtime only through
+    // `chat_switch_runtime`, at the moment the person presses. A retarget
+    // here would leave a deferred page intent (a start that carries the
+    // picker's choice later), which a newer switch from another tab must
+    // never be undone by.
+    // Only a roster that was READ and names the chat refuses: ending a
+    // process never waits on a file in the profile (a roster that cannot be
+    // read, because the profile folder is away, changes nothing here). A
+    // start never carries a page choice for a registered chat, so ending its
+    // process leaves no intent behind either way.
+    if matches!(is_registered_chat(&key), Ok(true)) {
+        return Err(REGISTERED_RETARGET.into());
+    }
     cancel_auto_resume(manager, &key, "cancelled when the agent changed");
     end_process(manager, &key)?;
     manager
@@ -11203,16 +11201,24 @@ pub struct ChatQueueState {
     /// limited now, and when it resets if the provider said.
     #[serde(skip_serializing_if = "Option::is_none")]
     home_runtime: Option<runtime_switch::HomeRuntime>,
+    /// The chat belongs to a registered agent: its runtime changes only
+    /// through `chat_switch_runtime`, whatever agents mode is. Derived from
+    /// the roster on every read, so it holds after a reload and with agents
+    /// mode off. Absent (older host) means the page treats the chat as
+    /// ordinary.
+    registered: bool,
 }
 
 pub fn chat_queue_state_impl(manager: &ChatManager, key: &str) -> Result<ChatQueueState, String> {
     // Read before the chat's locks are taken: it reads the record.
     let (pending_runtime, home_runtime) = runtime_switch::queue_fields(manager, key);
+    let registered = is_registered_chat(key).unwrap_or(false);
     // Match the send/reaper lock order, so an enqueue cannot cross this read.
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     let handoffs = manager.handoffs.lock().map_err(|e| e.to_string())?;
     let queues = manager.queued_turns.lock().map_err(|e| e.to_string())?;
     Ok(ChatQueueState {
+        registered,
         pending_runtime,
         home_runtime,
         held: manager.waits_because(key),

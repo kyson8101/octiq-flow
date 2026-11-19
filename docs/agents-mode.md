@@ -179,13 +179,29 @@ original first message is past the window.
   only because a session was dropped on the runtime already held
   (`keepsBaseline`) does not move the chat's baseline. (`chat_send` names no
   runtime.)
-* **The ordinary picker is the exception, and it is the person's choice.** A
-  registered chat opened with agents mode off changes model with `chat_retarget`
-  and then a `chat_start` that carries the page's own `handoff`. A start with a
-  non-empty page `handoff` is not overridden: it is recorded as the person's
-  switch (`octiq_provider_switched` with `byPerson`) when it differs from the
-  recorded runtime, so a later stale tab cannot undo it. (Before this, the
-  person's earlier switch overrode the picker's start.)
+* **For a registered chat the runtime changes only through
+  `chat_switch_runtime`, at the moment the person presses. No start, send or
+  retarget ever changes it, whatever it carries.** A `chat_start` that carries
+  a page `handoff` (the old ordinary picker's start) is not a choice: for a
+  registered chat the page's `handoff` is discarded, the recorded runtime runs,
+  nothing is recorded as the person's, and any history a fresh session needs
+  is the host's own `provider_history` plus the full brief, never a page's
+  (which can be a stale tab's). A field that is merely non-empty is not fresh
+  authorization: a tab that picked Codex and sat, then sent after another tab
+  switched to Opus, stays on Opus. `chat_retarget` of a registered chat is
+  refused in words that name `chat_switch_runtime` (`REGISTERED_RETARGET`), so
+  no deferred page intent is left behind. The orchestration master start
+  (`orchestration_master_start`) goes through the same start and follows the
+  same rule: a registered coordinator keeps its recorded runtime and its own
+  native session. An unregistered chat keeps the ordinary picker (`chat_retarget`
+  then a start with the page's `handoff`) unchanged.
+* **The page learns a chat is registered from the host**, not from the roster
+  cache: `chat_queue_state` carries `registered` (derived from the roster on
+  every read, so it holds with agents mode off and after a reload; absent from
+  an older host, which the page treats as an ordinary chat). In a registered,
+  saved, sent chat every model or effort pick, from the composer's picker, its
+  settings sheet or the run setup's main-agent select, is a
+  `chat_switch_runtime` and the page's settings move only on the host's word.
 * **Baseline.** Automatic failover leaves the baseline alone. A person's pick
   becomes the chat's new baseline, so a later failover returns to it; picking
   the home runtime therefore ends the fallback (`homeRuntime` disappears).

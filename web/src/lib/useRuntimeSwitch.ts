@@ -14,7 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "./bridge";
 import { once, IN_FLIGHT } from "./inFlight";
 import {
-  NO_RUNTIMES, readAnswer, readHome, readRuntime, reduceRuntime, runtimeFlight, takeAnswer,
+  NO_RUNTIMES, readAnswer, readHome, readRegistered, readRuntime, reduceRuntime, runtimeFlight, takeAnswer,
   type ChatRuntime, type RuntimeAction, type RuntimeRef, type RuntimeState, type SwitchAnswer,
 } from "./runtimeSwitch";
 
@@ -33,6 +33,10 @@ export function useRuntimeSwitch(
   onSwitched: (chatId: string, answer: SwitchAnswer) => void,
 ) {
   const [state, setState] = useState<RuntimeState>(NO_RUNTIMES);
+  // Which chats the host says belong to a registered agent (`chat_queue_state`
+  // `registered`): a fact the host derives from the roster, so it holds with
+  // agents mode off and after a reload. Absent until the host has said.
+  const [registered, setRegistered] = useState<Readonly<Record<string, boolean>>>({});
   const [refusals, setRefusals] = useState<Readonly<Record<string, SwitchRefusal>>>({});
   const held = useRef(state);
   const switched = useRef(onSwitched);
@@ -78,9 +82,11 @@ export function useRuntimeSwitch(
     const chatId = openChatId;
     const rev = held.current[chatId]?.rev ?? 0;
     bridge
-      .invoke<{ pendingRuntime?: unknown; homeRuntime?: unknown }>("chat_queue_state", { key: `chat:${chatId}` })
+      .invoke<{ pendingRuntime?: unknown; homeRuntime?: unknown; registered?: unknown }>("chat_queue_state", { key: `chat:${chatId}` })
       .then((queue) => {
         if (!current) return;
+        const fact = readRegistered(queue?.registered);
+        if (fact !== undefined) setRegistered((before) => (before[chatId] === fact ? before : { ...before, [chatId]: fact }));
         dispatch({
           type: "queue", chatId, rev,
           pending: readRuntime(queue?.pendingRuntime),
@@ -149,6 +155,10 @@ export function useRuntimeSwitch(
     /** What the page holds about one chat's runtime. */
     runtimeOf: (chatId: string | null | undefined): ChatRuntime | undefined => (chatId ? state[chatId] : undefined),
     refusalOf: (chatId: string | null | undefined): SwitchRefusal | undefined => (chatId ? refusals[chatId] : undefined),
+    /** Whether the host says this chat belongs to a registered agent: its
+     *  runtime then changes only through `request`, never a start. Undefined
+     *  until the host has said (an older host never does). */
+    registeredOf: (chatId: string | null | undefined): boolean | undefined => (chatId ? registered[chatId] : undefined),
     request,
     dismissRefusal,
   };

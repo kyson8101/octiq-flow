@@ -25,6 +25,12 @@
 //   8  An older reply is not applied over a newer host event: the reply to a
 //      Sol switch is held in transit, a newer host switch back to Opus
 //      arrives, then the older reply is released. The chip stays on Opus.
+//   9  Agents mode OFF, a registered agent's chat (the host says so in
+//      `chat_queue_state`): the ordinary model picker sends
+//      `chat_switch_runtime` and nothing else (no `chat_retarget`, no
+//      `chat_start`), and the picker's text moves only on the host's word.
+//   10 Agents mode OFF, an ordinary chat (the host says it is not
+//      registered): the picker is unchanged, a local choice and no switch.
 //
 // At 1280 (with the git column, so the chat is a narrow column) and 390, with
 // screenshots in the theme named by OCTIQ_THEME (dark by default).
@@ -58,7 +64,7 @@ const head = {
 let host;
 const fresh = (change = {}) => ({
   modelId: "claude:opus", effort: "high", access: "read",
-  home: null, pending: null, switchMode: "switched", delay: 0, refusal: "", calls: [], polls: 0, ...change,
+  home: null, pending: null, switchMode: "switched", delay: 0, refusal: "", calls: [], commands: [], registered: true, polls: 0, ...change,
 });
 const MODEL_OF = {
   "claude:opus": { agent: "claude", model: "opus" },
@@ -97,7 +103,7 @@ function resultFor(request) {
       // start of the dev server does not eat it.
       if (host.home?.resetsInMs && !host.home.resetsAt) host.home.resetsAt = Math.ceil((Date.now() + host.home.resetsInMs) / 1000);
       return {
-        live: false, queuedTurnIds: [],
+        live: false, queuedTurnIds: [], registered: host.registered,
         ...(host.home ? { homeRuntime: Object.fromEntries(Object.entries(host.home).filter(([name]) => name !== "resetsInMs")) } : {}),
         ...(host.pending ? { pendingRuntime: host.pending } : {}),
       };
@@ -153,19 +159,19 @@ const server = await createServer({
 const errors = [];
 const report = { artifacts, theme, scenes: {} };
 
-async function open(browser, { width, height, phone = false, chatId = "main", composer = true }) {
+async function open(browser, { width, height, phone = false, chatId = "main", composer = true, agentsMode = true }) {
   const context = await browser.newContext({
     viewport: { width, height }, reducedMotion: "reduce",
     ...(phone ? { hasTouch: true, isMobile: true } : {}),
   });
   host.chatId = chatId;
-  await context.addInitScript(({ stored, mode, gitColumn }) => {
-    localStorage.setItem("octiq.agentsMode", "on");
+  await context.addInitScript(({ stored, mode, gitColumn, agentsMode }) => {
+    localStorage.setItem("octiq.agentsMode", agentsMode ? "on" : "off");
     localStorage.setItem("octiq.v2.gitColumn", gitColumn ? "1" : "0");
     localStorage.setItem("octiq.theme", mode);
     localStorage.setItem("octiq.v2.theme", mode);
     localStorage.setItem("octiq.v2.conversations", JSON.stringify(stored));
-  }, { stored: [{ ...chatRecord(chatId, host.modelId, host.access), permission: host.access, messages }], mode: theme, gitColumn: !phone });
+  }, { stored: [{ ...chatRecord(chatId, host.modelId, host.access), permission: host.access, messages }], mode: theme, gitColumn: !phone, agentsMode });
   await context.route("**/token", (route) => route.fulfill({ body: "mock-token" }));
   await context.route("**/auth", (route) => route.fulfill({ body: "ok" }));
   await context.routeWebSocket(/.*/, (ws) => {
@@ -176,6 +182,7 @@ async function open(browser, { width, height, phone = false, chatId = "main", co
       if (["chat_subscribe", "orchestration_summary", "orchestration_run_detail"].includes(request.cmd)) {
         ws.send(JSON.stringify({ t: "reply", id: request.id, ok: false, error: `'${request.cmd}' is not available on this backend` })); return;
       }
+      host.commands.push(request.cmd);
       if (request.cmd === "chat_switch_runtime") { void switchRuntime(ws, request); return; }
       ws.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: resultFor(request) }));
     });
@@ -395,6 +402,45 @@ async function scenes(browser, size) {
     await page.waitForTimeout(1500);
     assert.match(await runsText(page), /^opus latest · high · Plan$/, `${at}: the older reply did not put Sol back (${await runsText(page)})`);
     await shot(page, `${at}-8-older-reply`);
+    await context.close();
+  }
+
+  // 9  Agents mode off, a registered agent's chat: the ordinary picker is a
+  //    runtime switch, asked of the host and applied only on its word.
+  {
+    host = fresh({ delay: 600 });
+    const { context, page } = await open(browser, { ...size, agentsMode: false });
+    const trigger = page.locator(".model-trigger:visible").first();
+    await trigger.waitFor();
+    assert.match(await trigger.innerText(), /opus/i, `${at}: the picker starts on Opus`);
+    assert.equal(await page.locator(".composer-identity").count(), 0, `${at}: no agent chip with agents mode off`);
+    await trigger.click();
+    const menu = page.locator(".picker-menu.is-models:visible, .settings-sheet:visible").first();
+    await menu.waitFor();
+    await menu.getByRole("tab", { name: /Codex/ }).click();
+    await menu.locator(".picker-item, .mp-card", { hasText: "Sol" }).first().click();
+    await page.waitForTimeout(250);
+    assert.match(await page.locator(".model-trigger:visible").first().innerText(), /opus/i, `${at}: the picker does not move on the press, only on the host's word`);
+    await page.waitForFunction(() => /sol/i.test(document.querySelector(".model-trigger")?.textContent ?? ""), null, { timeout: 10_000 });
+    assert.deepEqual(host.calls, [{ key: `chat:${host.chatId}`, agent: "codex", model: "gpt-5.6-sol", effort: "high" }], `${at}: one chat_switch_runtime with the picked runtime`);
+    assert.equal(host.commands.filter((cmd) => cmd === "chat_retarget" || cmd === "chat_start").length, 0, `${at}: no retarget and no start carries the choice (${host.commands.filter((cmd) => /chat_(retarget|start|send)/.test(cmd))})`);
+    await shot(page, `${at}-9-picker-registered-agents-off`);
+    await context.close();
+  }
+
+  // 10 Agents mode off, an ordinary chat: today's picker, no switch.
+  {
+    host = fresh({ registered: false });
+    const { context, page } = await open(browser, { ...size, agentsMode: false });
+    const trigger = page.locator(".model-trigger:visible").first();
+    await trigger.waitFor();
+    await trigger.click();
+    const menu = page.locator(".picker-menu.is-models:visible, .settings-sheet:visible").first();
+    await menu.waitFor();
+    await menu.getByRole("tab", { name: /Codex/ }).click();
+    await menu.locator(".picker-item, .mp-card", { hasText: "Sol" }).first().click();
+    await page.waitForFunction(() => /sol/i.test(document.querySelector(".model-trigger")?.textContent ?? ""), null, { timeout: 10_000 });
+    assert.equal(host.calls.length, 0, `${at}: an ordinary chat never asks the host to switch`);
     await context.close();
   }
 }

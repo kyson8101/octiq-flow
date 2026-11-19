@@ -1786,6 +1786,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 .ok_or("The run's project no longer exists.")?;
             let agent: crate::agent_chat::ChatAgent = arg(&args, "agent")?;
             let handoff: Option<String> = arg(&args, "handoff")?;
+            // A registered agent's chat carries no page choice: the host runs
+            // its recorded runtime and builds any history itself, so its own
+            // session is kept for the host to judge.
+            let handoff = if crate::agent_chat::is_registered_chat(&actor)? {
+                None
+            } else {
+                handoff
+            };
             // A provider switch always starts a fresh native session, even if
             // an older index save is still in flight in another browser.
             let resume = if handoff.is_some() {

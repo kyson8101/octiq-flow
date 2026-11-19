@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MODELS } from "./agentProviders";
 import {
-  NO_RUNTIMES, antigravityHold, clockWords, homeWords, msToReset, pendingLine, readAnswer, readHome, readRuntime,
+  NO_RUNTIMES, antigravityHold, clockWords, homeWords, msToReset, pendingLine, picksThroughSwitch, readAnswer, readHome, readRegistered, readRuntime,
   reduceRuntime, refOf, runtimeSwitchable, sameRuntime, shortModelName, takeAnswer, type HomeRuntime, type RuntimeState,
 } from "./runtimeSwitch";
 
@@ -188,5 +188,22 @@ describe("who is offered it", () => {
     expect(antigravityHold("antigravity", "manual")).toMatch(/Auto or Manual/);
     for (const level of ["read", "edits", "full"] as const) expect(antigravityHold("antigravity", level)).toBeUndefined();
     expect(antigravityHold("claude", "auto")).toBeUndefined();
+  });
+});
+
+describe("a pick in a registered agent's chat is a runtime switch, whatever agents mode is", () => {
+  it("reads only a boolean as the host's word", () => {
+    expect(readRegistered(true)).toBe(true);
+    expect(readRegistered(false)).toBe(false);
+    for (const odd of [undefined, null, "true", 1, {}]) expect(readRegistered(odd)).toBeUndefined();
+  });
+
+  it("goes through the switch only for a registered, saved, sent chat", () => {
+    expect(picksThroughSwitch({ registered: true, saved: true, started: true })).toBe(true);
+    expect(picksThroughSwitch({ registered: false, saved: true, started: true })).toBe(false);
+    // An older host says nothing: the chat stays on the ordinary picker.
+    expect(picksThroughSwitch({ registered: undefined, saved: true, started: true })).toBe(false);
+    expect(picksThroughSwitch({ registered: true, saved: false, started: true })).toBe(false);
+    expect(picksThroughSwitch({ registered: true, saved: true, started: false })).toBe(false);
   });
 });

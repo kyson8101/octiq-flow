@@ -216,6 +216,22 @@ export function runtimeSwitchable(chat: { identity: boolean; removed: boolean; w
   return chat.identity && !chat.removed && !chat.workerChat && !chat.frontDesk && chat.saved && chat.started;
 }
 
+/** The host's word that a chat belongs to a registered agent, from
+ *  `chat_queue_state`. Anything but a boolean says nothing (an older host). */
+export function readRegistered(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+/** Whether a model or effort pick in this chat goes to the host as a runtime
+ *  switch. For a registered agent's chat that is the only way its runtime
+ *  changes, whatever agents mode is: the ordinary picker's retarget plus a
+ *  page-built handoff on the next start is never used for it. A chat the host
+ *  has not called registered, or that nobody has sent a message in yet,
+ *  keeps the ordinary picker. */
+export function picksThroughSwitch(chat: { registered: boolean | undefined; saved: boolean; started: boolean }): boolean {
+  return chat.registered === true && chat.saved && chat.started;
+}
+
 /** Antigravity cannot ask, so the host refuses it for a chat at guarded Auto
  *  or Manual (the rule failover uses). The reason in words, or nothing. */
 export function antigravityHold(agent: Provider, access: AccessLevel): string | undefined {
