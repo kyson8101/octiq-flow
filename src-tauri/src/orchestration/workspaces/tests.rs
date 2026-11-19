@@ -1670,6 +1670,20 @@ fn a_reopened_approved_task_starts_while_a_later_revision_waits() {
     );
 }
 
+/// A recorded line without the host's own record time (`octiq_at`), which
+/// every recorded line carries and which must be a number. What a test compares
+/// is the line's own content.
+fn without_record_time(mut event: serde_json::Value) -> serde_json::Value {
+    let at = event
+        .as_object_mut()
+        .and_then(|object| object.remove(crate::transcript::AT));
+    assert!(
+        at.as_ref().is_some_and(|at| at.is_u64()),
+        "a recorded line carries its record time: {at:?}"
+    );
+    event
+}
+
 /// Review H5, and the person's decision of 2026-10-11: a reopened task
 /// keeps its approval and starts on its new instructions, as the same
 /// worker and nothing else. The task keeps a record of each reopen, and
@@ -1714,7 +1728,7 @@ fn a_reopened_task_keeps_its_approval_and_its_shape_and_says_what_it_was_told() 
     let told = reopened_in("chat:master", &task.id);
     assert_eq!(told.len(), 1, "one event for one reopen");
     assert_eq!(
-        told[0],
+        without_record_time(told[0].clone()),
         json!({
             "type": "octiq_task_reopened",
             "runId": run.id,
@@ -1976,7 +1990,7 @@ fn a_reopened_task_does_not_start_until_its_notice_is_in_the_coordinators_chat()
     let told = work.told();
     assert_eq!(told.len(), 1, "{told:?}");
     assert_eq!(
-        told[0],
+        without_record_time(told[0].clone()),
         json!({
             "type": "octiq_task_reopened",
             "runId": work.run.id,
