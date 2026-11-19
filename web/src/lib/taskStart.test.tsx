@@ -9,10 +9,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 import actionsSourceRaw from "./runDecisionActions.ts?raw";
 import chatSourceRaw from "../components/ChatRunDecisionCards.tsx?raw";
 import panelSourceRaw from "../components/OrchestrationPanel.tsx?raw";
+import newRunSourceRaw from "../components/NewRun.tsx?raw";
+import runSummarySourceRaw from "../components/RunSummaryParts.tsx?raw";
 import { lf } from "./sourceText";
 
 // Read with one kind of line end, so a pattern may name `\n` on a CRLF checkout too.
-const panelSource = lf(panelSourceRaw);
+// The panel's text comes first and the files its parts moved to follow it, so a
+// scan that slices by position still cuts the panel and a stray sender in either
+// moved file is counted and refused like one in the panel.
+const panelSource = lf([panelSourceRaw, newRunSourceRaw, runSummarySourceRaw].join("\n"));
 
 /** Every component file, as text: what a row draws inside its tabs is
  *  followed into the helpers that draw it. */

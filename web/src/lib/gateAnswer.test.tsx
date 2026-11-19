@@ -13,10 +13,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import actionsSourceRaw from "./runDecisionActions.ts?raw";
 import chatSourceRaw from "../components/ChatRunDecisionCards.tsx?raw";
 import panelSourceRaw from "../components/OrchestrationPanel.tsx?raw";
+import newRunSourceRaw from "../components/NewRun.tsx?raw";
+import runSummarySourceRaw from "../components/RunSummaryParts.tsx?raw";
 import { lf } from "./sourceText";
 
 // Read with one kind of line end, so a pattern may name `\n` on a CRLF checkout too.
-const panelSource = lf([panelSourceRaw, actionsSourceRaw, chatSourceRaw].join("\n"));
+const panelSource = lf([panelSourceRaw, newRunSourceRaw, runSummarySourceRaw, actionsSourceRaw, chatSourceRaw].join("\n"));
 
 vi.mock("./bridge", () => ({
   bridge: { invoke: async () => null, on: () => () => {}, onState: () => () => {} },
