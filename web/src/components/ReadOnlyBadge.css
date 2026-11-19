@@ -15,4 +15,4 @@
 /* Where a worker's approval card is shown in its main chat. */
 .worker-approval-context { margin: 12px 20px 4px; color: var(--fg-2); font-size: 12px; }
 /* A worker refusal nobody can approve is a row of the group above the
-   composer: `.worker-refusal-line` in ChatStatus.css. */
+   composer (ChatStatus.css). */

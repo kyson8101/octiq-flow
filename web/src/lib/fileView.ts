@@ -1,7 +1,7 @@
 // Card 89 — the decisions both file frames were making, separately.
 //
 // Showing a file was written twice: `FilePanel` for the chat dock and
-// `EditorMode` for the editor. Both read through `read_file_preview`, both save
+// an editor mode (since removed). Both read through `read_file_preview`, both save
 // through `write_file`, both make a truncated file read-only, both branch on
 // text/image/pdf — and, inevitably, they drifted. The one that mattered: the
 // real editor (CodeMirror, with syntax colouring, search and undo) was wired
