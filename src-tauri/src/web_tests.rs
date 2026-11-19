@@ -45,6 +45,25 @@ async fn a_git_backlog_never_holds_up_other_commands() {
 }
 
 /// Build a HeaderMap from `(name, value)` pairs, for the tests below.
+/// A new Claude agent with nothing registered but who it is.
+fn claude_draft(name: &str, role: &str, model: &str) -> crate::team::TeamDraft {
+    crate::team::TeamDraft {
+        id: None,
+        name: name.into(),
+        role: role.into(),
+        agent: crate::agent_chat::ChatAgent::Claude,
+        model: model.into(),
+        effort: None,
+        access: None,
+        project_id: None,
+        reports_to: None,
+        avatar: None,
+        team_id: None,
+        persistent_prompt: None,
+        desktop_tools: None,
+    }
+}
+
 fn headers(pairs: &[(&str, &str)]) -> axum::http::HeaderMap {
     use axum::http::header::HeaderName;
     let mut map = axum::http::HeaderMap::new();
@@ -1538,25 +1557,7 @@ async fn an_agent_reads_the_roster_but_changes_nothing_the_person_did_not_approv
     let chats = Arc::new(crate::agent_chat::ChatManager::default());
     let wiring = crate::handover::Wiring::scratch();
     let team = wiring.team.clone();
-    crate::team::save(
-        &team,
-        crate::team::TeamDraft {
-            id: None,
-            name: "Potato".into(),
-            role: "Leads.".into(),
-            agent: crate::agent_chat::ChatAgent::Claude,
-            model: "opus".into(),
-            effort: None,
-            access: None,
-            project_id: None,
-            reports_to: None,
-            avatar: None,
-            team_id: None,
-            persistent_prompt: None,
-            desktop_tools: None,
-        },
-    )
-    .unwrap();
+    crate::team::save(&team, claude_draft("Potato", "Leads.", "opus")).unwrap();
     let lead = chats.test_launch("chat:lead");
     let cfg = WebConfig {
         token: "hook-token".into(),
@@ -1609,25 +1610,7 @@ async fn an_agent_with_work_running_is_not_removed_by_the_tool_or_by_the_page() 
     let team = wiring.team.clone();
     // The page's command reads the roster from its usual place.
     let _team = crate::team::use_test_path(team.clone());
-    let nova = crate::team::save(
-        &team,
-        crate::team::TeamDraft {
-            id: None,
-            name: "Nova".into(),
-            role: "Builds.".into(),
-            agent: crate::agent_chat::ChatAgent::Claude,
-            model: "sonnet".into(),
-            effort: None,
-            access: None,
-            project_id: None,
-            reports_to: None,
-            avatar: None,
-            team_id: None,
-            persistent_prompt: None,
-            desktop_tools: None,
-        },
-    )
-    .unwrap();
+    let nova = crate::team::save(&team, claude_draft("Nova", "Builds.", "sonnet")).unwrap();
     let run = run(&store);
     let worker = running_worker_of(
         &store,
@@ -1720,25 +1703,7 @@ async fn a_worker_that_has_settled_still_cannot_propose_a_roster_or_lessons_chan
     let chats = Arc::new(chats);
     let wiring = crate::handover::Wiring::scratch();
     let team = wiring.team.clone();
-    let potato = crate::team::save(
-        &team,
-        crate::team::TeamDraft {
-            id: None,
-            name: "Potato".into(),
-            role: "Leads.".into(),
-            agent: crate::agent_chat::ChatAgent::Claude,
-            model: "opus".into(),
-            effort: None,
-            access: None,
-            project_id: None,
-            reports_to: None,
-            avatar: None,
-            team_id: None,
-            persistent_prompt: None,
-            desktop_tools: None,
-        },
-    )
-    .unwrap();
+    let potato = crate::team::save(&team, claude_draft("Potato", "Leads.", "opus")).unwrap();
     let cfg = WebConfig {
         token: "hook-token".into(),
         ..WebConfig::default()
@@ -1959,25 +1924,7 @@ async fn a_room_seat_cannot_propose_the_chats_lessons() {
     let team = wiring.team.clone();
     let chat = format!("chat:lessons-seated-{}", uuid::Uuid::new_v4().simple());
     let seat_key = format!("{chat}#2");
-    let potato = crate::team::save(
-        &team,
-        crate::team::TeamDraft {
-            id: None,
-            name: "Potato".into(),
-            role: "Leads.".into(),
-            agent: crate::agent_chat::ChatAgent::Claude,
-            model: "opus".into(),
-            effort: None,
-            access: None,
-            project_id: None,
-            reports_to: None,
-            avatar: None,
-            team_id: None,
-            persistent_prompt: None,
-            desktop_tools: None,
-        },
-    )
-    .unwrap();
+    let potato = crate::team::save(&team, claude_draft("Potato", "Leads.", "opus")).unwrap();
     crate::team::record_lead(&team, &chat, &potato, "project", false).unwrap();
     let cfg = WebConfig {
         token: "hook-token".into(),

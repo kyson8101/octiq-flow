@@ -721,6 +721,23 @@ pub(crate) fn launch_for(task_id: &str) -> WorkerLaunch {
     }
 }
 
+/// What the run panel says a person had on screen when they decided.
+fn panel_view_after_two_seconds() -> CardView {
+    CardView {
+        surface: "panel".into(),
+        shown_ms: Some(2_000),
+        updated_ms: None,
+    }
+}
+
+/// [`launch_for`] in a worktree of its own.
+fn launch_in_worktree(task_id: &str) -> WorkerLaunch {
+    WorkerLaunch {
+        new_worktree: Some(true),
+        ..launch_for(task_id)
+    }
+}
+
 pub(super) fn assigned(
     store: &OrchestrationStore,
     run: &Run,
@@ -2244,11 +2261,7 @@ fn rejecting_an_amendment_withdraws_only_new_tasks_and_keeps_the_run_alive() {
             Some(&[second.id.clone()]),
             Some(revision),
             None,
-            CardView {
-                surface: "panel".into(),
-                shown_ms: Some(2_000),
-                updated_ms: None,
-            },
+            panel_view_after_two_seconds(),
         )
         .unwrap();
     assert_eq!(rejected.status, RunStatus::Running);
@@ -2307,11 +2320,7 @@ fn rejecting_new_work_on_a_legacy_approved_run_never_stops_its_worker() {
             Some(&[new_task.id.clone()]),
             Some(revision),
             None,
-            CardView {
-                surface: "panel".into(),
-                shown_ms: Some(2_000),
-                updated_ms: None,
-            },
+            panel_view_after_two_seconds(),
         )
         .unwrap();
 
@@ -2451,11 +2460,7 @@ fn rejecting_a_legacy_approved_plan_with_missing_markers_withdraws_only_new_work
             Some(&[new_task.id.clone()]),
             Some(revision),
             None,
-            CardView {
-                surface: "panel".into(),
-                shown_ms: Some(2_000),
-                updated_ms: None,
-            },
+            panel_view_after_two_seconds(),
         )
         .unwrap();
 
@@ -2640,11 +2645,7 @@ fn rejection_never_withdraws_terminal_active_or_history_bearing_tasks() {
             Some(&[new_task.id.clone()]),
             Some(revision),
             None,
-            CardView {
-                surface: "panel".into(),
-                shown_ms: Some(2_000),
-                updated_ms: None,
-            },
+            panel_view_after_two_seconds(),
         )
         .unwrap();
 
@@ -2702,11 +2703,7 @@ fn rejecting_a_resize_restores_the_approved_size_and_dependency_flow() {
             Some(&[dependant.id.clone()]),
             Some(revision),
             None,
-            CardView {
-                surface: "panel".into(),
-                shown_ms: Some(2_000),
-                updated_ms: None,
-            },
+            panel_view_after_two_seconds(),
         )
         .unwrap();
 
@@ -2941,11 +2938,7 @@ fn concurrent_approve_and_reject_record_exactly_one_decision() {
             Some(&seen),
             Some(revision),
             None,
-            CardView {
-                surface: "panel".into(),
-                shown_ms: Some(2_000),
-                updated_ms: None,
-            },
+            panel_view_after_two_seconds(),
         )
     });
     let approved_view = approve.join().unwrap();
@@ -3922,15 +3915,7 @@ fn dependencies_become_ready_only_after_their_prerequisite_completes() {
     assert_eq!(first.status, TaskStatus::Ready);
     assert_eq!(second.status, TaskStatus::Pending);
 
-    let launch = WorkerLaunch {
-        task_id: first.id.clone(),
-        agent: ChatAgent::Codex,
-        model: None,
-        effort: None,
-        access: Access::Auto,
-        new_worktree: Some(true),
-        base_branch: String::new(),
-    };
+    let launch = launch_in_worktree(&first.id);
     let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
     store
         .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
@@ -3964,15 +3949,7 @@ fn only_the_active_attempt_can_settle_a_task() {
     let store = OrchestrationStore::default();
     let run = run(&store);
     let task = task(&store, &run, Vec::new());
-    let launch = WorkerLaunch {
-        task_id: task.id,
-        agent: ChatAgent::Codex,
-        model: None,
-        effort: None,
-        access: Access::Auto,
-        new_worktree: Some(true),
-        base_branch: String::new(),
-    };
+    let launch = launch_in_worktree(&task.id);
     let (_, _, first, _) = store.reserve_attempt("chat:master", &launch).unwrap();
     store
         .fail_preparation(
@@ -4012,13 +3989,8 @@ fn a_worker_cannot_report_for_someone_elses_attempt() {
     let run = run(&store);
     let task = task(&store, &run, Vec::new());
     let launch = WorkerLaunch {
-        task_id: task.id,
         agent: ChatAgent::Claude,
-        model: None,
-        effort: None,
-        access: Access::Auto,
-        new_worktree: Some(true),
-        base_branch: String::new(),
+        ..launch_in_worktree(&task.id)
     };
     let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
     let error = store
@@ -4041,15 +4013,7 @@ fn a_reported_block_can_be_retried_but_an_open_gate_cannot() {
     let store = OrchestrationStore::default();
     let run = run(&store);
     let task = task(&store, &run, Vec::new());
-    let launch = WorkerLaunch {
-        task_id: task.id.clone(),
-        agent: ChatAgent::Codex,
-        model: None,
-        effort: None,
-        access: Access::Auto,
-        new_worktree: Some(true),
-        base_branch: String::new(),
-    };
+    let launch = launch_in_worktree(&task.id);
     let (_, _, first, _) = store.reserve_attempt("chat:master", &launch).unwrap();
     store
         .activate_attempt(&first.id, "/tmp".into(), "first".into(), true)
@@ -4157,15 +4121,7 @@ fn a_settled_block_does_not_consume_a_concurrency_slot() {
         .unwrap();
     let first_task = task(&store, &run, Vec::new());
     let second_task = task(&store, &run, Vec::new());
-    let mut launch = WorkerLaunch {
-        task_id: first_task.id,
-        agent: ChatAgent::Codex,
-        model: None,
-        effort: None,
-        access: Access::Auto,
-        new_worktree: Some(true),
-        base_branch: String::new(),
-    };
+    let mut launch = launch_in_worktree(&first_task.id);
     let (_, _, first, _) = store.reserve_attempt("chat:master", &launch).unwrap();
     store
         .activate_attempt(&first.id, "/tmp".into(), "first".into(), true)
@@ -4210,15 +4166,7 @@ fn pending_safety_card_keeps_its_worker_attempt_resumable() {
     let store = OrchestrationStore::default();
     let run = run(&store);
     let task = task(&store, &run, Vec::new());
-    let launch = WorkerLaunch {
-        task_id: task.id,
-        agent: ChatAgent::Codex,
-        model: None,
-        effort: None,
-        access: Access::Auto,
-        new_worktree: Some(true),
-        base_branch: String::new(),
-    };
+    let launch = launch_in_worktree(&task.id);
     let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
     store
         .activate_attempt(&attempt.id, "/tmp".into(), "worker".into(), true)
@@ -4250,15 +4198,7 @@ fn active_workers_become_retriable_after_a_server_restart() {
     let store = OrchestrationStore::load(file.clone());
     let run = run(&store);
     let task = task(&store, &run, Vec::new());
-    let launch = WorkerLaunch {
-        task_id: task.id.clone(),
-        agent: ChatAgent::Codex,
-        model: None,
-        effort: None,
-        access: Access::Auto,
-        new_worktree: Some(true),
-        base_branch: String::new(),
-    };
+    let launch = launch_in_worktree(&task.id);
     let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
     store
         .activate_attempt(&attempt.id, "/tmp".into(), "worker".into(), true)
@@ -4280,15 +4220,7 @@ fn a_reported_block_stays_settled_after_a_server_restart() {
     let store = OrchestrationStore::load(file.clone());
     let run = run(&store);
     let task = task(&store, &run, Vec::new());
-    let launch = WorkerLaunch {
-        task_id: task.id,
-        agent: ChatAgent::Codex,
-        model: None,
-        effort: None,
-        access: Access::Auto,
-        new_worktree: Some(true),
-        base_branch: String::new(),
-    };
+    let launch = launch_in_worktree(&task.id);
     let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
     store
         .activate_attempt(&attempt.id, "/tmp".into(), "worker".into(), true)
