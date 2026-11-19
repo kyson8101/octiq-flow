@@ -352,7 +352,7 @@ describe("a reload while the chat waits, with the lists of what waits not read y
 });
 
 /** Every order the six sources can answer in: 720. */
-function orders(): WaitSource[][] {
+function allOrders(): WaitSource[][] {
   const out: WaitSource[][] = [];
   const walk = (left: WaitSource[], taken: WaitSource[]) => {
     if (!left.length) { out.push(taken); return; }
@@ -362,19 +362,52 @@ function orders(): WaitSource[][] {
   return out;
 }
 
+/** The full walk runs when `OCTIQ_EXHAUSTIVE=1` (CI). Locally a fixed sample
+ *  runs: the identity order, its reverse, and for every source one order with
+ *  it first and one with it last, the rest shuffled by a seeded generator.
+ *  Deterministic: no `Math.random`. */
+const EXHAUSTIVE = import.meta.env.OCTIQ_EXHAUSTIVE === "1";
+function sampleOrders(): WaitSource[][] {
+  let seed = 20261119;
+  const next = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed; };
+  const shuffled = (items: WaitSource[]) => {
+    const out = [...items];
+    for (let i = out.length - 1; i > 0; i--) { const j = next() % (i + 1); [out[i], out[j]] = [out[j], out[i]]; }
+    return out;
+  };
+  const picked: WaitSource[][] = [[...WAIT_SOURCES], [...WAIT_SOURCES].reverse()];
+  for (const source of WAIT_SOURCES) {
+    const rest = WAIT_SOURCES.filter((other) => other !== source);
+    picked.push([source, ...shuffled(rest)], [...shuffled(rest), source]);
+  }
+  const seen = new Set<string>();
+  return picked.filter((order) => { const key = order.join(">"); if (seen.has(key)) return false; seen.add(key); return true; });
+}
+const orders = (): WaitSource[][] => (EXHAUSTIVE ? allOrders() : sampleOrders());
+
 /** Each of these draws the composer some thousand times. Alone that is two
  *  or three seconds; in the whole suite, beside every other file, more than
  *  the default five. A test that runs out of time goes on running into the
  *  next one's storage, so the room is given outright. */
 const LONG = 120_000;
 
-describe("the 720 orders the six lists can answer in", () => {
+describe("the orders the six lists can answer in (all 720 with OCTIQ_EXHAUSTIVE=1)", () => {
+  it("are 720 distinct, and the local sample has every list first and last", () => {
+    expect(new Set(allOrders().map((order) => order.join(">"))).size).toBe(720);
+    const sample = sampleOrders();
+    expect(sample.map((order) => order.join(">"))).toEqual(sampleOrders().map((order) => order.join(">")));
+    for (const source of WAIT_SOURCES) {
+      expect(sample.some((order) => order[0] === source), `${source} first`).toBe(true);
+      expect(sample.some((order) => order.at(-1) === source), `${source} last`).toBe(true);
+    }
+  });
+
   // The turn worked 90 s before the reload, and 5 s after its question was
   // answered: the clock must read 1m 30s at every step until then, and
   // 1m 35s at the end. Nothing else is right, in any order.
   const steps = (answer: (next: ReturnType<typeof page>, source: WaitSource) => void, before: (next: ReturnType<typeof page>) => void) => async () => {
     const all = orders();
-    expect(all).toHaveLength(720);
+    expect(all).toHaveLength(EXHAUSTIVE ? 720 : sampleOrders().length);
     let wrong = 0;
     for (const order of all) {
       vi.stubGlobal("indexedDB", new IDBFactory());
@@ -515,7 +548,7 @@ describe("one card back and answered while another list is still unread", () => 
    *  wait on the permission as work. */
   const combination = (before: (next: ReturnType<typeof page>) => void) => async () => {
     const all = orders();
-    expect(all).toHaveLength(720);
+    expect(all).toHaveLength(EXHAUSTIVE ? 720 : sampleOrders().length);
     const wrong: string[] = [];
     for (const order of all) {
       vi.stubGlobal("indexedDB", new IDBFactory());

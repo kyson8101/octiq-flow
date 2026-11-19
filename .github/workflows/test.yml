@@ -1,0 +1,34 @@
+name: Web tests
+
+on:
+  pull_request:
+  push:
+    branches: [develop]
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm --dir web exec tsc --noEmit
+
+      # The full walk of every arrival order runs here; locally a fixed sample does.
+      - name: Test
+        run: pnpm --dir web test
+        env:
+          OCTIQ_EXHAUSTIVE: "1"
