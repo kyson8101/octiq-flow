@@ -73,7 +73,7 @@ export function ProviderFallbackChoices({ chatKey }: { chatKey: string }) {
     let sequence = 0;
     const reload = async () => {
       const current = ++sequence;
-      try { const next = await bridge.invoke<Choice[]>("provider_fallback_choices", { key: chatKey }); if (live && current === sequence) setChoices(next); }
+      try { const next = await bridge.invoke<Choice[]>("provider_fallback_choices", { key: chatKey }); if (live && current === sequence) setChoices(Array.isArray(next) ? next : []); }
       catch { /* Keep pending choices until the host can be read again. */ }
     };
     const off = bridge.on("provider-fallback-changed", () => void reload());
