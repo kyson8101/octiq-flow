@@ -1415,6 +1415,20 @@ impl Drop for StartClaim<'_> {
     }
 }
 
+/// A path mark blocks even a brand new chat id, under the session table.
+/// The caller holds the workspace lifecycle lock until this guard is dropped.
+pub(crate) struct LifespanHold<'a> {
+    manager: &'a ChatManager,
+    checkout: String,
+}
+impl Drop for LifespanHold<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut holds) = self.manager.lifespan_holds.lock() {
+            holds.remove(&self.checkout);
+        }
+    }
+}
+
 /// How long a send waits for another thread's start of the same chat to
 /// finish (`ChatManager::wait_out_start`) before it answers "no such chat".
 const START_WAIT: Duration = Duration::from_secs(10);
@@ -15152,20 +15166,6 @@ mod access_tests {
         let full = command(Access::Full);
         assert!(full.contains("--dangerously-skip-permissions"));
         assert!(!full.contains("--permission-mode bypassPermissions"));
-    }
-}
-
-/// A path mark blocks even a brand new chat id, under the session table.
-/// The caller holds the workspace lifecycle lock until this guard is dropped.
-pub(crate) struct LifespanHold<'a> {
-    manager: &'a ChatManager,
-    checkout: String,
-}
-impl Drop for LifespanHold<'_> {
-    fn drop(&mut self) {
-        if let Ok(mut holds) = self.manager.lifespan_holds.lock() {
-            holds.remove(&self.checkout);
-        }
     }
 }
 
