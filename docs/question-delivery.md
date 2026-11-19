@@ -323,13 +323,6 @@ pnpm test
 pnpm build
 ```
 
-`node scripts/test-question-delivery.mjs` runs the real card and pending-request
-hook in an isolated browser fixture. It checks disconnected and rejected
-submissions, retained choices, saved-answer reloads, and delivery events at
-desktop and phone widths. Set `OCTIQFLOW_PLAYWRIGHT_MODULE` to an installed
-Playwright module if necessary. The fixture does not connect to real chats or
-start an agent.
-
 Rust regression tests cover the actual tool timeout, disconnected/offline
 questions, restart recovery, partial batches, storage failures, cancellation,
 duplicate submissions, dispatch uncertainty, and live-tool/continuation races.
