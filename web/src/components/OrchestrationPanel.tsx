@@ -955,17 +955,9 @@ function RunDetail({
                 workerDefaults: { access: "auto" } })} data-icon-action aria-label="Enable automatic dispatch" title="Enable automatic dispatch"><ActionIcon name="run" label="Enable dispatch" /></button>}
             {!readOnly && ACTIVE_RUNS.has(run.status) && (
               confirmStop ? (
-                <div className="orch-stop-confirm" role="group" aria-labelledby={`${tabsId}-stop`}
-                  onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onCancelStop(); } }}>
-                  <p id={`${tabsId}-stop`}>Stop this mission? Workers stop and open tasks are cancelled. Archiving also hides it; its history and worktrees are kept.</p>
-                  <button ref={cancelRef} type="button" disabled={inputBusy} onClick={onCancelStop} data-icon-action title="Cancel" aria-label="Cancel">
-                    <ActionIcon name="cancel" label="Cancel" />
-                  </button>
-                  <button className="is-danger" type="button" disabled={inputBusy} onClick={() => onStop(false)} data-icon-action aria-label="Stop" title="Stop"><ActionIcon name="stop" label="Stop" /></button>
-                  <button className="is-danger" type="button" disabled={busy} onClick={() => { if (!busy) onStop(true); }} data-icon-action aria-label="Stop and archive" title="Stop and archive"><ActionIcon name="stop" label="Stop + archive" /></button>
-                </div>
+                <StopQuestion id={`${tabsId}-stop`} busy={busy} inputBusy={inputBusy} cancelRef={cancelRef} onCancel={onCancelStop} onStop={onStop} />
               ) : (
-                <button className="orch-quiet" type="button" disabled={inputBusy} onClick={(event) => { notePress(event); onAskStop(); }} data-icon-action aria-label="Stop" title="Stop"><ActionIcon name="stop" label="Stop" /></button>
+                <StopOpener inputBusy={inputBusy} onAsk={onAskStop} />
               )
             )}
             {!readOnly && mission && !closed && !confirmStop && !confirmEnd && <button className="orch-quiet" type="button" disabled={busy}
@@ -1472,6 +1464,28 @@ export const GATE_DOOR_NOTE: Record<GateDoor, { mine: string; others: string }> 
   },
 };
 
+/** The run's Stop, before its question. Replaced where it stands by the
+ *  question it opens, so the press is remembered (`notePress`): one that
+ *  repeats it cannot land on the question's confirming answer. */
+export function StopOpener({ inputBusy, onAsk }: { inputBusy: boolean; onAsk: () => void }) {
+  return <button className="orch-quiet" type="button" disabled={inputBusy} onClick={(event) => { notePress(event); onAsk(); }} data-icon-action aria-label="Stop" title="Stop"><ActionIcon name="stop" label="Stop" /></button>;
+}
+
+/** The question Stop opens: keep it running, stop, or stop and archive. */
+export function StopQuestion({ id, busy, inputBusy, cancelRef, onCancel, onStop }: {
+  id: string; busy: boolean; inputBusy: boolean; cancelRef: React.Ref<HTMLButtonElement>; onCancel: () => void; onStop: (archive: boolean) => void;
+}) {
+  return <div className="orch-stop-confirm" role="group" aria-labelledby={id}
+    onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onCancel(); } }}>
+    <p id={id}>Stop this mission? Workers stop and open tasks are cancelled. Archiving also hides it; its history and worktrees are kept.</p>
+    <button ref={cancelRef} type="button" disabled={inputBusy} onClick={onCancel} data-icon-action title="Cancel" aria-label="Cancel">
+      <ActionIcon name="cancel" label="Cancel" />
+    </button>
+    <button className="is-danger" type="button" disabled={inputBusy} onClick={() => onStop(false)} data-icon-action aria-label="Stop" title="Stop"><ActionIcon name="stop" label="Stop" /></button>
+    <button className="is-danger" type="button" disabled={busy} onClick={() => { if (!busy) onStop(true); }} data-icon-action aria-label="Stop and archive" title="Stop and archive"><ActionIcon name="stop" label="Stop + archive" /></button>
+  </div>;
+}
+
 /** The controls that answer one open gate: its options, and a written
  *  answer.
  *
@@ -1619,7 +1633,7 @@ type DeliveryAsk = "reopen" | "merged" | "abandon";
  *  - The way out of a question is remembered too, because the row comes
  *    back under the pointer that pressed it, and the three that open one
  *    drop a held key, so the key that answered does not ask again. */
-function DeliveryActions({ task, run, busy, active, onAction }: {
+export function DeliveryActions({ task, run, busy, active, onAction }: {
   task: OrchestrationTask; run: OrchestrationRun; busy: boolean; active: boolean;
   onAction: (command: string, args: Record<string, unknown>) => void;
 }) {
@@ -1702,7 +1716,7 @@ export function ReopenQuestion({ task, busy, onCancel, onReopen }: {
 
 /** Whether to remove a task's worktree: one that is merged, or one that is
  *  abandoned with its task. Drawn where the control that asked stood. */
-function RemovalQuestion({ abandon, allowed, busy, onCancel, onConfirm }: {
+export function RemovalQuestion({ abandon, allowed, busy, onCancel, onConfirm }: {
   abandon: boolean; allowed: boolean; busy: boolean; onCancel: () => void; onConfirm: () => void;
 }) {
   const keep = useRef<HTMLButtonElement>(null);

@@ -127,8 +127,10 @@ describe("who asks through the shared question", () => {
 
 describe("the controls that start or stop a worker", () => {
   it("drop a held key and are behind the stray-press guard of what opens them", () => {
-    // One component draws every start, and it drops the repeats of a key.
-    expect(panelSource).toMatch(/function StartButton\([\s\S]*?onKeyDown=\{dropHeld\}/);
+    // A Start's held key and a delivery opener's press are pressed for real in
+    // `OrchestrationPanel.controls.test.tsx`. What is scanned here is only the
+    // disclosures inside the row and group components, which no handler test
+    // can reach without drawing the whole panel.
     // Each disclosure of the panel that can bring a start under the pointer
     // is remembered by the guard the cards use (`lib/pressGuard.notePress`).
     // A row's two tabs are among them: switching changes what is under the

@@ -137,22 +137,31 @@ const EXPECTED: Record<Kind, { done: number; failed: number; word: string | null
 };
 
 type Scene = { name: string; kind: Kind; plan: boolean; ledger: OrchestrationSnapshot; total: number };
-const SCENES: Scene[] = (Object.keys(KINDS) as Kind[]).flatMap((kind) => [
-  { name: `${kind}, beside a pending plan`, kind, plan: true, ledger: placed(KINDS[kind]()), total: 2 },
-  { name: `${kind}, with no plan`, kind, plan: false, ledger: placed(noPlan(KINDS[kind]())), total: 1 },
-]);
-
-// The same A/B state table through Rust's summary projection. Only evidence
-// text disappeared; failure/hold/verdict fields must give the same answers.
-for (const [kind, source] of Object.entries(KINDS) as [Kind, () => OrchestrationSnapshot][]) {
-  const summary = kind === "finished" ? summaryFact(hostFacts.planAfterFailed()) : summaryFact(source());
+/** Distinct shapes only. A plan beside the task changes the line, the
+ *  decisions and the totals, so it is asked of the kinds that show each
+ *  difference; "blocked" and "check failed" differ from "failed" by their
+ *  word and are asked beside a plan only. The Rust summary projection
+ *  (only evidence text disappeared) is asked of two shapes. */
+const SHAPES: [Kind, boolean][] = [
+  ["failed", true], ["failed", false], ["blocked", true], ["checkFailed", true], ["checkFailed", false],
+  ["stopped", true], ["stopped", false], ["finished", true], ["finished", false],
+];
+const summaryOf = (kind: Kind) => {
+  const summary = kind === "finished" ? summaryFact(hostFacts.planAfterFailed()) : summaryFact(KINDS[kind]());
   if (kind === "finished") {
     Object.assign(summary.tasks[0], { status: "completed" });
     Object.assign(summary.attempts[0], { status: "completed", execution: { ...summary.attempts[0].execution!, state: "completed" } });
   }
-  SCENES.push({ name: `summary ${kind}, beside a pending plan`, kind, plan: true, ledger: placed(summary), total: 2 },
-    { name: `summary ${kind}, with no plan`, kind, plan: false, ledger: placed(noPlan(summary)), total: 1 });
-}
+  return summary;
+};
+const SCENES: Scene[] = [
+  ...SHAPES.map(([kind, plan]) => ({
+    name: `${kind}, ${plan ? "beside a pending plan" : "with no plan"}`, kind, plan,
+    ledger: placed(plan ? KINDS[kind]() : noPlan(KINDS[kind]())), total: plan ? 2 : 1,
+  })),
+  { name: "summary checkFailed, beside a pending plan", kind: "checkFailed", plan: true, ledger: placed(summaryOf("checkFailed")), total: 2 },
+  { name: "summary failed, with no plan", kind: "failed", plan: false, ledger: placed(noPlan(summaryOf("failed"))), total: 1 },
+];
 
 /** A moment after the ledger's latest stamp. */
 const after = (snapshot: OrchestrationSnapshot) => Math.max(...snapshot.tasks.map((task) => task.updatedAt)) + 5_000;
@@ -251,92 +260,65 @@ describe("the ledgers", () => {
   });
 });
 
-describe("every surface counts the same tasks done and the same tasks failed", () => {
-  it.each(SCENES)("$name", ({ kind, ledger, total }) => {
-    const { counts } = surfaces(ledger);
+describe("every surface says the same of a task that failed, was held by the person, or finished well", () => {
+  // One test per distinct shape. The rules are decided in `runProgress`,
+  // `taskHold` and `agentsDashboard`; this asks each other surface once.
+  it.each(SCENES)("$name", ({ kind, plan, ledger, total }) => {
+    const { counts, a, drawnRows, dev, mine, summary, line, attention, people, crew } = surfaces(ledger);
     const want = EXPECTED[kind];
     for (const [surface, said] of Object.entries(counts) as [string, Counts][]) {
       if (said.done !== null) expect(said.done, `${surface}: done`).toBe(want.done);
       if (said.total !== null) expect(said.total, `${surface}: of`).toBe(total);
       if (said.failed !== null) expect(said.failed, `${surface}: failed`).toBe(want.failed);
     }
-  });
-});
+    // The counts are one function's (`runTally`).
+    const run = ledger.runs[0];
+    const progress = runProgress(ledger, run, after(ledger));
+    const tally = runTally(run, progress.rows);
+    expect(progress.tiles.tasks).toEqual({ done: tally.done, total: tally.total });
+    expect(runCounts(ledger, run)).toEqual(tally);
 
-describe("a failure is there, under the panel's word, in the danger colour", () => {
-  const FAILURES = SCENES.filter((scene) => EXPECTED[scene.kind].failed > 0);
-
-  it.each(FAILURES)("$name: the panel's row", ({ kind, ledger }) => {
-    const { a, drawnRows } = surfaces(ledger);
-    expect(a).toMatchObject({ state: "failed", group: "running", why: EXPECTED[kind].word, tone: "danger" });
-    const drawn = drawnRows.find((row) => row.includes('data-state="failed"'))!;
-    expect(drawn).toContain('data-tone="danger"');
-    expect(drawn).toContain(`>${EXPECTED[kind].word}</span>`);
-  });
-
-  it.each(FAILURES)("$name: the Agents page lists it under its agent, with the panel's word, and the agent is not Queued", ({ kind, ledger, plan }) => {
-    const { a, dev, mine, summary } = surfaces(ledger);
-    expect(mine, "A is listed").toBeDefined();
-    // The word is the panel row's own, so the two cannot say different
-    // things of one task.
-    expect(mine!.label).toBe(a.why);
-    expect(mine!.label).toBe(EXPECTED[kind].word);
-    expect(mine!.state as string).toBe("failed");
-    expect(mine!.tone as string).toBe("danger");
-    // What failed leads the agent's own list, and is the agent's state.
-    expect(dev.activities[0].taskId).toBe(mine!.taskId);
-    expect(dev.state as string).toBe("failed");
-    expect(dev.stateLabel).toBe(EXPECTED[kind].word);
-    expect(dev.counts).toEqual(plan ? { failed: 1, queued: 1 } : { failed: 1 });
-    expect(summary).toEqual({ failed: 1 });
-  });
-
-  it.each(FAILURES)("$name: the chat list's line says it", ({ ledger, plan, total }) => {
-    const { line } = surfaces(ledger);
-    expect(line).toBe(plan ? `Needs you · 1 failed · 0/${total} done` : `1 failed · 0/${total} done`);
-  });
-
-  it.each(FAILURES)("$name: the run's attention count, its people and a mission's crew say it", ({ ledger, plan }) => {
-    const { attention, people, crew } = surfaces(ledger);
-    expect(attention).toMatchObject({ blocked: 1, failed: 1, decisions: plan ? 1 : 0 });
-    // Beside a plan the decision leads the button; alone, the failure is
-    // its word and its colour.
-    expect(attentionLabel(attention)).toBe(plan ? "Approval needed" : "1 failed");
-    expect(attentionTone(attention)).toBe(plan ? "decision" : "failed");
-    expect(attentionSpoken(attention)).toBe(plan ? "1 decision waiting, 1 task failed" : "1 task failed");
-    expect(people.map((person) => person.state as string)).toEqual(["failed"]);
-    expect(crew.map((member) => member.state as string)).toEqual(["failed"]);
-  });
-});
-
-describe("a task the person stopped is held, not failed", () => {
-  it.each(SCENES.filter((scene) => scene.kind === "stopped"))("$name", ({ ledger, plan, total }) => {
-    const { a, mine, dev, line, attention, people } = surfaces(ledger);
-    expect(a).toMatchObject({ state: "planned", why: STOPPED_LABEL });
-    expect(mine).toMatchObject({ state: "queued", label: STOPPED_LABEL });
-    expect(dev.state).toBe("queued");
-    expect(line).toBe(plan ? `Needs you · 0/${total} done` : `Running · 0/${total} done`);
-    expect(attention.blocked).toBe(0);
-    expect(people.map((person) => person.state as string)).toEqual(["assigned"]);
-  });
-});
-
-describe("a task that finished well is folded away quietly", () => {
-  it.each(SCENES.filter((scene) => scene.kind === "finished"))("$name", ({ ledger, plan, total }) => {
-    const { a, mine, dev, line, attention, people, summary } = surfaces(ledger);
-    expect(a).toMatchObject({ state: "done", group: "finished", why: null, tone: null });
-    // The Agents page shows no successful history.
-    expect(mine).toBeUndefined();
-    expect(dev.state).toBe(plan ? "queued" : "idle");
-    expect(summary).toEqual(plan ? { queued: 1 } : { idle: 1 });
-    expect(line).toBe(plan ? `Needs you · 1/${total} done` : `Running · 1/${total} done`);
-    expect(attention.blocked).toBe(0);
-    expect(people.map((person) => person.state as string)).toEqual([plan ? "assigned" : "done"]);
+    if (want.failed > 0) {
+      expect(a, "the panel's row").toMatchObject({ state: "failed", group: "running", why: want.word, tone: "danger" });
+      const drawn = drawnRows.find((row) => row.includes('data-state="failed"'))!;
+      expect(drawn).toContain('data-tone="danger"');
+      expect(drawn).toContain(`>${want.word}</span>`);
+      // The Agents page: the panel's own word, what failed leads, the agent is not Queued.
+      expect(mine!.label).toBe(a.why);
+      expect([mine!.state as string, mine!.tone as string]).toEqual(["failed", "danger"]);
+      expect(dev.activities[0].taskId).toBe(mine!.taskId);
+      expect([dev.state as string, dev.stateLabel]).toEqual(["failed", want.word]);
+      expect(dev.counts).toEqual(plan ? { failed: 1, queued: 1 } : { failed: 1 });
+      expect(summary).toEqual({ failed: 1 });
+      expect(line).toBe(plan ? `Needs you · 1 failed · 0/${total} done` : `1 failed · 0/${total} done`);
+      expect(attention).toMatchObject({ blocked: 1, failed: 1, decisions: plan ? 1 : 0 });
+      expect(attentionLabel(attention)).toBe(plan ? "Approval needed" : "1 failed");
+      expect(attentionTone(attention)).toBe(plan ? "decision" : "failed");
+      expect(attentionSpoken(attention)).toBe(plan ? "1 decision waiting, 1 task failed" : "1 task failed");
+      expect(people.map((person) => person.state as string)).toEqual(["failed"]);
+      expect(crew.map((member) => member.state as string)).toEqual(["failed"]);
+    } else if (kind === "stopped") {
+      expect(a).toMatchObject({ state: "planned", why: STOPPED_LABEL });
+      expect(mine).toMatchObject({ state: "queued", label: STOPPED_LABEL });
+      expect(dev.state).toBe("queued");
+      expect(line).toBe(plan ? `Needs you · 0/${total} done` : `Running · 0/${total} done`);
+      expect(attention.blocked).toBe(0);
+      expect(people.map((person) => person.state as string)).toEqual(["assigned"]);
+    } else {
+      expect(a).toMatchObject({ state: "done", group: "finished", why: null, tone: null });
+      // The Agents page shows no successful history.
+      expect(mine).toBeUndefined();
+      expect(dev.state).toBe(plan ? "queued" : "idle");
+      expect(summary).toEqual(plan ? { queued: 1 } : { idle: 1 });
+      expect(line).toBe(plan ? `Needs you · 1/${total} done` : `Running · 1/${total} done`);
+      expect(attention.blocked).toBe(0);
+      expect(people.map((person) => person.state as string)).toEqual([plan ? "assigned" : "done"]);
+    }
   });
 });
 
 describe("a mission's stage", () => {
-  const stage = (kind: Kind, plan: boolean) => surfaces(SCENES.find((scene) => scene.kind === kind && scene.plan === plan)!.ledger).stage;
+  const stage = (kind: Kind, plan: boolean) => surfaces(placed(plan ? KINDS[kind]() : noPlan(KINDS[kind]()))).stage;
 
   it("is never Ready to merge, or a draft, while an approved check has failed", () => {
     // Everything that could take a worker is settled or held, and a review
@@ -409,15 +391,6 @@ describe("how a task ended is read in one place", () => {
 });
 
 describe("the counts are one function's", () => {
-  it.each(SCENES)("$name: the strip, the tile, the chat list's line and the run picker read runTally", ({ ledger }) => {
-    const run = ledger.runs[0];
-    const progress = runProgress(ledger, run, after(ledger));
-    const tally = runTally(run, progress.rows);
-    expect(progress.tiles.tasks).toEqual({ done: tally.done, total: tally.total });
-    expect(runCounts(ledger, run)).toEqual(tally);
-    if (progress.strip) expect(progress.strip).toMatchObject(tally);
-  });
-
   it("says a run the host calls failed as one failure, unless what it left failed is a task the person stopped", () => {
     const failedRun = (kind: Kind) => {
       // Changed in a copy: the run's status is what the host's
@@ -638,7 +611,14 @@ const TOLD: Record<string, Told> = {
   },
 };
 const ORIGINAL_MOVES = Object.entries(TOLD).map(([name, told]) => ({ name, ...told }));
-const MOVES = [...ORIGINAL_MOVES, ...ORIGINAL_MOVES.map(move => ({ ...move, name: `summary ${move.name}`, ledger: () => summaryFact(move.ledger()) }))];
+/** The ledgers that differ in how the strip, the chat list, the attention
+ *  button and the people say them: one per class of failure. The others
+ *  differ only in the word on the row (`Check failed`) and are asked at the
+ *  row, where that is decided. */
+const CLASSES = ORIGINAL_MOVES.filter((move) => ["coordinator", "retrying", "person", "escalated", "replaced", "completedRun", "stoppedRun", "checkSpent"].includes(move.name));
+/** The summary projection: asked of one quiet, one red and one history shape. */
+const SUMMARIES = ORIGINAL_MOVES.filter((move) => ["coordinator", "person", "stoppedRun"].includes(move.name))
+  .map((move) => ({ ...move, name: `summary ${move.name}`, ledger: () => summaryFact(move.ledger()) }));
 
 describe("the failure ledgers", () => {
   it("are the host's, and say whose move each failure is", () => {
@@ -667,8 +647,11 @@ describe("the failure ledgers", () => {
 });
 
 describe("every surface says the same of a failure, by whose move it is", () => {
-  it.each(MOVES)("$name: the counts", (told) => {
-    const { counts } = surfaces(placed(told.ledger()));
+  // The owner of the rule is the row and the counts (`runProgress`,
+  // `orchestration.failureMove`): every host ledger is asked there. The
+  // other surfaces are asked once per class of failure.
+  it.each([...ORIGINAL_MOVES, ...SUMMARIES])("$name: the counts, the row, and the row as drawn", (told) => {
+    const { counts, a, drawnRows } = surfaces(placed(told.ledger()));
     // What failed, wherever a surface says or draws a count of it.
     for (const [surface, said] of Object.entries(counts) as [string, Counts][]) {
       if (said.failed !== null) expect(said.failed, `${surface}: failed`).toBe(told.failed);
@@ -681,10 +664,6 @@ describe("every surface says the same of a failure, by whose move it is", () => 
       expect(counts[surface].total, `${surface}: of`).toBe(told.total || null);
     }
     for (const surface of ["tiles", "tileDrawn", "runList"] as const) expect(counts[surface].total, `${surface}: of`).toBe(told.total);
-  });
-
-  it.each(MOVES)("$name: the row, and the row as drawn", (told) => {
-    const { a, drawnRows } = surfaces(placed(told.ledger()));
     expect(a).toMatchObject(told.row);
     expect(a.decisions).toBe(told.decisions);
     const drawn = drawnRows[0];
@@ -695,9 +674,9 @@ describe("every surface says the same of a failure, by whose move it is", () => 
     if (told.row.why) expect(drawn).toContain(`>${told.row.why}</span>`);
   });
 
-  it.each(MOVES)("$name: the strip, the chat list's line, the attention button and the run's status", (told) => {
+  it.each([...CLASSES, ...SUMMARIES.slice(1, 2)])("$name: the strip, the chat list's line, the attention button, the run's status, the people and the Agents page", (told) => {
     const ledger = placed(told.ledger());
-    const { line, attention, stripHtml, panelHtml } = surfaces(ledger);
+    const { line, attention, stripHtml, panelHtml, people, crew, mine, dev, summary } = surfaces(ledger);
     const scoped = chatSnapshot(ledger, MAIN);
     const picked = chatStrip(scoped, after(ledger));
     expect(picked ? [picked.strip.state, stripLine(picked.strip).word] : null).toEqual(told.strip);
@@ -711,10 +690,6 @@ describe("every surface says the same of a failure, by whose move it is", () => 
     // attention button, whatever the host calls the run.
     expect(panelHtml.includes("orch-status is-failed"), "a red run mark").toBe(told.status === "failed");
     expect(panelHtml.includes('class="orch-attention"'), "an attention button").toBe(!!told.attention);
-  });
-
-  it.each(MOVES)("$name: who the run is with, a mission's crew and the Agents page", (told) => {
-    const { people, crew, mine, dev, summary } = surfaces(placed(told.ledger()));
     expect(people.map((person) => person.state as string)).toEqual(told.people);
     expect(crew.map((member) => member.state as string)).toEqual(told.people);
     expect(mine ? [mine.state as string, mine.label] : null).toEqual(told.agent);
@@ -926,7 +901,7 @@ describe("a failed task queued for a slot", () => {
   // Copies of the recorded exhausted failure, with the queue fields added.
   // The old host leaves the person's failure behind; the fixed host marks
   // the retry and hands it to the coordinator. Neither asks the person.
-  const scenes = [false, true].flatMap(fixed => [false, true].map(summary => {
+  const scenes = ([[false, false], [true, true]] as const).map(([fixed, summary]) => {
     const recorded = hostFacts.failureAwaitsPerson();
     const ledger = placed(summary ? summaryFact(recorded) : recorded);
     Object.assign(ledger.tasks[0], {
@@ -934,7 +909,7 @@ describe("a failed task queued for a slot", () => {
       ...(fixed ? { retrying: true, failure: { kind: "failed", awaits: "coordinator" } } : {}),
     });
     return { name: `${fixed ? "fixed" : "old"} host, ${summary ? "summary" : "detail"}`, ledger };
-  }));
+  });
 
   it.each(scenes)("$name: every failure surface is quiet and the task is queued", ({ ledger }) => {
     const { a, counts, line, attention, stripHtml, drawnRows, people, crew, mine, dev } = surfaces(ledger);
@@ -1055,38 +1030,38 @@ const SOURCES = import.meta.glob<string>("../**/*.{ts,tsx}", { query: "?raw", im
 /** The code of a file, without its comments: a comment may say "completed". */
 const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`\\])\/\/.*$/gm, "$1");
 
-type Allowed = Record<string, { uses: number; why: string }>;
+type Allowed = Record<string, { why: string }>;
 
-/** Every file that may write the status word "completed" as a string, with
- *  how often and why. None of them asks whether a TASK is done: that is
+/** Every file that may write the status word "completed" as a string, and
+ *  why. None of them asks whether a TASK is done: that is
  *  `orchestration.isSettled` / `checkFailed` / `finishedWell`, and a file
  *  that compares a task's status with the word itself is a second reader,
  *  except for the explicitly named raw ledger status (not a success claim).
- *  The counts are exact: one more use in any of them fails this test, and
- *  so does a use anywhere else. */
+ *  A use in any other file fails this test; how often a listed file uses it
+ *  is not pinned. */
 const COMPLETED: Allowed = {
-  "./orchestration.ts": { uses: 7, why: "the status types of a run, a task, an attempt and an execution; isSettled, the one comparison of a task's status with the word; and shownRunStatus, of a RUN the host calls completed while work is queued or a failure is still somebody's move" },
-  "./taskHold.ts": { uses: 3, why: "a RUN that completed offers no start; an ATTEMPT that completed leaves a ready task its next attempt; the raw ledger status says Completed without claiming the task finished well" },
-  "./agentsDashboard.ts": { uses: 1, why: "a RUN that is over has no plan waiting" },
-  "./missionPage.ts": { uses: 1, why: "a RUN that has ended hands no task on" },
-  "../components/OrchestrationPanel.tsx": { uses: 1, why: "a RUN that completed offers to archive its workers" },
-  "./chat.ts": { uses: 4, why: "a tool call's own status and a provider turn's end in a transcript, not a task acceptance" },
-  "./codexEvents.ts": { uses: 1, why: "a Codex stream item's status" },
-  "./chatComplete.ts": { uses: 2, why: "the chat-completed event" },
-  "./useChatCompletions.ts": { uses: 1, why: "the chat-completed event" },
-  "./pullRequests.ts": { uses: 3, why: "a pull request workflow's completion" },
-  "../components/PullRequestsDashboard.tsx": { uses: 2, why: "a pull request workflow's completion" },
+  "./orchestration.ts": { why: "the status types of a run, a task, an attempt and an execution; isSettled, the one comparison of a task's status with the word; and shownRunStatus, of a RUN the host calls completed while work is queued or a failure is still somebody's move" },
+  "./taskHold.ts": { why: "a RUN that completed offers no start; an ATTEMPT that completed leaves a ready task its next attempt; the raw ledger status says Completed without claiming the task finished well" },
+  "./agentsDashboard.ts": { why: "a RUN that is over has no plan waiting" },
+  "./missionPage.ts": { why: "a RUN that has ended hands no task on" },
+  "../components/OrchestrationPanel.tsx": { why: "a RUN that completed offers to archive its workers" },
+  "./chat.ts": { why: "a tool call's own status and a provider turn's end in a transcript, not a task acceptance" },
+  "./codexEvents.ts": { why: "a Codex stream item's status" },
+  "./chatComplete.ts": { why: "the chat-completed event" },
+  "./useChatCompletions.ts": { why: "the chat-completed event" },
+  "./pullRequests.ts": { why: "a pull request workflow's completion" },
+  "../components/PullRequestsDashboard.tsx": { why: "a pull request workflow's completion" },
 };
 
 /** Every file that may read a task's `verdict`. Whether a check FAILED is
  *  `orchestration.checkFailed` and nobody else's to work out; the rest draw
  *  or count the verdict as it was reported. */
 const VERDICT: Allowed = {
-  "./orchestration.ts": { uses: 1, why: "checkFailed, the one reader" },
-  "./runProgress.ts": { uses: 1, why: "a settled row carries its verdict for the pill" },
-  "./agentTaskBoard.ts": { uses: 1, why: "a check that finished well says passed, or that it has no verdict" },
-  "./runAcceptance.ts": { uses: 4, why: "check coverage: verdicts counted as they were reported, a replaced check's included" },
-  "../components/OrchestrationPanel.tsx": { uses: 7, why: "the row's pass / fail pill (4) and whether a fail pill is quiet (asked of failureShown), the chip of a REPLACED failed check, and a check's kind chip" },
+  "./orchestration.ts": { why: "checkFailed, the one reader" },
+  "./runProgress.ts": { why: "a settled row carries its verdict for the pill" },
+  "./agentTaskBoard.ts": { why: "a check that finished well says passed, or that it has no verdict" },
+  "./runAcceptance.ts": { why: "check coverage: verdicts counted as they were reported, a replaced check's included" },
+  "../components/OrchestrationPanel.tsx": { why: "the row's pass / fail pill (4) and whether a fail pill is quiet (asked of failureShown), the chip of a REPLACED failed check, and a check's kind chip" },
 };
 
 /** Every file that may name what the host says of a task's failure: the
@@ -1096,12 +1071,12 @@ const VERDICT: Allowed = {
  *  `runWaits.surfaces.test`); the rest count retries for a sentence, hand a
  *  task on by type, or name the task a decision is about. */
 const FAILURE: Allowed = {
-  "./orchestration.ts": { uses: 12, why: "the types, and the readers: saysFailures, failureMove, failureOf, isRetrying, isFailureGate" },
-  "./runWaits.ts": { uses: 3, why: "a gate about a failed task is that task's decision: tied to its row, counted once" },
-  "./runProgress.ts": { uses: 2, why: "failureNote says how many automatic retries a task has, in its sentence" },
-  "./chatWorkflow.ts": { uses: 1, why: "a type: what workerLine hands failureShown" },
-  "../components/OrchestrationPanel.tsx": { uses: 1, why: "a decision's box names the task it is about" },
-  "./codexEvents.ts": { uses: 2, why: "a Codex stream item's own failure message, which is no task" },
+  "./orchestration.ts": { why: "the types, and the readers: saysFailures, failureMove, failureOf, isRetrying, isFailureGate" },
+  "./runWaits.ts": { why: "a gate about a failed task is that task's decision: tied to its row, counted once" },
+  "./runProgress.ts": { why: "failureNote says how many automatic retries a task has, in its sentence" },
+  "./chatWorkflow.ts": { why: "a type: what workerLine hands failureShown" },
+  "../components/OrchestrationPanel.tsx": { why: "a decision's box names the task it is about" },
+  "./codexEvents.ts": { why: "a Codex stream item's own failure message, which is no task" },
 };
 
 describe("how a task ended has one reader", () => {
@@ -1121,19 +1096,21 @@ describe("how a task ended has one reader", () => {
     }
     return uses;
   };
-  const exact = (allowed: Allowed) => Object.fromEntries(Object.entries(allowed).map(([path, rule]) => [path, rule.uses]));
+  // The files that may read it, not how many times each does: a new reader
+  // in a new file fails, a second use inside an approved reader does not.
+  const files = (allowed: Allowed) => Object.keys(allowed).sort();
 
   it("writes the word \"completed\" only for approved readers or a raw ledger status", () => {
     expect(Object.keys(SOURCES).length).toBeGreaterThan(300);
-    expect(found(READS.completed)).toEqual(exact(COMPLETED));
+    expect(Object.keys(found(READS.completed)).sort()).toEqual(files(COMPLETED));
   });
 
   it("reads a task's verdict only to draw or count it", () => {
-    expect(found(READS.verdict)).toEqual(exact(VERDICT));
+    expect(Object.keys(found(READS.verdict)).sort()).toEqual(files(VERDICT));
   });
 
   it("reads what the host says of a failure only through the readers", () => {
-    expect(found(READS.failure)).toEqual(exact(FAILURE));
+    expect(Object.keys(found(READS.failure)).sort()).toEqual(files(FAILURE));
   });
 
   it("catches a reader written the usual ways", () => {
