@@ -564,7 +564,7 @@ fn a_busy_chat_is_never_interrupted_and_the_pick_waits() {
         .heard()
         .iter()
         .any(|(name, body)| name == "chat-runtime-pending" && body["agent"] == "codex"));
-    let (pending, home) = queue_fields(&w.manager, &chat.key);
+    let (pending, home, _) = queue_fields(&w.manager, &chat.key);
     assert_eq!(pending.map(|p| p.agent), Some(ChatAgent::Codex));
     assert!(home.is_none());
     // A second pick replaces it.
@@ -931,7 +931,8 @@ fn the_automatic_paths_carry_the_brief_too() {
     let start = start.split("fn model_handoff_prompt(").next().unwrap();
     assert!(start.contains("runtime_switch::with_identity_brief"));
     assert!(start.contains("runtime_switch::adopt_pending"));
-    assert!(start.contains("current_runtime()"));
+    assert!(start.contains("runtime_switch::host_runtime("));
+    assert!(start.contains("runtime_switch::host_session("));
 }
 
 // ---- home runtime ------------------------------------------------------------
@@ -940,11 +941,8 @@ fn the_automatic_paths_carry_the_brief_too() {
 fn home_runtime_is_present_only_on_an_automatic_fallback_and_survives_a_restart() {
     let w = World::new();
     let chat = w.chat();
-    assert_eq!(
-        queue_fields(&w.manager, &chat.key),
-        (None, None),
-        "on its own runtime: no home"
-    );
+    let (pending, home, _) = queue_fields(&w.manager, &chat.key);
+    assert_eq!((pending, home), (None, None), "on its own runtime: no home");
     // The failover to Codex.
     let opus = settings(ChatAgent::Claude, "claude-opus-5-5", Some("high"));
     let codex = settings(ChatAgent::Codex, "gpt-5.6-sol", Some("high"));
@@ -1115,7 +1113,7 @@ fn stale_start(
     chat_start_user_impl(
         w.manager.clone(),
         chat.key.clone(),
-        std::env::temp_dir().to_string_lossy().into_owned(),
+        NO_SPAWN.into(),
         agent,
         Some(model.into()),
         Some(Access::Full),
@@ -1282,7 +1280,7 @@ fn a_start_with_a_page_handoff_and_an_older_runtime_changes_nothing_and_records_
         Some("[{\"role\":\"assistant\",\"text\":\"Ready.\"}]"),
         None,
     );
-    assert_eq!(started, Ok(()));
+    assert!(started.is_err(), "no provider is started: {started:?}");
     assert_eq!(
         started_as(&w, &chat),
         (ChatAgent::Claude, Some("claude-opus-5-5".into())),
@@ -1316,6 +1314,353 @@ fn a_start_with_a_page_handoff_and_an_older_runtime_changes_nothing_and_records_
     assert_eq!(started_as(&w, &chat).0, ChatAgent::Codex);
     assert_eq!(events(&chat, "octiq_provider_switched").len(), switched);
     end_process(&w.manager, &chat.key).unwrap();
+}
+
+// ---- the host decides a registered chat's runtime and session --------------
+
+/// A folder that does not exist: a start there reaches the launch decision
+/// (`start_seam`) and then fails, so no provider CLI is ever started.
+const NO_SPAWN: &str = "/nonexistent/octiq-runtime-switch-no-spawn";
+
+/// What a stale tab's start makes the host decide to launch, with nothing
+/// started.
+fn planned(
+    w: &World,
+    chat: &Chat,
+    agent: ChatAgent,
+    model: &str,
+    handoff: Option<&str>,
+    resume: Option<&str>,
+) -> crate::agent_chat::start_seam::Plan {
+    let _ = crate::agent_chat::start_seam::take();
+    let started = chat_start_user_impl(
+        w.manager.clone(),
+        chat.key.clone(),
+        NO_SPAWN.into(),
+        agent,
+        Some(model.into()),
+        Some(Access::Full),
+        Some("stale tab message".into()),
+        handoff.map(str::to_string),
+        resume.map(str::to_string),
+        None,
+        None,
+        Some("high".into()),
+        None,
+        None,
+        None,
+    );
+    assert!(started.is_err(), "nothing may be started: {started:?}");
+    crate::agent_chat::start_seam::take().expect("the start reached the launch decision")
+}
+
+/// A chat whose record has history and a Claude session, from before launches
+/// were recorded: no receipt, no launch line, and no start context.
+fn chat_from_before_launches_were_recorded(w: &World) -> Chat {
+    let chat = w.chat();
+    w.manager.starts.lock().unwrap().remove(&chat.key);
+    let _ = w.manager.orchestrations.forget_resume_context(&chat.key);
+    record_chat_event(
+        &chat.key,
+        json!({ "type": "system", "subtype": "init", "session_id": "claude-own-session",
+            "model": "claude-opus-5-5" }),
+    );
+    record_chat_event(
+        &chat.key,
+        json!({ "type": "user", "uuid": "u1", "message": { "content": "ORIGINAL_IDENTITY_CONTEXT" } }),
+    );
+    chat
+}
+
+#[test]
+fn the_hosts_runtime_is_read_from_the_record_then_the_start_context_then_the_transcript_then_the_registration(
+) {
+    let w = World::new();
+    let chat = w.chat();
+    w.manager.starts.lock().unwrap().remove(&chat.key);
+    let _ = w.manager.orchestrations.forget_resume_context(&chat.key);
+    let registration = settings(ChatAgent::Claude, "claude-opus-5-5", Some("high"));
+    let decide = || {
+        host_runtime(
+            &w.manager,
+            &chat.key,
+            &recorded(&chat.key).unwrap(),
+            &registration,
+        )
+        .unwrap()
+    };
+    // Nothing at all: the registration. The index row (the browser writes
+    // it) says Codex and a session, and is not asked.
+    crate::chat_index::upsert(
+        serde_json::from_value(json!({
+            "id": chat.id, "projectId": "workspace", "updatedAt": 101,
+            "modelId": "codex-gpt-5.6-sol", "effort": "low", "access": "full",
+            "sessionId": "codex-from-the-index",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let found = decide();
+    assert_eq!(found.source, RuntimeSource::Registration);
+    assert_eq!(found.settings, registration);
+    // Only its transcript shows it: the provider that announced the latest
+    // session. Codex names no model, and the registration is Claude's.
+    record_chat_event(
+        &chat.key,
+        json!({ "type": "thread.started", "thread_id": "codex-thread-1" }),
+    );
+    let found = decide();
+    assert_eq!(found.source, RuntimeSource::Transcript);
+    assert_eq!(
+        (
+            found.settings.agent,
+            found.settings.model,
+            found.settings.effort
+        ),
+        (ChatAgent::Codex, None, None)
+    );
+    // A Claude `init` names its model; the registration's effort is kept
+    // only for the registration's own model.
+    record_chat_event(
+        &chat.key,
+        json!({ "type": "system", "subtype": "init", "session_id": "claude-s", "model": "claude-opus-5-5" }),
+    );
+    let found = decide();
+    assert_eq!(found.source, RuntimeSource::Transcript);
+    assert_eq!(found.settings, registration);
+    // A session /clear revoked is not evidence.
+    crate::chat_index::forget_sessions(&chat.key, vec!["claude-s".into()]).unwrap();
+    assert_eq!(decide().settings.agent, ChatAgent::Codex);
+    // The start context beats the transcript.
+    w.manager.remember_start(
+        &chat.key,
+        StartContext {
+            defaults: None,
+            cwd: "/tmp/project".into(),
+            agent: ChatAgent::Pi,
+            model: Some("anthropic/claude-opus-5-5".into()),
+            access: Some(Access::Full),
+            extra_dirs: None,
+            env: None,
+            effort: None,
+            lite: None,
+            session_id: None,
+        },
+    );
+    let found = decide();
+    assert_eq!(found.source, RuntimeSource::StartContext);
+    assert_eq!(found.settings.agent, ChatAgent::Pi);
+    // The record beats both: a launch line, then a receipt after it.
+    let launched = settings(ChatAgent::Codex, "gpt-5.6-sol", Some("low"));
+    let mut line = serde_json::to_value(&launched).unwrap();
+    line["type"] = json!(LAUNCHED);
+    record_event(&chat, line);
+    let found = decide();
+    assert_eq!(found.source, RuntimeSource::Record);
+    assert_eq!(found.settings, launched);
+    let opus = settings(ChatAgent::Claude, "claude-opus-5-5", Some("high"));
+    auto_switch(&chat, &launched, &opus);
+    assert_eq!(decide().settings, opus, "the later line wins");
+}
+
+#[test]
+fn a_session_is_the_hosts_own_for_the_runtime_and_never_the_pages() {
+    let w = World::new();
+    let chat = chat_from_before_launches_were_recorded(&w);
+    let claude = settings(ChatAgent::Claude, "claude-opus-5-5", Some("high"));
+    let codex = settings(ChatAgent::Codex, "gpt-5.6-sol", None);
+    // No start context: the latest session its transcript shows, and only
+    // for the provider that announced it.
+    assert_eq!(
+        host_session(&w.manager, &chat.key, &claude).unwrap(),
+        Some("claude-own-session".into())
+    );
+    assert_eq!(host_session(&w.manager, &chat.key, &codex).unwrap(), None);
+    // A start context that holds no session owes a fresh one.
+    let mut start = w
+        .manager
+        .start_context(&chat.key)
+        .unwrap_or_else(|| StartContext {
+            defaults: None,
+            cwd: "/tmp/project".into(),
+            agent: ChatAgent::Claude,
+            model: Some("claude-opus-5-5".into()),
+            access: Some(Access::Full),
+            extra_dirs: None,
+            env: None,
+            effort: Some("high".into()),
+            lite: None,
+            session_id: None,
+        });
+    start.session_id = None;
+    w.manager.remember_start(&chat.key, start.clone());
+    assert_eq!(host_session(&w.manager, &chat.key, &claude).unwrap(), None);
+    start.session_id = Some("claude-live".into());
+    w.manager.remember_start(&chat.key, start);
+    assert_eq!(
+        host_session(&w.manager, &chat.key, &claude).unwrap(),
+        Some("claude-live".into())
+    );
+    assert_eq!(host_session(&w.manager, &chat.key, &codex).unwrap(), None);
+}
+
+#[test]
+fn an_existing_chat_with_no_switch_receipt_keeps_its_runtime_against_a_stale_start() {
+    // H3: the chat ran on Claude and was never switched. A stale tab asks
+    // for Codex, with a handoff and a session of its own. Nothing but
+    // `chat_switch_runtime` changes the runtime.
+    let w = World::new();
+    let chat = chat_from_before_launches_were_recorded(&w);
+    let plan = planned(
+        &w,
+        &chat,
+        ChatAgent::Codex,
+        "gpt-5.6-sol",
+        Some("[{\"role\":\"assistant\",\"text\":\"page history\"}]"),
+        Some("codex-session-of-the-page"),
+    );
+    assert_eq!(
+        (plan.agent, plan.model.as_deref(), plan.effort.as_deref()),
+        (ChatAgent::Claude, Some("claude-opus-5-5"), Some("high"))
+    );
+    assert_eq!(
+        plan.resume.as_deref(),
+        Some("claude-own-session"),
+        "the host's own session, never the page's"
+    );
+    let prompt = plan.prompt.unwrap();
+    assert!(prompt.contains("stale tab message") && !prompt.contains("page history"));
+    assert!(events(&chat, "octiq_provider_switched").is_empty());
+    assert!(events(&chat, "octiq_registered_recovered").is_empty());
+    // The coordinator's start (`orchestration_master_start`) is the same door.
+    let _ = crate::agent_chat::start_seam::take();
+    let master = chat_start_master_impl(
+        w.manager.clone(),
+        chat.key.clone(),
+        NO_SPAWN.into(),
+        ChatAgent::Codex,
+        Some("gpt-5.6-sol".into()),
+        Some(Access::Full),
+        "Coordinate".into(),
+        Some("[{\"role\":\"user\",\"text\":\"page history\"}]".into()),
+        Some("codex-session-of-the-page".into()),
+        None,
+        None,
+        Some("high".into()),
+        None,
+    );
+    assert!(master.is_err(), "nothing may be started");
+    let plan = crate::agent_chat::start_seam::take().expect("the master start reached the launch");
+    assert_eq!(plan.agent, ChatAgent::Claude);
+    assert_eq!(plan.resume.as_deref(), Some("claude-own-session"));
+    assert!(!plan.prompt.unwrap().contains("page history"));
+    assert_eq!(started_as(&w, &chat).0, ChatAgent::Claude);
+}
+
+#[test]
+fn a_launch_leaves_one_line_saying_the_runtime_it_ran_on() {
+    let w = World::new();
+    let chat = chat_from_before_launches_were_recorded(&w);
+    let opus = settings(ChatAgent::Claude, "claude-opus-5-5", Some("high"));
+    note_launch(&w.manager, &chat.key, &opus);
+    assert_eq!(events(&chat, LAUNCHED).len(), 1);
+    assert_eq!(recorded(&chat.key).unwrap().latest, Some(opus.clone()));
+    // The same runtime again adds nothing, and a new one adds a line.
+    note_launch(&w.manager, &chat.key, &opus);
+    assert_eq!(events(&chat, LAUNCHED).len(), 1);
+    let codex = settings(ChatAgent::Codex, "gpt-5.6-sol", Some("low"));
+    note_launch(&w.manager, &chat.key, &codex);
+    assert_eq!(events(&chat, LAUNCHED).len(), 2);
+    assert_eq!(recorded(&chat.key).unwrap().latest, Some(codex));
+    // A launch never touches the chat's own runtime (what failover returns to).
+    let found = recorded(&chat.key).unwrap();
+    assert_eq!((found.baseline, found.current), (None, None));
+    // A chat of no registered agent leaves none.
+    let plain = format!("chat:plain-{}", uuid::Uuid::new_v4().simple());
+    note_launch(&w.manager, &plain, &opus);
+    assert!(crate::transcript::of_type(&plain, LAUNCHED).is_empty());
+}
+
+#[test]
+fn a_same_runtime_stale_start_after_the_handoff_debt_was_paid_still_gets_the_earlier_context() {
+    // H4: switched Codex -> Opus, the first message after it paid the debt,
+    // the process stopped. A stale start with no session (and no history)
+    // must not open a session that has forgotten everything.
+    let w = World::new();
+    let chat = w.chat();
+    record_chat_event(
+        &chat.key,
+        json!({ "type": "user", "uuid": "u1", "message": { "content": "ORIGINAL_IDENTITY_CONTEXT" } }),
+    );
+    w.switch(&chat, ChatAgent::Codex, "gpt-5.6-sol", Some("high"))
+        .unwrap();
+    w.switch(&chat, ChatAgent::Claude, "claude-opus-5-5", Some("high"))
+        .unwrap();
+    handoff_taken(&w.manager, &chat.key);
+    assert!(!w.manager.handoff_owed(&chat.key));
+    assert_eq!(w.start(&chat).session_id, None, "a fresh session is owed");
+    let plan = planned(&w, &chat, ChatAgent::Claude, "claude-opus-5-5", None, None);
+    assert_eq!(plan.agent, ChatAgent::Claude);
+    assert_eq!(plan.resume, None, "no session of its own to resume");
+    let prompt = plan.prompt.unwrap();
+    assert!(prompt.starts_with(HANDOFF_PREFIX), "{prompt}");
+    assert!(prompt.contains("ORIGINAL_IDENTITY_CONTEXT"), "{prompt}");
+    assert!(prompt.contains("stale tab message"), "{prompt}");
+    assert!(prompt.contains(crate::team::BRIEF_MARK), "{prompt}");
+    // The page's own history is not what was handed over.
+    let page = planned(
+        &w,
+        &chat,
+        ChatAgent::Claude,
+        "claude-opus-5-5",
+        Some("[{\"role\":\"assistant\",\"text\":\"Ready.\"}]"),
+        None,
+    );
+    assert!(!page.prompt.unwrap().contains("Ready."));
+}
+
+#[test]
+fn a_chat_started_before_launches_were_recorded_resolves_from_its_transcript() {
+    let w = World::new();
+    let chat = chat_from_before_launches_were_recorded(&w);
+    assert!(events(&chat, LAUNCHED).is_empty());
+    let registration = settings(ChatAgent::Claude, "claude-opus-5-5", Some("high"));
+    let found = host_runtime(
+        &w.manager,
+        &chat.key,
+        &recorded(&chat.key).unwrap(),
+        &registration,
+    )
+    .unwrap();
+    assert_eq!(found.source, RuntimeSource::Transcript);
+    assert_eq!(found.settings.agent, ChatAgent::Claude);
+    let queue =
+        serde_json::to_value(chat_queue_state_impl(&w.manager, &chat.key).unwrap()).unwrap();
+    assert_eq!(queue["runtime"]["agent"], "claude");
+    assert_eq!(queue["runtime"]["model"], "claude-opus-5-5");
+    // The same chat whose transcript shows a Codex session (it ran there
+    // before launches were recorded): that is the runtime, and a Claude
+    // session is not resumed under it.
+    let codex_chat = w.chat();
+    w.manager.starts.lock().unwrap().remove(&codex_chat.key);
+    let _ = w
+        .manager
+        .orchestrations
+        .forget_resume_context(&codex_chat.key);
+    record_chat_event(
+        &codex_chat.key,
+        json!({ "type": "thread.started", "thread_id": "codex-thread-1" }),
+    );
+    let plan = planned(
+        &w,
+        &codex_chat,
+        ChatAgent::Claude,
+        "claude-opus-5-5",
+        None,
+        Some("claude-session-1"),
+    );
+    assert_eq!(plan.agent, ChatAgent::Codex);
+    assert_eq!(plan.resume.as_deref(), Some("codex-thread-1"));
 }
 
 #[test]
@@ -1372,7 +1717,7 @@ fn an_unregistered_chats_picker_still_retargets_and_its_start_carries_the_choice
         Some("[{\"role\":\"user\",\"text\":\"earlier\"}]"),
         None,
     );
-    assert_eq!(started, Ok(()));
+    assert!(started.is_err(), "no provider is started: {started:?}");
     assert_eq!(started_as(&w, &chat).0, ChatAgent::Codex);
     wait_idle(&w, &chat);
 }

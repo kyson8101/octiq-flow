@@ -329,12 +329,35 @@ use a 15-minute cooldown. Registered agent defaults and identity do not change.
   derived from that record, never from cooldowns. The host's recorded
   runtime beats a stale tab's `chat_start` after a person's switch and after
   automatic failover. **For a registered chat the runtime changes only through
-  `chat_switch_runtime`, when the person presses: no start, send or retarget
-  carries a choice, and a page `handoff` is discarded** (a non-empty page field
-  is not fresh authorization; the host builds any history itself).
-  `chat_retarget` is refused for a registered chat, `chat_queue_state.registered`
-  tells the page, and the page sends every model or effort pick of such a chat
-  to the host whatever agents mode is. The first prompt of any
+  `chat_switch_runtime`, when the person presses: no start, send, wake, queued
+  turn, auto-resume or orchestration master start carries a choice.** For such a
+  chat (`defaults_for_chat` is `Some`) the host ignores the page's agent, model,
+  effort, resume and handoff entirely, and decides both itself. **Runtime**, one
+  function (`runtime_switch::host_runtime`): the latest runtime line of the
+  chat's record (a switch, recovery or failover receipt, or the
+  `octiq_runtime_launched` line each launch now leaves); else its start
+  context or the ledger's resume context; else what its own transcript shows
+  the host launched (the provider that announced the latest native session,
+  and Claude's `init` model: only for a chat from before launches were
+  recorded); else, only for a chat with no history at all, the registration.
+  Never the chat index row (the browser writes it), and never the registration
+  for a chat that has run ("a chat keeps what it has"). Failover and preset
+  recovery still decide for a limited or invalid runtime. **Session**
+  (`host_session`): the host's own native session for that runtime (start
+  context, else the provider's own latest session event in the transcript,
+  filtered by `forgotten_sessions` and by the provider that announced it); a
+  start context that holds none owes a fresh session. **Any fresh session of
+  a chat that has history gets the host's `provider_history` plus the full
+  brief**, whatever the runtime and whatever happened to an earlier handoff
+  debt. `chat_retarget` is refused for a registered chat,
+  `chat_queue_state.registered` and `.runtime` tell the page (the page takes
+  the host's runtime when `registered` turns true, and a pick on a saved chat
+  whose registration is not yet known waits for that read, or is refused in
+  words when it failed), and the page sends every model or effort pick of such
+  a chat to the host whatever agents mode is. Reviewing a rule where a page
+  field signals intent: test an old pending intent crossing a later host
+  choice, a chat that was never switched (no receipt), and a same-runtime
+  stale start after a handoff debt was paid. The first prompt of any
   fresh session after a provider change, automatic or not, carries the
   agent's full brief (`team::identity_brief`) outside the JSON history. Check
   it with `node scripts/test-runtime-switch.mjs`.

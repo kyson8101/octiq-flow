@@ -113,7 +113,7 @@ import { ChatNotices } from "./components/ChatNotices";
 import { RemovedFolderBanner } from "./components/RemovedFolderBanner";
 import { RuntimeRows } from "./components/RuntimeRows";
 import { useRuntimeSwitch } from "./lib/useRuntimeSwitch";
-import { picksThroughSwitch, refOf, runtimeSwitchable, sameRuntime } from "./lib/runtimeSwitch";
+import { picksThroughSwitch, refOf, runtimeSwitchable, sameRuntime, type RuntimeRef } from "./lib/runtimeSwitch";
 import { ChatStatus } from "./components/ChatStatus";
 import { ChatQuestionsContext, QuestionWaitingRow, type ChatQuestions } from "./components/InlineQuestions";
 import { isAnswerTurn } from "./lib/questionBlock";
@@ -2336,7 +2336,18 @@ export default function App() {
   // (`applyHostRuntime`, called by its event and by a `switched` answer) and
   // never the press. Not offered for a worker's chat, a front desk, a removed
   // agent's chat or a conversation nobody has sent a message in yet.
-  const runtimeSwitch = useRuntimeSwitch(conn, conversationId, applyHostRuntime);
+  // The host's word on what a registered chat runs on, read with the fact
+  // that it is registered: a saved, sent chat takes it when it differs from
+  // what the page drew (a pick made before the page knew the chat was
+  // registered, a cache), unless a newer event overtook the read.
+  const takeHostRuntime = useCallback((id: string, runtime: RuntimeRef) => {
+    if (!(chatsRef.current[id]?.messages.length)) return;
+    const shown = modelFromId(meta.current[id]?.modelId ?? null);
+    const same = shown && sameRuntime(refOf(shown, (meta.current[id]?.effort ?? "auto") as Effort), runtime);
+    if (same) return;
+    applyHostRuntime(id, runtime);
+  }, [applyHostRuntime]);
+  const runtimeSwitch = useRuntimeSwitch(conn, conversationId, applyHostRuntime, takeHostRuntime);
   const askRuntime = runtimeSwitch.request;
   const runtimeChat = conversationId && composerIdentity && runtimeSwitchable({
     identity: true,
@@ -2358,21 +2369,25 @@ export default function App() {
     saved: !!openRecord,
     started: chat.messages.length > 0,
   }) ? conversationId : null;
-  const switchPending = runtimeSwitch.runtimeOf(switchChat)?.pending;
-  const pickRuntime = useCallback((model: ModelChoice) => {
-    if (!switchChat) return;
-    const asked = refOf(model, effort);
+  // What a runtime request reads when it is made, which may be after a wait
+  // for the host's word on whether the chat is registered: the values of the
+  // latest render, never the ones the press was drawn with.
+  const liveRuntime = useRef({ choice, effort, pendingOf: runtimeSwitch.runtimeOf });
+  liveRuntime.current = { choice, effort, pendingOf: runtimeSwitch.runtimeOf };
+  const switchTo = useCallback((id: string, model: ModelChoice | null, next: Effort | null) => {
+    const live = liveRuntime.current;
+    const asked = refOf(model ?? live.choice, next ?? live.effort);
     // The runtime already running is no change, unless a switch is waiting:
     // picking it takes that back.
-    if (sameRuntime(asked, refOf(choice, effort)) && !switchPending) return;
-    void askRuntime(switchChat, asked, "sheet");
-  }, [switchChat, effort, choice, switchPending, askRuntime]);
+    if (sameRuntime(asked, refOf(live.choice, live.effort)) && !live.pendingOf(id)?.pending) return;
+    void askRuntime(id, asked, "sheet");
+  }, [askRuntime]);
+  const pickRuntime = useCallback((model: ModelChoice) => {
+    if (switchChat) switchTo(switchChat, model, null);
+  }, [switchChat, switchTo]);
   const pickRuntimeEffort = useCallback((next: Effort) => {
-    if (!switchChat) return;
-    const asked = refOf(choice, next);
-    if (sameRuntime(asked, refOf(choice, effort)) && !switchPending) return;
-    void askRuntime(switchChat, asked, "sheet");
-  }, [switchChat, effort, choice, switchPending, askRuntime]);
+    if (switchChat) switchTo(switchChat, null, next);
+  }, [switchChat, switchTo]);
   // The chat on screen counts as read, and stays that way for as long as it
   // is the one on screen — this covers both opening it (its own `updatedAt`
   // is already older than `now`) and it picking up NEW activity while being
@@ -4452,13 +4467,48 @@ export default function App() {
   // The pickers' own entry points. In a registered agent's chat a pick is a
   // runtime switch the host decides (`pickRuntime`); the page's `choice` and
   // `effort` move only on its word. Anywhere else it is the ordinary picker.
+  // A pick on a saved, sent chat whose registration the host has not yet
+  // said waits for that word (`chat_queue_state`): until then the page does
+  // not know whether the pick is a runtime switch or the ordinary picker's,
+  // and the ordinary one would show a model the host is not running. If the
+  // read fails, the pick is refused in words and nothing changes.
+  const picksAfterRead = !!conversationId && !workerChat && !!openRecord && chat.messages.length > 0
+    && runtimeSwitch.registeredOf(conversationId) === undefined;
+  const livePicks = useRef({ changeModel, changeEffort });
+  livePicks.current = { changeModel, changeEffort };
+  const afterRead = useCallback((id: string, what: string, go: (registered: boolean) => void) => {
+    void runtimeSwitch.whenRead(id).then((fact) => {
+      // Only while that chat is still the one the person is in.
+      if (visibleRef.current !== id) return;
+      if (fact.kind === "failed") {
+        patch(id, (state) => ({
+          ...state,
+          notices: [...state.notices, `Could not change ${what}: the host did not say whether this chat belongs to a registered agent (${fact.text}). Nothing was changed.`].slice(-8),
+        }));
+        return;
+      }
+      go(fact.kind === "registered");
+    });
+  }, [runtimeSwitch.whenRead, patch]);
   const pickModel = useCallback(
-    (c: ModelChoice) => (switchChat ? pickRuntime(c) : changeModel(c)),
-    [switchChat, pickRuntime, changeModel],
+    (c: ModelChoice) => {
+      if (switchChat) return pickRuntime(c);
+      if (picksAfterRead && conversationId) {
+        return afterRead(conversationId, "the model", (registered) => (registered ? switchTo(conversationId, c, null) : livePicks.current.changeModel(c)));
+      }
+      return changeModel(c);
+    },
+    [switchChat, pickRuntime, picksAfterRead, conversationId, afterRead, switchTo, changeModel],
   );
   const pickEffort = useCallback(
-    (e: Effort) => (switchChat ? pickRuntimeEffort(e) : changeEffort(e)),
-    [switchChat, pickRuntimeEffort, changeEffort],
+    (e: Effort) => {
+      if (switchChat) return pickRuntimeEffort(e);
+      if (picksAfterRead && conversationId) {
+        return afterRead(conversationId, "the effort", (registered) => (registered ? switchTo(conversationId, null, e) : livePicks.current.changeEffort(e)));
+      }
+      return changeEffort(e);
+    },
+    [switchChat, pickRuntimeEffort, picksAfterRead, conversationId, afterRead, switchTo, changeEffort],
   );
 
   /** What a level is called, in the words of the agent THAT chat runs — the one

@@ -31,6 +31,14 @@
 //      `chat_start`), and the picker's text moves only on the host's word.
 //   10 Agents mode OFF, an ordinary chat (the host says it is not
 //      registered): the picker is unchanged, a local choice and no switch.
+//   11 The host has not yet said whether the chat is registered (its
+//      `chat_queue_state` answer is held, failed, or says nothing about it),
+//      and a pick is made: held, the pick waits for the answer and then goes
+//      to the host as a switch; failed, it is refused in words and nothing
+//      changes; an older host that says nothing is an ordinary chat. And a
+//      page that drew another model than the host runs (an optimistic pick
+//      the index kept) takes the host's runtime once the chat is known to be
+//      registered.
 //
 // At 1280 (with the git column, so the chat is a narrow column) and 390, with
 // screenshots in the theme named by OCTIQ_THEME (dark by default).
@@ -64,7 +72,7 @@ const head = {
 let host;
 const fresh = (change = {}) => ({
   modelId: "claude:opus", effort: "high", access: "read",
-  home: null, pending: null, switchMode: "switched", delay: 0, refusal: "", calls: [], commands: [], registered: true, polls: 0, ...change,
+  home: null, pending: null, switchMode: "switched", delay: 0, refusal: "", calls: [], commands: [], registered: true, polls: 0, queueMode: undefined, ...change,
 });
 const MODEL_OF = {
   "claude:opus": { agent: "claude", model: "opus" },
@@ -86,7 +94,7 @@ function resultFor(request) {
   const key = request.args?.key;
   switch (request.cmd) {
     case "list_workspaces": return [{ id: "octiq", name: "octiq-flow", primary_path: root }];
-    case "chat_index_list": return [chatRecord(host.chatId, host.modelId, host.access)];
+    case "chat_index_list": return [chatRecord(host.chatId, host.listModelId ?? host.modelId, host.access)];
     case "chat_index_deleted": return [];
     case "chat_page": return { events: [], context: [], before: null };
     case "provider_fallback_choices": return [];
@@ -104,6 +112,8 @@ function resultFor(request) {
       if (host.home?.resetsInMs && !host.home.resetsAt) host.home.resetsAt = Math.ceil((Date.now() + host.home.resetsInMs) / 1000);
       return {
         live: false, queuedTurnIds: [], registered: host.registered,
+        // What the host runs a registered chat on, as the real host says it.
+        ...(host.registered === true ? { runtime: { ...MODEL_OF[host.modelId], effort: host.effort === "auto" ? null : host.effort } } : {}),
         ...(host.home ? { homeRuntime: Object.fromEntries(Object.entries(host.home).filter(([name]) => name !== "resetsInMs")) } : {}),
         ...(host.pending ? { pendingRuntime: host.pending } : {}),
       };
@@ -171,7 +181,7 @@ async function open(browser, { width, height, phone = false, chatId = "main", co
     localStorage.setItem("octiq.theme", mode);
     localStorage.setItem("octiq.v2.theme", mode);
     localStorage.setItem("octiq.v2.conversations", JSON.stringify(stored));
-  }, { stored: [{ ...chatRecord(chatId, host.modelId, host.access), permission: host.access, messages }], mode: theme, gitColumn: !phone, agentsMode });
+  }, { stored: [{ ...chatRecord(chatId, host.listModelId ?? host.modelId, host.access), permission: host.access, messages }], mode: theme, gitColumn: !phone, agentsMode });
   await context.route("**/token", (route) => route.fulfill({ body: "mock-token" }));
   await context.route("**/auth", (route) => route.fulfill({ body: "ok" }));
   await context.routeWebSocket(/.*/, (ws) => {
@@ -183,6 +193,15 @@ async function open(browser, { width, height, phone = false, chatId = "main", co
         ws.send(JSON.stringify({ t: "reply", id: request.id, ok: false, error: `'${request.cmd}' is not available on this backend` })); return;
       }
       host.commands.push(request.cmd);
+      if (request.cmd === "chat_queue_state" && host.queueMode === "held") {
+        const answer = () => ws.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: resultFor(request) }));
+        (host.heldQueues ??= []).push(answer);
+        host.releaseQueue = () => { host.registered = true; host.heldQueues.splice(0).forEach((send) => send()); };
+        return;
+      }
+      if (request.cmd === "chat_queue_state" && host.queueMode === "failed") {
+        ws.send(JSON.stringify({ t: "reply", id: request.id, ok: false, error: "The host could not read the chat." })); return;
+      }
       if (request.cmd === "chat_switch_runtime") { void switchRuntime(ws, request); return; }
       ws.send(JSON.stringify({ t: "reply", id: request.id, ok: true, result: resultFor(request) }));
     });
@@ -441,6 +460,60 @@ async function scenes(browser, size) {
     await menu.locator(".picker-item, .mp-card", { hasText: "Sol" }).first().click();
     await page.waitForFunction(() => /sol/i.test(document.querySelector(".model-trigger")?.textContent ?? ""), null, { timeout: 10_000 });
     assert.equal(host.calls.length, 0, `${at}: an ordinary chat never asks the host to switch`);
+    await context.close();
+  }
+
+  // 11 The host has not yet said whether the chat is registered.
+  for (const mode of ["held", "missing", "failed"]) {
+    host = fresh({ registered: undefined, queueMode: mode === "missing" ? undefined : mode, delay: 300 });
+    const { context, page } = await open(browser, { ...size, agentsMode: false });
+    const trigger = page.locator(".model-trigger:visible").first();
+    await trigger.waitFor();
+    await trigger.click();
+    const menu = page.locator(".picker-menu.is-models:visible, .settings-sheet:visible").first();
+    await menu.waitFor();
+    await menu.getByRole("tab", { name: /Codex/ }).click();
+    await menu.locator(".picker-item, .mp-card", { hasText: "Sol" }).first().click();
+    await page.waitForTimeout(600);
+    const sent = () => host.commands.filter((cmd) => /^chat_(retarget|start|send)$/.test(cmd));
+    if (mode === "held") {
+      assert.match(await page.locator(".model-trigger:visible").first().innerText(), /opus/i, `${at}: held: the pick waits, the picker shows what the host runs`);
+      assert.equal(host.calls.length, 0, `${at}: held: nothing is asked of the host before it has said`);
+      assert.deepEqual(sent(), [], `${at}: held: no retarget and no start`);
+      host.releaseQueue();
+      await page.waitForFunction(() => /sol/i.test(document.querySelector(".model-trigger")?.textContent ?? ""), null, { timeout: 10_000 });
+      assert.deepEqual(host.calls, [{ key: `chat:${host.chatId}`, agent: "codex", model: "gpt-5.6-sol", effort: "high" }], `${at}: held: the waiting pick went to the host as a switch`);
+      assert.deepEqual(sent(), [], `${at}: held: and nothing else carried it`);
+    } else if (mode === "missing") {
+      await page.waitForFunction(() => /sol/i.test(document.querySelector(".model-trigger")?.textContent ?? ""), null, { timeout: 10_000 });
+      assert.equal(host.calls.length, 0, `${at}: an older host that says nothing is an ordinary chat: no switch`);
+    } else {
+      // The refusal is a notice above the composer: its row says what could
+      // not be done, and the host's reason is in its opened panel.
+      const notice = page.locator(".chat-notices");
+      await notice.getByText(/Could not change the model/).first().waitFor();
+      // A phone's settings sheet stays open after a pick: close it first.
+      await page.keyboard.press("Escape");
+      const closer = page.getByRole("button", { name: "Close" });
+      if (await closer.count()) await closer.first().click();
+      await notice.locator("button").first().click();
+      await page.getByText(/Nothing was changed\./).first().waitFor();
+      assert.match(await page.locator(".model-trigger:visible").first().innerText(), /opus/i, `${at}: failed: the picker did not move`);
+      assert.equal(host.calls.length, 0, `${at}: failed: nothing was sent to the host`);
+      assert.deepEqual(sent(), [], `${at}: failed: no retarget and no start`);
+    }
+    await shot(page, `${at}-11-registered-unknown-${mode}`);
+    await context.close();
+  }
+
+  // 11 (cont.) A page that drew another model than the host runs takes the
+  // host's word once it knows the chat is registered.
+  {
+    host = fresh({ listModelId: "codex:sol" });
+    const { context, page } = await open(browser, { ...size, agentsMode: false });
+    await page.waitForFunction(() => /opus/i.test(document.querySelector(".model-trigger")?.textContent ?? ""), null, { timeout: 10_000 });
+    assert.equal(host.calls.length, 0, `${at}: taking the host's runtime asks nothing of it`);
+    await shot(page, `${at}-11-host-runtime-taken`);
     await context.close();
   }
 }

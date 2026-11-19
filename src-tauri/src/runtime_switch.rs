@@ -29,7 +29,12 @@ use crate::provider_failover::Settings;
 pub(super) const HANDOFF_PREFIX: &str =
     "Continue this OctiqFlow conversation using the earlier turns below.";
 
-const RECORD_KINDS: [&str; 5] = [
+/// The line every launch of a registered agent's chat leaves behind
+/// (`note_launch`): the runtime the host actually started.
+pub(super) const LAUNCHED: &str = "octiq_runtime_launched";
+
+const RECORD_KINDS: [&str; 6] = [
+    LAUNCHED,
     "octiq_provider_switched",
     "octiq_registered_recovered",
     "octiq_runtime_pending",
@@ -61,6 +66,9 @@ impl PendingRuntime {
 pub(crate) struct Recorded {
     /// Where the last runtime change put the chat.
     pub current: Option<Settings>,
+    /// The latest runtime the host decided or ran, whichever line says it
+    /// last: a switch, a recovery, a failover or a launch.
+    pub latest: Option<Settings>,
     /// The chat's own runtime: where automatic failover returns to. The
     /// registration until the first change; then the first runtime an
     /// automatic failover left, or the person's last pick.
@@ -79,6 +87,12 @@ impl Recorded {
     /// still names an older runtime does not undo it.
     pub(crate) fn current_runtime(&self) -> Option<&Settings> {
         self.current.as_ref()
+    }
+
+    /// The runtime the host last ran or decided for this chat, a launch
+    /// included.
+    pub(crate) fn latest_runtime(&self) -> Option<&Settings> {
+        self.latest.as_ref()
     }
 }
 
@@ -109,7 +123,13 @@ fn fold(found: &mut Recorded, event: &Value) {
                 found.pending = None;
             }
             found.last_by_person = by_person;
+            found.latest = Some(to.clone());
             found.current = Some(to);
+        }
+        Some(LAUNCHED) => {
+            if let Some(runtime) = runtime_of(event) {
+                found.latest = Some(runtime);
+            }
         }
         Some("octiq_runtime_pending") => {
             found.pending = serde_json::from_value(event.clone()).ok();
@@ -212,6 +232,9 @@ pub(crate) struct RuntimeBook {
     owed: std::collections::HashSet<String>,
     /// Chats whose record has been read into this book.
     loaded: std::collections::HashSet<String>,
+    /// The latest runtime the record holds for a chat, so a launch writes
+    /// its line only when it says something new.
+    latest: HashMap<String, Settings>,
     /// The projects' names, for a global agent's roster in its brief.
     projects: Vec<(String, String)>,
 }
@@ -256,6 +279,9 @@ impl ChatManager {
             }
             if found.handoff_owed {
                 book.owed.insert(key.to_string());
+            }
+            if let Some(latest) = found.latest {
+                book.latest.insert(key.to_string(), latest);
             }
             if let Some(target) = found.pending {
                 book.pending
@@ -303,6 +329,7 @@ impl ChatManager {
             book.pending.remove(key);
             book.owed.remove(key);
             book.loaded.remove(key);
+            book.latest.remove(key);
         }
     }
 
@@ -354,36 +381,46 @@ fn eligible(manager: &ChatManager, key: &str) -> Result<crate::team::TeamAgent, 
     Ok(agent)
 }
 
-/// What the chat runs on now, with the access it runs at: the live start
-/// context, else the ledger's resume context, else the chat's index entry,
-/// else the registration.
+/// What the chat runs on now: the host's own decision
+/// (`host_runtime`), with the access the chat runs at (its start context's,
+/// else the ledger's, else the index entry's, else the registration's).
 fn current_runtime(
     manager: &ChatManager,
     key: &str,
     agent: &crate::team::TeamAgent,
 ) -> Result<Settings, String> {
-    if let Some(start) = manager.start_context(key) {
-        return Ok(start.settings());
-    }
-    if let Some(saved) = manager.orchestrations.saved_resume_context(key) {
-        return Ok(saved.settings());
-    }
-    if let Some(meta) = key
-        .strip_prefix("chat:")
-        .map(crate::chat_index::find)
-        .transpose()?
-        .flatten()
-    {
-        if let Ok(settings) = crate::lead_threads::saved_settings(&meta) {
-            return Ok(settings);
-        }
-    }
+    let registration = registration_of(agent);
+    let host = host_runtime(manager, key, &recorded(key)?, &registration)?;
+    let access = manager
+        .start_context(key)
+        .map(|start| start.settings().access)
+        .or_else(|| {
+            manager
+                .orchestrations
+                .saved_resume_context(key)
+                .map(|saved| saved.settings().access)
+        })
+        .or_else(|| {
+            key.strip_prefix("chat:")
+                .and_then(|id| crate::chat_index::find(id).ok().flatten())
+                .and_then(|meta| crate::lead_threads::saved_settings(&meta).ok())
+                .map(|saved| saved.access)
+        })
+        .unwrap_or(host.settings.access);
     Ok(Settings {
+        access,
+        ..host.settings
+    })
+}
+
+/// The registration as a runtime.
+fn registration_of(agent: &crate::team::TeamAgent) -> Settings {
+    Settings {
         agent: agent.agent,
         model: Some(agent.model.clone()),
         effort: agent.effort.clone(),
         access: agent.access,
-    })
+    }
 }
 
 /// Check a request against the chat's current runtime and build the
@@ -718,6 +755,7 @@ fn settle(
     }
     if let Ok(mut book) = manager.runtime.lock() {
         book.loaded.insert(key.to_string());
+        book.latest.insert(key.to_string(), to.clone());
         if handoff_owed {
             book.owed.insert(key.to_string());
         } else {
@@ -936,16 +974,40 @@ pub(super) fn adopt_pending(manager: &ChatManager, key: &str) {
 pub(crate) fn queue_fields(
     manager: &ChatManager,
     key: &str,
-) -> (Option<PendingView>, Option<HomeRuntime>) {
+) -> (
+    Option<PendingView>,
+    Option<HomeRuntime>,
+    Option<PendingView>,
+) {
     let path = crate::team::default_path();
-    if key.starts_with("chat:orch-")
-        || !matches!(crate::team::defaults_for_chat(&path, key), Ok(Some(_)))
-    {
-        return (None, None);
+    if key.starts_with("chat:orch-") {
+        return (None, None, None);
     }
-    let Ok(found) = recorded(key) else {
-        return (None, None);
+    let Ok(Some(preset)) = crate::team::defaults_for_chat(&path, key) else {
+        return (None, None, None);
     };
+    let Ok(found) = recorded(key) else {
+        return (None, None, None);
+    };
+    // What the host runs this chat on, so a page that drew something else
+    // (an optimistic pick, a cache) can take the host's word.
+    let runtime = host_runtime(
+        manager,
+        key,
+        &found,
+        &Settings {
+            agent: preset.agent,
+            model: Some(preset.model.clone()),
+            effort: preset.effort.clone(),
+            access: Access::Read,
+        },
+    )
+    .ok()
+    .map(|host| PendingView {
+        agent: host.settings.agent,
+        model: host.settings.model,
+        effort: host.settings.effort,
+    });
     let pending = found.pending.clone().map(|p| PendingView {
         agent: p.agent,
         model: p.model,
@@ -954,9 +1016,9 @@ pub(crate) fn queue_fields(
     let current = manager
         .start_context(key)
         .map(|start| start.settings())
-        .or(found.current.clone());
+        .or(found.latest.clone());
     let home = home_runtime(manager, found.baseline.as_ref(), current.as_ref());
-    (pending, home)
+    (pending, home, runtime)
 }
 
 /// The runtime to return to, only while the chat runs on something else.
@@ -988,6 +1050,191 @@ pub(super) fn home_after(manager: &ChatManager, key: &str, to: &Settings) -> Opt
     let found = recorded(key).ok()?;
     let home = home_runtime(manager, found.baseline.as_ref(), Some(to))?;
     serde_json::to_value(home).ok()
+}
+
+// ---- the host decides a registered chat's runtime and session -------------
+
+/// Where `host_runtime` found a registered chat's runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RuntimeSource {
+    /// A line of the chat's record: a switch, a recovery, a failover or the
+    /// launch line every launch now leaves.
+    Record,
+    /// The live start context, or the ledger's resume context.
+    StartContext,
+    /// Only the chat's own transcript shows it (a chat from before launches
+    /// were recorded): the provider that announced the latest native session
+    /// and, for Claude, the model its `init` names.
+    Transcript,
+    /// A chat with no history at all: the registration.
+    Registration,
+}
+
+/// What the host decided for a registered chat's next launch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostRuntime {
+    pub settings: Settings,
+    pub source: RuntimeSource,
+}
+
+/// The ONE place a registered chat's runtime is decided. No start, send,
+/// wake, queued turn or auto-resume carries a runtime of its own for such a
+/// chat: whatever a page says about agent, model, effort, session or history
+/// is ignored, and the host reads (in this order):
+///
+/// 1. the latest runtime line of the chat's record: a switch, a recovery, a
+///    failover, or the launch line each launch leaves;
+/// 2. else the start context, or the ledger's resume context;
+/// 3. else what the chat's own transcript shows the host launched;
+/// 4. else, only for a chat with no history at all, the registration.
+///
+/// Never the chat index row (the browser writes it), and never the
+/// registration for a chat that has run: a chat keeps what it has. The
+/// access is the registration's here; the caller keeps the level it holds.
+pub(crate) fn host_runtime(
+    manager: &ChatManager,
+    key: &str,
+    recorded: &Recorded,
+    registration: &Settings,
+) -> Result<HostRuntime, String> {
+    if let Some(latest) = recorded.latest_runtime() {
+        return Ok(HostRuntime {
+            settings: latest.clone(),
+            source: RuntimeSource::Record,
+        });
+    }
+    if let Some(settings) = manager
+        .start_context(key)
+        .map(|start| start.settings())
+        .or_else(|| {
+            manager
+                .orchestrations
+                .saved_resume_context(key)
+                .map(|saved| saved.settings())
+        })
+    {
+        return Ok(HostRuntime {
+            settings,
+            source: RuntimeSource::StartContext,
+        });
+    }
+    if let Some(settings) = transcript_runtime(key, registration)? {
+        return Ok(HostRuntime {
+            settings,
+            source: RuntimeSource::Transcript,
+        });
+    }
+    Ok(HostRuntime {
+        settings: registration.clone(),
+        source: RuntimeSource::Registration,
+    })
+}
+
+/// The native session a provider announced on one line of a record, and the
+/// model that line names (Claude's `init` does; the others do not).
+fn announced(event: &Value) -> Option<(ChatAgent, String, Option<String>)> {
+    ChatAgent::ALL.into_iter().find_map(|provider| {
+        provider_for(provider)
+            .observe_event(event)
+            .session_id
+            .map(|id| {
+                let model = (provider == ChatAgent::Claude)
+                    .then(|| event["model"].as_str().map(str::to_string))
+                    .flatten();
+                (provider, id.to_string(), model)
+            })
+    })
+}
+
+/// A chat from before launches were recorded: the provider that announced
+/// its latest native session is the one the host last ran. The transcript
+/// has no effort, and no model for most providers, so they are kept from the
+/// registration only when it names the same provider (and, when the
+/// transcript names a model, the same model); otherwise left to the provider.
+fn transcript_runtime(key: &str, registration: &Settings) -> Result<Option<Settings>, String> {
+    let forgotten = crate::chat_index::forgotten_sessions(key)?;
+    let lines = crate::transcript::every_line(key)?;
+    let Some((agent, _, model)) = lines
+        .iter()
+        .rev()
+        .filter_map(|line| announced(&line.event))
+        .find(|(_, id, _)| !forgotten.contains(id))
+    else {
+        return Ok(None);
+    };
+    let model = model
+        .filter(|model| crate::agent_provider::validate_model(agent, Some(model.as_str())).is_ok());
+    let same_provider = registration.agent == agent;
+    let model = match model {
+        Some(model) => Some(model),
+        None if same_provider => registration.model.clone(),
+        None => None,
+    };
+    let same_choice_as_registration = same_provider && model == registration.model;
+    Ok(Some(Settings {
+        agent,
+        model,
+        effort: same_choice_as_registration
+            .then(|| registration.effort.clone())
+            .flatten(),
+        access: registration.access,
+    }))
+}
+
+/// The native session the host itself remembers for `runtime`'s provider:
+/// the start context's (which the provider's own `init` keeps current), else
+/// the latest session the provider announced in the chat's own transcript.
+/// Never the page's, and never one that `/clear` revoked or another provider
+/// announced. A start context that holds no session means a fresh session is
+/// owed (a switch, a recovery), so the transcript is not asked then.
+pub(crate) fn host_session(
+    manager: &ChatManager,
+    key: &str,
+    runtime: &Settings,
+) -> Result<Option<String>, String> {
+    let forgotten = crate::chat_index::forgotten_sessions(key)?;
+    if let Some(start) = manager.start_context(key) {
+        return Ok(start
+            .session_id
+            .filter(|id| start.agent == runtime.agent && !forgotten.contains(id)));
+    }
+    let lines = crate::transcript::every_line(key)?;
+    Ok(lines
+        .iter()
+        .rev()
+        .filter_map(|line| announced(&line.event))
+        .find(|(_, id, _)| !forgotten.contains(id))
+        .and_then(|(agent, id, _)| (agent == runtime.agent).then_some(id)))
+}
+
+/// A launch of a registered agent's chat leaves one line saying the runtime
+/// it ran on, so a chat is never again left to be read from its transcript.
+/// Written only when it adds something to what the record already says.
+pub(super) fn note_launch(manager: &ChatManager, key: &str, runtime: &Settings) {
+    if key.starts_with("chat:orch-") || !matches!(is_registered_chat(key), Ok(true)) {
+        return;
+    }
+    manager.load_runtime(key);
+    let known = manager
+        .runtime
+        .lock()
+        .ok()
+        .and_then(|book| book.latest.get(key).cloned());
+    if known
+        .as_ref()
+        .is_some_and(|known| same_runtime(known, runtime))
+    {
+        return;
+    }
+    let mut line = serde_json::to_value(runtime).unwrap_or(Value::Null);
+    if let Some(object) = line.as_object_mut() {
+        object.insert("type".into(), json!(LAUNCHED));
+    }
+    if record_chat_event_synced(key, line).is_some() {
+        if let Ok(mut book) = manager.runtime.lock() {
+            book.latest.insert(key.to_string(), runtime.clone());
+        }
+    }
 }
 
 // ---- a fresh session carries who the agent is ------------------------------

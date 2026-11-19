@@ -37,25 +37,34 @@ function missing(sources: { app: string; hook: string; sheet: string; rows: stri
   if (/if \(done\.state === "switched"\) switched\.current/.test(h)) out.push("never apply an answer unconditionally");
   if (/once\(runtimeFlight\(chatId\)/.test(h) === false) out.push("one request per chat, through lib/inFlight");
   // The two controls ask the host and never `changeModel`.
-  const pick = body(a, "const pickRuntime = useCallback(") + body(a, "const pickRuntimeEffort = useCallback(");
-  if (!pick.includes("askRuntime(")) out.push("the pickers ask the host");
+  const pick = body(a, "const switchTo = useCallback(") + body(a, "const pickRuntime = useCallback(") + body(a, "const pickRuntimeEffort = useCallback(");
+  if (!body(a, "const switchTo = useCallback(").includes("askRuntime(")) out.push("the pickers ask the host");
   if (/changeModel|changeEffort|setChoice|setEffort|endSession|chat_stop|chat_start/.test(pick)) out.push("the pickers never change the chat themselves");
   // H2: in a registered agent's chat every model or effort pick is a switch,
   // whatever agents mode is. The host's fact decides, never the roster, and
   // the composer's pickers and the main-agent select all go through it.
   const entry = body(a, "const pickModel = useCallback(") + body(a, "const pickEffort = useCallback(");
-  if (!/switchChat \? pickRuntime\(c\) : changeModel\(c\)/.test(entry) || !/switchChat \? pickRuntimeEffort\(e\) : changeEffort\(e\)/.test(entry)) out.push("a pick in a registered chat is a switch");
+  if (!/if \(switchChat\) return pickRuntime\(c\);/.test(entry) || !/if \(switchChat\) return pickRuntimeEffort\(e\);/.test(entry)) out.push("a pick in a registered chat is a switch");
+  // A pick on a saved, sent chat whose registration the host has not said
+  // waits for it and, when the read fails, is refused in words.
+  const unread = a.slice(a.indexOf("const picksAfterRead ="), a.indexOf("const pickEffort = useCallback("));
+  if (!/const picksAfterRead = [^;]*runtimeSwitch\.registeredOf\(conversationId\) === undefined;/.test(a)) out.push("a pick before the host has said waits for it");
+  if (!/afterRead\(conversationId, "the model"/.test(unread) || !/afterRead\(conversationId, "the effort"/.test(a)) out.push("both pickers wait for the host's word");
+  if (!/fact\.kind === "failed"[\s\S]{0,400}Nothing was changed\./.test(a)) out.push("a failed read is refused in words");
+  if (!/runtimeSwitch\.whenRead\(id\)/.test(a)) out.push("the wait is the hook's one read");
   if (!/picksThroughSwitch\(\{\s*registered: runtimeSwitch\.registeredOf\(conversationId\),/.test(a)) out.push("registered comes from the host's fact");
   if (/onChoice=\{changeModel\}|onEffort=\{changeEffort\}|if \(model\) changeModel\(model\)/.test(a) || !/onChoice=\{pickModel\}/.test(a) || !/onEffort=\{pickEffort\}/.test(a)) out.push("no picker reaches changeModel directly");
-  const switchChatDecl = a.slice(a.indexOf("const switchChat ="), a.indexOf("const switchPending"));
+  const switchChatDecl = a.slice(a.indexOf("const switchChat ="), a.indexOf("const liveRuntime"));
   if (/agentsMode|composerIdentity|roster|frontDeskChats/.test(switchChatDecl)) out.push("registered is not read from agents mode or a roster cache");
   if (!/readRegistered\(queue\?\.registered\)/.test(h)) out.push("the hook reads the host's registered fact");
+  // When the chat turns out to be registered the page takes the host's runtime.
+  if (!/fact\.kind === "registered" && runtime && \(held\.current\[chatId\]\?\.rev \?\? 0\) === rev\) hostRuntime\.current\?\.\(chatId, runtime\)/.test(h) || !/useRuntimeSwitch\(conn, conversationId, applyHostRuntime, takeHostRuntime\)/.test(a)) out.push("registered brings the host's runtime");
   // The way back asks the host with the home runtime.
   if (!/onBack=\{\(home\) => void askRuntime\(runtimeChat, \{ agent: home\.agent, model: home\.model, effort: home\.effort \}, "row"\)\}/.test(a)) out.push("the way back asks for the home runtime");
   // The page's settings follow the host's word, by one function.
   const apply = body(a, "const applyHostRuntime = useCallback(");
   if (!/setChoice\(next\)/.test(apply)) out.push("the host's word moves the page's settings");
-  if (!/useRuntimeSwitch\(conn, conversationId, applyHostRuntime\)/.test(a)) out.push("a switched answer goes through applyHostRuntime");
+  if (!/useRuntimeSwitch\(conn, conversationId, applyHostRuntime, takeHostRuntime\)/.test(a)) out.push("a switched answer goes through applyHostRuntime");
   if (!/"chat-provider-switch"[\s\S]{0,400}applyHostRuntime\(id, payload\)/.test(a)) out.push("the event goes through applyHostRuntime");
   if (/setChoice|setEffort|setAccess/.test(h)) out.push("the hook never moves the settings");
   // Nothing optimistic in the controls.
@@ -79,7 +88,7 @@ describe("changing a chat's runtime goes through the host", () => {
   });
 
   it("fails when a picker goes through changeModel, which ends the process", () => {
-    const mutated = app.replace("void askRuntime(switchChat, asked, \"sheet\");\n  }, [switchChat, effort, choice, switchPending, askRuntime]);\n  const pickRuntimeEffort", "changeModel(model);\n  }, [switchChat, effort, choice, switchPending, askRuntime]);\n  const pickRuntimeEffort");
+    const mutated = app.replace("void askRuntime(id, asked, \"sheet\");", "changeModel(model as ModelChoice);");
     expect(mutated).not.toBe(app);
     expect(missing({ ...ALL, app: mutated })).toContain("the pickers never change the chat themselves");
   });
@@ -91,9 +100,33 @@ describe("changing a chat's runtime goes through the host", () => {
   });
 
   it("fails when a pick in a registered chat takes the ordinary path (H2)", () => {
-    const mutated = app.replace("(switchChat ? pickRuntime(c) : changeModel(c))", "changeModel(c)");
+    const mutated = app.replace("if (switchChat) return pickRuntime(c);", "");
     expect(mutated).not.toBe(app);
     expect(missing({ ...ALL, app: mutated })).toContain("a pick in a registered chat is a switch");
+  });
+
+  it("fails when a pick before the host has said which chat this is takes the ordinary path", () => {
+    const mutated = app.replace("&& runtimeSwitch.registeredOf(conversationId) === undefined;", "&& false;");
+    expect(mutated).not.toBe(app);
+    expect(missing({ ...ALL, app: mutated })).toContain("a pick before the host has said waits for it");
+  });
+
+  it("fails when a failed read of the fact lets the pick through silently", () => {
+    const mutated = app.replace("Nothing was changed.`", "`");
+    expect(mutated).not.toBe(app);
+    expect(missing({ ...ALL, app: mutated })).toContain("a failed read is refused in words");
+  });
+
+  it("fails when the effort picker does not wait for the host's word", () => {
+    const mutated = app.replace("afterRead(conversationId, \"the effort\"", "((id: string, what: string, go: (registered: boolean) => void) => go(false))(conversationId, \"the effort\"");
+    expect(mutated).not.toBe(app);
+    expect(missing({ ...ALL, app: mutated })).toContain("both pickers wait for the host's word");
+  });
+
+  it("fails when the page does not take the host's runtime once the chat is known to be registered", () => {
+    const mutated = hook.replace("hostRuntime.current?.(chatId, runtime)", "undefined");
+    expect(mutated).not.toBe(hook);
+    expect(missing({ ...ALL, hook: mutated })).toContain("registered brings the host's runtime");
   });
 
   it("fails when registered is worked out from agents mode (H2)", () => {

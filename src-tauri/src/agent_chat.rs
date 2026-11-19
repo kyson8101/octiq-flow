@@ -3930,7 +3930,6 @@ fn chat_start_with_user_turn(
     runtime_switch::adopt_pending(&manager, &key);
     let resume = crate::chat_index::usable_session(&key, resume)?;
     let previous_start = manager.start_context(&key);
-    let previous_resume = resume.clone();
     let mut recovered = false;
     let mut agent = agent;
     let mut model = model;
@@ -3943,35 +3942,30 @@ fn chat_start_with_user_turn(
         None
     };
     let registered_chat = registered.is_some();
-    // What the host recorded of this chat's runtime. For a registered chat
-    // the runtime changes ONLY through `chat_switch_runtime`, at the moment
-    // the person presses: no start carries a choice, whatever it holds. The
-    // record wins over the page, so a stale tab, a cache or a page-built
-    // `handoff` that still names an older runtime cannot undo the person's
-    // switch or an automatic failover. A runtime the record holds that is
-    // itself invalid or limited is not forced: the preset recovery and the
-    // failover routing below decide.
-    if registered_chat {
-        // The page's history is data from one tab at one moment; the host's
-        // own `provider_history` is built below whenever a fresh session
-        // needs one.
+    // For a registered chat the HOST decides the runtime and the session,
+    // from one function (`runtime_switch::host_runtime`, `host_session`).
+    // Whatever the page said about agent, model, effort, resume and history
+    // (a stale tab, a cache, an optimistic picker) is not read: the person
+    // changes a registered chat's runtime only through
+    // `chat_switch_runtime`, and the host's failover and preset recovery
+    // still decide for a limited or invalid one, below.
+    let mut recorded_runtime = runtime_switch::Recorded::default();
+    if let Some(preset) = &registered {
         handoff = None;
+        recorded_runtime = runtime_switch::recorded(&key)?;
+        let registration = crate::provider_failover::Settings {
+            agent: preset.agent,
+            model: Some(preset.model.clone()),
+            effort: preset.effort.clone(),
+            access: access.unwrap_or(Access::Read),
+        };
+        let host = runtime_switch::host_runtime(&manager, &key, &recorded_runtime, &registration)?;
+        resume = runtime_switch::host_session(&manager, &key, &host.settings)?;
+        agent = host.settings.agent;
+        model = host.settings.model;
+        effort = host.settings.effort;
     }
-    let recorded_runtime = if registered_chat {
-        runtime_switch::recorded(&key)?
-    } else {
-        runtime_switch::Recorded::default()
-    };
-    let page_runtime = (agent, model.clone(), effort.clone());
-    let mut host_runtime_won = false;
-    if let Some(runtime) = recorded_runtime.current_runtime().filter(|runtime| {
-        crate::agent_provider::validate_model(runtime.agent, runtime.model.as_deref()).is_ok()
-    }) {
-        agent = runtime.agent;
-        model = runtime.model.clone();
-        effort = runtime.effort.clone();
-        host_runtime_won = page_runtime != (agent, model.clone(), effort.clone());
-    }
+    let previous_resume = resume.clone();
     let source = crate::provider_failover::Settings {
         agent,
         model: model.clone(),
@@ -4022,14 +4016,13 @@ fn chat_start_with_user_turn(
                 ..baseline.clone()
             };
         }
-        if recovered && resume.is_none() {
-            handoff = Some(provider_history(&key)?);
-        } else if host_runtime_won && resume.is_none() {
-            // The record put this start on another provider than the page
-            // asked for, and the page had no session of that provider: a
-            // fresh session owes the history and the agent's brief.
+        // A fresh session of a chat that has history is owed that history
+        // and the agent's brief, whatever the runtime is and whatever
+        // happened to an earlier handoff's debt. The page's history is never
+        // used: the host reads its own record.
+        if resume.is_none() {
             let history = provider_history(&key)?;
-            if history != "[]" {
+            if recovered || history != "[]" {
                 handoff = Some(history);
             }
         }
@@ -4191,6 +4184,8 @@ fn chat_start_with_user_turn(
             session_id: resume.clone(),
         },
     );
+    #[cfg(test)]
+    start_seam::note(agent, &model, &effort, &resume, &prompt);
     let result = start_session(
         manager.clone(),
         Voice::host(key.clone()),
@@ -4221,7 +4216,7 @@ fn chat_start_with_user_turn(
             // Only a session was dropped, on the runtime the record already
             // holds: the chat's own runtime (what failover returns to) stays.
             let keeps_baseline = recorded_runtime
-                .current_runtime()
+                .latest_runtime()
                 .is_some_and(|current| runtime_switch::same_choice(current, &source));
             provider_switch::announce_runtime_change_with(&manager, &key, &requested_source, &source,
                 "octiq_registered_recovered", "Recovered this chat's compatible provider and exact model in a fresh session. Earlier transcript and settings remain in the record.", previous_resume.as_deref(),
@@ -4235,6 +4230,51 @@ fn chat_start_with_user_turn(
         }
     }
     result
+}
+
+/// What a start decided to launch, for the tests that must not start a real
+/// provider CLI: read just before `start_session`, which a test then lets fail
+/// on a folder that does not exist.
+#[cfg(test)]
+pub(crate) mod start_seam {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Clone, Debug)]
+    pub(crate) struct Plan {
+        pub agent: ChatAgent,
+        pub model: Option<String>,
+        pub effort: Option<String>,
+        pub resume: Option<String>,
+        pub prompt: Option<String>,
+    }
+
+    thread_local! {
+        static LAST: RefCell<Option<Plan>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn note(
+        agent: ChatAgent,
+        model: &Option<String>,
+        effort: &Option<String>,
+        resume: &Option<String>,
+        prompt: &Option<String>,
+    ) {
+        LAST.with(|last| {
+            *last.borrow_mut() = Some(Plan {
+                agent,
+                model: model.clone(),
+                effort: effort.clone(),
+                resume: resume.clone(),
+                prompt: prompt.clone(),
+            })
+        });
+    }
+
+    /// The plan of the last start on this thread, taken.
+    pub(crate) fn take() -> Option<Plan> {
+        LAST.with(|last| last.borrow_mut().take())
+    }
 }
 
 /// A provider switch starts a fresh native session, but not a fresh user chat.
@@ -5550,6 +5590,20 @@ fn start_session_with_recovery(
     if handoff_taken {
         // The process holds the history now; the debt is paid.
         runtime_switch::handoff_taken(&manager, &key);
+    }
+    if session_key == key && !front_desk {
+        // The runtime this launch ran on, said on the record once, so the
+        // chat is never again read from its transcript.
+        runtime_switch::note_launch(
+            &manager,
+            &key,
+            &crate::provider_failover::Settings {
+                agent,
+                model: model.clone(),
+                effort: effort.clone(),
+                access: access.unwrap_or(Access::Read),
+            },
+        );
     }
     if let Some(request) = native_recovery.as_mut() {
         request.arm();
@@ -11207,11 +11261,16 @@ pub struct ChatQueueState {
     /// mode off. Absent (older host) means the page treats the chat as
     /// ordinary.
     registered: bool,
+    /// What the host runs a registered chat on (`runtime_switch::host_runtime`),
+    /// so a page that showed something else takes the host's word. Absent for
+    /// an ordinary chat and for a record that cannot be read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime: Option<runtime_switch::PendingView>,
 }
 
 pub fn chat_queue_state_impl(manager: &ChatManager, key: &str) -> Result<ChatQueueState, String> {
     // Read before the chat's locks are taken: it reads the record.
-    let (pending_runtime, home_runtime) = runtime_switch::queue_fields(manager, key);
+    let (pending_runtime, home_runtime, runtime) = runtime_switch::queue_fields(manager, key);
     let registered = is_registered_chat(key).unwrap_or(false);
     // Match the send/reaper lock order, so an enqueue cannot cross this read.
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
@@ -11219,6 +11278,7 @@ pub fn chat_queue_state_impl(manager: &ChatManager, key: &str) -> Result<ChatQue
     let queues = manager.queued_turns.lock().map_err(|e| e.to_string())?;
     Ok(ChatQueueState {
         registered,
+        runtime,
         pending_runtime,
         home_runtime,
         held: manager.waits_because(key),

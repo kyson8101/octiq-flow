@@ -12,6 +12,7 @@
 // rejected is older than an event and is not applied either.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "./bridge";
+import { lacksCommand } from "./useChatRequests";
 import { once, IN_FLIGHT } from "./inFlight";
 import {
   NO_RUNTIMES, readAnswer, readHome, readRegistered, readRuntime, reduceRuntime, runtimeFlight, takeAnswer,
@@ -20,6 +21,12 @@ import {
 
 const chatOf = (key: unknown) => (typeof key === "string" && key.startsWith("chat:") ? key.slice(5) : null);
 const said = (error: unknown) => String((error as Error)?.message ?? error);
+
+/** What the host said about one chat (`chat_queue_state.registered`): that it
+ *  belongs to a registered agent, that it does not (an older host that says
+ *  nothing included), or that the read failed. A failed read is never
+ *  remembered as an answer: the next pick asks again. */
+export type RegistrationFact = { kind: "registered" } | { kind: "ordinary" } | { kind: "failed"; text: string };
 
 /** Where the press was made: its refusal is said there. */
 export type SwitchOrigin = "row" | "sheet";
@@ -31,16 +38,29 @@ export function useRuntimeSwitch(
   /** The host said the chat now runs on this (a `switched` answer): the page
    *  takes it the way it takes `chat-provider-switch`. */
   onSwitched: (chatId: string, answer: SwitchAnswer) => void,
+  /** What the host runs a registered chat on, read with `registered: true`
+   *  and not overtaken by an event since: the page takes it, because a page
+   *  that drew another model before it knew the chat was registered is
+   *  otherwise never corrected. */
+  onHostRuntime?: (chatId: string, runtime: RuntimeRef) => void,
 ) {
   const [state, setState] = useState<RuntimeState>(NO_RUNTIMES);
   // Which chats the host says belong to a registered agent (`chat_queue_state`
   // `registered`): a fact the host derives from the roster, so it holds with
   // agents mode off and after a reload. Absent until the host has said.
   const [registered, setRegistered] = useState<Readonly<Record<string, boolean>>>({});
+  const registeredRef = useRef(registered);
+  registeredRef.current = registered;
   const [refusals, setRefusals] = useState<Readonly<Record<string, SwitchRefusal>>>({});
   const held = useRef(state);
   const switched = useRef(onSwitched);
   switched.current = onSwitched;
+  const hostRuntime = useRef(onHostRuntime);
+  hostRuntime.current = onHostRuntime;
+  // The one read of `chat_queue_state` per chat at a time, shared by the
+  // effect below (every connect, every chat opened) and by a pick that has to
+  // know whether the chat is registered before it can be sent anywhere.
+  const reading = useRef(new Map<string, Promise<RegistrationFact>>());
 
   const dispatch = useCallback((action: RuntimeAction) => {
     const next = reduceRuntime(held.current, action);
@@ -74,29 +94,56 @@ export function useRuntimeSwitch(
     };
   }, [dispatch]);
 
-  // Every connect, and every chat opened: a restart forgets nothing the
-  // host derives from the record, and a page that was away heard no events.
-  useEffect(() => {
-    if (conn !== "open" || !openChatId) return;
-    let current = true;
-    const chatId = openChatId;
+  const read = useCallback((chatId: string): Promise<RegistrationFact> => {
+    const live = reading.current.get(chatId);
+    if (live) return live;
     const rev = held.current[chatId]?.rev ?? 0;
-    bridge
-      .invoke<{ pendingRuntime?: unknown; homeRuntime?: unknown; registered?: unknown }>("chat_queue_state", { key: `chat:${chatId}` })
-      .then((queue) => {
-        if (!current) return;
-        const fact = readRegistered(queue?.registered);
-        if (fact !== undefined) setRegistered((before) => (before[chatId] === fact ? before : { ...before, [chatId]: fact }));
+    const asked = bridge
+      .invoke<{ pendingRuntime?: unknown; homeRuntime?: unknown; registered?: unknown; runtime?: unknown }>("chat_queue_state", { key: `chat:${chatId}` })
+      .then((queue): RegistrationFact => {
+        // Anything but `true` is an ordinary chat, an older host included:
+        // it cannot know the rule.
+        const fact: RegistrationFact = readRegistered(queue?.registered) === true ? { kind: "registered" } : { kind: "ordinary" };
+        setRegistered((before) => (before[chatId] === (fact.kind === "registered") ? before : { ...before, [chatId]: fact.kind === "registered" }));
         dispatch({
           type: "queue", chatId, rev,
           pending: readRuntime(queue?.pendingRuntime),
           home: readHome(queue?.homeRuntime),
         });
+        // The host's word on what it runs, unless an event has come since
+        // this read began (that is newer than the read).
+        const runtime = readRuntime(queue?.runtime);
+        if (fact.kind === "registered" && runtime && (held.current[chatId]?.rev ?? 0) === rev) hostRuntime.current?.(chatId, runtime);
+        return fact;
       })
-      // An older backend has no such fields; the events still work.
-      .catch(() => {});
-    return () => { current = false; };
-  }, [conn, openChatId, dispatch]);
+      .catch((problem): RegistrationFact => {
+        // A backend that has no such command is an older one: ordinary.
+        if (lacksCommand(problem)) {
+          setRegistered((before) => (before[chatId] === false ? before : { ...before, [chatId]: false }));
+          return { kind: "ordinary" };
+        }
+        return { kind: "failed", text: said(problem) };
+      })
+      .finally(() => { reading.current.delete(chatId); });
+    reading.current.set(chatId, asked);
+    return asked;
+  }, [dispatch]);
+
+  // Every connect, and every chat opened: a restart forgets nothing the
+  // host derives from the record, and a page that was away heard no events.
+  useEffect(() => {
+    if (conn !== "open" || !openChatId) return;
+    void read(openChatId);
+  }, [conn, openChatId, read]);
+
+  /** Whether the host says this chat is registered, asked now unless it has
+   *  already said. A pick on a saved chat waits for this: until the host has
+   *  answered, the page does not know which way the pick goes. */
+  const whenRead = useCallback((chatId: string): Promise<RegistrationFact> => {
+    const known = registeredRef.current[chatId];
+    if (known !== undefined) return Promise.resolve<RegistrationFact>(known ? { kind: "registered" } : { kind: "ordinary" });
+    return read(chatId);
+  }, [read]);
 
   // A refusal is said where the press was made, for as long as that is
   // what is on screen: another chat's is not this one's.
@@ -159,6 +206,7 @@ export function useRuntimeSwitch(
      *  runtime then changes only through `request`, never a start. Undefined
      *  until the host has said (an older host never does). */
     registeredOf: (chatId: string | null | undefined): boolean | undefined => (chatId ? registered[chatId] : undefined),
+    whenRead,
     request,
     dismissRefusal,
   };

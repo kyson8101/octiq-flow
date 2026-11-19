@@ -32,6 +32,16 @@
 //      recorded runtime, the page's history is unused, nothing is recorded as
 //      the person's, and the picker's `chat_retarget` of a registered chat is
 //      refused in words that name `chat_switch_runtime`.
+//   12 A chat that was never switched (no receipt) and a stale tab that
+//      names Codex with a handoff and a session of its own (H3): the host
+//      keeps the runtime it last ran, resumes its own native session, never
+//      starts Codex, and the page's history is unused.
+//   13 The same chat started as a coordinator (`orchestration_master_start`)
+//      with Codex and a page handoff (H3): Claude again, never Codex.
+//   14 A same-runtime stale start with no session after a switch whose
+//      handoff debt was paid, then a restart (H4): the earlier context is not
+//      lost, and the page's own "Ready." history is not used.
+//   (Every scene asserts the real CLI launches' argv and prompts.)
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -350,9 +360,14 @@ try {
   const stale = await wait("Codex got the stale tab's message", () => messages("codex").find((m) => m.includes("STALE_TAB_AFTER_RESTART")), 60_000);
   assert.equal(messages("claude").length, claudeWritesBefore, "Claude was not started or written to by the stale tab");
   assert.ok(!messages("claude").some((m) => m.includes("STALE_TAB_AFTER_RESTART")));
-  assert.match(stale, /fail over before the stale tab/, "the fresh Codex session carries the history");
-  assert.match(stale, /You are Ada/, "and the agent's full brief");
-  assert.ok(stale.indexOf("STALE_TAB_AFTER_RESTART") < stale.lastIndexOf("You are Ada"), "the new message is in the data, the brief is outside it");
+  // The host resumes its OWN native Codex session (the one the failover
+  // started, read back from the chat's record after the restart), so the
+  // history and the brief are already in it: they are not sent a second time.
+  const failoverCodex = providerCalls("codex").find((c) => c.text?.includes("fail over before the stale tab"));
+  const staleCall = providerCalls("codex").find((c) => c.text?.includes("STALE_TAB_AFTER_RESTART"));
+  const staleResume = providerCalls("codex").find((c) => c.pid === staleCall.pid && c.method === "thread/resume");
+  assert.equal(staleResume?.params.threadId, `new-codex-${failoverCodex.pid}`, "the host resumes its own Codex session, never one the page named");
+  assert.ok(!/Earlier turns/.test(stale), "a resumed session is not handed the history again");
   assert.equal((await indexRow()).modelId.startsWith("codex:"), true, "the index still says Codex, and so does the launch");
   const home = (await state()).homeRuntime;
   assert.equal(home?.agent, "claude", "the way back to Opus is still offered: the stale start did not make Codex the baseline");
@@ -393,8 +408,91 @@ try {
   assert.ok(!staleOpus.includes("earlier turn from the page"), "the page's history is never used");
   assert.equal(providerCalls("claude").filter((c) => c.argv).length, claudeStartsB, "Claude was not started");
   assert.equal((await indexRow()).modelId.startsWith("codex:"), true);
+  // ---- 12-14: a chat that was never switched (H3, H4) ------------------------------
+  const bea = await invoke("team_save", { agent: { name: "Bea", role: "Owns the frontend.", agent: "claude", model: "opus", effort: "high", access: "auto", projectId: project.id } });
+  const beaLead = await invoke("lead_thread_open", { agentId: bea.id ?? bea.agent?.id });
+  const bkey = `chat:${beaLead.id}`, bcwd = beaLead.cwd;
+  const bidle = async () => {
+    const rows = await invoke("chat_activity", { key: bkey }).catch(() => []);
+    return !(Array.isArray(rows) ? rows : [rows]).some((row) => row?.key === bkey && row.busy);
+  };
+  const bsend = (text, turnId, runtime = { agent: "claude", model: "opus" }, extra = {}) =>
+    invoke("chat_start", { key: bkey, cwd: bcwd, ...runtime, effort: "high", access: "auto", prompt: text, turnId, ...extra })
+      .catch((error) => { if (!/already running/.test(String(error.message))) throw error; return invoke("chat_send", { key: bkey, text, turnId }); });
+  const launches = (provider) => providerCalls(provider).filter((c) => c.argv);
+  const launchOf = (pid) => calls().find((c) => c.pid === pid && c.argv);
+  const callWith = (provider, marker) => providerCalls(provider).find((c) => (c.text ?? JSON.stringify(c.params ?? "")).includes(marker));
+  const resumeOf = (launch) => launch.argv[launch.argv.indexOf("--resume") + 1];
+  const switches = () => events.filter((e) => e.event === "chat-provider-switch" && e.payload.key === bkey).length;
+  const codexAll = () => providerCalls("codex").filter((c) => c.method === "turn/start" || c.method === "thread/start" || c.method === "thread/resume").length;
+
+  // 12: no receipt, a stale tab naming Codex.
+  await bsend("BEA_FIRST_TURN ORIGINAL_IDENTITY_CONTEXT", "b1");
+  await wait("Bea idle", bidle);
+  const beaFirst = callWith("claude", "BEA_FIRST_TURN");
+  const beaSession = `new-claude-${beaFirst.pid}`;
+  await restart();
+  const beaSwitches = switches(), beaCodexBefore = codexAll(), beaClaudeBefore = launches("claude").length;
+  await invoke("chat_start", { key: bkey, cwd: bcwd, agent: "codex", model: "gpt-5.6-sol", effort: "high", access: "auto", prompt: "BEA_STALE_TAB", turnId: "b2",
+    handoff: JSON.stringify([{ role: "assistant", text: "PAGE_HISTORY_NOT_THE_HOSTS" }]), resume: "codex-session-of-the-page" });
+  const staleBea = await wait("Claude got the stale tab's message", () => launches("claude").length > beaClaudeBefore && callWith("claude", "BEA_STALE_TAB"), 60_000);
+  assert.equal(codexAll(), beaCodexBefore, "Codex never started: a start carries no runtime");
+  assert.ok(!JSON.stringify(staleBea).includes("PAGE_HISTORY_NOT_THE_HOSTS"), "the page's history is unused");
+  const staleLaunch = launchOf(staleBea.pid);
+  assert.equal(staleLaunch.argv[staleLaunch.argv.indexOf("--model") + 1], "opus");
+  assert.equal(resumeOf(staleLaunch), beaSession, "the host resumes its own native session, never the page's");
+  assert.equal(switches(), beaSwitches, "no runtime change is announced");
+  const beaQueue = await invoke("chat_queue_state", { key: bkey });
+  assert.deepEqual([beaQueue.registered, beaQueue.runtime?.agent, beaQueue.runtime?.model], [true, "claude", "opus"], "the host says what it runs");
+  await wait("Bea idle", bidle);
+
+  // 13: the same chat started as a coordinator.
+  await invoke("chat_stop", { key: bkey });
+  assert.equal((await invoke("chat_switch_runtime", { key: bkey, agent: "claude", model: "opus", effort: "high" })).state, "switched", "an Opus no-op writes no receipt");
+  const beaRow = (await invoke("chat_index_list")).find((row) => row.id === beaLead.id);
+  await invoke("chat_index_save", { meta: { ...beaRow, cwd: fs.realpathSync(repo) } });
+  const beaRun = await invoke("orchestration_run_create", { actorChatKey: bkey, objective: "MASTER_HANDOFF_RUNTIME_PROBE", workspaceId: project.id, rootPath: fs.realpathSync(repo), maxConcurrent: 1, workspaceMode: "direct" });
+  const codexBeforeMaster = codexAll(), claudeBeforeMaster = launches("claude").length;
+  await invoke("orchestration_master_start", { actorChatKey: bkey, runId: beaRun.id, agent: "codex", model: "gpt-5.6-sol", effort: "high", access: "auto",
+    handoff: JSON.stringify([{ role: "user", text: "MASTER_HANDOFF_CONTEXT" }]) });
+  const master = await wait("Claude got the coordinator start", () => launches("claude").length > claudeBeforeMaster && callWith("claude", "MASTER_HANDOFF_RUNTIME_PROBE"), 60_000);
+  assert.equal(codexAll(), codexBeforeMaster, "Codex never started for the coordinator");
+  assert.ok(!JSON.stringify(master).includes("MASTER_HANDOFF_CONTEXT"), "the page's handoff is unused");
+  assert.equal(switches(), beaSwitches, "still no runtime change");
+  await wait("Bea idle", bidle);
+
+  // 14: switched Codex -> Opus, the handoff debt paid, a restart, then the
+  // same-runtime stale start with no session and a page history of its own.
+  await invoke("chat_stop", { key: bkey });
+  assert.equal((await invoke("chat_switch_runtime", { key: bkey, agent: "codex", model: "gpt-5.6-sol", effort: "high" })).state, "switched");
+  await bsend("BEA_ON_CODEX", "b3", { agent: "codex", model: "gpt-5.6-sol" });
+  await wait("Codex answered Bea", () => callWith("codex", "BEA_ON_CODEX"), 60_000);
+  await wait("Bea idle", bidle);
+  assert.equal((await invoke("chat_switch_runtime", { key: bkey, agent: "claude", model: "opus", effort: "high" })).state, "switched");
+  await bsend("LATEST_HOST_HISTORY_AFTER_SWITCH", "b4");
+  const afterSwitch = await wait("Claude got the history after the switch", () => callWith("claude", "LATEST_HOST_HISTORY_AFTER_SWITCH"), 60_000);
+  assert.match(JSON.stringify(afterSwitch), /ORIGINAL_IDENTITY_CONTEXT/, "the fresh session after the switch carries the earlier context");
+  await wait("Bea idle", bidle);
+  const debtSession = `new-claude-${afterSwitch.pid}`;
+  await restart();
+  const codexBeforeReplay = codexAll(), claudeBeforeReplay = launches("claude").length;
+  await invoke("chat_start", { key: bkey, cwd: bcwd, agent: "claude", model: "opus", effort: "high", access: "auto", prompt: "SAME_RUNTIME_STALE_PAGE_SEND", turnId: "b5",
+    handoff: JSON.stringify([{ role: "assistant", text: "Ready." }]), resume: null });
+  const replay = await wait("Claude got the same-runtime stale start", () => launches("claude").length > claudeBeforeReplay && callWith("claude", "SAME_RUNTIME_STALE_PAGE_SEND"), 60_000);
+  const replayLaunch = launchOf(replay.pid);
+  const replayPrompt = JSON.stringify(replay);
+  // The earlier context is not lost: the host resumes its own session that
+  // holds it, or hands a fresh one the host's history and the full brief.
+  const continuity = resumeOf(replayLaunch) === debtSession
+    || (/Earlier turns \(JSON\)/.test(replayPrompt) && /ORIGINAL_IDENTITY_CONTEXT/.test(replayPrompt) && /You are Bea/.test(replayPrompt));
+  assert.ok(continuity, `the earlier context survives (resume ${resumeOf(replayLaunch)}, prompt ${replayPrompt.slice(0, 200)})`);
+  assert.ok(!replayPrompt.includes("Ready."), "the page's own history is not used");
+  assert.equal(codexAll(), codexBeforeReplay, "Codex was not started");
   results.scene10 = { stale: stale.length };
   results.scene11 = { picked: picked.length, staleOpus: staleOpus.length, refused };
+  results.scene12 = { resumed: resumeOf(staleLaunch), beaSession };
+  results.scene13 = { prompt: JSON.stringify(master).length };
+  results.scene14 = { resumed: resumeOf(replayLaunch), debtSession };
   results.pass = true;
 } catch (error) {
   results.pass = false; results.error = String(error.stack ?? error);
