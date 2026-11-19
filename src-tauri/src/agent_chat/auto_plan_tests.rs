@@ -1618,7 +1618,8 @@ fn auto_plan_observed_source_never_regrants_launch_evidence() {
 #[test]
 fn auto_plan_approval_source_never_takes_a_session_table_or_chat_lock() {
     let source = include_str!("../orchestration/auto_plan.rs");
-    let production = source.split("#[cfg(test)]").next().unwrap();
+    // Cut at the test MODULE: an earlier `#[cfg(test)]` is a small test-only fn.
+    let production = source.split("#[cfg(test)]\nmod tests {").next().unwrap();
     for forbidden in [
         ".sessions",
         ".queued_turns",

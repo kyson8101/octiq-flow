@@ -1560,7 +1560,6 @@ fn pi_image(path: &str) -> Option<Value> {
     }))
 }
 
-const PI_HELLO_ID: &str = "octiq-hello-";
 const PI_PROMPT_ID: &str = "octiq-prompt-";
 
 /// What a refused prompt means to a person, with the way out when Pi's own

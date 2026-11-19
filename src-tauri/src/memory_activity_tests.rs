@@ -1419,66 +1419,6 @@ fn a_line_in_a_new_file_that_could_not_be_proven_is_confirmed_by_the_next_look()
     assert_eq!(lines(&chat).len(), 1);
 }
 
-/// Not a check — the numbers the review asked for. Runs only with
-/// OCTIQ_MEASURE=1, alone: a transcript of 20 MB or more, one record
-/// against it, then four at once, and a restart's pass over it.
-#[test]
-fn measure_records_against_a_20_mb_transcript() {
-    if std::env::var("OCTIQ_MEASURE").is_err() {
-        return;
-    }
-    use std::time::Instant;
-    let ledger = scratch_ledger();
-    let chat = unique("big");
-    index(&chat);
-    let path = crate::transcript::path_for(&chat).unwrap();
-    {
-        let delta = json!({"type": "stream_event", "event": {"delta": {"text": "x".repeat(960)}}});
-        let line = serde_json::to_string(&delta).unwrap();
-        let mut file = std::io::BufWriter::new(fs::File::create(&path).unwrap());
-        while file.get_ref().metadata().unwrap().len() < 21 * 1024 * 1024 {
-            for _ in 0..1024 {
-                writeln!(file, "{line}").unwrap();
-            }
-            file.flush().unwrap();
-        }
-    }
-    crate::transcript::forget_count(&chat);
-    let size = fs::metadata(&path).unwrap().len();
-    let synced = |c: &str, e: Value| crate::transcript::append_synced(c, &e);
-    faults::HOLDS.lock().unwrap().clear();
-    let started = Instant::now();
-    record_at(&ledger, activity(&chat, &fresh_id(), Status::Saved), synced);
-    let one = started.elapsed();
-    let started = Instant::now();
-    let handles: Vec<_> = (0..4)
-        .map(|_| {
-            let (ledger, chat) = (ledger.to_path_buf(), chat.clone());
-            std::thread::spawn(move || {
-                let t = Instant::now();
-                record_at(
-                    &ledger,
-                    activity(&chat, &fresh_id(), Status::Saved),
-                    |c, e| crate::transcript::append_synced(c, &e),
-                );
-                t.elapsed()
-            })
-        })
-        .collect();
-    let each: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-    let four = started.elapsed();
-    let holds = faults::HOLDS.lock().unwrap().clone();
-    let started = Instant::now();
-    let restart = recover_at(&ledger, |_| Ok(None), deliver);
-    let recover = started.elapsed();
-    assert_eq!(restart, Recorded::default());
-    assert_eq!(lines(&chat).len(), 5);
-    println!(
-            "MEASURE transcript={size} bytes; one record={one:?}; four concurrent: wall={four:?} each={each:?}; lock holds={holds:?}; restart pass={recover:?}"
-        );
-    crate::transcript::forget(&chat);
-}
-
 /// Fill the ledger past `KEEP` with writes newer than everything a test
 /// made, so the next record forgets the test's own.
 fn crowd(ledger: &Path) {

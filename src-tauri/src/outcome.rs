@@ -31,8 +31,6 @@ use serde_json::{json, Value};
 
 use crate::agent_provider::AgentKind;
 
-/// The tool result `_meta` key a host MCP failure carries its outcome under.
-pub const META_KEY: &str = "octiq/outcome";
 /// The field a provider failure event, or a host tool line, carries it in.
 pub const EVENT_FIELD: &str = "octiq_outcome";
 /// The host's own line about one tool call (`record_tool`).

@@ -70,7 +70,6 @@ mod question_media;
 mod question_store;
 mod record_storage;
 mod record_trim;
-mod retired_features;
 mod safety_block;
 mod scheduling;
 mod shutdown;
@@ -103,7 +102,6 @@ pub async fn run_headless() {
         eprintln!("[server] {}", profile_lock::conflict_message(&owner));
         std::process::exit(1);
     }
-    retired_features::at_startup();
     // After the profile is ours: a stop writes what is still owed first.
     shutdown::install();
     // Once, before anything can be running: tidy away transcripts no chat

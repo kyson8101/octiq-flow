@@ -76,6 +76,7 @@ pub(crate) struct McpReady {
 }
 
 impl McpReady {
+    #[cfg(test)]
     pub(crate) fn new(server: &str) -> Arc<Self> {
         Self::watching(&[server.to_owned()], Duration::ZERO)
     }

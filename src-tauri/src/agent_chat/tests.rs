@@ -6,8 +6,9 @@ use crate::agent_provider::{
 
 /// Every production source file of this module, agent_chat.rs first:
 /// `(file name, text)` with LF line ends. Test files and the test-only
-/// helper files are left out, and agent_chat.rs is cut at its inline
-/// `mod tests` when it still has one.
+/// helper files are left out; the production children agent_chat.rs declares
+/// with `#[path]` (they live directly in `src/`) are read too. Each file is
+/// cut at its own inline `#[cfg(test)] mod tests {` when it has one.
 pub(super) fn production_sources() -> Vec<(String, String)> {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = vec![("agent_chat.rs".to_string(), src.join("agent_chat.rs"))];
@@ -26,6 +27,14 @@ pub(super) fn production_sources() -> Vec<(String, String)> {
             continue;
         }
         files.push((name, path));
+    }
+    for name in [
+        "claude_session_recovery.rs",
+        "provider_switch.rs",
+        "registered_runtime.rs",
+        "codex_elicitation.rs",
+    ] {
+        files.push((name.to_string(), src.join(name)));
     }
     files
         .into_iter()
@@ -1162,6 +1171,12 @@ fn one_access_level_becomes_each_agents_own_flag() {
             false,
         );
         assert!(c.contains(claude_flag), "claude {level:?}");
+        // `bypassPermissions` is accepted only when the process was launched
+        // for it, so Full never names it as a permission mode.
+        assert!(
+            !c.contains("--permission-mode bypassPermissions"),
+            "claude {level:?}"
+        );
         assert!(
             !c.contains("--sandbox"),
             "claude must not get a sandbox flag"
