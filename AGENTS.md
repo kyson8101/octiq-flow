@@ -158,7 +158,10 @@ and never again from inside an agent chat:
   `web/src/lib/__fixtures__/*.jsonl`. Those fixtures are verbatim
   `claude -p --output-format stream-json` output; re-record them with the same
   flag set `build_command` uses (`agent_chat.rs`), never hand-edit them. A few
-  component tests render through `react-dom/server`.
+  component tests render through `react-dom/server`. `OCTIQ_EXHAUSTIVE=1 pnpm
+  test` also runs the exhaustive walks (all 720 arrival orders in
+  `turnClock.unread.test.tsx`); CI sets it, a local run takes a fixed sample.
+  What to write is in **Which tests to write**.
 - **Format**: `cd src-tauri && cargo fmt`. There are no eslint/prettier/rustfmt
   config files; defaults apply.
 
@@ -1971,8 +1974,9 @@ person is drawn waiting, not working (`lib/chatWait`).
     agent's next writing are not kept); it never reads time the turn spent
     waiting, or time nobody saw. That holds in every order the lists
     arrive in, before and after the page gives up on one, with one card
-    waiting or two (`turnClock.unread.test.tsx` walks the 120 three ways
-    for each).
+    waiting or two (`turnClock.unread.test.tsx` walks the orders three ways
+    for each: a fixed sample locally, all 720 orders of the six lists with
+    `OCTIQ_EXHAUSTIVE=1`, which CI sets).
   - *When the page cannot read a list* (`gaveUp`): nothing changes on the
     clock. The restored wait stays on with the moment it began, the chat is
     held as `unchecked`, and the person can ask again. A card that a later
@@ -2551,21 +2555,23 @@ are read by `lib/runProgress` off the ledger this tab already holds.
 - **What is proven of that, and what is only guarded.** Three tests, each
   with a limit to say:
   - `runWaits.surfaces.test.tsx` asks each surface's own function or
-    component the same count and the same yes or no over a table of ledger
-    shapes: a host that says `awaits` and one that does not, the card list
-    delivered, not arrived, failed, and the ledger as the host really
-    serialises it (`web/src/lib/__fixtures__/host`, recorded from the host's
-    own tests and never hand-edited). It proves the surfaces agree when each
-    is given the one reading. It builds that hand-off itself and does not
-    run `App`.
+    component the same count and the same yes or no over a table of
+    distinct ledger shapes: a host that says `awaits` and one that does
+    not, the card list delivered, not arrived, failed, and the ledger as
+    the host really serialises it (`web/src/lib/__fixtures__/host`,
+    recorded from the host's own tests and never hand-edited). The rule
+    itself is decided and tested in `lib/runWaits`; this is one agreement
+    test per other surface. It proves the surfaces agree when each is given
+    the one reading. It builds that hand-off itself and does not run `App`.
   - `runWaits.wiring.test.ts` is the hand-off: it reads `App.tsx` as text
     and names each place a surface is given the cards (`pendingHeld`), and
     shows the check failing for the mutations that drop one. The Agents
     page's `held` is a required prop, so dropping it does not compile. No
     test renders `App`.
   - The scan for a second reader of `gates`, `nativeDecisions` or `awaits`
-    counts the usual spellings. It is a guard against writing one by habit,
-    not a proof: a computed property name, or a second sort of what
+    compares the set of files allowed to read them (each with its reason),
+    not how often each reads; it matches the usual spellings. It is a guard
+    against writing one by habit, not a proof: a computed property name, or a second sort of what
     `openGates` returns, passes it.
   A surface the table does not ask (a title, a notification, a tab's label)
   is not covered by any of this until it is added to it.
@@ -2659,8 +2665,11 @@ are read by `lib/runProgress` off the ledger this tab already holds.
   stopped, closed, completed or archived offers none. A new control that
   starts an attempt is a `StartKind` there, never a button of its own:
   Task details used to offer an enabled `Start next attempt` on a reopened
-  task the host held. `taskStart.test.tsx` scans the panel for a second
-  sender and for a start label written outside the reader.
+  task the host held. What a Start sends, and that a refused one sends
+  nothing, is pressed in `components/OrchestrationPanel.controls.test.tsx`;
+  `taskStart.test.tsx` only scans that no second sender of
+  `orchestration_worker_start` exists and that no start label is written
+  outside the reader.
 - **The ledger's status in a task's details is said as the ledger's**
   (`taskHold.statusLine`): `Ledger status: Working`, kept apart from what
   the worker's process is doing. A task something holds leads with the
@@ -2760,8 +2769,11 @@ are read by `lib/runProgress` off the ledger this tab already holds.
       (`lib/inFlight`, `gateFlight`), so a panel drawn again is still off
       and the sender refuses a second answer. Review 3 (H1): a press
       repeated in the spot where the button was about to be was sent as the
-      person's decision. `gateAnswer.test.tsx` scans the panel for an
-      answer sent without a guard.
+      person's decision. The guards are proven by pressing the controls in
+      `components/OrchestrationPanel.controls.test.tsx`; `gateAnswer.test.tsx`
+      keeps only the scan that `onResolve` is called, and a gate's controls
+      are drawn, inside `GateAnswer` alone, and that the person's door has
+      one sender (`resolveRunGate`).
     - **The person's door is sent only for a gate that waits on the person**
       (`orchestration.gateDoor`). A failure's gate or a peer request's that
       the one reading calls theirs goes to the socket (`Answer`, with
@@ -2804,15 +2816,19 @@ are read by `lib/runProgress` off the ledger this tab already holds.
     one. A wait on the person is the decision colour and a failure the
     danger colour (`data-tone`); nothing to count is left out, never "0/0".
   - `finishedWell.surfaces.test.tsx` asks every surface the same done and
-    failed counts over ten ledgers (the host's four `plan_after_*` and one
-    that finished well, each beside a pending plan and with no plan), then
-    over the host's seven failure ledgers (`failure_*`, `retry_executing`):
-    the counts, the row and the row as drawn, the strip, the chat list's
-    line, the attention button, the run's status, who the run is with and
-    the Agents page. It scans the source: the string `"completed"`, a
-    task's `.verdict`, and what the host says of a failure (`task.failure`,
-    `retryLimit`, `.retrying`, `aboutTaskId`) are allowed per file, with an
-    exact count and a reason. A new filter or count that compares a task's
+    failed counts, one test per distinct shape: the host's four
+    `plan_after_*` and one that finished well, each beside a pending plan
+    and with no plan, plus two summary-read ledgers; then over the host's
+    failure ledgers (`failure_*`, `retry_executing`), where the rule lives
+    in `runProgress` and `orchestration.failureMove` and every ledger is
+    asked there (the counts, the row and the row as drawn), while the
+    strip, the chat list's line, the attention button, the run's status,
+    who the run is with and the Agents page are asked once per class of
+    failure. It scans the source: the string `"completed"`, a task's
+    `.verdict`, and what the host says of a failure (`task.failure`,
+    `retryLimit`, `.retrying`, `aboutTaskId`) are each allowed in a SET of
+    files, with a reason per file; how often a file reads is not pinned.
+    A new filter or count that compares a task's
     status with the word, or reads a failure's move itself, fails it; ask
     one of the readers instead. `scripts/test-quiet-failures.mjs` draws the
     same seven ledgers in the real App at 1280 and 390.
@@ -2882,9 +2898,12 @@ are read by `lib/runProgress` off the ledger this tab already holds.
   the delivery's word, the path, the host's warnings, when git was asked
   and what it said, the validation checkouts' paths). A new control that
   starts, decides or removes goes above the tablist. `taskStart.test.tsx`
-  reads the tabs for it, and follows every component drawn in them into
-  its own source (`inTabs`): a scan that stopped at the row's `</article>`
-  never saw the helper that drew Reopen, Clean up and Abandon in Details.
+  reads the tabs for it (a scan, the rule being "no sender inside the
+  tabs"), and follows every component drawn in them into its own source
+  (`inTabs`): a scan that stopped at the row's `</article>` never saw the
+  helper that drew Reopen, Clean up and Abandon in Details. What those
+  controls send when pressed is in
+  `components/OrchestrationPanel.controls.test.tsx`.
 
   A new row opens on `Steps`: the checklist with its current step and its
   count line; a task with no reported steps says `No steps reported yet`
@@ -4188,6 +4207,51 @@ kept branch against saved delivery evidence and re-verifies ancestry against
 the current base, without rebuilding or a worker;
 missing/stale evidence explains the swept state and asks for restore/refresh.
 
+## Which tests to write
+
+A suite is paid for in seconds and in edits: a plural-suffix change failed 66
+web tests, and six tests were 18 of the 28 seconds of the web suite (hand
+mutation sample of 2026-11-19, 125 mutations on five modules). A test earns its
+place by what it catches. Six rules:
+
+- **A test names the loss it prevents.** If the only honest description is
+  "the code is still written this way", it is not written. Five run-panel
+  mutations were caught only by a text scan, while a blocked Start that still
+  sent was caught by nothing.
+- **One fact, one owner.** A rule is tested where it is decided (the reducer
+  or the function). Another surface gets one test showing it asks that
+  function, not a re-proof of the rule; the same rule asserted on ten
+  surfaces fails ten tests for one edit.
+- **A control that starts, stops, approves or deletes gets a behaviour
+  test that presses it and checks what is sent.** Use
+  `web/src/lib/__fixtures__/pressTree.ts`, as
+  `components/OrchestrationPanel.controls.test.tsx` does: it stubs React's
+  hooks, calls the component function and calls the real `onClick` and
+  `onKeyDown`. Effects do not run in it. A source-text scan is the last
+  resort, for a rule no behaviour test can express (no second sender exists,
+  a focus effect), and it never pins how many times a string appears in a
+  file.
+- **A sentence's wording is asserted once, where the sentence is built.**
+  Other tests assert that the sentence is used, not what it says.
+- **A matrix covers distinct cases.** An exhaustive walk of orders runs in CI
+  only: `OCTIQ_EXHAUSTIVE=1` (`.github/workflows/test.yml` sets it). Locally
+  `turnClock.unread.test.tsx` runs a fixed deterministic sample of the 720
+  orders.
+- **A boundary gets a test at the boundary** (exactly the limit, and one
+  past it). A constant is not restated by a test: it fails only when someone
+  changes it on purpose.
+
+Not cut by any of this: Rust authority, durability and race tests (a trashed
+chat counted as listed and a read mark that moved backwards were caught by no
+Rust test, which is the gap to close, not to widen). Their setup may be shared
+through builders (`agent_chat/test_support.rs` and the helpers beside each
+test module); the assertions stay.
+
+To check that a test earns its place, apply the mutation it exists for by
+hand, see it fail, and revert. A test that no plausible mutation of its
+subject fails is a candidate to remove. Say so in the change; do not delete
+silently.
+
 ## Conventions & gotchas
 
 - **An automatic cleanup test needs a safe control actually stripped or
@@ -4446,6 +4510,8 @@ missing/stale evidence explains the swept state and asks for restore/refresh.
   what each HOLDS as well as when it answers. And run a reviewer's older
   probes against a new rule before the loop: one of theirs
   (`failed-other`) passed only because of the bug the next review found.
+  Which matrices to write, and which to run only in CI, is in **Which tests
+  to write**.
 - **A mutation check of a script section switches off the one thing the
   section claims to prove, and sees that section fail.** A mock that sends
   two signals for one fact proves neither: with the first switched off the
