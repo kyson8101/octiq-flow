@@ -928,17 +928,7 @@ fn removed_agent_tools_are_not_exposed_to_the_host() {
 fn the_agent_is_told_to_ask_us_rather_than_deny() {
     // Without this flag an `ask` decision in print mode is terminal: the
     // call is denied, nobody is asked, and the chat says nothing about why.
-    let line = build_command(
-        ChatAgent::Claude,
-        None,
-        Some(Access::Auto),
-        "hello",
-        None,
-        &[],
-        None,
-        &[],
-        false,
-    );
+    let line = hello_line(ChatAgent::Claude, Some(Access::Auto), false);
     assert!(line.contains("--permission-prompt-tool stdio"));
 }
 
@@ -961,17 +951,7 @@ fn the_question_tool_the_agent_cannot_be_answered_on_is_taken_back() {
     // the one that reaches a phone. Unconditional on purpose: when the MCP
     // config could not be written there is no `ask_user` either, and no
     // question at all is what this command line did before the flag arrived.
-    let line = build_command(
-        ChatAgent::Claude,
-        None,
-        Some(Access::Auto),
-        "hello",
-        None,
-        &[],
-        None,
-        &[],
-        false,
-    );
+    let line = hello_line(ChatAgent::Claude, Some(Access::Auto), false);
     assert!(line.contains("--disallowedTools AskUserQuestion"));
 }
 
@@ -1014,17 +994,7 @@ fn a_lite_chat_drops_the_machines_skills_hooks_and_other_mcp_servers() {
 
 #[test]
 fn a_normal_chat_still_gets_everything_this_machine_offers() {
-    let line = build_command(
-        ChatAgent::Claude,
-        None,
-        Some(Access::Auto),
-        "hello",
-        None,
-        &[],
-        None,
-        &[],
-        false,
-    );
+    let line = hello_line(ChatAgent::Claude, Some(Access::Auto), false);
     assert!(!line.contains("--strict-mcp-config"));
     assert!(!line.contains("--disable-slash-commands"));
     assert!(!line.contains("--setting-sources"));
@@ -1036,17 +1006,7 @@ fn lite_says_nothing_to_codex() {
     // can be told to ignore, so the same idea saved 21.2k against 20.8k
     // there — a rounding error, for flags that would still have to be
     // written and kept right. The switch is a Claude one until that changes.
-    let line = build_command(
-        ChatAgent::Codex,
-        None,
-        Some(Access::Auto),
-        "hello",
-        None,
-        &[],
-        None,
-        &[],
-        true,
-    );
+    let line = hello_line(ChatAgent::Codex, Some(Access::Auto), true);
     assert!(!line.contains("--ignore-user-config"));
     assert!(!line.contains("--strict-mcp-config"));
 }
@@ -1109,30 +1069,10 @@ fn model_names_are_allowlisted() {
 #[test]
 fn resume_only_takes_a_plain_id() {
     let id = "a2c8ca18-dcd4-41bc-a49d-b078f2a8e056";
-    let c = build_command(
-        ChatAgent::Claude,
-        None,
-        None,
-        "",
-        Some(id),
-        &[],
-        None,
-        &[],
-        false,
-    );
+    let c = resume_line(id);
     assert!(c.contains(&format!("--resume '{id}'")));
     // Anything that could become a second shell word is dropped outright.
-    let bad = build_command(
-        ChatAgent::Claude,
-        None,
-        None,
-        "",
-        Some("x; rm -rf /"),
-        &[],
-        None,
-        &[],
-        false,
-    );
+    let bad = resume_line("x; rm -rf /");
     assert!(!bad.contains("--resume"));
 }
 
@@ -1268,17 +1208,7 @@ fn claude_and_codex_both_get_a_two_way_stream() {
 
 #[test]
 fn effort_is_an_allowlist_and_spelled_per_agent() {
-    let c = build_command(
-        ChatAgent::Claude,
-        None,
-        None,
-        "",
-        None,
-        &[],
-        Some("xhigh"),
-        &[],
-        false,
-    );
+    let c = effort_line("xhigh");
     assert!(c.contains("--effort xhigh"));
     // Codex carries the validated value in its typed turn request.
     assert_eq!(
@@ -1287,84 +1217,34 @@ fn effort_is_an_allowlist_and_spelled_per_agent() {
     );
 
     // Anything outside the set is dropped rather than forwarded.
-    let bad = build_command(
-        ChatAgent::Claude,
-        None,
-        None,
-        "",
-        None,
-        &[],
-        Some("turbo; id"),
-        &[],
-        false,
-    );
+    let bad = effort_line("turbo; id");
     assert!(!bad.contains("--effort"));
 
     // `max` is BOTH agents': Codex's own model list gives it to every
     // GPT-5.6 model (`supported_reasoning_levels` in
     // `~/.codex/models_cache.json`), so refusing it here dropped a level
     // the agent would have taken.
-    let claude_max = build_command(
-        ChatAgent::Claude,
-        None,
-        None,
-        "",
-        None,
-        &[],
-        Some("max"),
-        &[],
-        false,
-    );
+    let claude_max = effort_line("max");
     assert!(claude_max.contains("--effort max"));
     assert_eq!(provider_for(ChatAgent::Codex).effort("max"), Some("max"));
 
     // `minimal` is nobody's any more. The same model list dropped it from
     // every GPT-5.6 model, and Claude never had it.
     assert_eq!(provider_for(ChatAgent::Codex).effort("minimal"), None);
-    let claude_min = build_command(
-        ChatAgent::Claude,
-        None,
-        None,
-        "",
-        None,
-        &[],
-        Some("minimal"),
-        &[],
-        false,
-    );
+    let claude_min = effort_line("minimal");
     assert!(!claude_min.contains("--effort"));
 
     // `ultracode` is Claude's top rung. It is missing from `--help`, but the
     // flag takes it: an unknown value warns and falls back, and this one
     // does not.
-    let ultra = build_command(
-        ChatAgent::Claude,
-        None,
-        None,
-        "",
-        None,
-        &[],
-        Some("ultracode"),
-        &[],
-        false,
-    );
+    let ultra = effort_line("ultracode");
     assert!(ultra.contains("--effort ultracode"));
     assert_eq!(provider_for(ChatAgent::Codex).effort("ultracode"), None);
 
     // `auto` deliberately reaches the command line as nothing at all: the
     // flag rejects it, and no flag IS "the agent picks". The UI then sends
     // `/effort auto` to the running session, which does take it.
-    let auto = build_command(
-        ChatAgent::Claude,
-        None,
-        None,
-        "",
-        None,
-        &[],
-        Some("auto"),
-        &[],
-        false,
-    );
+    let auto = effort_line("auto");
     assert!(!auto.contains("--effort"));
 }
 
@@ -1440,17 +1320,7 @@ fn codex_is_allowed_to_run_where_there_is_no_git_repo() {
 
     // Claude has no such check and no such flag; handing it one would be
     // an unknown argument.
-    let claude = build_command(
-        ChatAgent::Claude,
-        None,
-        Some(Access::Read),
-        "hello",
-        None,
-        &[],
-        None,
-        &[],
-        false,
-    );
+    let claude = hello_line(ChatAgent::Claude, Some(Access::Read), false);
     assert!(!claude.contains("--skip-git-repo-check"), "{claude}");
 }
 
@@ -1770,26 +1640,11 @@ fn a_decision_made_while_a_chat_is_idle_holds_off_its_next_turn() {
     let manager = Arc::new(ChatManager::default());
     let key = format!("idle-{}", uuid::Uuid::new_v4().simple());
     let session = |busy: bool| {
-        Arc::new(Mutex::new(ChatSession {
-            launch_id: "test-launch".into(),
-            user_turn_id: None,
-            answering: None,
-            child: stand_in::still()
-                .stdin(Stdio::null())
-                .spawn()
-                .expect("a stand-in agent"),
-            stdin: None,
-            codex: None,
-            agent: ChatAgent::Codex,
-            busy,
-            last_active: Instant::now(),
-            cut_off: CutOff::No,
-            auto_plan_refused: false,
-            auto_plan_turn: AutoPlanTurn::default(),
-            auto_plan_attribution: AutoPlanAttribution::Ready,
-            leaving: None,
-            first_turn_held: false,
-        }))
+        let child = stand_in::still()
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("a stand-in agent");
+        ChatSession::shared(child, None, ChatAgent::Codex, busy)
     };
     // No live process: nothing can be in a turn.
     assert_eq!(manager.while_idle(&key, || Ok(1)), Ok(1));
@@ -1842,23 +1697,7 @@ fn a_running_chat_reports_the_pid_its_memory_hangs_off() {
     let pid = child.id() as i32;
     manager.sessions.lock().unwrap().insert(
         key.clone(),
-        Arc::new(Mutex::new(ChatSession {
-            launch_id: "test-launch".into(),
-            user_turn_id: None,
-            answering: None,
-            child,
-            stdin: None,
-            codex: None,
-            agent: ChatAgent::Claude,
-            busy: false,
-            last_active: Instant::now(),
-            cut_off: CutOff::No,
-            auto_plan_refused: false,
-            auto_plan_turn: AutoPlanTurn::default(),
-            auto_plan_attribution: AutoPlanAttribution::Ready,
-            leaving: None,
-            first_turn_held: false,
-        })),
+        ChatSession::shared(child, None, ChatAgent::Claude, false),
     );
 
     assert_eq!(manager.chat_pids().get(&pid), Some(&key));
@@ -1880,23 +1719,7 @@ fn a_queued_codex_user_turn_is_durable_before_its_next_process_starts() {
         .expect("a Codex stand-in");
     manager.sessions.lock().unwrap().insert(
         key.clone(),
-        Arc::new(Mutex::new(ChatSession {
-            launch_id: "test-launch".into(),
-            user_turn_id: None,
-            answering: None,
-            child,
-            stdin: None,
-            codex: None,
-            agent: ChatAgent::Codex,
-            busy: true,
-            last_active: Instant::now(),
-            cut_off: CutOff::No,
-            auto_plan_refused: false,
-            auto_plan_turn: AutoPlanTurn::default(),
-            auto_plan_attribution: AutoPlanAttribution::Ready,
-            leaving: None,
-            first_turn_held: false,
-        })),
+        ChatSession::shared(child, None, ChatAgent::Codex, true),
     );
 
     chat_send_user_impl(
@@ -2218,23 +2041,7 @@ pub(super) fn claude_session(busy: bool) -> Arc<Mutex<ChatSession>> {
         .spawn()
         .expect("an echo to stand in for Claude");
     let stdin = child.stdin.take();
-    Arc::new(Mutex::new(ChatSession {
-        launch_id: "test-launch".into(),
-        user_turn_id: None,
-        answering: None,
-        child,
-        stdin,
-        codex: None,
-        agent: ChatAgent::Claude,
-        busy,
-        last_active: Instant::now(),
-        cut_off: CutOff::No,
-        auto_plan_refused: false,
-        auto_plan_turn: AutoPlanTurn::default(),
-        auto_plan_attribution: AutoPlanAttribution::Ready,
-        leaving: None,
-        first_turn_held: false,
-    }))
+    ChatSession::shared(child, stdin, ChatAgent::Claude, busy)
 }
 
 pub(super) fn capturing_claude_session() -> (
@@ -2249,23 +2056,7 @@ pub(super) fn capturing_claude_session() -> (
     let stdin = child.stdin.take();
     let stdout = stand_in::echoed(child.stdout.take().expect("the capture pipe"));
     (
-        Arc::new(Mutex::new(ChatSession {
-            launch_id: "test-launch".into(),
-            user_turn_id: None,
-            answering: None,
-            child,
-            stdin,
-            codex: None,
-            agent: ChatAgent::Claude,
-            busy: true,
-            last_active: Instant::now(),
-            cut_off: CutOff::No,
-            auto_plan_refused: false,
-            auto_plan_turn: AutoPlanTurn::default(),
-            auto_plan_attribution: AutoPlanAttribution::Ready,
-            leaving: None,
-            first_turn_held: false,
-        })),
+        ChatSession::shared(child, stdin, ChatAgent::Claude, true),
         stdout,
     )
 }
@@ -3657,35 +3448,12 @@ fn stopping_codex_keeps_its_queue_on_the_native_thread() {
         .expect("a Codex app-server stand-in");
     let stdin = child.stdin.take();
     let session = Arc::new(Mutex::new(ChatSession {
-        launch_id: "test-launch".into(),
-        user_turn_id: None,
-        answering: None,
-        child,
-        stdin,
-        codex: Some(CodexAppSession {
-            thread_id: "thread-1".into(),
-            active_turn_id: Some("turn-1".into()),
-            interrupt_when_started: false,
-            next_request: 0,
-            elicitations: HashMap::new(),
-            mcp_calls: HashMap::new(),
-            mcp_refusals: HashMap::new(),
-            model: None,
-            effort: None,
-            access: Some(Access::Read),
-            cwd: "/tmp".into(),
-            workspace_roots: vec!["/tmp".into()],
-            has_octiq_mcp: false,
-        }),
-        agent: ChatAgent::Codex,
-        busy: true,
-        last_active: Instant::now(),
-        cut_off: CutOff::No,
-        auto_plan_refused: false,
-        auto_plan_turn: AutoPlanTurn::default(),
-        auto_plan_attribution: AutoPlanAttribution::Ready,
-        leaving: None,
-        first_turn_held: false,
+        codex: Some(CodexAppSession::standing_in(
+            "thread-1",
+            Some("turn-1"),
+            Access::Read,
+        )),
+        ..ChatSession::standing_in(child, stdin, ChatAgent::Codex, true)
     }));
     manager
         .sessions
@@ -3767,23 +3535,7 @@ fn cancelling_a_codex_turn_takes_it_back_out_of_the_transcript() {
     hold(
         &manager,
         &key,
-        Arc::new(Mutex::new(ChatSession {
-            launch_id: "test-launch".into(),
-            user_turn_id: None,
-            answering: None,
-            child,
-            stdin: None,
-            codex: None,
-            agent: ChatAgent::Codex,
-            busy: true,
-            last_active: Instant::now(),
-            cut_off: CutOff::No,
-            auto_plan_refused: false,
-            auto_plan_turn: AutoPlanTurn::default(),
-            auto_plan_attribution: AutoPlanAttribution::Ready,
-            leaving: None,
-            first_turn_held: false,
-        })),
+        ChatSession::shared(child, None, ChatAgent::Codex, true),
     );
 
     chat_send_user_impl(
@@ -3921,35 +3673,12 @@ fn interrupting_codex_keeps_its_app_server_and_native_thread() {
         .expect("a Codex app-server stand-in");
     let stdin = child.stdin.take();
     let session = Arc::new(Mutex::new(ChatSession {
-        launch_id: "test-launch".into(),
-        user_turn_id: None,
-        answering: None,
-        child,
-        stdin,
-        codex: Some(CodexAppSession {
-            thread_id: thread.into(),
-            active_turn_id: Some("turn-1".into()),
-            interrupt_when_started: false,
-            next_request: 0,
-            elicitations: HashMap::new(),
-            mcp_calls: HashMap::new(),
-            mcp_refusals: HashMap::new(),
-            model: None,
-            effort: None,
-            access: Some(Access::Read),
-            cwd: "/tmp".into(),
-            workspace_roots: vec!["/tmp".into()],
-            has_octiq_mcp: false,
-        }),
-        agent: ChatAgent::Codex,
-        busy: true,
-        last_active: Instant::now(),
-        cut_off: CutOff::No,
-        auto_plan_refused: false,
-        auto_plan_turn: AutoPlanTurn::default(),
-        auto_plan_attribution: AutoPlanAttribution::Ready,
-        leaving: None,
-        first_turn_held: false,
+        codex: Some(CodexAppSession::standing_in(
+            thread,
+            Some("turn-1"),
+            Access::Read,
+        )),
+        ..ChatSession::standing_in(child, stdin, ChatAgent::Codex, true)
     }));
     manager
         .sessions

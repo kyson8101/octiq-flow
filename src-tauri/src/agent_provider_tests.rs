@@ -77,18 +77,20 @@ pub(crate) fn agy_events(stream: &str) -> Vec<Value> {
         .collect()
 }
 
-fn command(kind: AgentKind, mcp_config: Option<&Path>) -> String {
-    provider_for(kind).build_command(&AgentCommand {
-        model: Some("model-x"),
-        access: Some(Access::Auto),
-        prompt: "hello",
+/// The plainest launch of `prompt`: no model, access, effort, MCP config or
+/// worker role. A test names only what it is about, after `..request(..)`.
+fn request(prompt: &str) -> AgentCommand<'_> {
+    AgentCommand {
+        model: None,
+        access: None,
+        prompt,
         resume: None,
         extra_dirs: &[],
         sandbox_roots: &[],
-        effort: Some("high"),
+        effort: None,
         images: &[],
         lite: false,
-        mcp_config,
+        mcp_config: None,
         persistent_authorizations: None,
         orchestration_worker: false,
         front_desk: false,
@@ -98,6 +100,16 @@ fn command(kind: AgentKind, mcp_config: Option<&Path>) -> String {
         worker_full_tools: false,
         claude_worker_mcp: None,
         preferences: None,
+    }
+}
+
+fn command(kind: AgentKind, mcp_config: Option<&Path>) -> String {
+    provider_for(kind).build_command(&AgentCommand {
+        model: Some("model-x"),
+        access: Some(Access::Auto),
+        effort: Some("high"),
+        mcp_config,
+        ..request("hello")
     })
 }
 
@@ -387,25 +399,10 @@ fn an_orchestration_worker_gets_the_structured_gate_and_report_protocol() {
         .contains("do not call `orchestration_gate_create` or `orchestration_worker_report`"));
 
     let claude = provider_for(AgentKind::Claude).build_command(&AgentCommand {
-        model: None,
         access: Some(Access::Auto),
-        prompt: "work",
-        resume: None,
-        extra_dirs: &[],
-        sandbox_roots: &[],
-        effort: None,
-        images: &[],
-        lite: false,
         mcp_config: Some(Path::new("octiq-ask.json")),
-        persistent_authorizations: None,
         orchestration_worker: true,
-        front_desk: false,
-        codex_user_mcp: &[],
-        codex_worker_playwright: None,
-        codex_worker_desktop: false,
-        worker_full_tools: false,
-        claude_worker_mcp: None,
-        preferences: None,
+        ..request("work")
     });
     assert!(claude.contains("orchestration_gate_create"));
     assert!(claude.contains("orchestration_worker_report"));
@@ -417,23 +414,12 @@ fn a_front_desk_gets_route_chat_and_no_other_tool() {
         model: Some("haiku"),
         // Whatever access it was given, the tools are what stop it.
         access: Some(Access::Full),
-        prompt: "where do I take this",
-        resume: None,
         extra_dirs: &["/tmp/extra".to_owned()],
-        sandbox_roots: &[],
         effort: Some("low"),
-        images: &[],
         lite: true,
         mcp_config: Some(Path::new("octiq-ask.json")),
-        persistent_authorizations: None,
-        orchestration_worker: false,
         front_desk: true,
-        codex_user_mcp: &[],
-        codex_worker_playwright: None,
-        codex_worker_desktop: false,
-        worker_full_tools: false,
-        claude_worker_mcp: None,
-        preferences: None,
+        ..request("where do I take this")
     });
     assert!(line.contains(" --tools ''"), "no built-in tool: {line}");
     assert!(line.contains(" --permission-mode dontAsk"), "{line}");
@@ -466,23 +452,12 @@ fn codex_request<'a>(front_desk: bool, servers: &'a [CodexMcpServer]) -> AgentCo
     AgentCommand {
         model: Some("gpt-5.6-luna"),
         access: Some(Access::Read),
-        prompt: "where do I take this",
-        resume: None,
-        extra_dirs: &[],
-        sandbox_roots: &[],
         effort: Some("low"),
-        images: &[],
         lite: true,
         mcp_config: Some(Path::new("octiq-ask.json")),
-        persistent_authorizations: None,
-        orchestration_worker: false,
         front_desk,
         codex_user_mcp: servers,
-        codex_worker_playwright: None,
-        codex_worker_desktop: false,
-        worker_full_tools: false,
-        claude_worker_mcp: None,
-        preferences: None,
+        ..request("where do I take this")
     }
 }
 
@@ -1230,25 +1205,10 @@ fn a_worker_is_told_the_same_outage_guidance_as_the_card_and_the_snapshot() {
     );
 
     let claude = provider_for(AgentKind::Claude).build_command(&AgentCommand {
-        model: None,
         access: Some(Access::Auto),
-        prompt: "work",
-        resume: None,
-        extra_dirs: &[],
-        sandbox_roots: &[],
-        effort: None,
-        images: &[],
-        lite: false,
         mcp_config: Some(Path::new("octiq-ask.json")),
-        persistent_authorizations: None,
         orchestration_worker: true,
-        front_desk: false,
-        codex_user_mcp: &[],
-        codex_worker_playwright: None,
-        codex_worker_desktop: false,
-        worker_full_tools: false,
-        claude_worker_mcp: None,
-        preferences: None,
+        ..request("work")
     });
     // Quoted for the shell, so look for a stretch without apostrophes.
     let tail = guidance
@@ -1265,25 +1225,10 @@ fn a_worker_is_told_the_same_outage_guidance_as_the_card_and_the_snapshot() {
 #[test]
 fn a_worker_launch_line_reaches_the_agent_whole() {
     let line = provider_for(AgentKind::Claude).build_command(&AgentCommand {
-        model: None,
         access: Some(Access::Auto),
-        prompt: "work",
-        resume: None,
-        extra_dirs: &[],
-        sandbox_roots: &[],
-        effort: None,
-        images: &[],
-        lite: false,
         mcp_config: Some(Path::new("octiq-ask.json")),
-        persistent_authorizations: None,
         orchestration_worker: true,
-        front_desk: false,
-        codex_user_mcp: &[],
-        codex_worker_playwright: None,
-        codex_worker_desktop: false,
-        worker_full_tools: false,
-        claude_worker_mcp: None,
-        preferences: None,
+        ..request("work")
     });
     let shell = crate::proc::resolve_agent_shell(
         std::env::var("SHELL").ok(),
@@ -1365,25 +1310,12 @@ fn a_claude_launch_carries_no_allow_rule_beyond_octiqflows_own_tools() {
     for access in [Access::Read, Access::Manual, Access::Edits, Access::Auto] {
         for worker in [false, true] {
             let line = provider_for(AgentKind::Claude).build_command(&AgentCommand {
-                model: None,
                 access: Some(access),
-                prompt: "work",
                 resume: Some("session-1"),
-                extra_dirs: &[],
-                sandbox_roots: &[],
-                effort: None,
-                images: &[],
                 lite: true,
                 mcp_config: Some(Path::new("octiq-ask.json")),
-                persistent_authorizations: None,
                 orchestration_worker: worker,
-                front_desk: false,
-                codex_user_mcp: &[],
-                codex_worker_playwright: None,
-                codex_worker_desktop: false,
-                worker_full_tools: false,
-                claude_worker_mcp: None,
-                preferences: None,
+                ..request("work")
             });
             assert_eq!(line.matches("--allowedTools").count(), 1, "{line}");
             let rules = line
@@ -2324,23 +2256,9 @@ fn agy_request<'a>(access: Option<Access>, mcp: Option<&'a Path>) -> AgentComman
     AgentCommand {
         model: Some("gemini-3.8-flash-high"),
         access,
-        prompt: "fix it",
-        resume: None,
-        extra_dirs: &[],
-        sandbox_roots: &[],
         effort: Some("high"),
-        images: &[],
-        lite: false,
         mcp_config: mcp,
-        persistent_authorizations: None,
-        orchestration_worker: false,
-        front_desk: false,
-        codex_user_mcp: &[],
-        codex_worker_playwright: None,
-        codex_worker_desktop: false,
-        worker_full_tools: false,
-        claude_worker_mcp: None,
-        preferences: None,
+        ..request("fix it")
     }
 }
 

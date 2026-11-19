@@ -74,6 +74,41 @@ pub(super) fn build_command_with_mcp(
     })
 }
 
+/// `agent`'s launch of "hello" at `access`, with nothing else asked for.
+pub(super) fn hello_line(agent: ChatAgent, access: Option<Access>, lite: bool) -> String {
+    build_command(agent, None, access, "hello", None, &[], None, &[], lite)
+}
+
+/// A Claude launch of an empty prompt that asks for nothing but `effort`.
+pub(super) fn effort_line(effort: &str) -> String {
+    build_command(
+        ChatAgent::Claude,
+        None,
+        None,
+        "",
+        None,
+        &[],
+        Some(effort),
+        &[],
+        false,
+    )
+}
+
+/// A Claude launch of an empty prompt that asks for nothing but `resume`.
+pub(super) fn resume_line(resume: &str) -> String {
+    build_command(
+        ChatAgent::Claude,
+        None,
+        None,
+        "",
+        Some(resume),
+        &[],
+        None,
+        &[],
+        false,
+    )
+}
+
 /// Deliver only between turns, and never ahead of a waiting user message.
 /// The durable notification remains in-flight until the provider emits its receipt.
 pub(crate) fn deliver_orchestration_notification(
@@ -82,6 +117,73 @@ pub(crate) fn deliver_orchestration_notification(
     env: std::collections::BTreeMap<String, String>,
 ) -> Result<bool, String> {
     deliver_orchestration_notifications(manager, std::slice::from_ref(notification), env)
+}
+
+impl CodexAppSession {
+    /// A Codex app-server thread as the stand-ins hold it: no model, no
+    /// effort, `/tmp` as its folder, and a turn in flight only when
+    /// `active_turn_id` names one.
+    pub(super) fn standing_in(
+        thread_id: &str,
+        active_turn_id: Option<&str>,
+        access: Access,
+    ) -> Self {
+        CodexAppSession {
+            thread_id: thread_id.into(),
+            active_turn_id: active_turn_id.map(Into::into),
+            interrupt_when_started: false,
+            next_request: 0,
+            elicitations: HashMap::new(),
+            mcp_calls: HashMap::new(),
+            mcp_refusals: HashMap::new(),
+            model: None,
+            effort: None,
+            access: Some(access),
+            cwd: "/tmp".into(),
+            workspace_roots: vec!["/tmp".into()],
+            has_octiq_mcp: false,
+        }
+    }
+}
+
+impl ChatSession {
+    /// A session around a stand-in `child`, as a launch leaves one: no
+    /// turn acknowledged, nothing cut off, nobody leaving. A test that needs
+    /// a field the launch would have set assigns it afterwards.
+    pub(super) fn standing_in(
+        child: Child,
+        stdin: Option<ChildStdin>,
+        agent: ChatAgent,
+        busy: bool,
+    ) -> Self {
+        ChatSession {
+            launch_id: "test-launch".into(),
+            user_turn_id: None,
+            answering: None,
+            child,
+            stdin,
+            codex: None,
+            agent,
+            busy,
+            last_active: Instant::now(),
+            cut_off: CutOff::No,
+            auto_plan_refused: false,
+            auto_plan_turn: AutoPlanTurn::default(),
+            auto_plan_attribution: AutoPlanAttribution::Ready,
+            leaving: None,
+            first_turn_held: false,
+        }
+    }
+
+    /// [`Self::standing_in`], already shared the way the manager holds it.
+    pub(super) fn shared(
+        child: Child,
+        stdin: Option<ChildStdin>,
+        agent: ChatAgent,
+        busy: bool,
+    ) -> Arc<Mutex<ChatSession>> {
+        Arc::new(Mutex::new(Self::standing_in(child, stdin, agent, busy)))
+    }
 }
 
 impl ChatManager {
@@ -105,20 +207,7 @@ impl ChatManager {
             key.to_string(),
             Arc::new(Mutex::new(ChatSession {
                 launch_id,
-                user_turn_id: None,
-                answering: None,
-                child,
-                stdin: None,
-                codex: None,
-                agent: ChatAgent::Claude,
-                busy: false,
-                last_active: Instant::now(),
-                cut_off: CutOff::No,
-                auto_plan_refused: false,
-                auto_plan_turn: AutoPlanTurn::default(),
-                auto_plan_attribution: AutoPlanAttribution::Ready,
-                leaving: None,
-                first_turn_held: false,
+                ..ChatSession::standing_in(child, None, ChatAgent::Claude, false)
             })),
         );
         secret
@@ -190,23 +279,7 @@ impl ChatManager {
         let stdin = child.stdin.take();
         self.sessions.lock().unwrap().insert(
             key.to_string(),
-            Arc::new(Mutex::new(ChatSession {
-                launch_id: "test-launch".into(),
-                user_turn_id: None,
-                answering: None,
-                child,
-                stdin,
-                codex: None,
-                agent,
-                busy,
-                last_active: Instant::now(),
-                cut_off: CutOff::No,
-                auto_plan_refused: false,
-                auto_plan_turn: AutoPlanTurn::default(),
-                auto_plan_attribution: AutoPlanAttribution::Ready,
-                leaving: None,
-                first_turn_held: false,
-            })),
+            ChatSession::shared(child, stdin, agent, busy),
         );
         self.test_child(key)
     }
@@ -229,23 +302,7 @@ impl ChatManager {
         let heard = stand_in::echoed(child.stdout.take().expect("the stand-in's stdout"));
         self.sessions.lock().unwrap().insert(
             key.to_string(),
-            Arc::new(Mutex::new(ChatSession {
-                launch_id: "test-launch".into(),
-                user_turn_id: None,
-                answering: None,
-                child,
-                stdin,
-                codex: None,
-                agent,
-                busy,
-                last_active: Instant::now(),
-                cut_off: CutOff::No,
-                auto_plan_refused: false,
-                auto_plan_turn: AutoPlanTurn::default(),
-                auto_plan_attribution: AutoPlanAttribution::Ready,
-                leaving: None,
-                first_turn_held: false,
-            })),
+            ChatSession::shared(child, stdin, agent, busy),
         );
         (self.test_child(key), heard)
     }
@@ -256,21 +313,7 @@ impl ChatManager {
         let session = self.sessions.lock().unwrap().get(key).cloned().unwrap();
         let mut session = session.lock().unwrap();
         session.agent = ChatAgent::Codex;
-        session.codex = Some(CodexAppSession {
-            thread_id: "thread-1".into(),
-            active_turn_id: None,
-            interrupt_when_started: false,
-            next_request: 0,
-            elicitations: HashMap::new(),
-            mcp_calls: HashMap::new(),
-            mcp_refusals: HashMap::new(),
-            model: None,
-            effort: None,
-            access: Some(access),
-            cwd: "/tmp".into(),
-            workspace_roots: vec!["/tmp".into()],
-            has_octiq_mcp: false,
-        });
+        session.codex = Some(CodexAppSession::standing_in("thread-1", None, access));
     }
 
     /// The level a Codex app-server stand-in would start its next turn at.

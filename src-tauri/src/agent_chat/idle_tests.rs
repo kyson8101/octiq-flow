@@ -38,23 +38,10 @@ fn still_session(busy: bool, ago: Duration) -> Arc<Mutex<ChatSession>> {
         .spawn()
         .expect("a sleep to stand in for an agent");
     Arc::new(Mutex::new(ChatSession {
-        launch_id: "test-launch".into(),
-        user_turn_id: None,
-        answering: None,
-        child,
-        stdin: None,
-        codex: None,
-        agent: ChatAgent::Claude,
-        busy,
         last_active: Instant::now()
             .checked_sub(ago)
             .expect("a clock with some run-up behind it"),
-        cut_off: CutOff::No,
-        auto_plan_refused: false,
-        auto_plan_turn: AutoPlanTurn::default(),
-        auto_plan_attribution: AutoPlanAttribution::Ready,
-        leaving: None,
-        first_turn_held: false,
+        ..ChatSession::standing_in(child, None, ChatAgent::Claude, busy)
     }))
 }
 

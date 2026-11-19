@@ -67,20 +67,7 @@ async fn the_actual_tool_timeout_leaves_an_answerable_question_without_a_browser
         key.clone(),
         Arc::new(Mutex::new(ChatSession {
             launch_id: "launch-1".into(),
-            user_turn_id: None,
-            answering: None,
-            child,
-            stdin: None,
-            codex: None,
-            agent: ChatAgent::Codex,
-            busy: true,
-            last_active: Instant::now(),
-            cut_off: CutOff::No,
-            auto_plan_refused: false,
-            auto_plan_turn: AutoPlanTurn::default(),
-            auto_plan_attribution: AutoPlanAttribution::Ready,
-            leaving: None,
-            first_turn_held: false,
+            ..ChatSession::standing_in(child, None, ChatAgent::Codex, true)
         })),
     );
     let request = serde_json::from_value(json!({ "chatKey": key, "launchId": "launch-1", "questions": [{"question":"Which database?"}] })).unwrap();
@@ -262,20 +249,7 @@ fn an_answer_rejoins_a_live_persistent_agent_through_the_normal_send_path() {
         key.clone(),
         Arc::new(Mutex::new(ChatSession {
             launch_id: "launch-1".into(),
-            user_turn_id: None,
-            answering: None,
-            child,
-            stdin,
-            codex: None,
-            agent: ChatAgent::Claude,
-            busy: false,
-            last_active: Instant::now(),
-            cut_off: CutOff::No,
-            auto_plan_refused: false,
-            auto_plan_turn: AutoPlanTurn::default(),
-            auto_plan_attribution: AutoPlanAttribution::Ready,
-            leaving: None,
-            first_turn_held: false,
+            ..ChatSession::standing_in(child, stdin, ChatAgent::Claude, false)
         })),
     );
     let (id, _rx) = manager

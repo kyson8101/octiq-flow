@@ -524,21 +524,8 @@ fn session_of(agent: ChatAgent, stdin: bool, busy: bool) -> Arc<Mutex<ChatSessio
     .expect("a stand-in agent");
     let stdin = child.stdin.take();
     Arc::new(Mutex::new(ChatSession {
-        launch_id: "test-launch".into(),
-        user_turn_id: None,
         answering: Some("user-0".into()),
-        child,
-        stdin,
-        codex: None,
-        agent,
-        busy,
-        last_active: Instant::now(),
-        cut_off: CutOff::No,
-        auto_plan_refused: false,
-        auto_plan_turn: AutoPlanTurn::default(),
-        auto_plan_attribution: AutoPlanAttribution::Ready,
-        leaving: None,
-        first_turn_held: false,
+        ..ChatSession::standing_in(child, stdin, agent, busy)
     }))
 }
 
@@ -1397,21 +1384,11 @@ fn codex_session() -> Arc<Mutex<ChatSession>> {
     {
         let mut codex = session.lock().unwrap();
         codex.agent = ChatAgent::Codex;
-        codex.codex = Some(CodexAppSession {
-            thread_id: "thread-1".into(),
-            active_turn_id: Some("turn-1".into()),
-            interrupt_when_started: false,
-            next_request: 0,
-            elicitations: HashMap::new(),
-            mcp_calls: HashMap::new(),
-            mcp_refusals: HashMap::new(),
-            model: None,
-            effort: None,
-            access: Some(Access::Read),
-            cwd: "/tmp".into(),
-            workspace_roots: vec!["/tmp".into()],
-            has_octiq_mcp: false,
-        });
+        codex.codex = Some(CodexAppSession::standing_in(
+            "thread-1",
+            Some("turn-1"),
+            Access::Read,
+        ));
     }
     session
 }
