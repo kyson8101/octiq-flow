@@ -2479,6 +2479,7 @@ impl OrchestrationStore {
     /// click that cannot say what it saw approves nothing. A revision shown
     /// for less than `PLAN_SETTLE_MS` had only just replaced the one being
     /// read, and is refused rather than approved unseen.
+    #[cfg(test)]
     pub fn approve_plan_from_card(
         &self,
         actor_chat_key: &str,
@@ -2825,6 +2826,7 @@ impl OrchestrationStore {
 
     /// Create a task with its card, size and judging role in one write.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn create_task_full(
         &self,
         actor_chat_key: &str,
@@ -3081,6 +3083,7 @@ impl OrchestrationStore {
     /// person again and nobody, the old owner included, starts it meanwhile.
     /// A task with a live attempt is refused: two writers in one checkout is
     /// exactly what a handoff must not create.
+    #[cfg(test)]
     pub fn reassign_task(
         &self,
         actor_chat_key: &str,

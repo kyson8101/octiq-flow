@@ -1456,6 +1456,7 @@ impl OrchestrationStore {
     /// of the scheduler until it holds (`deliver_reopen_notices`). A reopen
     /// with nowhere to be shown is refused outright: the coordinator's chat
     /// has to be one the person can open.
+    #[cfg(test)]
     pub fn reopen_task(&self, actor: &str, task_id: &str, spec: String) -> Result<Task, String> {
         self.reopen_task_as(actor, task_id, spec, ReopenedBy::Coordinator)
     }
