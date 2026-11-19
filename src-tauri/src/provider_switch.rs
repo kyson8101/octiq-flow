@@ -96,10 +96,43 @@ pub(super) fn announce_runtime_change(
     message: &str,
     previous_session: Option<&str>,
 ) -> Result<(), String> {
-    record_chat_event_synced(
+    announce_runtime_change_with(
+        manager,
         key,
-        json!({ "type": kind, "from": from.agent, "previousSettings": from, "previousSessionId": previous_session, "agent": to.agent, "model": to.model, "effort": to.effort, "access": to.access, "session_id": manager.provider_session(key), "message": message }),
-    ).ok_or("The runtime change could not be recorded. Inspect the chat before continuing.")?;
+        from,
+        to,
+        kind,
+        message,
+        previous_session,
+        Value::Null,
+        None,
+    )
+}
+
+/// `announce_runtime_change` with fields of its own on the record's line
+/// (`byPerson`, `handoffOwed`) and, when the caller knows it, the session
+/// the chat holds now (`session`: `Some(None)` is no session at all). The
+/// `chat-provider-switch` event names the runtime the chat can return to
+/// (`home`) while it runs on an automatic fallback.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn announce_runtime_change_with(
+    manager: &ChatManager,
+    key: &str,
+    from: &Settings,
+    to: &Settings,
+    kind: &str,
+    message: &str,
+    previous_session: Option<&str>,
+    extra: Value,
+    session: Option<Option<String>>,
+) -> Result<(), String> {
+    let session_id = session.unwrap_or_else(|| manager.provider_session(key));
+    let mut event = json!({ "type": kind, "from": from.agent, "previousSettings": from, "previousSessionId": previous_session, "agent": to.agent, "model": to.model, "effort": to.effort, "access": to.access, "session_id": session_id, "message": message });
+    if let (Some(event), Some(extra)) = (event.as_object_mut(), extra.as_object()) {
+        event.extend(extra.clone());
+    }
+    record_chat_event_synced(key, event)
+        .ok_or("The runtime change could not be recorded. Inspect the chat before continuing.")?;
     if let Some(id) = key.strip_prefix("chat:") {
         if let Some(mut meta) = crate::chat_index::list()
             .into_iter()
@@ -113,14 +146,15 @@ pub(super) fn announce_runtime_change(
             meta.access = Some(to.access.as_env().into());
             // An old provider's id is invalid on the new provider. Startup
             // will supply its own id; neither the page nor a restart reuses it.
-            meta.session_id = manager.provider_session(key);
+            meta.session_id = session_id.clone();
             crate::chat_index::upsert(meta)?;
             announce_index_change(id, false);
         }
     }
     crate::bus::emit(
         "chat-provider-switch",
-        json!({ "key": key, "agent": to.agent, "model": to.model, "effort": to.effort, "access": to.access, "sessionId": manager.provider_session(key) }),
+        json!({ "key": key, "agent": to.agent, "model": to.model, "effort": to.effort, "access": to.access, "sessionId": session_id,
+            "home": runtime_switch::home_after(manager, key, to), "byPerson": extra["byPerson"].as_bool().unwrap_or(false) }),
     );
     Ok(())
 }
@@ -208,7 +242,9 @@ pub(super) fn run_provider_switch(
     let prompt = model_handoff_prompt(&history, entry.pending_turn.as_ref().map_or(
         "The previous provider reached its account limit. Continue the latest unfinished request. Read the current workspace, task ledger and any running job outputs first; preserve completed work and do not replay tools or external actions blindly. Keep the same agent identity, plan approvals and scope.",
         |turn| turn.text.as_str()));
-    let prompt = crate::team::refresh_turn_brief(&crate::team::default_path(), key, prompt, &[])?;
+    // The first prompt of a fresh session carries who the agent is, outside
+    // the history: a long chat's first message is past the window.
+    let prompt = runtime_switch::with_identity_brief(&manager, key, prompt)?;
     crate::agent_provider::validate_model(target.agent, target.model.as_deref())?;
     registered_runtime::require_installed(target.agent)?;
     prepare_runtime_change(

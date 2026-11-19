@@ -1395,6 +1395,9 @@ pub struct ChatManager {
     /// chat key — see `Leaving`. A leaf: held for one lookup or one change
     /// and never across another lock.
     leaving: Mutex<HashMap<String, Arc<Leaving>>>,
+    /// A person's runtime switches: what waits for a full stop and what a
+    /// fresh session is owed (`runtime_switch.rs`). A leaf mutex.
+    runtime: Mutex<runtime_switch::RuntimeBook>,
 }
 
 /// One start's hold on a chat that has no process yet
@@ -3922,6 +3925,9 @@ fn chat_start_with_user_turn(
     if manager.has_process(&key) {
         return Err(format!("chat '{key}' is already running"));
     }
+    // A runtime switch that waited for this chat to have no process applies
+    // first, so this start is on the runtime the person picked.
+    runtime_switch::adopt_pending(&manager, &key);
     let resume = crate::chat_index::usable_session(&key, resume)?;
     let previous_start = manager.start_context(&key);
     let previous_resume = resume.clone();
@@ -3931,18 +3937,31 @@ fn chat_start_with_user_turn(
     let mut effort = effort;
     let mut resume = resume;
     let mut handoff = handoff;
-    let source = crate::provider_failover::Settings {
-        agent,
-        model: model.clone(),
-        effort: effort.clone(),
-        access: access.unwrap_or(Access::Read),
-    };
     let registered = if !key.starts_with("chat:orch-") {
         crate::team::defaults_for_chat(&crate::team::default_path(), &key)?
     } else {
         None
     };
     let registered_chat = registered.is_some();
+    // What the host recorded of this chat's runtime. When the person's last
+    // change decided it, a page that still names an older runtime (a stale
+    // tab, a cache) does not undo the switch.
+    let recorded_runtime = if registered_chat {
+        runtime_switch::recorded(&key)?
+    } else {
+        runtime_switch::Recorded::default()
+    };
+    if let Some(runtime) = recorded_runtime.persons_runtime() {
+        agent = runtime.agent;
+        model = runtime.model.clone();
+        effort = runtime.effort.clone();
+    }
+    let source = crate::provider_failover::Settings {
+        agent,
+        model: model.clone(),
+        effort: effort.clone(),
+        access: access.unwrap_or(Access::Read),
+    };
     if registered_chat
         && user_turn_id
             .as_deref()
@@ -3977,6 +3996,15 @@ fn chat_start_with_user_turn(
                 .as_ref()
                 .map(StartContext::default_settings)
                 .unwrap_or_else(|| selected.runtime.clone());
+        }
+        // The chat's own runtime is what the record says it is, so a restart
+        // while the chat runs on an automatic fallback still knows where
+        // failover returns to.
+        if let Some(baseline) = &recorded_runtime.baseline {
+            defaults = crate::provider_failover::Settings {
+                access: defaults.access,
+                ..baseline.clone()
+            };
         }
         if recovered && resume.is_none() {
             handoff = Some(provider_history(&key)?);
@@ -4104,9 +4132,21 @@ fn chat_start_with_user_turn(
         )?;
     }
     let visible_prompt = prompt.clone();
+    let mut handed_over = false;
     let prompt = match (prompt, handoff.filter(|history| !history.trim().is_empty())) {
-        (Some(prompt), Some(history)) => Some(model_handoff_prompt(&history, &prompt)),
+        (Some(prompt), Some(history)) => {
+            handed_over = true;
+            Some(model_handoff_prompt(&history, &prompt))
+        }
         (prompt, _) => prompt,
+    };
+    // A fresh session after a provider change is told who the agent is:
+    // the history is data, and the agent's brief goes after it.
+    let prompt = match prompt {
+        Some(prompt) if handed_over && registered_chat => {
+            Some(runtime_switch::with_identity_brief(&manager, &key, prompt)?)
+        }
+        prompt => prompt,
     };
     // How this host was started, kept so the backend can start it the same way
     // again — see `StartContext`. Written BEFORE the spawn, and left in place if
@@ -4523,6 +4563,9 @@ fn start_queued_turn(
     turn: QueuedTurn,
     command_line_only: bool,
 ) -> Result<(), String> {
+    // The next process of a chat whose person picked another runtime while
+    // it was busy starts on that runtime.
+    runtime_switch::adopt_pending(&manager, session_key);
     let start = manager
         .start_context(session_key)
         .ok_or_else(|| format!("nothing here knows how to resume '{session_key}'"))?;
@@ -4955,6 +4998,21 @@ fn start_session_with_recovery(
     // lease. Declared before sessions: its Drop takes only the ledger after
     // every chat lock below has been released, on success and error alike.
     let _worker_spawn = manager.orchestrations.lease_worker_spawn(&key)?;
+    // A chat the person switched to another provider owes its first prompt
+    // the history and the agent's brief, whoever starts it (a message, a
+    // wake, a queued turn). Built before the session table is locked: it
+    // reads the whole record.
+    let (prompt, visible_prompt, handoff_taken) = if session_key == key && !front_desk {
+        runtime_switch::with_switch_context(
+            &manager,
+            &key,
+            resume.as_deref(),
+            prompt,
+            visible_prompt,
+        )?
+    } else {
+        (prompt, visible_prompt, false)
+    };
     let manager_for_exit = manager.clone();
     let session_key_for_exit = session_key.clone();
     // Lock audit: legacy admission uses sessions -> ledger (read-only), as
@@ -5459,6 +5517,10 @@ fn start_session_with_recovery(
         first_turn_held: mcp_ready.is_some() && writes_first_prompt,
     }));
     sessions.insert(session_key.clone(), session.clone());
+    if handoff_taken {
+        // The process holds the history now; the debt is paid.
+        runtime_switch::handoff_taken(&manager, &key);
+    }
     if let Some(request) = native_recovery.as_mut() {
         request.arm();
     }
@@ -5911,6 +5973,7 @@ fn start_session_with_recovery(
                         // turn, and acted on once that full stop is recorded.
                         let mut wrap_up = None;
                         let mut auto_plan_end = None;
+                        let finished_turn = observed.turn_finished;
                         if observed.turn_finished {
                             native_recovery_turn = false;
                             // The full stop is also when the next message the
@@ -6014,6 +6077,17 @@ fn start_session_with_recovery(
                             stream_provider.kind(),
                             &event,
                         ) else {
+                            // The full stop could not be recorded, but a
+                            // switch it took is still applied: the process
+                            // was marked ended and must not be left so.
+                            if finished_turn {
+                                runtime_switch::apply_at_full_stop(
+                                    &reading,
+                                    &session_key,
+                                    &key,
+                                    &asking,
+                                );
+                            }
                             continue;
                         };
                         if !notification_receipts.is_empty() {
@@ -6047,6 +6121,16 @@ fn start_session_with_recovery(
                         }
                         if let Some(ended) = wrap_up {
                             settle_wrap_up(&reading, &session_key, &asking, ended);
+                        }
+                        // The runtime switch this full stop took (`mark_due`):
+                        // the person's pick, applied between two turns.
+                        if finished_turn {
+                            runtime_switch::apply_at_full_stop(
+                                &reading,
+                                &session_key,
+                                &key,
+                                &asking,
+                            );
                         }
                     }
                     // A non-JSON line means the agent printed something we did
@@ -6316,6 +6400,14 @@ fn start_session_with_recovery(
                     code,
                 },
             );
+            // A chat that ended with a runtime switch waiting and nothing
+            // queued is idle with no process: the switch applies now, so the
+            // person sees it done rather than pending forever.
+            if was_current {
+                if let Ok(Some(_claim)) = manager_for_exit.hold_start(&session_key_for_exit) {
+                    runtime_switch::adopt_pending(&manager_for_exit, &session_key_for_exit);
+                }
+            }
         });
     }
 
@@ -6822,7 +6914,12 @@ fn end_turn_locked(
     session.cut_off = CutOff::No;
     session.turn_ended();
     let wrap_up = manager.completion_at_full_stop(session_key, session, clean);
-    let refused = if manager.auto_resumes.waits(session_key) {
+    // A runtime switch the person asked for during this turn applies at this
+    // full stop, before the queue moves: the process is marked ended here and
+    // `apply_at_full_stop` replaces it once the lock is let go.
+    let switching =
+        runtime_switch::mark_due(manager, session_key, stream_key, session, wrap_up.is_some());
+    let refused = if switching || manager.auto_resumes.waits(session_key) {
         None
     } else {
         dispatch_next_persistent_turn(manager, session_key, stream_key, session)
@@ -7318,6 +7415,7 @@ fn deliver_orchestration_notification_with_start(
         }
     }
     let _claim = manager.hold_start(key)?;
+    runtime_switch::adopt_pending(&manager, key);
     let meta = crate::chat_index::list()
         .into_iter()
         .find(|m| format!("chat:{}", m.id) == *key)
@@ -7437,6 +7535,9 @@ pub(crate) fn wake_chat(
         Err(why) => return Ok(Woken::Later(why)),
         Ok(_) => {}
     }
+    // A runtime switch that waited for the chat to have no process applies
+    // first: a host wake starts the chat on the runtime the person picked.
+    runtime_switch::adopt_pending(manager, key);
     let Some(start) = manager.start_context(key) else {
         return Ok(Woken::Later(
             "the chat is not running and has not run since OctiqFlow started".into(),
@@ -10262,7 +10363,10 @@ mod claude_session_recovery;
 mod provider_switch;
 #[path = "registered_runtime.rs"]
 mod registered_runtime;
+#[path = "runtime_switch.rs"]
+mod runtime_switch;
 use provider_switch::{announce_provider_switch, provider_history, run_provider_switch};
+pub use runtime_switch::{chat_switch_runtime_impl, Request as SwitchRequest};
 
 #[path = "codex_elicitation.rs"]
 mod codex_elicitation;
@@ -10866,6 +10970,8 @@ pub fn chat_forget_impl(manager: &ChatManager, key: String) -> Result<(), String
     manager.revoke_auto_plan(&key);
     let scheduled_ids = manager.auto_resumes.session_ids(&key);
     chat_stop_impl(manager, key.clone())?;
+    // A cleared chat starts over: no switch waits and no history is owed.
+    manager.forget_runtime(&key);
     let mut ids = Vec::new();
     if let Some(start) = manager.start_context(&key) {
         ids.extend(start.session_id);
@@ -11029,14 +11135,28 @@ pub struct ChatQueueState {
     /// itself once the folder is back. Absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     held: Option<String>,
+    /// A runtime the person picked that waits for the turn in flight to end
+    /// (`chat_switch_runtime`). Read from the chat's record, so it holds
+    /// after a restart. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_runtime: Option<runtime_switch::PendingView>,
+    /// The chat's own runtime, present only while it runs on an automatic
+    /// fallback: where the person can return to, whether that provider is
+    /// limited now, and when it resets if the provider said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    home_runtime: Option<runtime_switch::HomeRuntime>,
 }
 
 pub fn chat_queue_state_impl(manager: &ChatManager, key: &str) -> Result<ChatQueueState, String> {
+    // Read before the chat's locks are taken: it reads the record.
+    let (pending_runtime, home_runtime) = runtime_switch::queue_fields(manager, key);
     // Match the send/reaper lock order, so an enqueue cannot cross this read.
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     let handoffs = manager.handoffs.lock().map_err(|e| e.to_string())?;
     let queues = manager.queued_turns.lock().map_err(|e| e.to_string())?;
     Ok(ChatQueueState {
+        pending_runtime,
+        home_runtime,
         held: manager.waits_because(key),
         completing_turn_id: manager.completing_turn(key),
         live: sessions.contains_key(key) || handoffs.contains(key),

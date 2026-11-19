@@ -646,3 +646,36 @@ async fn an_answer_that_was_saved_is_answered_as_saved() {
     assert_eq!(answered.result, Ok(json!({ "saved": true })));
     assert!(answered.unsaved.is_empty(), "{:?}", answered.unsaved);
 }
+
+// ---- chat_switch_runtime ---------------------------------------------------
+
+/// The person's command reaches nothing it should not, through the real
+/// `dispatch`: a worker's chat is refused by what it is, and with the profile
+/// folder away a switch is refused whole, in the folder's own words, with the
+/// chat's process untouched (it is not an ending action: nothing is acted on
+/// before it can be saved).
+#[test]
+fn a_runtime_switch_is_refused_for_a_worker_and_whole_while_the_folder_is_away() {
+    let world = World::new();
+    let args =
+        |key: &str| json!({ "key": key, "agent": "codex", "model": "gpt-5.6-sol", "effort": null });
+    let worker = told(&world.svc, "chat_switch_runtime", args("chat:orch-someone"));
+    let why = worker
+        .result
+        .expect_err("a worker's runtime comes with its task");
+    assert!(!why.is_empty());
+
+    let key = fresh("switch");
+    world
+        .chats()
+        .test_start_at(&key, ChatAgent::Claude, Access::Read);
+    let process = world.chats().test_hold(&key, ChatAgent::Claude, false);
+    let away = world.folder_goes();
+    let refused = told(&world.svc, "chat_switch_runtime", args(&key));
+    assert_eq!(refused.result, Err(away));
+    assert!(
+        process.alive(),
+        "nothing was ended for a switch that could not be saved"
+    );
+    world.folder_returns();
+}

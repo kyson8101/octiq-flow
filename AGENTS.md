@@ -317,6 +317,19 @@ use a 15-minute cooldown. Registered agent defaults and identity do not change.
   worker model restrictions and every normal reservation gate still apply.
   A cancelled worker choice stays held; a new attempt/assignee cannot inherit
   its old one-time answer. These commands have no agent-hook route.
+- **The person can change a registered agent's runtime from inside its chat**
+  (`chat_switch_runtime`, `runtime_switch.rs`, contract in
+  [agents mode](docs/agents-mode.md#switching-a-chats-runtime-chat_switch_runtime)):
+  socket-only; the registration never changes; the person's pick overrides the
+  host's cooldown (`State::clear`); a busy chat is never interrupted (the pick
+  is `pending` and applies at the turn's full stop, before the queue moves,
+  under `end_turn_locked`); every fact that must survive a restart is a line in
+  the chat's record (`octiq_runtime_pending`, `octiq_provider_switched` with
+  `byPerson`/`handoffOwed`, `octiq_runtime_handoff_taken`); `homeRuntime` is
+  derived from that record, never from cooldowns. The first prompt of any
+  fresh session after a provider change, automatic or not, carries the
+  agent's full brief (`team::identity_brief`) outside the JSON history. Check
+  it with `node scripts/test-runtime-switch.mjs`.
 - Validate with Rust approval/schedule tests and
   `node scripts/test-provider-failover.mjs`: real server/socket and stub CLIs,
   isolated home and profile, no paid model calls. Add `claude ask` or

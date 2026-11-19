@@ -3237,6 +3237,7 @@ fn a_task_hook_acts_on_the_proven_chat() {
 
 /// Commands only the person gives. Nothing on a hook may reach them.
 const PERSON_ONLY: &[&str] = &[
+    "chat_switch_runtime",
     "orchestration_auto_plan_get",
     "orchestration_auto_plan_set",
     "orchestration_task_accept",
