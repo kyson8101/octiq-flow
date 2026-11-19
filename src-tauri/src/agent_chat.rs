@@ -182,6 +182,9 @@ fn record_durable_user_turn_with_append(
     if let Some(target) = append_to {
         event["octiq_append_to"] = Value::String(target.to_string());
     }
+    // The time the person sent it (a queued turn is recorded when it is
+    // queued), on the line and on the live event alike.
+    crate::transcript::stamp(&mut event);
     let seq = crate::transcript::append(key, &event);
     crate::bus::emit(
         "chat-event",
@@ -197,7 +200,8 @@ fn record_durable_user_turn_with_append(
 /// the same transcript-before-bus ordering as provider output, so a reconnect
 /// cannot miss a schedule, cancellation, or dispatch result. Returns where the
 /// event sits in the transcript; `None` when it reached only the live stream.
-pub(crate) fn record_chat_event(key: &str, event: Value) -> Option<u64> {
+pub(crate) fn record_chat_event(key: &str, mut event: Value) -> Option<u64> {
+    crate::transcript::stamp(&mut event);
     fan_out(key, crate::transcript::append(key, &event), event)
 }
 
@@ -212,7 +216,8 @@ pub(crate) fn record_start_failure(key: &str, message: &str) {
     );
 }
 
-pub(crate) fn record_chat_event_synced(key: &str, event: Value) -> Option<u64> {
+pub(crate) fn record_chat_event_synced(key: &str, mut event: Value) -> Option<u64> {
+    crate::transcript::stamp(&mut event);
     fan_out(key, crate::transcript::append_synced(key, &event), event)
 }
 
@@ -227,9 +232,10 @@ pub(crate) fn record_chat_event_synced(key: &str, event: Value) -> Option<u64> {
 pub(crate) fn record_chat_event_in(
     key: &str,
     seen: Option<&crate::transcript::Generation>,
-    event: Value,
+    mut event: Value,
 ) -> crate::transcript::Held {
     use crate::transcript::Held;
+    crate::transcript::stamp(&mut event);
     let (held, seq) = match seen {
         Some(seen) => crate::transcript::append_in(key, seen, &event),
         None => (Held::Unconfirmed, None),
@@ -270,7 +276,8 @@ fn record_delivery(key: &str, turn_id: Option<&str>, state: &str) -> Option<u64>
     if turn_id.starts_with(crate::orchestration::inbox::RECEIPT_PREFIX) {
         return None;
     }
-    let event = json!({ "type": "octiq_user_turn_delivery", "uuid": turn_id, "state": state });
+    let mut event = json!({ "type": "octiq_user_turn_delivery", "uuid": turn_id, "state": state });
+    crate::transcript::stamp(&mut event);
     let seq = crate::transcript::append(key, &event);
     crate::bus::emit(
         "chat-event",
@@ -3438,7 +3445,8 @@ pub fn chat_cancel_auto_resume_impl(manager: &ChatManager, key: String) -> Resul
 /// and the bubble is what has to go.
 fn announce_cancelled(key: &str, turn: &QueuedTurn) {
     for turn_id in turn.turn_ids() {
-        let event = json!({ "type": "octiq_user_turn_cancelled", "uuid": turn_id });
+        let mut event = json!({ "type": "octiq_user_turn_cancelled", "uuid": turn_id });
+        crate::transcript::stamp(&mut event);
         let seq = turn
             .recorded
             .then(|| crate::transcript::append(key, &event))
@@ -5367,6 +5375,10 @@ fn start_session_with_recovery(
                         // Keep the live payload small too; the reducer draws
                         // the same text/diff/outcome without this second copy.
                         crate::record_storage::trim_display_only(&mut event);
+                        // The host's record time, on the line and on the live
+                        // event below (the same value; a provider line never
+                        // carries one of its own).
+                        crate::transcript::stamp(&mut event);
                         let notification_receipts: Vec<_> =
                             crate::orchestration::inbox::receipt_ids(&event)
                                 .into_iter()
@@ -7240,7 +7252,8 @@ pub fn chat_dismiss_unsent_impl(
     // The check and the append are one step against the record: a pickup that
     // lands after the read, or a record published during it, writes nothing
     // (`turn_delivery::append_unless_picked_up`).
-    let event = json!({ "type": "octiq_user_turn_dismissed", "uuid": turn_id });
+    let mut event = json!({ "type": "octiq_user_turn_dismissed", "uuid": turn_id });
+    crate::transcript::stamp(&mut event);
     let Some(seq) = crate::turn_delivery::append_unless_picked_up(&key, &turn_id, &event)? else {
         return Ok(false);
     };
