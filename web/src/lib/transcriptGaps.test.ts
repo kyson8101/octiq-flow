@@ -2,7 +2,7 @@
 // one-line rows can sit closer than a turn does. That is only safe while the
 // lines that used to add a margin of their own to the old 18px gap still do.
 import { describe, expect, it } from "vitest";
-import stylesCss from "../styles.css?raw";
+import stylesCss from "./stylesText";
 import autoPlanCss from "../components/AutoPlan.css?raw";
 import messageListSource from "../components/MessageList.tsx?raw";
 import { lf } from "./sourceText";

@@ -12,7 +12,7 @@
 import { describe, expect, it } from "vitest";
 
 import designSystemCss from "../design-system.css?raw";
-import stylesCss from "../styles.css?raw";
+import stylesCss from "./stylesText";
 import mangaSheet from "../manga.css?raw";
 import autoPlanCss from "../components/AutoPlan.css?raw";
 import chatPlanCss from "../components/ChatPlanCards.css?raw";

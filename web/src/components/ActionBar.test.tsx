@@ -9,7 +9,7 @@ import { FocusModeButton } from "./FocusMode";
 import { FullscreenButton } from "./FullscreenButton";
 import { InstalledReload } from "./InstalledReload";
 import barCss from "./ActionBar.css?raw";
-import stylesCss from "../styles.css?raw";
+import stylesCss from "../lib/stylesText";
 import appSource from "../App.tsx?raw";
 
 // The buttons' modules reach the socket bridge, which opens a connection on import.

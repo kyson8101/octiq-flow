@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ROW_FITS, rowFit } from "./composerFit";
 import composer from "../components/Composer.tsx?raw";
-import styles from "../styles.css?raw";
+import styles from "./stylesText";
 
 describe("whether the composer's row holds its pickers side by side", () => {
   it("keeps them while what the row holds is no wider than the row", () => {

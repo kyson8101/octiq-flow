@@ -6,7 +6,7 @@ import type { OrchestrationSnapshot } from "../lib/orchestration";
 import { pendingByTask, type PendingAction } from "../lib/pendingActions";
 import { NO_PENDING_ACTIONS, PendingActionsContext, type PendingActionsView } from "./PendingActionBadge";
 import { Sidebar, type Project } from "./Sidebar";
-import stylesCss from "../styles.css?raw";
+import stylesCss from "../lib/stylesText";
 import mobileSidebarCss from "./MobileSidebar.css?raw";
 
 const projects: Project[] = [

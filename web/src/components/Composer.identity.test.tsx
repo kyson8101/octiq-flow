@@ -5,7 +5,7 @@ vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 
 import { AgentIdentityChip, Composer, MODELS } from "./Composer";
 import { agentIdentity, type TeamAgent } from "../lib/agentsMode";
-import styles from "../styles.css?raw";
+import styles from "../lib/stylesText";
 
 const opus = MODELS.find((m) => m.agent === "claude" && m.flag === "opus")!;
 const ryan: TeamAgent = {

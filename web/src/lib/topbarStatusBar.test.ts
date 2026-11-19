@@ -7,7 +7,7 @@
 // anything change in a desktop browser — which is why they are pinned here.
 import { describe, expect, it } from "vitest";
 
-import css from "../styles.css?raw";
+import css from "./stylesText";
 import html from "../../index.html?raw";
 
 /** Every declaration block whose selector list is exactly `.topbar`. */
