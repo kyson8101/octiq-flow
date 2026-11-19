@@ -1102,6 +1102,7 @@ fn the_hosts_current_runtime_is_what_a_page_cannot_undo() {
 }
 
 /// A stale tab's start, the way a page that never heard of the change sends it.
+#[cfg(unix)]
 fn stale_start(
     w: &World,
     chat: &Chat,
@@ -1132,6 +1133,7 @@ fn stale_start(
 /// Provider CLIs that start, read stdin and say nothing (a Codex that also
 /// lists no MCP servers): a start succeeds without a model, so what a
 /// successful start records can be read. The folder holds the scripts.
+#[cfg(unix)]
 fn clis_that_start(dir: &crate::test_dir::TestDir) {
     use std::os::unix::fs::PermissionsExt;
     let found = ChatAgent::ALL
@@ -1156,11 +1158,13 @@ fn started_as(w: &World, chat: &Chat) -> (ChatAgent, Option<String>) {
 }
 
 /// End what the start began: the stand-in reads stdin until it is told to go.
+#[cfg(unix)]
 fn wait_idle(w: &World, chat: &Chat) {
     let _ = end_process(&w.manager, &chat.key);
 }
 
 #[test]
+#[cfg(unix)]
 fn a_stale_start_after_an_automatic_failover_stays_on_the_host_runtime() {
     let w = World::new();
     let stub = crate::test_dir::TestDir::new("runtime-stale-clis");
@@ -1191,6 +1195,7 @@ fn a_stale_start_after_an_automatic_failover_stays_on_the_host_runtime() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_stale_start_after_a_persons_switch_stays_on_it_and_a_foreign_session_is_dropped() {
     let w = World::new();
     let stub = crate::test_dir::TestDir::new("runtime-stale-clis");
@@ -1257,6 +1262,7 @@ fn a_dropped_session_on_the_held_runtime_keeps_the_chats_own_baseline() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_start_with_a_page_handoff_and_an_older_runtime_changes_nothing_and_records_nothing() {
     // H2: a tab picked Codex with the ordinary picker, then another tab
     // switched the chat to Opus. The first tab's Send carries a non-empty
@@ -1681,6 +1687,7 @@ fn the_retarget_of_a_registered_chat_is_refused_in_words_that_name_the_switch() 
 }
 
 #[test]
+#[cfg(unix)]
 fn an_unregistered_chats_picker_still_retargets_and_its_start_carries_the_choice() {
     let w = World::new();
     let stub = crate::test_dir::TestDir::new("runtime-plain-clis");
@@ -1736,6 +1743,7 @@ fn the_queue_state_says_whether_a_chat_belongs_to_a_registered_agent() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_recorded_runtime_that_is_limited_or_invalid_is_not_forced() {
     let w = World::new();
     let stub = crate::test_dir::TestDir::new("runtime-stale-clis");
