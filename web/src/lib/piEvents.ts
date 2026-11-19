@@ -4,6 +4,7 @@
 // protocol belong to Pi.
 
 import type { ToolState } from "./chat";
+import { obj, str } from "./jsonNarrow";
 import { outcomeOfResult, type ToolOutcome } from "./toolOutcome";
 
 export type PiContent =
@@ -35,14 +36,6 @@ export type PiRead =
       outcome?: ToolOutcome;
     }
   | { kind: "done" };
-
-function obj(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
 
 function contentText(value: unknown): string {
   if (typeof value === "string") return value;

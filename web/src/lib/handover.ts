@@ -4,6 +4,7 @@
 // the server.
 import { AGENT_NAME, accessLabel, claudeModelName, modelChoiceForFlag, MODELS, sameModelFlag, type AccessLevel, type Provider } from "./agentProviders";
 import type { Message } from "./chat";
+import { chatIdOf } from "./chatKey";
 
 /** `starting`: confirmed, and its new chat is being started or waits for a
  *  retry. It may exist already, so it can no longer be declined.
@@ -265,10 +266,7 @@ export function handoverAnchorKey(messages: readonly Message[], handovers: reado
   return JSON.stringify([...handoverAnchors(messages, handovers)]);
 }
 
-/** The chat id behind a `chat:` key. */
-export function chatIdOf(key: string): string {
-  return key.startsWith("chat:") ? key.slice(5) : key;
-}
+export { chatIdOf };
 
 /** The new chat's model, as a person reads it. */
 export function modelName(settings: Handover["settings"]): string {

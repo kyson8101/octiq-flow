@@ -1,5 +1,6 @@
 import type { Block, ChatState, Failure, Message, Speaker } from "./chat";
 import type { ToolOutcome } from "./toolOutcome";
+import { obj as asObj, str as asStr } from "./jsonNarrow";
 
 /** A call still in flight when the stop landed, marked as ended. Everything
  *  else on the message is left exactly as it is. */
@@ -46,9 +47,8 @@ export function describeFailure(agent: "claude" | "codex" | "pi" | "antigravity"
 
 export type Json = Record<string, unknown>;
 
-export const asObj = (v: unknown): Json => (v && typeof v === "object" ? (v as Json) : {});
 
-export const asStr = (v: unknown): string => (typeof v === "string" ? v : "");
+export { asObj, asStr };
 
 /** Append to the last block when it is the same kind, else start a new one.
  *  Streaming text arrives in many small pieces; one block per piece would
