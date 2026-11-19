@@ -15,7 +15,7 @@ import {
   reassignRequest, type CrewMember, type Destinations, type ReassignChoice,
 } from "../lib/missionPage";
 import type { OrchestrationAttempt, OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
-import type { PersonState } from "../lib/runPanel";
+import { messageOf, type PersonState } from "../lib/runPanel";
 import { AgentAvatar } from "./AgentAvatar";
 import "./MissionPage.css";
 
@@ -201,10 +201,6 @@ export function ReassignForm({ run, task, crew, busy: inputBusy, onDone }: {
         onClick={() => void submit()}>{sending ? "Reassigning…" : "Reassign"}</button>}
     </div>
   </div>;
-}
-
-function messageOf(problem: unknown): string {
-  return String((problem as Error)?.message ?? problem);
 }
 
 function ReassignIcon() {

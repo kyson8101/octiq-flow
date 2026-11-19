@@ -14,7 +14,7 @@ import {
 } from "../lib/agentTaskBoard";
 import { acceptanceLine, checkCoverage, KIND_LABEL, requiresVerdict, runStages } from "../lib/runAcceptance";
 import {
-  attentionLabel, attentionSpoken, attentionTone, mainChatTarget, nextRunTab, NO_STEPS, runAttention, runPeople, RUN_TABS, setRunArchived, splitArchived, stopRun,
+  attentionLabel, attentionSpoken, attentionTone, mainChatTarget, messageOf, nextRunTab, NO_STEPS, runAttention, runPeople, RUN_TABS, setRunArchived, splitArchived, stopRun,
   TASK_TAB_LABEL, TASK_TABS, taskTabKey,
   type PersonState, type RunAttention, type RunTab, type TaskTab,
 } from "../lib/runPanel";
@@ -1955,10 +1955,6 @@ function statusLabel(status: string): string {
 
 function timeLabel(timestamp: number): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(timestamp);
-}
-
-function messageOf(problem: unknown): string {
-  return String((problem as Error)?.message ?? problem);
 }
 
 function OrchestratorGlyph() {
