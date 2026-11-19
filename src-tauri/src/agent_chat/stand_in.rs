@@ -49,6 +49,29 @@ pub(crate) fn echoed(stdout: ChildStdout) -> BufReader<ChildStdout> {
     }
 }
 
+/// A test that ends a stand-in reads its stdout for the end of output ("nothing
+/// was written to the stopped agent"). Closing the stand-in's stdin is one way
+/// to end it, and it then leaves on its own: the harness's `.` and `test
+/// result` lines must not follow the echoes, or that read is told something
+/// was written. The Windows suite met exactly that (a lone `.`), because
+/// there the ending came first more often than the kill.
+#[test]
+fn an_echo_that_ends_on_its_own_leaves_nothing_after_its_echoes() {
+    let mut child = echo()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("an echo");
+    let mut stdin = child.stdin.take().expect("its stdin");
+    let mut heard = echoed(child.stdout.take().expect("its stdout"));
+    writeln!(stdin, "one").unwrap();
+    drop(stdin);
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut heard, &mut rest).expect("the rest of its output");
+    child.wait().expect("it ended");
+    assert_eq!(rest, "one\n");
+}
+
 #[test]
 fn agent() {
     match std::env::var(PART).as_deref() {
@@ -60,10 +83,13 @@ fn agent() {
             let mut line = Vec::new();
             while input.read_until(b'\n', &mut line).unwrap_or(0) > 0 {
                 if out.write_all(&line).and_then(|_| out.flush()).is_err() {
-                    return;
+                    std::process::exit(0);
                 }
                 line.clear();
             }
+            // Leave without the harness's closing `.` and `test result`
+            // lines: they would read as something the stand-in was written.
+            std::process::exit(0);
         }
         _ => {}
     }

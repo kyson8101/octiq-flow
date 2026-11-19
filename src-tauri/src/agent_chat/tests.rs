@@ -2786,18 +2786,23 @@ fn hand_over_in_background(
     })
 }
 
-/// A stand-in whose stdin is a pipe nobody reads: the first write to it
-/// fails with a broken pipe.
+/// A stand-in whose stdin refuses every write, so the first prompt cannot be
+/// given. It used to be a pipe whose reader was killed, but a pipe breaks only
+/// while NO process holds its read end, and on macOS `std` makes a pipe and
+/// marks it close-on-exec in two steps: a stand-in another test spawns in
+/// between inherits the read end, the write then succeeds into the pipe's
+/// buffer, and the launch is never ended (about one module run in seven). A
+/// file opened for reading only has no reader to wait for: writing to it
+/// fails in the kernel, whatever else the suite is spawning.
 fn session_with_a_broken_pipe() -> Arc<Mutex<ChatSession>> {
+    #[cfg(unix)]
+    use std::os::fd::OwnedFd as Owned;
+    #[cfg(windows)]
+    use std::os::windows::io::OwnedHandle as Owned;
     let (session, _heard) = capturing_claude_session();
-    let mut gone = stand_in::echo()
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .expect("a stand-in");
-    let stdin = gone.stdin.take();
-    gone.kill().expect("kill it");
-    gone.wait().expect("reap it");
+    let unwritable = std::fs::File::open(std::env::current_exe().expect("the test binary"))
+        .expect("a file to open for reading only");
+    let stdin = Some(std::process::ChildStdin::from(Owned::from(unwritable)));
     {
         let mut guard = session.lock().unwrap();
         guard.stdin = stdin;
@@ -2976,26 +2981,41 @@ fn stop_does_not_wait_on_a_blocked_save_of_the_delivery_line() {
     let outcome = stop_done.recv_timeout(Duration::from_millis(1500));
 
     // Let the save go. A reader that never blocks satisfies the append's
-    // open, and a short-lived writer gives the record's count its EOF.
+    // open. The record's count reads the FIFO and needs its EOF, which a
+    // writer's close gives only to a read that is already waiting: macOS's
+    // read does not take the EOF of a writer that came and went before the
+    // read began (the count's open returns at once beside the reader above),
+    // and one short-lived writer let the whole module hang about one run in
+    // fifteen. So writers keep coming and going until the hand-over is done.
     use std::os::unix::fs::OpenOptionsExt;
     let reader = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(&path)
         .expect("open the fifo for reading");
-    drop(
-        std::fs::OpenOptions::new()
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(&path)
-            .expect("open the fifo for writing"),
-    );
+    let feeding = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let feeder = {
+        let (feeding, path) = (feeding.clone(), path.clone());
+        thread::spawn(move || {
+            while feeding.load(std::sync::atomic::Ordering::SeqCst) {
+                drop(
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .custom_flags(libc::O_NONBLOCK)
+                        .open(&path),
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+        })
+    };
     stop.join().expect("the stop finished");
     assert!(lock_free, "the session lock is not held across the save");
     let (ended, took) = outcome.expect("Stop waited on the save of the delivery line");
     assert_eq!(ended, Ok(true));
     assert!(took < Duration::from_millis(500), "Stop took {took:?}");
     waiting.join().expect("the hand-over finished");
+    feeding.store(false, std::sync::atomic::Ordering::SeqCst);
+    feeder.join().expect("the writers stopped");
     drop(reader);
     let _ = std::fs::remove_file(&path);
     crate::transcript::forget(&key);
