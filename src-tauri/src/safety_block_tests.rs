@@ -1,4 +1,3 @@
-
 use super::*;
 
 const EXTERNAL: &str = "2026-09-05T12:44:54Z ERROR codex_core::tools::router: \

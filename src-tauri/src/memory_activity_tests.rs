@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn activity(chat: &str, id: &str, status: Status) -> Activity {

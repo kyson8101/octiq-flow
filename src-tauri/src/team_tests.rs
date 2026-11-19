@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn draft(name: &str, project: Option<&str>) -> TeamDraft {

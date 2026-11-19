@@ -1,4 +1,3 @@
-
 thread_local! {
     /// Makes Codex the one-process-per-turn, command-line provider on this
     /// thread only, so a test of that path needs no process-wide variable.
