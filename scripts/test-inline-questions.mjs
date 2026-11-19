@@ -172,6 +172,7 @@ function resultFor(request) {
     case "git_status_summary": return [{ path: root, repo_root: root, is_repo: true, branch: "develop", changed: 0, ahead: 0, behind: 0 }];
     case "git_local_branches": return { is_repo: true, current: "develop", branches: ["develop"], is_worktree: false };
     case "chat_task": return { chatId: request.args?.chatId, projectId: "octiq" };
+    case "provider_fallback_choices": return [];
     default: return null;
   }
 }
@@ -373,7 +374,7 @@ async function batchScene(browser, size, label, out) {
     };
   });
   assert.deepEqual({ ...out.batch, wrapped: undefined, desc: undefined }, {
-    questions: 3, buttons: 1, boxes: 4, radios: 3, why: "2 of 3 questions still need an answer.", submit: "Send 3 answers", wrapped: undefined, desc: undefined,
+    questions: 3, buttons: 1, boxes: 4, radios: 3, why: "2 of 3 questions still need an answer.", submit: "Send", wrapped: undefined, desc: undefined,
   });
   assert(out.batch.wrapped, `${label}: a row's words run outside it`);
   assert.notEqual(out.batch.desc, "none", `${label}: the description is not drawn`);

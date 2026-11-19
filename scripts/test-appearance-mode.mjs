@@ -126,6 +126,7 @@ function resultFor(request) {
     case "git_local_branches": return { is_repo: true, current: "develop", branches: ["develop"], is_worktree: false };
     case "chat_task": return { chatId: request.args?.chatId, projectId: "octiq" };
     case "pty_spawn": case "pty_attach": ptyId = request.args?.id ?? ptyId; return true;
+    case "provider_fallback_choices": return [];
     default: return null;
   }
 }
