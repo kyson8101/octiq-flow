@@ -390,6 +390,7 @@ impl OrchestrationStore {
 
     /// Refresh exactly as the existing task/mission Refresh doors do. This
     /// only proposes candidates; no worker is stopped and no folder is removed.
+    #[cfg(test)]
     pub(crate) fn request_workspace_cleanup(
         &self,
         chats: &ChatManager,

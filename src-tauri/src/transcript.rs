@@ -1849,6 +1849,7 @@ fn try_forget_file(path: &Path) -> std::io::Result<bool> {
 ///
 /// Builds outside the append lock, then publishes only if source stamp and
 /// generation still match. Concurrent appends/clears cause a retryable error.
+#[cfg(test)]
 pub(crate) fn rewrite_lines(
     path: &Path,
     mut edit: impl FnMut(&str) -> Option<String>,
@@ -1866,6 +1867,7 @@ pub(crate) fn rewrite_lines(
 /// `storage` also coalesces no-op ranges and keeps a synced backup until
 /// readback checks numbering, references and host facts. Such a replacement
 /// always moves generation, even when no host fact changed.
+#[cfg(test)]
 pub(crate) fn rewrite_numbered(
     path: &Path,
     edit: impl FnMut(u64, &[u8]) -> Option<String>,

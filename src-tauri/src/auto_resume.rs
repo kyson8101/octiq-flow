@@ -197,6 +197,7 @@ impl Store {
 
     /// An immediate, durable provider handoff, sharing Stop/cancel/crash semantics
     /// with reset continuations. Native session ids belong only to `start`.
+    #[cfg(test)]
     pub(crate) fn schedule_switch(
         &self,
         key: &str,

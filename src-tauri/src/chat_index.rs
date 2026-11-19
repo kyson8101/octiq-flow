@@ -620,6 +620,7 @@ pub fn bounded_preview(text: &str) -> String {
 /// the stored preview changed, `None` when it did not (same words, an empty
 /// response, a chat the index does not list or has trashed): nothing is
 /// written then, and activity (`updated_at`) is never touched.
+#[cfg(test)]
 pub fn set_host_preview(id: &str, response: &str) -> Result<Option<u64>, String> {
     Ok(set_host_previews(&[(id.to_owned(), response.to_owned())])?
         .into_iter()
@@ -631,6 +632,7 @@ pub fn set_host_preview(id: &str, response: &str) -> Result<Option<u64>, String>
 /// Every write rewrites the whole file, so previews that arrive together are
 /// written together (`agent_chat::PreviewBatch`). Answers `(id, new version)`
 /// for each chat whose stored preview changed, in the order given.
+#[cfg(test)]
 pub fn set_host_previews(previews: &[(String, String)]) -> Result<Vec<(String, u64)>, String> {
     let items: Vec<(String, String, Option<u64>)> = previews
         .iter()
