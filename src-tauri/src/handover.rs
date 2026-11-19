@@ -630,7 +630,7 @@ fn find_agent<'a>(team: &'a [TeamAgent], who: &str) -> Result<&'a TeamAgent, Str
     }
 }
 
-fn provider_name(agent: ChatAgent) -> &'static str {
+pub(crate) fn provider_name(agent: ChatAgent) -> &'static str {
     match agent {
         ChatAgent::Claude => "Claude",
         ChatAgent::Codex => "Codex",

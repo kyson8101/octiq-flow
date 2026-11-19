@@ -469,14 +469,7 @@ pub fn draft(roster: &Roster, kind: Kind, p: &Proposal) -> Result<Draft, String>
     }
 }
 
-fn provider_name(agent: ChatAgent) -> &'static str {
-    match agent {
-        ChatAgent::Claude => "Claude",
-        ChatAgent::Codex => "Codex",
-        ChatAgent::Pi => "pi",
-        ChatAgent::Antigravity => "Antigravity",
-    }
-}
+use crate::handover::provider_name;
 
 /// Every field of an agent as the person reads it on the card.
 fn fields(roster: &Roster, agent: &TeamAgent) -> Vec<(&'static str, String)> {
