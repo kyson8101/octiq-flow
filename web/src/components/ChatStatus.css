@@ -287,3 +287,84 @@
   .status-row-dismiss { flex-basis: 44px; width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
   .status-row:has(> .status-row-dismiss) { min-height: 44px; }
 }
+
+/* ---- What the chat runs on ------------------------------------------------
+   The way back after an automatic failover, and a switch waiting for the
+   turn's full stop. Neutral rows: no accent (that is a turn in flight), no
+   warning (nothing is wrong). The words are one line cut inside the row and
+   the button never gives way; only the host's refusal takes a second line,
+   whole, like a completion that did not happen. */
+
+.runtime-row-copy {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  min-width: 0;
+  gap: 0 8px;
+  overflow: hidden;
+}
+
+.runtime-row-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-0);
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.runtime-row-detail {
+  flex: 0 100000 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The refusal is the host's sentence and is never cut: the row grows
+   upward for it. */
+.runtime-row:has(.runtime-row-refusal) .runtime-row-copy {
+  flex-wrap: wrap;
+  overflow: visible;
+  padding: 4px 0;
+}
+.runtime-row-refusal {
+  flex: 1 1 100%;
+  color: var(--fg-1);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.runtime-pending-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--fg-3);
+}
+
+.runtime-back {
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding: 1px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 130ms ease-out, color 130ms ease-out;
+}
+.runtime-back:hover:not([aria-disabled="true"]) { background: var(--bg-2); color: var(--fg-0); }
+.runtime-back[aria-disabled="true"] { opacity: 0.55; cursor: wait; }
+.runtime-back:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+@media (max-width: 859.98px), (any-pointer: coarse) {
+  .runtime-back { min-height: 44px; min-width: 44px; }
+  .runtime-row:has(.runtime-back) { min-height: 44px; }
+}
+
+@keyframes runtime-row-in { from { opacity: 0; transform: translateY(2px); } }
+.runtime-row { animation: runtime-row-in 180ms ease-out; }
+@media (prefers-reduced-motion: reduce) { .runtime-row { animation: none; } }

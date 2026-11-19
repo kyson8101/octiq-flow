@@ -778,6 +778,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         | "chat_set_access"
         | "chat_stop"
         | "chat_retarget"
+        | "chat_switch_runtime"
         | "chat_restart"
         | "chat_forget" => {
             svc.orchestrations
@@ -1165,6 +1166,28 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &svc.chats,
             arg(&args, "key")?,
         )),
+        // The person changes provider, model and effort inside a registered
+        // agent's chat, or returns to its own runtime after a failover. The
+        // registration does not change. Socket only: no hook or MCP tool.
+        "chat_switch_runtime" => {
+            if let Ok(projects) = crate::workspaces::list_workspaces_impl(&svc.workspaces) {
+                svc.chats.note_projects(
+                    projects
+                        .into_iter()
+                        .map(|project| (project.id, project.name))
+                        .collect(),
+                );
+            }
+            to_value(crate::agent_chat::chat_switch_runtime_impl(
+                &svc.chats,
+                &arg::<String>(&args, "key")?,
+                crate::agent_chat::SwitchRequest {
+                    agent: arg(&args, "agent")?,
+                    model: arg(&args, "model")?,
+                    effort: arg(&args, "effort")?,
+                },
+            ))
+        }
         // A fresh process for a conversation that carries on: the only way a
         // chat already open picks up an MCP server or a plugin added since it
         // started.
@@ -1763,6 +1786,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 .ok_or("The run's project no longer exists.")?;
             let agent: crate::agent_chat::ChatAgent = arg(&args, "agent")?;
             let handoff: Option<String> = arg(&args, "handoff")?;
+            // A registered agent's chat carries no page choice: the host runs
+            // its recorded runtime and builds any history itself, so its own
+            // session is kept for the host to judge.
+            let handoff = if crate::agent_chat::is_registered_chat(&actor)? {
+                None
+            } else {
+                handoff
+            };
             // A provider switch always starts a fresh native session, even if
             // an older index save is still in flight in another browser.
             let resume = if handoff.is_some() {

@@ -502,6 +502,8 @@ pub fn chat_forget_impl(manager: &ChatManager, key: String) -> Result<(), String
     manager.revoke_auto_plan(&key);
     let scheduled_ids = manager.auto_resumes.session_ids(&key);
     chat_stop_impl(manager, key.clone())?;
+    // A cleared chat starts over: no switch waits and no history is owed.
+    manager.forget_runtime(&key);
     let mut ids = Vec::new();
     if let Some(start) = manager.start_context(&key) {
         ids.extend(start.session_id);
@@ -636,11 +638,18 @@ pub(crate) fn chat_stream_state(
 }
 
 pub fn chat_queue_state_impl(manager: &ChatManager, key: &str) -> Result<ChatQueueState, String> {
+    // Read before the chat's locks are taken: it reads the record.
+    let (pending_runtime, home_runtime, runtime) = runtime_switch::queue_fields(manager, key);
+    let registered = is_registered_chat(key).unwrap_or(false);
     // Match the send/reaper lock order, so an enqueue cannot cross this read.
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     let handoffs = manager.handoffs.lock().map_err(|e| e.to_string())?;
     let queues = manager.queued_turns.lock().map_err(|e| e.to_string())?;
     Ok(ChatQueueState {
+        registered,
+        runtime,
+        pending_runtime,
+        home_runtime,
         held: manager.waits_because(key),
         completing_turn_id: manager.completing_turn(key),
         live: sessions.contains_key(key) || handoffs.contains(key),

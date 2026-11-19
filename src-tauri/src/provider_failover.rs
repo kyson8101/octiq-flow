@@ -31,8 +31,17 @@ fn account(settings: &Settings) -> String {
     account_of(settings.agent, settings.model.as_deref())
 }
 
+/// One account's cooldown. `known` is true only when the provider itself said
+/// when the limit resets; an unknown reset is a 15-minute guess and is never
+/// shown to the person as a time.
+#[derive(Clone, Copy)]
+struct Cooldown {
+    until: i64,
+    known: bool,
+}
+
 #[derive(Default)]
-pub(crate) struct State(Mutex<BTreeMap<String, i64>>);
+pub(crate) struct State(Mutex<BTreeMap<String, Cooldown>>);
 
 impl State {
     /// `model` names Pi's upstream (`account_of`); every other provider has
@@ -44,10 +53,39 @@ impl State {
         reset: Option<i64>,
         now: i64,
     ) {
-        let until = reset.filter(|at| *at > now).unwrap_or(now + 15 * 60);
+        let known = reset.filter(|at| *at > now);
+        let fresh = Cooldown {
+            until: known.unwrap_or(now + 15 * 60),
+            known: known.is_some(),
+        };
         let mut blocked = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = blocked.entry(account_of(agent, model)).or_default();
-        *entry = (*entry).max(until);
+        let entry = blocked.entry(account_of(agent, model)).or_insert(fresh);
+        // Only ever grows while the limit stands; the longer of two wins and
+        // keeps its own provenance.
+        if fresh.until > entry.until {
+            *entry = fresh;
+        }
+    }
+
+    /// The person says the limit is back: forget this account's cooldown. The
+    /// cooldown is an estimate; if the provider really is still limited, its
+    /// own quota failure marks the account again and ordinary failover runs.
+    pub(crate) fn clear(&self, agent: AgentKind, model: Option<&str>) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&account_of(agent, model));
+    }
+
+    /// When the provider said this account resets, if it is limited now and
+    /// said so. Never the 15-minute guess.
+    pub(crate) fn resets_at(&self, agent: AgentKind, model: Option<&str>, now: i64) -> Option<i64> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&account_of(agent, model))
+            .filter(|cooldown| cooldown.until > now && cooldown.known)
+            .map(|cooldown| cooldown.until)
     }
 
     pub(crate) fn blocked(&self, agent: AgentKind, model: Option<&str>, now: i64) -> bool {
@@ -55,7 +93,7 @@ impl State {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&account_of(agent, model))
-            .is_some_and(|until| *until > now)
+            .is_some_and(|cooldown| cooldown.until > now)
     }
 
     pub(crate) fn alternative(&self, source: &Settings, now: i64) -> Option<Settings> {
@@ -92,7 +130,7 @@ impl State {
                 .filter(|agent| installed(*agent))
                 .filter_map(|agent| equivalent(source, agent)),
             )
-            .filter_map(|settings| blocked.get(&account(&settings)).copied())
+            .filter_map(|settings| blocked.get(&account(&settings)).map(|c| c.until))
             .filter(|until| *until > now)
             .min()
             .unwrap_or(now + 15 * 60)

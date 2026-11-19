@@ -81,6 +81,18 @@ export function presentNotice(raw: string): Omit<PresentedNotice, "count"> {
     };
   }
 
+  // The host's sentence for a switch the person made from inside the chat
+  // (`runtime_switch.rs`, `octiq_provider_switched` with `byPerson`): it is
+  // their own act, not an outage or a failover, and the row says so.
+  const chosen = /^Switched to (.+?) at (.+?) effort by your choice\. (.+)$/i.exec(text);
+  if (chosen) {
+    return {
+      key: `message:${text.toLocaleLowerCase()}`,
+      title: `You switched to ${chosen[1]}`,
+      detail: text,
+    };
+  }
+
   const key = `message:${text.toLocaleLowerCase()}`;
   // A sentence short enough for one row is its own title.
   if (chars(text) <= TITLE_MAX) return { key, title: text };

@@ -8,8 +8,10 @@
 //     pickers come back when the column closes; the window is then walked
 //     down to the desktop's narrowest;
 //   * an agent's chat: the settings text is cut before the name, its access
-//     is the last part to go, and a press, a tap or Enter shows the three
-//     values whole in a read-only sheet (Escape and a press outside shut it);
+//     is the last part to go, and a press, a tap or Enter opens the sheet
+//     that holds the model and effort pickers (Escape and a press outside
+//     shut it); the sheet is the settings sheet's own shell, so it stays
+//     inside the window in the three-column layout too;
 //   * the sheet the folded button opens on a wide window is a card, inside
 //     the window.
 //
@@ -189,9 +191,10 @@ const chip = (page) => page.evaluate(() => {
   };
 });
 
-const sheetText = (page) => page.locator(".composer-identity-sheet").evaluate((el) => {
+const sheetText = (page) => page.locator(".runtime-sheet").evaluate((el) => {
   const r = el.getBoundingClientRect();
-  return { text: el.innerText.replace(/\s+/g, " ").trim(), inside: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight, controls: el.querySelectorAll("button, input, select, a").length };
+  const targets = [...el.querySelectorAll(".picker-item, .sheet-link, .mp-tab")].map((t) => Math.round(t.getBoundingClientRect().height));
+  return { text: el.innerText.replace(/\s+/g, " ").trim(), inside: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight, controls: el.querySelectorAll("button, input, select, a").length, minTarget: targets.length ? Math.min(...targets) : 0, sideways: el.scrollWidth > el.clientWidth + 1 };
 });
 
 /** An ordinary chat between the run column and the git column. */
@@ -310,17 +313,21 @@ async function agent(browser, out, size) {
   const spot = await page.locator(".composer-identity-name").evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
   assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.className, spot), "composer-identity-runs", `${label}: a press on the name reaches the disclosure`);
   if (size.phone) await page.touchscreen.tap(spot.x, spot.y); else await page.mouse.click(spot.x, spot.y);
-  const sheet = page.locator(".composer-identity-sheet");
+  const sheet = page.locator(".runtime-sheet");
   await sheet.waitFor();
   const shown = await sheetText(page);
   out.sheet = shown;
-  assert.match(shown.text, /^Model Opus latest Effort High Access Plan /, `${label}: the sheet has the three values whole (${shown.text})`);
-  assert.equal(shown.controls, 0, `${label}: and no control: it is read-only`);
+  assert.match(shown.text, /^Model and effort /, `${label}: the sheet is the model and effort sheet (${shown.text})`);
+  assert.match(shown.text, /Effort\s+(Low|Medium|High|Very high|Max|Auto)/i, `${label}: it holds the effort control (${shown.text})`);
+  assert.doesNotMatch(shown.text, /\bAccess\b/, `${label}: and no access control`);
+  assert.match(shown.text, /This changes this chat only/, `${label}: it says it changes this chat only`);
   assert.equal(shown.inside, true, `${label}: inside the window`);
+  assert.equal(shown.sideways, false, `${label}: the sheet does not scroll sideways`);
+  if (size.phone) assert(shown.minTarget >= 44, `${label}: targets are 44px on a phone (${shown.minTarget})`);
   assert.equal((await chip(page)).expanded, "true");
   await page.screenshot({ path: join(artifacts, `${label}-sheet.png`) });
   // A press outside shuts it.
-  await page.locator(".picker-scrim").click({ position: { x: 4, y: 4 } });
+  await page.locator(".sheet-scrim").click({ position: { x: 4, y: 4 } });
   await sheet.waitFor({ state: "detached" });
   // The keyboard: Enter opens it, Escape shuts it, and the focus stays.
   const button = page.locator(".composer-identity-runs");

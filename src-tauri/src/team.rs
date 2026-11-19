@@ -3107,6 +3107,35 @@ pub fn refresh_turn_brief(
     ))
 }
 
+/// The agent's whole current brief after `text`, for the first prompt of a
+/// fresh provider session. The role and the roster live in a chat's first
+/// message only, and a handoff keeps just the newest part of the history, so
+/// after a provider change (the person's or an automatic failover's) a long
+/// chat would otherwise lose who the agent is. The brief goes after
+/// `BRIEF_MARK`, which the page hides from the person's bubble, and outside
+/// the history, which is data. A chat with no registered lead is returned as
+/// it is.
+pub fn identity_brief(
+    path: &Path,
+    chat_key: &str,
+    text: String,
+    projects: &[(String, String)],
+) -> Result<String, String> {
+    let Some(record) = lead_for_chat(path, chat_key)? else {
+        return Ok(text);
+    };
+    lead_brief(
+        path,
+        chat_key,
+        &record.project_id,
+        &record.lead_id,
+        &text,
+        record.cross_project,
+        projects,
+        false,
+    )
+}
+
 fn roster_context(
     team: &[TeamAgent],
     lead: &TeamAgent,

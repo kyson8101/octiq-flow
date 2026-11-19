@@ -45,6 +45,198 @@ surfaced without scheduling another retry or automatic provider handoff.
 discloses it. Stub integration verifies this path; real Claude account switching
 has not been tested.
 
+## Switching a chat's runtime (`chat_switch_runtime`)
+
+The person changes **provider, model and effort from inside a registered
+agent's chat**, and can return to the chat's own runtime after an automatic
+failover ("Opus is limited → the chat moved to Codex → the limit is back →
+there was no way to go back"). The registration (`team.json`), the agent's
+new chats and the workers its chats coordinate are never touched; the access
+level is never changed.
+
+### The command (socket only)
+
+```
+chat_switch_runtime { key, agent, model, effort }
+  → { state: "switched" | "pending", agent, model, effort, access }
+```
+
+One `dispatch.rs` arm. It has **no hook action and no MCP tool**
+(`web_tests::PERSON_ONLY`). `access` is the level the chat runs at; a switch
+does not move it. (Pi runs Auto as Edits, which is narrower and allowed.)
+`model` and `effort` may be `null` (the provider's default).
+
+Refused in words, before anything changes: a worker chat (`chat:orch-` or an
+attempt on record, by durable identity, never `active_task`), a front desk, a
+chat with no registered agent or whose agent was removed or is being removed
+(lead threads `chat:lead-*` are covered: they have a lead record), a chat that
+is not listed, a chat whose wrap-up (Complete) is in flight, an invalid or
+foreign model, an effort the provider (or, for Claude, the model) does not
+take, a CLI that is not installed, and Antigravity for a chat at guarded
+**Auto or Manual** (it cannot ask, the rule failover uses). Read, Edits and
+Full keep their mapping.
+
+### What "switched" and "pending" mean
+
+* **switched** — nothing was running (no process, or a process idle with
+  nothing queued, no background work, no job). It is applied now. An idle
+  process is ended (not through `chat_retarget`).
+* **pending** — a turn is in flight, parked on a card, unwinding after Stop,
+  or something is queued or waiting. **Nothing is interrupted.** The switch
+  applies at that turn's **full stop**, under the same lock, **before the
+  queue moves**. Queued messages then go to the new runtime in FIFO order
+  with their turn ids (`carry_queued_turn`). A second pick replaces the
+  pending one; picking the runtime already running clears it (and is
+  otherwise a no-op answering `switched`). **Stop keeps it**: it applies at
+  the cut-off turn's full stop, or at the chat's next start. A process that
+  is gone applies it on the next start by whoever starts the chat (a person's
+  message, `wake_chat`, a worker notification, a queued turn). A pending
+  switch waits for running background work or jobs: the full stop that
+  follows them applies it.
+
+A switch that cannot be applied at the full stop (for example the CLI
+vanished) never leaves the chat stuck: the old runtime carries on, the
+pending record is cleared with the reason (`octiq_runtime_pending_cleared`
+with `failed`) and an `error` status says why.
+
+### Save first, record, and restart
+
+Nothing changes unless the intent is on disk: `octiq_runtime_change_prepared`
+(reason names the person's choice) is written first, and a write that fails
+refuses the whole command in the profile's words. The record then holds:
+
+| line | meaning |
+| --- | --- |
+| `octiq_runtime_change_prepared` | the intent (`from`, `to`, `reason`) |
+| `octiq_runtime_pending` / `octiq_runtime_pending_cleared` | a switch waits / was taken back or dropped |
+| `octiq_provider_switched` + `byPerson: true`, `handoffOwed`, `sessionKept` | the switch itself; its `message` says what it switched to and that the registration is unchanged (not the "is unavailable" wording) |
+| `octiq_runtime_handoff_taken` | the first fresh-session prompt carried the history |
+
+The in-memory book (`RuntimeBook`) only mirrors the record for the one place
+that cannot read it, the full stop. After a restart the pending switch, the
+owed handoff, the baseline and `homeRuntime` are derived from the record
+(`runtime_switch::recorded`). The chat index row (model, effort, session) and
+the start context **and** the ledger's resume context are replaced with the
+new runtime, never removed, so `wake_chat` and worker notifications start the
+chat on it.
+
+### Events and reads
+
+* `chat-provider-switch` (existing) gains `home` (the `homeRuntime` shape
+  below, or `null`) and `byPerson`.
+* `chat-runtime-pending { key, agent, model, effort }` when a switch is
+  waiting, and `{ key, cleared: true }` when it was applied, replaced,
+  taken back or dropped.
+* `chat_queue_state` gains `pendingRuntime { agent, model, effort }` and
+  `homeRuntime { agent, model, effort, limited, resetsAt? }`.
+
+`homeRuntime` is present **only while the chat runs on an automatic
+fallback** rather than its own runtime. It is the chat's baseline, derived
+from the record (`octiq_provider_switched.previousSettings` of the first
+automatic switch, the person's last pick, `octiq_registered_recovered`), so it
+is right after a restart when cooldowns are empty. `limited` is the failover
+state now; `resetsAt` (unix seconds) only when the provider gave a real reset,
+**never the 15-minute guess**.
+
+### Same provider, other provider
+
+* **Same provider**: the native session is kept and resumed with the new
+  model and effort. Each CLI takes its model flag together with its resume
+  flag (`claude --resume --model --effort`, `codex` app-server
+  `thread/resume` with model/effort, `codex exec resume -c model=…`,
+  `agy --conversation --model`, `pi --session --model`; flags confirmed
+  against each installed CLI's `--help`, no paid call). With no known session
+  it is a fresh session with the history, like a different provider.
+* **Different provider**: the old session id is never passed. The next start
+  is a fresh session with the bounded history (`provider_history`, JSON data,
+  newest 160k characters) **whoever starts it** (a person's message,
+  `wake_chat`, a notification). `handoffOwed` carries this across a restart.
+  Returning to Claude after Codex is such a fresh session, so the Codex turns
+  are not lost.
+
+### Identity after a provider change
+
+The agent's role and roster used to live only in a chat's first message, and a
+handoff keeps the newest 160k characters of history, so a long chat lost who
+the agent was after a provider change. The first prompt of **every** fresh
+session after a provider change, the person's or an automatic failover's
+(`run_provider_switch`, the switched/recovered branch of `chat_start`, and
+the start-time hook `runtime_switch::with_switch_context`), now carries the
+agent's **full current brief** (`team::identity_brief`) after `BRIEF_MARK`,
+outside the JSON history and hidden from the person's bubble. It holds when the
+original first message is past the window.
+
+### Stale pages, baseline, cooldown
+
+* **For a registered chat the HOST decides the runtime and the session; the
+  page decides neither.** The rule covers `chat_start`, `chat_send`,
+  `orchestration_master_start`, `wake_chat` and every queued-turn and
+  auto-resume carry: whatever a page sends as `agent`, `model`, `effort`,
+  `resume` or `handoff` is ignored entirely (`defaults_for_chat` is `Some`).
+  The runtime changes only through `chat_switch_runtime`, at the moment the
+  person presses, plus the host's own failover and preset recovery for a
+  limited or invalid runtime.
+  * **Runtime**, one host function (`runtime_switch::host_runtime`, also what
+    `chat_switch_runtime` reads as the chat's current runtime and what
+    `chat_queue_state.runtime` says): (1) the latest runtime line of the
+    record, a switch, recovery or failover receipt or the
+    `octiq_runtime_launched` line every launch of a registered chat now leaves
+    (written once per change, so the transcript fallback is needed only for
+    chats from before this change); (2) else the start context or the
+    ledger's resume context; (3) else what the chat's own transcript shows the
+    host launched: the provider that announced the latest native session
+    (not revoked by `/clear`), and Claude's `init` model (the registration's
+    effort is kept only when provider and model equal the registration's);
+    (4) else, only for a chat with no history at all, the registration. Never
+    the chat index row, which the browser writes, and never the registration
+    for a chat that has run. A recorded runtime that is invalid or limited is
+    not forced: preset recovery and the normal failover routing decide, and a
+    `recovered` line written only because a session was dropped on the runtime
+    already held (`keepsBaseline`) does not move the chat's baseline.
+  * **Session** (`host_session`): the host's own remembered native session for
+    that runtime, the start context's, else the provider's own latest session
+    event in the transcript, filtered by `forgotten_sessions` and by the
+    provider that announced it. A start context that holds no session owes a
+    fresh one. **Any fresh session of a chat that has history gets the host's
+    `provider_history` plus the full brief**, whatever the runtime, and
+    whatever happened to an earlier handoff debt (a same-runtime stale start
+    after the debt was paid still gets the earlier context).
+  * A field that is merely non-empty is not fresh authorization: a tab that
+    picked Codex and sat, then sent after another tab switched to Opus, stays
+    on Opus, and so does a chat that was never switched against a stale start
+    or a master start that names Codex. `chat_retarget` of a registered chat
+    is refused in words that name `chat_switch_runtime`
+    (`REGISTERED_RETARGET`), so no deferred page intent is left behind. An
+    unregistered chat keeps the ordinary picker (`chat_retarget` then a start
+    with the page's `handoff`) unchanged. (The unreadable-roster fail-open of
+    `chat_retarget` is a known follow-up, not changed here.)
+* **The page learns a chat is registered from the host**, not from the roster
+  cache: `chat_queue_state` carries `registered` (derived from the roster on
+  every read, so it holds with agents mode off and after a reload; absent from
+  an older host, which the page treats as an ordinary chat) and, for such a
+  chat, `runtime`, what the host runs it on. In a registered, saved, sent chat
+  every model or effort pick, from the composer's picker, its settings sheet or
+  the run setup's main-agent select, is a `chat_switch_runtime` and the page's
+  settings move only on the host's word. **While `registered` is not yet
+  known** on a saved, sent chat, a pick waits for the `chat_queue_state` read
+  (shared with the open-chat read), then goes the way the fact says; if the
+  read fails the pick is refused in words (a notice above the composer) and
+  nothing changes. When the read says `registered: true` and the page drew
+  another model than `runtime` (an optimistic pick the index kept, a cache),
+  the page takes the host's runtime unless a newer event overtook the read.
+* **Baseline.** Automatic failover leaves the baseline alone. A person's pick
+  becomes the chat's new baseline, so a later failover returns to it; picking
+  the home runtime therefore ends the fallback (`homeRuntime` disappears).
+* **The person overrides the cooldown.** It is an estimate and they can see
+  the limit is back. `provider_failover::State::clear` forgets the account and
+  the start is not rerouted. If the provider really is still limited, its own
+  quota failure marks it again and ordinary failover runs; the person's
+  message is not lost.
+* **No automatic return** when a limit resets: that would swap the model under
+  running work. The person decides.
+* A scheduled auto-resume for the chat is cancelled by a switch, as by any
+  message.
+
 Agents mode is a switch in **Settings → Agents**. When it is off, chats work
 exactly as before. The idea follows [Paperclip](https://paperclip.ing/): you
 manage a team of agents instead of prompting one.

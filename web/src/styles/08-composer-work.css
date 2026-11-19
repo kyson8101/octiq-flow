@@ -475,6 +475,37 @@
 .composer-identity-sheet dd { margin: 0; overflow-wrap: anywhere; color: var(--fg-0); }
 .composer-identity-sheet p { margin: 0; color: var(--fg-2); }
 .composer-identity-sheet-note { padding-top: 6px; border-top: 1px solid var(--border); color: var(--fg-3); font-size: 11px; line-height: 1.45; }
+/* The sheet that changes what the chat runs on (`RuntimeSheet`): the
+   settings sheet's shell, with its own few lines of words. Quiet, and never
+   the accent: a pending switch is not a turn in flight. */
+.runtime-sheet .runtime-pending,
+.runtime-sheet .runtime-refusal,
+.runtime-sheet .runtime-note,
+.runtime-sheet .runtime-receipt {
+  margin: 8px 4px 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg-2);
+}
+.runtime-sheet .runtime-refusal { color: var(--fg-0); overflow-wrap: anywhere; }
+.runtime-sheet .runtime-pending { color: var(--fg-1); }
+.runtime-sheet .runtime-note { color: var(--fg-3); }
+.runtime-sheet .runtime-refusal-dismiss {
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-2);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.runtime-sheet .mp-card[aria-disabled="true"],
+.runtime-sheet .picker-item[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+@media (hover: none), (any-pointer: coarse) {
+  .runtime-sheet .picker-item, .runtime-sheet .sheet-link, .runtime-sheet .mp-tab { min-height: 44px; }
+  .runtime-sheet .runtime-refusal-dismiss { min-height: 44px; padding: 0 8px; }
+}
 @media (prefers-reduced-motion: reduce) {
   .composer-identity-runs { transition: none; }
 }

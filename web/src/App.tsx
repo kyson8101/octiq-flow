@@ -111,6 +111,9 @@ import { ProjectsPage } from "./components/ProjectsPage";
 import { BackgroundProvider, JobCallsProvider, JobStoreProvider } from "./components/Background";
 import { ChatNotices } from "./components/ChatNotices";
 import { RemovedFolderBanner } from "./components/RemovedFolderBanner";
+import { RuntimeRows } from "./components/RuntimeRows";
+import { useRuntimeSwitch } from "./lib/useRuntimeSwitch";
+import { picksThroughSwitch, refOf, runtimeSwitchable, sameRuntime, type RuntimeRef } from "./lib/runtimeSwitch";
 import { ChatStatus } from "./components/ChatStatus";
 import { ChatQuestionsContext, QuestionWaitingRow, type ChatQuestions } from "./components/InlineQuestions";
 import { isAnswerTurn } from "./lib/questionBlock";
@@ -1838,15 +1841,23 @@ export default function App() {
     [patch],
   );
 
+  /** The host moved a chat to another runtime: the page's settings follow ITS
+   *  word and nothing else's (`chat-provider-switch`, or the `switched`
+   *  answer to the page's own `chat_switch_runtime`), never the press. */
+  const applyHostRuntime = useCallback((id: string, payload: { agent: Provider; model: string | null; effort?: string | null; access?: AccessLevel; sessionId?: string | null }) => {
+    const next = modelFromReported(payload.agent, payload.model ?? "");
+    if (!next) return;
+    const effort = (payload.effort ?? "auto") as Effort;
+    const access = payload.access ?? meta.current[id]?.access ?? "auto";
+    if (meta.current[id]) meta.current[id] = { ...meta.current[id], modelId: next.id, effort, access };
+    setConversations((list) => list.map((chat) => chat.id === id ? { ...chat, modelId: next.id, effort, permission: access, ...("sessionId" in payload ? { sessionId: payload.sessionId ?? undefined } : {}) } : chat));
+    if (visibleRef.current === id) { setChoice(next); setEffort(effort); setAccess(access); }
+  }, []);
   useEffect(() => bridge.on<{ key: string; agent: Provider; model: string; effort?: Effort; access: AccessLevel; sessionId?: string }>("chat-provider-switch", (payload) => {
     const id = convOf(payload.key);
     if (!id) return;
-    const next = modelFromReported(payload.agent, payload.model);
-    if (!next) return;
-    if (meta.current[id]) meta.current[id] = { ...meta.current[id], modelId: next.id, effort: payload.effort ?? "auto", access: payload.access };
-    setConversations((list) => list.map((chat) => chat.id === id ? { ...chat, modelId: next.id, effort: payload.effort ?? "auto", permission: payload.access, sessionId: payload.sessionId } : chat));
-    if (visibleRef.current === id) { setChoice(next); setEffort(payload.effort ?? "auto"); setAccess(payload.access); }
-  }), []);
+    applyHostRuntime(id, payload);
+  }), [applyHostRuntime]);
 
   // Save every loaded conversation as it grows, the background ones included:
   // an answer that arrived while you were elsewhere has to survive a reload the
@@ -2319,6 +2330,64 @@ export default function App() {
       : undefined),
     [composerIdentity, conversationId, openRecord, chat.model, choice, effort, access],
   );
+  // Changing what an agent's chat runs on, and the way back after an
+  // automatic failover (`lib/runtimeSwitch`, contract in docs/agents-mode.md).
+  // The host decides: the page's `choice` and `effort` follow its word
+  // (`applyHostRuntime`, called by its event and by a `switched` answer) and
+  // never the press. Not offered for a worker's chat, a front desk, a removed
+  // agent's chat or a conversation nobody has sent a message in yet.
+  // The host's word on what a registered chat runs on, read with the fact
+  // that it is registered: a saved, sent chat takes it when it differs from
+  // what the page drew (a pick made before the page knew the chat was
+  // registered, a cache), unless a newer event overtook the read.
+  const takeHostRuntime = useCallback((id: string, runtime: RuntimeRef) => {
+    if (!(chatsRef.current[id]?.messages.length)) return;
+    const shown = modelFromId(meta.current[id]?.modelId ?? null);
+    const same = shown && sameRuntime(refOf(shown, (meta.current[id]?.effort ?? "auto") as Effort), runtime);
+    if (same) return;
+    applyHostRuntime(id, runtime);
+  }, [applyHostRuntime]);
+  const runtimeSwitch = useRuntimeSwitch(conn, conversationId, applyHostRuntime, takeHostRuntime);
+  const askRuntime = runtimeSwitch.request;
+  const runtimeChat = conversationId && composerIdentity && runtimeSwitchable({
+    identity: true,
+    removed: !!composerIdentity.removed,
+    workerChat,
+    frontDesk: frontDeskChats.has(conversationId),
+    saved: !!openRecord,
+    started: chat.messages.length > 0,
+  }) ? conversationId : null;
+  const runtimeNow = runtimeSwitch.runtimeOf(runtimeChat);
+  const runtimeRefusal = runtimeSwitch.refusalOf(runtimeChat);
+  // A model or effort pick in a registered agent's chat is a runtime switch,
+  // whatever agents mode is: the host says which chats are registered
+  // (`chat_queue_state`), and for them `chat_switch_runtime` is the only way
+  // the runtime changes. A start never carries a choice, so the ordinary
+  // picker's retarget plus handoff is not used for these chats.
+  const switchChat = conversationId && !workerChat && picksThroughSwitch({
+    registered: runtimeSwitch.registeredOf(conversationId),
+    saved: !!openRecord,
+    started: chat.messages.length > 0,
+  }) ? conversationId : null;
+  // What a runtime request reads when it is made, which may be after a wait
+  // for the host's word on whether the chat is registered: the values of the
+  // latest render, never the ones the press was drawn with.
+  const liveRuntime = useRef({ choice, effort, pendingOf: runtimeSwitch.runtimeOf });
+  liveRuntime.current = { choice, effort, pendingOf: runtimeSwitch.runtimeOf };
+  const switchTo = useCallback((id: string, model: ModelChoice | null, next: Effort | null) => {
+    const live = liveRuntime.current;
+    const asked = refOf(model ?? live.choice, next ?? live.effort);
+    // The runtime already running is no change, unless a switch is waiting:
+    // picking it takes that back.
+    if (sameRuntime(asked, refOf(live.choice, live.effort)) && !live.pendingOf(id)?.pending) return;
+    void askRuntime(id, asked, "sheet");
+  }, [askRuntime]);
+  const pickRuntime = useCallback((model: ModelChoice) => {
+    if (switchChat) switchTo(switchChat, model, null);
+  }, [switchChat, switchTo]);
+  const pickRuntimeEffort = useCallback((next: Effort) => {
+    if (switchChat) switchTo(switchChat, null, next);
+  }, [switchChat, switchTo]);
   // The chat on screen counts as read, and stays that way for as long as it
   // is the one on screen — this covers both opening it (its own `updatedAt`
   // is already older than `now`) and it picking up NEW activity while being
@@ -4395,6 +4464,53 @@ export default function App() {
     [conversationId, endSession, choice.agent, tellSession],
   );
 
+  // The pickers' own entry points. In a registered agent's chat a pick is a
+  // runtime switch the host decides (`pickRuntime`); the page's `choice` and
+  // `effort` move only on its word. Anywhere else it is the ordinary picker.
+  // A pick on a saved, sent chat whose registration the host has not yet
+  // said waits for that word (`chat_queue_state`): until then the page does
+  // not know whether the pick is a runtime switch or the ordinary picker's,
+  // and the ordinary one would show a model the host is not running. If the
+  // read fails, the pick is refused in words and nothing changes.
+  const picksAfterRead = !!conversationId && !workerChat && !!openRecord && chat.messages.length > 0
+    && runtimeSwitch.registeredOf(conversationId) === undefined;
+  const livePicks = useRef({ changeModel, changeEffort });
+  livePicks.current = { changeModel, changeEffort };
+  const afterRead = useCallback((id: string, what: string, go: (registered: boolean) => void) => {
+    void runtimeSwitch.whenRead(id).then((fact) => {
+      // Only while that chat is still the one the person is in.
+      if (visibleRef.current !== id) return;
+      if (fact.kind === "failed") {
+        patch(id, (state) => ({
+          ...state,
+          notices: [...state.notices, `Could not change ${what}: the host did not say whether this chat belongs to a registered agent (${fact.text}). Nothing was changed.`].slice(-8),
+        }));
+        return;
+      }
+      go(fact.kind === "registered");
+    });
+  }, [runtimeSwitch.whenRead, patch]);
+  const pickModel = useCallback(
+    (c: ModelChoice) => {
+      if (switchChat) return pickRuntime(c);
+      if (picksAfterRead && conversationId) {
+        return afterRead(conversationId, "the model", (registered) => (registered ? switchTo(conversationId, c, null) : livePicks.current.changeModel(c)));
+      }
+      return changeModel(c);
+    },
+    [switchChat, pickRuntime, picksAfterRead, conversationId, afterRead, switchTo, changeModel],
+  );
+  const pickEffort = useCallback(
+    (e: Effort) => {
+      if (switchChat) return pickRuntimeEffort(e);
+      if (picksAfterRead && conversationId) {
+        return afterRead(conversationId, "the effort", (registered) => (registered ? switchTo(conversationId, null, e) : livePicks.current.changeEffort(e)));
+      }
+      return changeEffort(e);
+    },
+    [switchChat, pickRuntimeEffort, picksAfterRead, conversationId, afterRead, switchTo, changeEffort],
+  );
+
   /** What a level is called, in the words of the agent THAT chat runs — the one
    *  on screen may by then be showing another. */
   const accessLabel = useCallback((id: string, level: AccessLevel) => {
@@ -5643,7 +5759,7 @@ export default function App() {
                   {workspaces.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select></label>
                 <label>Main agent<select aria-label="Main agent" value={choice.id} onChange={(event) => {
-                  const model = MODELS.find((item) => item.id === event.target.value); if (model) changeModel(model);
+                  const model = MODELS.find((item) => item.id === event.target.value); if (model) pickModel(model);
                 }}>
                   {MODELS.filter((item) => item.flag && (!installed || installed.includes(item.agent))).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}
                 </select></label>
@@ -6044,6 +6160,18 @@ export default function App() {
                   onDismiss={() => completions.dismiss(conversationId)}
                 />
               )}
+              {/* What the chat runs on: the way back after a failover, and a
+                  switch waiting for the turn to end. */}
+              {runtimeChat && (
+                <RuntimeRows
+                  chat={runtimeChat}
+                  current={choice.agent}
+                  runtime={runtimeNow}
+                  refusal={runtimeRefusal?.origin === "row" ? runtimeRefusal.text : undefined}
+                  onBack={(home) => void askRuntime(runtimeChat, { agent: home.agent, model: home.model, effort: home.effort }, "row")}
+                  onDismissRefusal={() => runtimeSwitch.dismissRefusal(runtimeChat)}
+                />
+              )}
               {/* Mounted for as long as the chat is, so it can tell a notice
                   that turned up from one that was here when the chat opened. */}
               <Arrive when={visibleNotices.length > 0} scope={conversationId}>
@@ -6069,7 +6197,7 @@ export default function App() {
             draftStore={composerDrafts.current}
             focusOn={focusBox}
             choice={choice}
-            onChoice={changeModel}
+            onChoice={pickModel}
             started={chat.messages.length > 0}
             access={access}
             onAccess={changeAccess}
@@ -6097,7 +6225,7 @@ export default function App() {
             background={chat.background}
             jobChat={conversationId ? keyFor(conversationId) : undefined}
             effort={effort}
-            onEffort={changeEffort}
+            onEffort={pickEffort}
             lite={lite}
             onLite={changeLite}
             /* Only when there is a process to end. With nothing running the
@@ -6130,6 +6258,13 @@ export default function App() {
             lastCostUsd={chat.lastCostUsd}
             identity={composerIdentity}
             runsAt={runsAt}
+            runtime={runtimeChat ? {
+              pending: runtimeNow?.pending,
+              refusal: runtimeRefusal?.origin === "sheet" ? runtimeRefusal.text : undefined,
+              onPick: pickRuntime,
+              onEffort: pickRuntimeEffort,
+              onDismissRefusal: () => runtimeSwitch.dismissRefusal(runtimeChat),
+            } : undefined}
             /* Parked on a card: the running line says so, and its clock
                leaves the wait out. */
             waiting={waitingHere}

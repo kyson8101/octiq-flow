@@ -44,6 +44,7 @@ const glyphs = {
   stop: <rect x="5" y="5" width="14" height="14" rx="2" />,
   save: <><path d="M4 3h13l4 4v14H4zM8 3v6h8V3M8 21v-8h9v8" /></>,
   preview: <><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></>,
+  swap: <path d="M4 8h13l-3-3M20 16H7l3 3" />,
 } satisfies Record<string, ReactNode>;
 
 export type ActionName = keyof typeof glyphs;

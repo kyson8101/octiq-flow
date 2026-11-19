@@ -22,12 +22,38 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
     Ok(())
 }
 
+/// Whether this chat belongs to a registered agent (a lead's thread, or a
+/// front desk): the chats whose runtime only `chat_switch_runtime` changes.
+/// Derived from the roster, never from the page.
+pub(crate) fn is_registered_chat(key: &str) -> Result<bool, String> {
+    if key.starts_with("chat:orch-") {
+        return Ok(false);
+    }
+    Ok(crate::team::defaults_for_chat(&crate::team::default_path(), key)?.is_some())
+}
+
+/// What `chat_retarget` says to a registered agent's chat.
+pub(crate) const REGISTERED_RETARGET: &str = "This chat belongs to a registered agent, so the model picker cannot retarget it. Change its provider, model or effort with chat_switch_runtime (the runtime sheet); that is the only way, and it keeps the conversation.";
+
 /// End only the host provider process so the same application conversation can
 /// continue on another model. The old native session cannot be resumed by the
 /// backend during the handoff; the next browser send supplies a fresh start
 /// context for the selected provider. Permissions, access, and the transcript
 /// belong to the user conversation and remain intact.
 pub fn chat_retarget_impl(manager: &ChatManager, key: String) -> Result<(), String> {
+    // A registered agent's chat changes its runtime only through
+    // `chat_switch_runtime`, at the moment the person presses. A retarget
+    // here would leave a deferred page intent (a start that carries the
+    // picker's choice later), which a newer switch from another tab must
+    // never be undone by.
+    // Only a roster that was READ and names the chat refuses: ending a
+    // process never waits on a file in the profile (a roster that cannot be
+    // read, because the profile folder is away, changes nothing here). A
+    // start never carries a page choice for a registered chat, so ending its
+    // process leaves no intent behind either way.
+    if matches!(is_registered_chat(&key), Ok(true)) {
+        return Err(REGISTERED_RETARGET.into());
+    }
     cancel_auto_resume(manager, &key, "cancelled when the agent changed");
     end_process(manager, &key)?;
     manager

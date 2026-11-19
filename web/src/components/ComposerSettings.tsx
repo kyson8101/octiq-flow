@@ -331,7 +331,7 @@ export function SettingsSheet({
  *
  *  The value is the point of it: a settings list you have to open to read is a
  *  list of questions, and this one answers two of them where it stands. */
-function SheetLink({
+export function SheetLink({
   label,
   value,
   onClick,
@@ -367,6 +367,7 @@ export function EffortList({
   effort,
   onEffort,
   started,
+  note,
 }: {
   agent: Provider;
   effort: Effort;
@@ -374,6 +375,9 @@ export function EffortList({
   /** This conversation already has turns in it, so when the new level takes
    *  hold is worth saying. */
   started: boolean;
+  /** Says when the change lands, in place of the ordinary sentence (the
+   *  runtime sheet applies a change after the turn, not straight away). */
+  note?: ReactNode;
 }) {
   return (
     <>
@@ -408,10 +412,10 @@ export function EffortList({
           when the change lands in it. */}
       <div className="sheet-foot-note">
         Higher effort means more thorough answers, but takes longer and uses your limits faster.
-        {started &&
+        {note ?? (started &&
           (providerFor(agent).capabilities.liveSettings.effort
             ? " Changes this chat straight away."
-            : " Applies from your next message.")}
+            : " Applies from your next message."))}
       </div>
     </>
   );
@@ -420,7 +424,7 @@ export function EffortList({
 /** Back, close, and into a page: the three moves this sheet can make. Drawn
  *  here rather than pulled from the toolbar's icons because these are chrome,
  *  and chrome is thinner than a control. */
-function BackIcon() {
+export function BackIcon() {
   return (
     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="m15 18-6-6 6-6" />
@@ -428,7 +432,7 @@ function BackIcon() {
   );
 }
 
-function CloseIcon() {
+export function CloseIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M18 6 6 18M6 6l12 12" />
@@ -469,6 +473,7 @@ export function ModelPicker({
   onRestart,
   rows,
   afterList,
+  holdProvider,
 }: {
   choice: ModelChoice;
   models: readonly ModelChoice[];
@@ -483,10 +488,17 @@ export function ModelPicker({
   started: boolean;
   /** New chats start without this machine's skills, hooks and other MCP. */
   lite: boolean;
-  onLite: (on: boolean) => void;
+  /** Absent: no Clean start switch. A chat that is already running has no
+   *  use for it (the runtime sheet of an agent's chat). */
+  onLite?: (on: boolean) => void;
   /** End the running agent, keeping the conversation. Absent when there is no
    *  process to end. */
   onRestart?: () => void;
+  /** A provider whose models are shown and cannot be picked right now, and
+   *  why, in words (Antigravity cannot ask, so a chat at guarded Auto or
+   *  Manual may not move to it). The tiles stay, off (`aria-disabled`), and
+   *  the reason stands under the list. Undefined: nothing is held. */
+  holdProvider?: (provider: Provider) => string | undefined;
   /** Draw the models as full-width rows with their hints, rather than as the
    *  grid of name tiles the dropdown uses. The phone's sheet sets it. */
   rows?: boolean;
@@ -517,9 +529,11 @@ export function ModelPicker({
     ? [choice, ...offered]
     : offered;
   const gone = missing(tab);
+  const held = holdProvider?.(tab);
   const modelStatus = catalogStatus[tab];
 
   const useExactId = () => {
+    if (held) return;
     const exact = exactId.trim();
     const model = modelChoiceForFlag(tab, exact);
     if (!model) {
@@ -569,8 +583,9 @@ export function ModelPicker({
               className={`${rows ? "picker-item has-robot" : "mp-card"} ${on ? "is-on" : ""}`}
               aria-pressed={on}
               disabled={gone}
-              title={`${m.model} · ${m.flag}`}
-              onClick={() => onChoice(m)}
+              aria-disabled={held ? true : undefined}
+              title={held ? `${m.model} · ${held}` : `${m.model} · ${m.flag}`}
+              onClick={() => { if (!held) onChoice(m); }}
             >
               {/* Show the complete cast while choosing the next model. */}
               <Mascot robot={m.composerStyle} mood="idle" size={rows ? 32 : 44} />
@@ -598,7 +613,7 @@ export function ModelPicker({
           id={`exact-model-${tab}`}
           aria-label="Exact model ID"
           value={exactId}
-          disabled={gone}
+          disabled={gone || !!held}
           spellCheck={false}
           autoCapitalize="none"
           autoCorrect="off"
@@ -608,7 +623,7 @@ export function ModelPicker({
             setExactError(false);
           }}
         />
-        <button type="submit" disabled={gone || !exactId.trim()}>Use exact ID</button>
+        <button type="submit" disabled={gone || !!held || !exactId.trim()}>Use exact ID</button>
       </form>
       {exactError && (
         <div className="mp-catalog is-warn">{tab === "pi"
@@ -630,6 +645,8 @@ export function ModelPicker({
         <div className="mp-catalog">{modelStatus.note}</div>
       )}
 
+      {held && <div className="mp-note" role="note">{held}</div>}
+
       {afterList}
 
       {/* Under the tiles because it is the same decision as the model: what
@@ -637,7 +654,7 @@ export function ModelPicker({
           keeps its skills in a folder rather than in the config it can be told
           to skip, so the same flags there saved about 2% and are not worth a
           switch that would look like it did something. */}
-      {providerFor(tab).capabilities.cleanStart && (
+      {onLite && providerFor(tab).capabilities.cleanStart && (
         <button
           type="button"
           role="menuitemcheckbox"
