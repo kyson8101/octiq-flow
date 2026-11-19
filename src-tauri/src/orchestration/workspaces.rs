@@ -2014,6 +2014,69 @@ pub(super) fn recover_workspaces(data: &mut Stored) -> bool {
     changed
 }
 
+/// Advice for new assigned work follows the current orientation. Approval
+/// freezes it, so a later switch never rewrites a task's accepted mode.
+pub(super) fn propose_assigned(
+    run: &Run,
+    task_id: &str,
+    destination: Option<&TaskDestination>,
+    worker: Option<&automation::WorkerSettings>,
+    assignee: Option<&TaskAssignee>,
+) -> WorkspaceProposal {
+    let Some(agent) = assignee else {
+        return propose(run, task_id, destination, worker);
+    };
+    let settings = match crate::scheduling::load() {
+        Ok(settings) => settings,
+        Err(error) => {
+            return WorkspaceProposal {
+                plan: None,
+                new_branch: false,
+                conflict: None,
+                error: Some(error),
+                provisional: false,
+                proposed_at: now_ms(),
+            }
+        }
+    };
+    if settings.orientation != crate::scheduling::Orientation::Agents
+        && run.workspace_mode != WorkspaceMode::Agent
+    {
+        return propose(run, task_id, destination, worker);
+    }
+    let root = task_root(run, destination);
+    if !workflow::has_git(root) {
+        let mut direct = run.clone();
+        direct.workspace_mode = WorkspaceMode::Direct;
+        return propose(&direct, task_id, destination, worker);
+    }
+    match workflow::agent_plan(root, "", &agent.id, "batch_pending", None) {
+        Ok(mut plan) => {
+            // Its branch is allocated only once the lane chooses a batch.
+            plan.warnings.push(
+                "A new branch and fresh session are allocated when this agent's batch starts."
+                    .into(),
+            );
+            WorkspaceProposal {
+                new_branch: !Path::new(&plan.checkout_root).exists(),
+                conflict: None,
+                plan: Some(plan),
+                error: None,
+                provisional: false,
+                proposed_at: now_ms(),
+            }
+        }
+        Err(error) => WorkspaceProposal {
+            plan: None,
+            new_branch: false,
+            conflict: None,
+            error: Some(error),
+            provisional: false,
+            proposed_at: now_ms(),
+        },
+    }
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
@@ -6310,68 +6373,5 @@ mod migration_tests {
         let persisted: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(persisted["version"], STORE_VERSION);
-    }
-}
-
-/// Advice for new assigned work follows the current orientation. Approval
-/// freezes it, so a later switch never rewrites a task's accepted mode.
-pub(super) fn propose_assigned(
-    run: &Run,
-    task_id: &str,
-    destination: Option<&TaskDestination>,
-    worker: Option<&automation::WorkerSettings>,
-    assignee: Option<&TaskAssignee>,
-) -> WorkspaceProposal {
-    let Some(agent) = assignee else {
-        return propose(run, task_id, destination, worker);
-    };
-    let settings = match crate::scheduling::load() {
-        Ok(settings) => settings,
-        Err(error) => {
-            return WorkspaceProposal {
-                plan: None,
-                new_branch: false,
-                conflict: None,
-                error: Some(error),
-                provisional: false,
-                proposed_at: now_ms(),
-            }
-        }
-    };
-    if settings.orientation != crate::scheduling::Orientation::Agents
-        && run.workspace_mode != WorkspaceMode::Agent
-    {
-        return propose(run, task_id, destination, worker);
-    }
-    let root = task_root(run, destination);
-    if !workflow::has_git(root) {
-        let mut direct = run.clone();
-        direct.workspace_mode = WorkspaceMode::Direct;
-        return propose(&direct, task_id, destination, worker);
-    }
-    match workflow::agent_plan(root, "", &agent.id, "batch_pending", None) {
-        Ok(mut plan) => {
-            // Its branch is allocated only once the lane chooses a batch.
-            plan.warnings.push(
-                "A new branch and fresh session are allocated when this agent's batch starts."
-                    .into(),
-            );
-            WorkspaceProposal {
-                new_branch: !Path::new(&plan.checkout_root).exists(),
-                conflict: None,
-                plan: Some(plan),
-                error: None,
-                provisional: false,
-                proposed_at: now_ms(),
-            }
-        }
-        Err(error) => WorkspaceProposal {
-            plan: None,
-            new_branch: false,
-            conflict: None,
-            error: Some(error),
-            provisional: false,
-            proposed_at: now_ms(),
-        },
     }
 }

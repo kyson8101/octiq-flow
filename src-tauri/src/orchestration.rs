@@ -6739,21 +6739,6 @@ fn clean_files(files: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn a_message_limit_counts_utf8_bytes_and_names_both_sizes() {
-    let accepted = "中".repeat(6_666) + "ab";
-    assert_eq!(
-        required_text("message body", accepted, 20_000)
-            .unwrap()
-            .len(),
-        20_000
-    );
-    let refused = "中".repeat(6_667);
-    let error = required_text("message body", refused, 20_000).unwrap_err();
-    assert!(error.contains("20001 UTF-8 bytes"), "{error}");
-    assert!(error.contains("20000 UTF-8 bytes"), "{error}");
-}
-
 fn required_text(label: &str, value: String, max: usize) -> Result<String, String> {
     let value = value.trim().to_string();
     if value.is_empty() {
@@ -6803,6 +6788,10 @@ fn announce(run_id: &str, change: &str) {
         "orchestration-changed",
         json!({ "runId": run_id, "change": change }),
     );
+}
+
+pub(crate) fn validate_fallback_worker(agent: ChatAgent, model: &str) -> Result<(), String> {
+    automation::worker_model(agent, Some(model)).map(|_| ())
 }
 
 #[cfg(test)]
@@ -11130,10 +11119,21 @@ pub(crate) mod tests {
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Blocked);
         assert_eq!(snapshot.runs[0].status, RunStatus::Waiting);
     }
-}
 
-pub(crate) fn validate_fallback_worker(agent: ChatAgent, model: &str) -> Result<(), String> {
-    automation::worker_model(agent, Some(model)).map(|_| ())
+    #[test]
+    fn a_message_limit_counts_utf8_bytes_and_names_both_sizes() {
+        let accepted = "中".repeat(6_666) + "ab";
+        assert_eq!(
+            required_text("message body", accepted, 20_000)
+                .unwrap()
+                .len(),
+            20_000
+        );
+        let refused = "中".repeat(6_667);
+        let error = required_text("message body", refused, 20_000).unwrap_err();
+        assert!(error.contains("20001 UTF-8 bytes"), "{error}");
+        assert!(error.contains("20000 UTF-8 bytes"), "{error}");
+    }
 }
 
 #[cfg(test)]
