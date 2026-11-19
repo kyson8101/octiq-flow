@@ -1,6 +1,15 @@
 use super::*;
 use serde_json::json;
 
+/// A line as the caller wrote it: the host's record time is not part of what
+/// these tests compare.
+fn unstamped(mut event: Value) -> Value {
+    if let Some(object) = event.as_object_mut() {
+        object.remove(AT);
+    }
+    event
+}
+
 #[test]
 fn record_head_follows_clear_and_keeps_generation_across_appends_and_cold_reads() {
     let key = unique_key("record-head-clear");
@@ -217,7 +226,7 @@ fn ranges_keep_seq_page_context_and_receipts_across_restart() {
     assert!(text.contains("octiq_record_refs"));
     let tail = since(&key, 8);
     assert_eq!(seqs(&tail), [13, 14, 15, 16]);
-    assert_eq!(tail.last().unwrap().event, init);
+    assert_eq!(unstamped(tail.last().unwrap().event.clone()), init);
     assert_eq!(of_type(&key, "octiq_question_answered").len(), 1);
     for before in [None, Some(8), Some(14), Some(17)] {
         let page = page_with_budget(&key, before, 999999, 20).unwrap();
@@ -229,10 +238,10 @@ fn ranges_keep_seq_page_context_and_receipts_across_restart() {
     }
     forget_count(&key);
     assert_eq!(append(&key, &init), Some(17));
-    assert_eq!(since(&key, 16)[0].event, init);
+    assert_eq!(unstamped(since(&key, 16)[0].event.clone()), init);
     forget(&key);
     assert_eq!(append(&key, &init), Some(1));
-    assert_eq!(since(&key, 0)[0].event, init);
+    assert_eq!(unstamped(since(&key, 0)[0].event.clone()), init);
     forget(&key);
 }
 
@@ -339,8 +348,8 @@ fn page_reads_mixed_list_sources_directly_without_recursive_init_expansion() {
     }
     let file = File::open(path_for(&key).unwrap()).unwrap();
     let index = LineIndex::scan(&file, u64::MAX).unwrap();
-    assert_eq!(index.read(&file, 40).unwrap().unwrap().0, init);
-    assert_eq!(since(&key, 39)[0].event, init);
+    assert_eq!(unstamped(index.read(&file, 40).unwrap().unwrap().0), init);
+    assert_eq!(unstamped(since(&key, 39)[0].event.clone()), init);
     forget(&key);
 }
 
@@ -876,7 +885,10 @@ fn lines_already_in_a_record_are_confirmed_only_by_a_sync_that_succeeds() {
     forget_count(&key);
     assert_eq!(confirm_synced(&key), Some(()));
     assert_eq!(append(&key, &json!({ "n": 3 })), Some(3));
-    let all: Vec<Value> = since(&key, 0).into_iter().map(|r| r.event).collect();
+    let all: Vec<Value> = since(&key, 0)
+        .into_iter()
+        .map(|r| unstamped(r.event))
+        .collect();
     assert_eq!(
         all,
         [json!({ "n": 1 }), json!({ "n": 2 }), json!({ "n": 3 })]
@@ -902,7 +914,10 @@ fn the_events_of_one_type_are_found_without_the_rest() {
     write!(file, "{{\"type\":\"octiq_x\",\"n\":").unwrap();
     drop(file);
     assert_eq!(
-        of_type(&key, "octiq_x"),
+        of_type(&key, "octiq_x")
+            .into_iter()
+            .map(unstamped)
+            .collect::<Vec<_>>(),
         [
             json!({ "type": "octiq_x", "n": 1 }),
             json!({ "type": "octiq_x", "n": 3 })
@@ -927,7 +942,10 @@ fn a_line_that_is_not_utf8_hides_no_event_of_a_type_after_it() {
     drop(file);
     append(&key, &json!({ "type": "octiq_x", "n": 2 }));
     assert_eq!(
-        of_type(&key, "octiq_x"),
+        of_type(&key, "octiq_x")
+            .into_iter()
+            .map(unstamped)
+            .collect::<Vec<_>>(),
         [
             json!({ "type": "octiq_x", "n": 1 }),
             json!({ "type": "octiq_x", "n": 2 })
@@ -1073,7 +1091,7 @@ fn a_line_for_a_record_is_put_in_that_record_or_in_none() {
     assert_eq!(receipt(&key, &seen), Held::Moved);
     let lines = since(&key, 0);
     assert_eq!(lines.len(), 1, "{lines:?}");
-    assert_eq!(lines[0].event, json!({ "new": true }));
+    assert_eq!(unstamped(lines[0].event.clone()), json!({ "new": true }));
 
     // A record not made yet is one too: the line makes it.
     let fresh = unique_key("append-in-fresh");
@@ -1143,7 +1161,11 @@ fn a_cleared_record_never_gets_a_line_meant_for_the_one_before_it() {
         clear.join().unwrap();
         let lines = since(&key, 0);
         assert_eq!(lines.len(), 1, "round {round}: {lines:?}");
-        assert_eq!(lines[0].event, json!({ "new": true }), "round {round}");
+        assert_eq!(
+            unstamped(lines[0].event.clone()),
+            json!({ "new": true }),
+            "round {round}"
+        );
         match held {
             Held::Moved => refused += 1,
             _ => cleared_away += 1,
@@ -1465,4 +1487,64 @@ fn a_record_not_made_yet_is_the_one_a_write_under_another_spelling_makes() {
         "a record cleared under its other spelling still gave a receipt"
     );
     forget(&lower);
+}
+
+#[test]
+fn every_recorded_line_gets_the_host_time_once_and_keeps_it() {
+    let key = unique_key("record-time");
+    let before = now_ms();
+    // An object without a time is stamped; one with a time keeps it.
+    append(&key, &json!({"type":"assistant","message":{"content":[]}})).unwrap();
+    append(&key, &json!({"type":"user","octiq_at":1234})).unwrap();
+    append_synced(&key, &json!({})).unwrap();
+    let generation = generation(&key).unwrap();
+    let (held, seq) = append_in(&key, &generation, &json!({"type":"octiq_note"}));
+    assert_eq!(held, Held::Confirmed);
+    assert_eq!(seq, Some(4));
+    let after = now_ms();
+
+    let lines = since(&key, 0);
+    assert_eq!(lines.len(), 4);
+    let first = lines[0].event[AT].as_u64().unwrap();
+    assert!(first >= before && first <= after);
+    assert_eq!(lines[1].event[AT], 1234);
+    assert!(lines[2].event[AT].as_u64().unwrap() >= before);
+    assert!(lines[3].event[AT].as_u64().unwrap() >= before);
+    // The line is otherwise exactly what was written.
+    assert_eq!(lines[0].event["message"], json!({"content": []}));
+
+    // A rewrite that carries a line over never restamps it.
+    let path = path_for(&key).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    rewrite_lines(&path, |line| Some(line.to_string())).unwrap();
+    let again = since(&key, 0);
+    assert_eq!(again[0].event[AT].as_u64().unwrap(), first);
+    assert_eq!(again[1].event[AT], 1234);
+    forget(&key);
+}
+
+#[test]
+fn stamp_gives_the_live_event_the_value_the_line_will_hold() {
+    let key = unique_key("record-time-live");
+    let mut event = json!({"type":"octiq_user_turn","uuid":"u1"});
+    stamp(&mut event);
+    let at = event[AT].as_u64().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    append(&key, &event).unwrap();
+    assert_eq!(since(&key, 0)[0].event[AT].as_u64().unwrap(), at);
+    // Stamping twice keeps the first time; non-objects are left alone.
+    stamp(&mut event);
+    assert_eq!(event[AT].as_u64().unwrap(), at);
+    let mut scalar = json!("text");
+    stamp(&mut scalar);
+    assert_eq!(scalar, json!("text"));
+    forget(&key);
+}
+
+#[test]
+fn a_seeded_history_is_not_stamped() {
+    let key = unique_key("record-time-seed");
+    assert!(seed(&key, &[json!({"type":"user","n":1})]).unwrap());
+    assert!(since(&key, 0)[0].event.get(AT).is_none());
+    forget(&key);
 }

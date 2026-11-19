@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { ActionIcon } from "./ActionIcon";
 import { StatusDismiss } from "./ChatStatus";
+import { MessageTime } from "./MessageTime";
 import type { Message } from "../lib/chat";
 import "./MessageBubble.css";
 
@@ -21,6 +22,7 @@ export function MessageBubble({ user, message, wrapUp = false, onStart, onCancel
 }) {
   const body = <div className="msg-body">{children}</div>;
   if (!user) return body;
+  const at = message.at;
   const accepted = !!(message.echo || message.takenUp);
   const delivery = accepted ? "dispatched" : message.queueLost ? "failed" : message.delivery;
   const pending = !!message.queueAction;
@@ -72,7 +74,14 @@ export function MessageBubble({ user, message, wrapUp = false, onStart, onCancel
               {footer}
               {onDismiss && <StatusDismiss label="Dismiss" visible onClick={onDismiss} />}
             </div>
+            <MessageTime at={at} />
           </div>
+        </div>
+      )}
+      {/* A message with nothing to say about its delivery still gets its time. */}
+      {!(label || footer) && at !== undefined && (
+        <div className="message-delivery message-delivery-time">
+          <div className="message-delivery-line"><MessageTime at={at} /></div>
         </div>
       )}
       {detail && !accepted && delivery !== "dispatched" && delivery !== "queued" && <p className="message-delivery-detail">{detail}</p>}

@@ -441,6 +441,52 @@ thread_local! {
     static HEAD_SCAN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
+/// The host's own time on a recorded line: epoch milliseconds, this machine's
+/// clock, a top-level field named `octiq_at`. It says when the host first
+/// recorded the line, not when the provider made it.
+///
+/// A line that already has it keeps it: nothing that rewrites, compacts or
+/// copies a record restamps (those paths move existing bytes and never come
+/// through `write` / `append_in`). A record older than this field has none,
+/// and `seed` (a history imported from an agent's own files) stamps nothing:
+/// the time such a line was said is not the time it was imported.
+///
+/// A caller that also announces the event stamps it first (`stamp`) and then
+/// records and emits THAT value, so the live event and the line agree. The
+/// recording step stamps a line that arrives without one, as a last resort.
+pub const AT: &str = "octiq_at";
+
+/// Now, in the milliseconds `octiq_at` carries.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Give a JSON object its record time unless it has one. Anything that is not
+/// an object is left alone.
+pub fn stamp(event: &mut Value) {
+    if let Some(object) = event.as_object_mut() {
+        object.entry(AT).or_insert_with(|| Value::from(now_ms()));
+    }
+}
+
+/// `event` as one record line, stamped with the record time when it has none.
+/// Splices the field in after the opening brace so no copy of the event's JSON
+/// is made for a line that is mostly typing pieces.
+fn stamped_line(event: &Value) -> Result<String, serde_json::Error> {
+    let line = serde_json::to_string(event)?;
+    if !event.is_object() || event.get(AT).is_some() {
+        return Ok(line);
+    }
+    let at = now_ms();
+    Ok(match line.strip_prefix('{') {
+        Some("}") => format!("{{\"{AT}\":{at}}}"),
+        Some(rest) => format!("{{\"{AT}\":{at},{rest}"),
+        None => line,
+    })
+}
+
 /// Record an event and return its sequence number.
 ///
 /// Best-effort: if this cannot write, the event still reaches anyone currently
@@ -501,7 +547,7 @@ fn write(key: &str, event: &Value, synced: bool) -> Option<u64> {
             lists.encode(stored, seq);
         }
     }
-    let line = serde_json::to_string(stored.as_ref().unwrap_or(event)).ok()?;
+    let line = stamped_line(stored.as_ref().unwrap_or(event)).ok()?;
     let (seq, file, existed) = put(&mut appending, &path, record.clone(), &line, synced)?;
     if let Some(lists) = lists {
         WRITE_LISTS
@@ -590,7 +636,7 @@ pub enum Held {
 /// which then writes nothing, or after it, and takes the line with the
 /// record it was written into.
 pub fn append_in(key: &str, seen: &Generation, event: &Value) -> (Held, Option<u64>) {
-    let (Some(path), Ok(line)) = (path_for(key), serde_json::to_string(event)) else {
+    let (Some(path), Ok(line)) = (path_for(key), stamped_line(event)) else {
         return (Held::Unconfirmed, None);
     };
     let record = identity(&path);
@@ -849,7 +895,7 @@ pub(crate) fn append_after_walk(
     walked: &Walked,
     event: &Value,
 ) -> Result<After, String> {
-    let (Some(path), Ok(line)) = (path_for(key), serde_json::to_string(event)) else {
+    let (Some(path), Ok(line)) = (path_for(key), stamped_line(event)) else {
         return Err("the chat's record could not be written".into());
     };
     let record = identity(&path);

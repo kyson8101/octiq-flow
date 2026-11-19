@@ -21,7 +21,7 @@ import { groupTurns } from "../lib/groupTurns";
 import { ChatReadingProvider, ReadingScope, ReadingStateContext, useReadingState } from "../lib/useReadingState";
 import { ActionIcon } from "./ActionIcon";
 import { readDeskRoute, readTaskBrief } from "../lib/taskBrief";
-import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import type { Attached, Message } from "../lib/chat";
 import { AgentLogo } from "./AgentLogo";
@@ -41,6 +41,8 @@ import { ConfigWorldProvider } from "./ConfigPanel";
 import { seatKey, seatTints } from "../lib/seatTint";
 import { ConversationMap, conversationMapTurns } from "./ConversationMap";
 import { MessageBubble } from "./MessageBubble";
+import { DayDivider, MessageTime } from "./MessageTime";
+import { dayLabel, dividerBefore, fullLabel, turnTime, watchLocalDay } from "../lib/messageTime";
 import { WrapUpNote } from "./CompleteChat";
 import { useJob } from "./Background";
 import { isJobTurn, jobIdOfTurn, jobTurnBubble } from "../lib/jobs";
@@ -222,6 +224,7 @@ function TurnView({
       <article className={`msg msg-answer ${fresh ? "is-new" : ""}`}>
         <AnswerBubble lines={lateLines}
           status={waits && message.queueLost ? "Not delivered" : waits && message.delivery === "queued" ? "Sent when the current reply ends" : undefined} />
+        <MessageTime at={message.at} />
       </article>
     );
   }
@@ -385,11 +388,18 @@ function TurnView({
             takes to answer, which is how the flicker became impossible to
             miss. The bottom turn is the only one a working agent can still add
             to, so that is the one that has to wait for it to stop. */}
-        {role === "assistant" && answer && (
+        {/* The time belongs to every visible agent turn, a tool-only or
+            thinking-only one too; Copy stays with the prose. While the turn
+            is still going the row is held out of sight at its full size, so
+            nothing moves when it ends. */}
+        {role === "assistant" && (answer || turnTime(messages, "assistant") !== undefined) && (
           <div className={`msg-foot${streaming || turnLive ? " is-placeholder" : ""}`}>
-            {streaming || turnLive
-              ? <span className="msg-copy" aria-hidden="true"><ActionIcon name="copy" /></span>
-              : <CopyAnswer text={answer} what="reply" />}
+            {answer
+              ? streaming || turnLive
+                ? <span className="msg-copy" aria-hidden="true"><ActionIcon name="copy" /></span>
+                : <CopyAnswer text={answer} what="reply" />
+              : null}
+            <MessageTime at={turnTime(messages, "assistant")} />
           </div>
         )}
       </MessageBubble>
@@ -437,6 +447,14 @@ function CopyAnswer({ text, what }: { text: string; what: "reply" | "message" })
  *  callbacks are `useCallback`ed in App and read the loaded chats through
  *  `chatsRef` rather than taking `chats` as a dependency, which is what used to
  *  give this a new `onSetting` on every delta and make the memo do nothing. */
+/** `Date.now()` as of the last time the local date changed (or the mount):
+ *  one timer to the next local midnight, no per-second tick. */
+function useLocalDay(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => watchLocalDay(() => setNow(Date.now())), []);
+  return now;
+}
+
 const MessageListBody = function MessageList({
   messages,
   busy,
@@ -1192,6 +1210,11 @@ const MessageListBody = function MessageList({
   // and against what was last committed, so the render the window above
   // re-runs on a chat switch gets one answer and not two.
   const drawnIds = useMemo(() => visibleTurns.map((turn) => turn[0].id), [visibleTurns]);
+  // Where the local day changes between two turns that have a time. "Today"
+  // is read from a clock that moves when the local date does, so a chat left
+  // open across midnight says what a reload would.
+  const dividers = useMemo(() => dividerBefore(visibleTurns.map((turn) => turnTime(turn, turn[0].role))), [visibleTurns]);
+  const dayNow = useLocalDay();
   const liveNow = useLiveAppend(conversationId ?? "", drawnIds);
   // A new box only when the answer changes: a delta re-renders no reader.
   const live = useMemo(() => ({ current: liveNow }), [liveNow]);
@@ -1309,8 +1332,10 @@ const MessageListBody = function MessageList({
         )}
         {head}
         {earlierMarks}
-        {visibleTurns.map((turn) => (
-          <ReadingScope key={turn[0].id} id={turn[0].id}>
+        {visibleTurns.map((turn, turnIndex) => (
+          <Fragment key={turn[0].id}>
+          {dividers.has(turnIndex) && <DayDivider label={dayLabel(turnTime(turn, turn[0].role)!, dayNow)} full={fullLabel(turnTime(turn, turn[0].role)!)} />}
+          <ReadingScope id={turn[0].id}>
             <TurnView
               messages={turn}
               stopped={!!stoppedAt && turn.some((m) => m.id === stoppedAt)}
@@ -1344,6 +1369,7 @@ const MessageListBody = function MessageList({
             {!!stoppedAt && turn.some((m) => m.id === stoppedAt) && <StopMark />}
             {!!marks?.size && turn.map((m) => marks.get(m.id)).filter(Boolean)}
           </ReadingScope>
+          </Fragment>
         ))}
         {compactingSince !== undefined && <Compacting since={compactingSince} />}
         {/* A pending question whose call these turns do not hold. */}
