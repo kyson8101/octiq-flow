@@ -1,15 +1,22 @@
 // What a chat runs at, said beside the agent's name in the composer, and the
 // last turn's receipt, said in a tooltip.
 //
-// In an agent's chat the composer has no pickers: the agent's registration
-// owns its settings. So what THIS chat runs at is said as small quiet text
-// beside its name, `opus · high · Auto`: read-only, and only what the page
-// knows of this chat. A value it does not know is left out, never guessed
-// and never filled in from the roster: a chat can differ from its agent's
-// registration. It keeps the model it was started on, and its level is its
-// own: it opens on the registration's and then keeps the one it has, which
-// the page holds, saves with the chat and asks for at the next start
+// In an agent's chat the composer row has no pickers: the agent's
+// registration owns what its chats open on. So what THIS chat runs at is said
+// as small quiet text beside its name, `opus · high · Auto`, and only what the
+// page knows of this chat. A value it does not know is left out, never
+// guessed and never filled in from the roster: a chat can differ from its
+// agent's registration. It keeps the model it was started on, and its level
+// is its own: it opens on the registration's and then keeps the one it has,
+// which the page holds, saves with the chat and asks for at the next start
 // (`chatSettings.wiring.test.ts`).
+//
+// The person can change the model and effort of a chat that can switch from
+// the sheet behind that text (`components/RuntimeSheet`, `lib/runtimeSwitch`),
+// and go back after a failover with one press. Both ask the host, and the
+// page's `choice` and `effort` move only on the host's word: the values here
+// are still the session's own, never the registration's and never an
+// optimistic guess at what a press will do.
 import { providerFor, type AccessLevel, type Effort, type ModelChoice } from "./agentProviders";
 
 /** What the page was told about a saved chat. Each is absent in a record

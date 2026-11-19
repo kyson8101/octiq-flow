@@ -43,6 +43,9 @@ import type { BackgroundTask } from "../lib/background";
 import { BackgroundNote, useHasRunningJob } from "./Background";
 import { RollingText } from "./RollingNumber";
 import { receiptLines, runsAtLine, runsAtParts, runsAtRows, type KnownSettings } from "../lib/chatSettings";
+import { pendingLine } from "../lib/runtimeSwitch";
+import { notePress } from "../lib/pressGuard";
+import { RuntimeSheet, type RuntimeControls } from "./RuntimeSheet";
 import { ROW_FITS, rowFit, type RowFit } from "../lib/composerFit";
 import { WAIT_WORDS, type ChatHold } from "../lib/chatWait";
 import { type TurnWaits } from "../lib/turnClock";
@@ -196,12 +199,19 @@ export function Composer({
   lastDurationMs,
   lastCostUsd,
   runsAt,
+  runtime,
   waiting,
   onRecheckWaits,
   turnWaits,
   identity,
   advanced,
 }: {
+  /** An agent's chat whose runtime the person may change from inside it:
+   *  the settings text beside the name opens a sheet with the model and
+   *  effort pickers, and both ask the host. Absent (a worker's chat, a front
+   *  desk, a removed agent, a conversation not sent yet): the chip stays
+   *  read-only. */
+  runtime?: RuntimeControls;
   /** Agents mode, new task: where it will run is chosen automatically, and
    *  the location controls stay out of sight behind this toggle. `summary` is
    *  the automatic choice in words, for the toggle's tooltip. Absent: the
@@ -1275,7 +1285,8 @@ export function Composer({
               <SlidersIcon />
             </button>
           )}
-          {identity ? <AgentIdentityChip identity={identity} chat={session} runsAt={runsAt} receipt={receipt} /> : <>
+          {identity ? <AgentIdentityChip identity={identity} chat={session} runsAt={runsAt} receipt={receipt}
+            runtime={runtime && session ? { chat: session, choice, effort, access, installed, controls: runtime } : undefined} /> : <>
           <div className="composer-settings">
           <div className="picker">
             <button
@@ -1554,7 +1565,7 @@ export function Composer({
  *  `chat` is the saved chat this composer is the composer of: a confirmed
  *  route's face and name land on the chip of the chat it opened and on no
  *  other (`lib/identityTravel.composerLanding`), whoever the chip names. */
-export function AgentIdentityChip({ identity, chat, runsAt, receipt = [], initiallyOpen = false }: {
+export function AgentIdentityChip({ identity, chat, runsAt, receipt = [], initiallyOpen = false, runtime }: {
   identity: AgentIdentity;
   chat?: string;
   /** What THIS chat runs at (`lib/chatSettings.knownSettings`): only what
@@ -1564,19 +1575,30 @@ export function AgentIdentityChip({ identity, chat, runsAt, receipt = [], initia
   receipt?: readonly string[];
   /** Static-render seam for the chip's test: there is no press to make. */
   initiallyOpen?: boolean;
+  /** Present when the person may change what this chat runs on from here:
+   *  the sheet then holds the pickers (`RuntimeSheet`). */
+  runtime?: {
+    chat: string;
+    choice: ModelChoice;
+    effort: Effort;
+    access: AccessLevel;
+    installed?: readonly Provider[];
+    controls: RuntimeControls;
+  };
 }) {
   // The face and the name are the chip, with what the chat runs at beside
-  // them in small quiet text. That text is not a picker: the agent's
-  // registration says what its chats open on (Settings, Agents), and a chat
-  // then keeps the level it has, which is what is said here and may not be
-  // the registration's. It is a disclosure, because a narrow composer cuts
-  // it short:
-  // a press, a tap or Enter shows the three values whole, read-only, with
-  // the last turn's receipt, so none of it is behind a hover alone.
+  // them in small quiet text. It is a disclosure, because a narrow composer
+  // cuts it short: a press, a tap or Enter shows the values whole, so none
+  // of it is behind a hover alone. Where the chat can change its runtime the
+  // sheet holds the model and effort pickers, and both ask the host; the
+  // agent's registration is never touched (Settings, Agents says what its
+  // new chats open on). Otherwise it is read-only, as it was.
   const [open, setOpen] = useState(initiallyOpen);
   const sheetId = useId();
   // A sheet opened in one chat is not another chat's.
   useEffect(() => setOpen(initiallyOpen), [chat, initiallyOpen]);
+  // The catalogue is loaded when the sheet opens, as the ordinary picker's is.
+  const catalog = useProviderModels(open && !!runtime, runtime?.installed);
   const provider = AGENT_NAME[identity.provider];
   const line = runsAt ? runsAtLine(runsAt) : "";
   const { rest, access } = runsAtParts(runsAt ?? {});
@@ -1586,9 +1608,11 @@ export function AgentIdentityChip({ identity, chat, runsAt, receipt = [], initia
     `${provider} ${identity.model} · set in Settings, Agents`,
     // This session's own values, never the registration's in their place.
     line ? `This chat runs at ${line}` : "",
+    runtime?.controls.pending ? pendingLine(runtime.controls.pending) : "",
     identity.removed ? "No longer registered: this conversation keeps its last settings" : "",
     ...receipt,
   ].filter(Boolean).join("\n");
+  const installed = runtime?.installed;
   return (
     <div className="composer-identity" title={open ? undefined : tip} data-removed={identity.removed || undefined} data-chat={chat || undefined}>
       {/* What a confirmed route's name lands on (`identityTravel`): it stays
@@ -1599,19 +1623,38 @@ export function AgentIdentityChip({ identity, chat, runsAt, receipt = [], initia
           `::before`), so there is something to press at any width. */}
       {line && <button type="button" className="composer-identity-runs" aria-expanded={open} aria-controls={sheetId}
         aria-label={`What this chat runs at: ${line}`}
+        data-switchable={runtime ? "" : undefined}
         onKeyDown={(event) => { if (event.key === "Escape" && open) { event.stopPropagation(); setOpen(false); } }}
-        onClick={() => setOpen((shown) => !shown)}>
+        onClick={(event) => { notePress(event); setOpen((shown) => !shown); }}>
         {rest && <span className="composer-identity-rest">{rest}</span>}
         {access && <span className="composer-identity-access">{access}</span>}
       </button>}
-      {line && open && <>
+      {line && open && runtime && <>
+        <div className="sheet-scrim" onClick={() => setOpen(false)} />
+        <RuntimeSheet
+          id={sheetId}
+          chat={runtime.chat}
+          choice={runtime.choice}
+          effort={runtime.effort}
+          access={runtime.access}
+          catalog={{
+            models: catalog.models, status: catalog.status, reload: catalog.reload,
+            missing: (agent) => installed !== undefined && !installed.includes(agent),
+            noAgents: installed !== undefined && installed.length === 0,
+          }}
+          controls={runtime.controls}
+          receipt={receipt}
+          onDone={() => setOpen(false)}
+        />
+      </>}
+      {line && open && !runtime && <>
         <div className="picker-scrim" onClick={() => setOpen(false)} />
         <div className="picker-menu composer-identity-sheet" id={sheetId} role="group" aria-label="What this chat runs at">
           <dl>
             {runsAtRows(runsAt ?? {}).map((row) => <div key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}
           </dl>
           {receipt.map((item) => <p key={item}>{item}</p>)}
-          <p className="composer-identity-sheet-note">Read-only here. This chat keeps what it runs at. Settings, Agents sets what an agent's new chats open on.</p>
+          <p className="composer-identity-sheet-note">This chat keeps what it runs at. Settings, Agents sets what an agent's new chats open on.</p>
         </div>
       </>}
     </div>

@@ -64,6 +64,18 @@ describe("chat notice presentation", () => {
     for (const text of [why, plain]) expect(presentNotice(text).title.length).toBeLessThanOrEqual(60);
   });
 
+  it("reads a switch the person made from inside the chat as their own act, not an outage", () => {
+    // The host's sentence for `octiq_provider_switched` with `byPerson`.
+    const sentence = "Switched to claude / opus at high effort by your choice. Ryan's registration is unchanged.";
+    const notice = presentNotice(sentence);
+    expect(notice.title).toBe("You switched to claude / opus");
+    expect(notice.detail).toBe(sentence);
+    expect(notice.title).not.toMatch(/unavailable|limit|failed|recovered/i);
+    expect(notice.title.length).toBeLessThanOrEqual(60);
+    // An automatic failover keeps the host's own wording.
+    expect(presentNotice("Claude is unavailable. Continuing on Codex.").title).not.toMatch(/^You switched/);
+  });
+
   it("keeps plain guidance readable without inventing technical details", () => {
     expect(presentNotice("Say something first — a round uses your last message.")).toEqual({
       key: "message:say something first — a round uses your last message.",

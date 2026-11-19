@@ -1711,6 +1711,12 @@ and is there only while it has something to point at: `1 question waiting`
 (`QuestionWaitingRow`), for a question in the transcript that is out of
 view.
 
+A sixth kind is the chat's runtime (`RuntimeRows`, `lib/runtimeSwitch`), for
+a registered agent's chat only, after the completion line and before the
+notices: the way back after an automatic failover, and a switch waiting for
+the turn to end (see **What a chat runs at**). Both are neutral rows of the
+same frame: no accent, no warning.
+
 - **A row is one line, with no box and no fill of its own.** The same
   height (28px; a row with Dismiss grows to 44px on a phone or coarse pointer),
   the same left edge and the same icon column, which is the
@@ -1748,21 +1754,76 @@ view.
 
 ### What a chat runs at is beside the agent's name
 
-An agent's chat has no pickers: the registration says what a chat of the
-agent opens on, and the chat then keeps what it has (**A chat's level is its
-own**, above). So the composer says what THIS chat runs at beside the agent's
-name, as small quiet text, `opus · high · Auto` (`AgentIdentityChip`,
-`lib/chatSettings`).
+An agent's chat has no pickers in the row: the registration says what a chat
+of the agent opens on, and the chat then keeps what it has (**A chat's level
+is its own**, above). So the composer says what THIS chat runs at beside the
+agent's name, as small quiet text, `opus · high · Auto` (`AgentIdentityChip`,
+`lib/chatSettings`). The person changes provider, model and effort of an
+existing chat from the sheet behind that text, and goes back after a
+failover with one press (below); the registration is never touched.
 
-- **It is read-only, and it is a disclosure.** No picker: Settings, Agents
-  sets what the agent's new chats open on, and the sheet says so. A press, a
-  tap or Enter on it shows the
-  three values whole (`Model`, `Effort`, `Access`, as the pickers name
-  them) with the last turn's receipt, in a sheet that holds no control;
-  Escape or a press outside shuts it. A narrow composer cuts the text, so
-  what it says is never behind a hover alone. The button's target is the
-  whole chip (its `::before`, placed by the chip and so not cut with the
-  text): there is something to press when the text has no room left.
+- **It is a disclosure, and for a chat that can switch its sheet holds the
+  pickers.** A press, a tap or Enter on it opens `RuntimeSheet`: the
+  composer's own settings sheet shell (`.sheet.settings-sheet`, across the
+  foot of a phone, a card at the foot of a wide window, so nothing of it is
+  drawn past the composer's box in the three-column layout), with the same
+  `ModelPicker` (grouped by provider; a limited provider's models stay
+  pickable, the host decides) and the same `EffortList`. There is no access
+  control: access stays with `request_access` and its card. The sheet says
+  this changes this chat only, and that Settings, Agents sets what new chats
+  open on. Escape or a press outside shuts it; targets are 44px on a phone
+  or coarse pointer. A narrow composer cuts the text, so what it says is
+  never behind a hover alone. The button's target is the whole chip (its
+  `::before`, placed by the chip and so not cut with the text).
+- **Where it is not offered the chip is read-only as it was**: a worker's
+  chat (no composer), a front desk, a removed agent's chat and a
+  conversation not sent yet (`runtimeSwitchable`). Its sheet then shows the
+  three values whole (`Model`, `Effort`, `Access`) with the last turn's
+  receipt and holds no control.
+- **The host decides, and the page's settings move only on its word.**
+  Both controls send `chat_switch_runtime { key, agent, model, effort }`
+  (`lib/useRuntimeSwitch`, through `lib/inFlight` keyed by chat, so a drawn
+  again control cannot send twice). Never `changeModel`: it ends the chat's
+  process itself, which would stall a turn. `choice`, `effort` and `access`
+  change only through `applyHostRuntime`, called by the `chat-provider-switch`
+  event and by a `switched` answer, never by the press
+  (`runtimeSwitch.wiring.test.ts` reads `App.tsx` for it). A `pending`
+  answer, the `chat-runtime-pending` events and `chat_queue_state`'s
+  `pendingRuntime` and `homeRuntime` (read on every connect and chat open, so
+  a reload and a second tab draw the same; a read older than an event never
+  puts the older answer back, `reduceRuntime`) only say what waits and where
+  home is.
+- **A switch during a turn is one quiet line**, `Switches to <model> after
+  this turn`, in the group above the composer, in the sheet and in the
+  chip's tooltip. No accent: the accent is a turn in flight. Picking the
+  runtime already running takes it back.
+- **The way back is a row** (`RuntimeRows`, the shared `.status-row`), shown
+  while `homeRuntime` is present: `Running on Codex · Opus limit resets 3:40
+  PM`, or `Running on Codex · Opus may be available again` once the reset
+  has passed or the provider is not limited, and one icon + short word
+  button, `Back to Opus`. The button is offered while the provider is
+  limited too, because the person may know it is back; the host decides.
+  One line cut inside the row; the button never gives way and is 44px on a
+  phone or coarse pointer. One timer set for `resetsAt` (`msToReset`, in
+  steps a timer can hold) redraws the words; nothing polls. `resetsAt` is
+  the provider's real reset, never the host's 15-minute guess; with none the
+  row says `limit reached`. The press is guarded like any answer with no
+  question in front of it (`repeatsAnother`, `notePress`, `dropHeld`).
+- **A refusal is the host's sentence, in words where the press was made**:
+  on the row (never cut, the row grows upward) or in the sheet, with a
+  Dismiss. The settings stay as they were.
+- **Antigravity at guarded Auto or Manual** stays visible and off
+  (`aria-disabled`) with the reason under the list (`antigravityHold`); the
+  host refuses it too. Its effort is part of its model id, so no effort is
+  offered or sent for it (`refOf`).
+- **A switch the person made reads as theirs**: the transcript's
+  `octiq_provider_switched` notice for a person's switch is titled `You
+  switched to <runtime>` (`chatNotices.presentNotice`), not as an outage or
+  a failover. `scripts/test-runtime-switch-ui.mjs` drives the real App
+  against a stub socket at 1280 and 390 in `OCTIQ_THEME=light|dark`: the
+  fallback with the limit and its reset, Back to Opus, the idle picker,
+  pending, refusal, a reload with a fallback and with a pending switch, a
+  worker chat and Antigravity held.
 - **Only what the page knows of this chat** (`knownSettings`). The values
   are the page's own for the session (`choice`, `effort`, `access`). A
   conversation not saved yet runs at exactly those, which the page copied
@@ -1792,7 +1853,8 @@ name, as small quiet text, `opus · high · Auto` (`AgentIdentityChip`,
   from the registration's, in the text, the sheet or the tooltip.
 - **The last turn's receipt is a tooltip, and two lines of the chip's
   sheet.** `Last turn · 178.1s` and `Cost · $9.526` (`receiptLines`) are in
-  the chip's tooltip and its opened sheet, and in the model picker's
+  the chip's tooltip and its opened sheet (the runtime sheet shows them too),
+  and in the model picker's
   tooltip in an ordinary chat. The eyebrow carries no receipt and no model
   name.
 
