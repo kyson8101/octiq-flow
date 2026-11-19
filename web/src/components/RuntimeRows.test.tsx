@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [], on: () => () => {} } }));
@@ -24,6 +24,11 @@ const rows = (props: Partial<Parameters<typeof RuntimeRows>[0]> = {}) => renderT
 );
 
 describe("the way back, a row of the group above the composer", () => {
+  // The words depend on the viewer's calendar day, so the clock is pinned at local
+  // midday: an hour ahead is the same day, whatever time the suite really runs.
+  beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date(2026, 10, 19, 12, 0)); });
+  afterEach(() => { vi.useRealTimers(); });
+
   it("draws nothing for a chat that is not on a fallback", () => {
     expect(rows({ runtime: undefined })).toBe("");
     expect(rows({ runtime: { rev: 1 } })).toBe("");
@@ -33,11 +38,19 @@ describe("the way back, a row of the group above the composer", () => {
     const html = rows();
     expect(html).toContain('class="runtime-row status-row"');
     expect(html).toContain("Running on Codex");
+    // 13:00 the same day: the clock alone, no weekday.
     expect(html).toMatch(/Opus limit resets \d{1,2}:\d{2}/);
+    expect(html).not.toMatch(/Opus limit resets [A-Z][a-z]{2} /);
     expect(html).toContain('aria-label="Back to Opus"');
     expect(html).toContain('<span class="action-label" aria-hidden="true">Back to Opus</span>');
     // An icon and a short word: the answer is a decision, not a bare icon.
     expect(html).toContain('data-action-icon="swap"');
+  });
+
+  it("names a reset on the next day by its weekday", () => {
+    const tomorrow = Math.floor(new Date(2026, 10, 20, 0, 10).getTime() / 1000);
+    const html = rows({ runtime: { rev: 1, home: home({ resetsAt: tomorrow }) } });
+    expect(html).toMatch(/Opus limit resets [A-Z][a-z]{2} \d{1,2}:\d{2}/);
   });
 
   it("is offered while the provider is limited, and after the reset has passed", () => {

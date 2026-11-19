@@ -5,7 +5,7 @@ import {
   reduceRuntime, refOf, runtimeSwitchable, sameRuntime, shortModelName, takeAnswer, type HomeRuntime, type RuntimeState,
 } from "./runtimeSwitch";
 
-const opusHome: HomeRuntime = { agent: "claude", model: "opus", effort: "high", limited: true, resetsAt: Math.floor(Date.UTC(2026, 10, 19, 7, 40) / 1000) };
+const opusHome: HomeRuntime = { agent: "claude", model: "opus", effort: "high", limited: true, resetsAt: Math.floor(new Date(2026, 10, 19, 13, 40).getTime() / 1000) };
 const codex = { agent: "codex" as const, model: "gpt-5.6-sol", effort: "high" };
 
 describe("reading the host's runtimes", () => {
@@ -122,7 +122,9 @@ describe("folding what the host says", () => {
 });
 
 describe("the way back, in words", () => {
-  const T = Date.UTC(2026, 10, 19, 6, 0);
+  // Local midday, never a fixed UTC instant: "the same day" is the viewer's calendar day,
+  // so a UTC time straddled local midnight in some zones (UTC-7 read 07:40Z as the next day).
+  const T = new Date(2026, 10, 19, 12, 0).getTime();
   it("names the reset while the limit stands", () => {
     const words = homeWords("codex", opusHome, T, "en-US");
     expect(words.label).toBe("Running on Codex");
@@ -131,7 +133,7 @@ describe("the way back, in words", () => {
   });
 
   it("says it may be available once the reset has passed, and still offers the way back", () => {
-    const words = homeWords("codex", opusHome, T + 3 * 3_600_000, "en-US");
+    const words = homeWords("codex", opusHome, T + 3 * 3_600_000, "en-US"); // 15:00, after the 13:40 reset
     expect(words.detail).toBe("Opus may be available again");
     expect(words.back).toBe("Back to Opus");
   });
@@ -142,7 +144,7 @@ describe("the way back, in words", () => {
   });
 
   it("names another day's reset by its weekday", () => {
-    const next = Date.UTC(2026, 10, 21, 12, 0);
+    const next = new Date(2026, 10, 21, 12, 0).getTime();
     expect(clockWords(next, T, "en-US")).toMatch(/^[A-Z][a-z]{2} \d/);
   });
 
