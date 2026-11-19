@@ -1153,6 +1153,9 @@ mod tests {
         assert_eq!(rows.len(), known_agents().count());
 
         assert_eq!(rows[0].id, "claude");
+        // "claude" is the binary; "Claude Code" is what the CLI is called.
+        assert_eq!(rows[0].name, "Claude Code");
+        assert_eq!(rows[0].bin, "claude");
         assert!(!rows[0].installed);
         assert!(rows[0].path.is_none());
 
@@ -1175,14 +1178,6 @@ mod tests {
             AGENT_PROBE.lock().unwrap().is_none(),
             "a forced check must drop the cached answer"
         );
-    }
-
-    #[test]
-    fn install_rows_carry_a_name_for_the_screen() {
-        // "claude" is the binary; "Claude Code" is what the CLI is called.
-        let rows = install_rows(&[]);
-        assert_eq!(rows[0].name, "Claude Code");
-        assert_eq!(rows[0].bin, "claude");
     }
 
     #[test]

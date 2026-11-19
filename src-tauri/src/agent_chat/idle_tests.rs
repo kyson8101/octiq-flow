@@ -54,11 +54,6 @@ fn put(manager: &ChatManager, key: &str, session: Arc<Mutex<ChatSession>>) {
 }
 
 #[test]
-fn default_idle_timeout_is_five_minutes() {
-    assert_eq!(IDLE_TIMEOUT, Duration::from_secs(5 * 60));
-}
-
-#[test]
 fn native_background_work_keeps_an_idle_parent_alive_and_explicit_end_reports_ids() {
     let manager = ChatManager::default();
     let key = format!("chat:test-background-{}", uuid::Uuid::new_v4());

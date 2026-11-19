@@ -925,15 +925,11 @@ fn removed_agent_tools_are_not_exposed_to_the_host() {
 }
 
 #[test]
-fn the_agent_is_told_to_ask_us_rather_than_deny() {
-    // Without this flag an `ask` decision in print mode is terminal: the
-    // call is denied, nobody is asked, and the chat says nothing about why.
-    let line = hello_line(ChatAgent::Claude, Some(Access::Auto), false);
-    assert!(line.contains("--permission-prompt-tool stdio"));
-}
-
-#[test]
-fn the_question_tool_the_agent_cannot_be_answered_on_is_taken_back() {
+fn the_agent_is_told_to_ask_us_rather_than_deny_and_the_question_tool_it_gains_is_taken_back() {
+    // Without `--permission-prompt-tool stdio` an `ask` decision in print
+    // mode is terminal: the call is denied, nobody is asked, and the chat
+    // says nothing about why.
+    //
     // `--permission-prompt-tool stdio` does not only route permissions. It
     // also hands the model `AskUserQuestion`, which plain print mode never
     // offered: measured on the same CLI, 30 built-in tools without the flag
@@ -952,6 +948,7 @@ fn the_question_tool_the_agent_cannot_be_answered_on_is_taken_back() {
     // config could not be written there is no `ask_user` either, and no
     // question at all is what this command line did before the flag arrived.
     let line = hello_line(ChatAgent::Claude, Some(Access::Auto), false);
+    assert!(line.contains("--permission-prompt-tool stdio"));
     assert!(line.contains("--disallowedTools AskUserQuestion"));
 }
 

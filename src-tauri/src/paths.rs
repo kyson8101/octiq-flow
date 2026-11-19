@@ -455,28 +455,25 @@ mod tests {
         // The dangerous shape: `<real dir>/nope/../../../etc/passwd`. Nothing
         // below `nope` exists, so the tail is re-attached by hand — and a `..`
         // there would climb straight back out of the root we just validated.
+        // The second shape names a file that does exist behind the `..`: it
+        // must not make the climb look harmless.
         let dir = tmp("tail-dotdot");
-        // PathBuf::push normalizes `..` for Windows verbatim paths (the form
-        // canonicalize returns). Preserve the actual caller-supplied input.
-        let mut raw = dir.as_os_str().to_os_string();
-        raw.push(format!(
-            "{sep}nope{sep}..{sep}escaped.txt",
-            sep = std::path::MAIN_SEPARATOR
-        ));
-        let sneaky = PathBuf::from(raw);
-        assert_eq!(canonical_target(&sneaky), None);
-    }
-
-    #[test]
-    fn an_unresolved_parent_segment_cannot_be_hidden_by_an_existing_target() {
-        let dir = tmp("tail-dotdot-existing");
         std::fs::write(dir.join("existing.txt"), "keep").unwrap();
-        let mut raw = dir.as_os_str().to_os_string();
-        raw.push(format!(
-            "{sep}missing{sep}..{sep}existing.txt",
-            sep = std::path::MAIN_SEPARATOR
-        ));
-        assert_eq!(canonical_target(Path::new(&raw)), None);
+        for tail in [
+            "nope{sep}..{sep}escaped.txt",
+            "missing{sep}..{sep}existing.txt",
+        ] {
+            // PathBuf::push normalizes `..` for Windows verbatim paths (the
+            // form canonicalize returns). Preserve the actual caller-supplied
+            // input.
+            let mut raw = dir.as_os_str().to_os_string();
+            raw.push(format!(
+                "{sep}{}",
+                tail.replace("{sep}", &std::path::MAIN_SEPARATOR.to_string()),
+                sep = std::path::MAIN_SEPARATOR
+            ));
+            assert_eq!(canonical_target(Path::new(&raw)), None, "{tail}");
+        }
     }
 
     #[test]

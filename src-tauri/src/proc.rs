@@ -519,28 +519,23 @@ mod tests {
     }
 
     #[test]
-    fn windows_derives_bash_from_git_on_path() {
+    fn windows_derives_bash_from_git_on_path_with_either_path_separator() {
         // `git` lives in <git>\cmd; its bash is the sibling <git>\bin\bash.exe.
         // The install here is deliberately NOT one of the fixed candidates, so
         // this can only pass by deriving the path from where git was found.
-        let shell = resolve_agent_shell(None, None, true, &|name| match name {
-            "git" => Some(r"D:\dev\PortableGit\cmd\git.exe".to_string()),
-            r"D:\dev\PortableGit\bin\bash.exe" => Some(name.to_string()),
-            _ => None,
-        })
-        .expect("git on PATH leads to its bash");
-        assert_eq!(shell.program, r"D:\dev\PortableGit\bin\bash.exe");
-    }
-
-    #[test]
-    fn windows_derives_bash_from_a_git_path_with_forward_slashes() {
-        let shell = resolve_agent_shell(None, None, true, &|name| match name {
-            "git" => Some("D:/dev/PortableGit/cmd/git.exe".to_string()),
-            r"D:\dev\PortableGit\bin\bash.exe" => Some(name.to_string()),
-            _ => None,
-        })
-        .expect("Windows accepts either path separator");
-        assert_eq!(shell.program, r"D:\dev\PortableGit\bin\bash.exe");
+        // Windows accepts either path separator in what `where` reports.
+        for git in [
+            r"D:\dev\PortableGit\cmd\git.exe",
+            "D:/dev/PortableGit/cmd/git.exe",
+        ] {
+            let shell = resolve_agent_shell(None, None, true, &|name| match name {
+                "git" => Some(git.to_string()),
+                r"D:\dev\PortableGit\bin\bash.exe" => Some(name.to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|error| panic!("git at {git} leads to its bash: {error}"));
+            assert_eq!(shell.program, r"D:\dev\PortableGit\bin\bash.exe", "{git}");
+        }
     }
 
     #[test]

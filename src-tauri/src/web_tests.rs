@@ -255,26 +255,18 @@ fn html_files_are_served_as_browser_pages() {
 }
 
 #[test]
-fn video_files_are_served_with_playable_content_types() {
+fn video_and_audio_files_are_served_with_playable_content_types() {
     for (name, expected) in [
         ("preview.mp4", "video/mp4"),
         ("preview.webm", "video/webm"),
         ("preview.mov", "video/quicktime"),
-    ] {
-        assert_eq!(file_mime(std::path::Path::new(name)), expected);
-    }
-}
-
-#[test]
-fn audio_files_are_served_with_playable_content_types() {
-    for (name, expected) in [
         ("take.mp3", "audio/mpeg"),
         ("take.M4A", "audio/mp4"),
         ("take.wav", "audio/wav"),
         ("take.ogg", "audio/ogg"),
         ("take.flac", "audio/flac"),
     ] {
-        assert_eq!(file_mime(std::path::Path::new(name)), expected);
+        assert_eq!(file_mime(std::path::Path::new(name)), expected, "{name}");
     }
 }
 
