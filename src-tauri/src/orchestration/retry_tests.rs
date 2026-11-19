@@ -1538,3 +1538,115 @@ pub(crate) fn spent_check() -> Spent {
         _lead: lead,
     }
 }
+
+/// What `read` makes of the task as the ledger now holds it, asked of the
+/// data itself with its status and its latest attempt's set by hand.
+fn read_as(
+    lead: &Lead,
+    task_id: &str,
+    attempt_id: &str,
+    status: TaskStatus,
+    attempt_status: AttemptStatus,
+    read: fn(&Stored, &Task) -> Option<FailureKind>,
+) -> Option<FailureKind> {
+    lead.store
+        .mutate(|data| {
+            data.tasks.get_mut(task_id).unwrap().status = status;
+            data.attempts.get_mut(attempt_id).unwrap().status = attempt_status;
+            let task = data.tasks.get(task_id).unwrap().clone();
+            Ok(read(data, &task))
+        })
+        .unwrap()
+}
+
+/// A blocked task is SHOWN as failed when its latest attempt failed and as
+/// blocked when that attempt reported blocked, and only once the attempt is
+/// settled and has no open gate. Losing either turns a quiet row into a
+/// red one, or the reverse.
+#[test]
+fn a_blocked_task_is_shown_as_what_its_settled_attempt_ended_as() {
+    let lead = Lead::new();
+    let task = lead.task();
+    let attempt = lead.start(&task.id).unwrap();
+    let as_shown = |status| {
+        read_as(
+            &lead,
+            &task.id,
+            &attempt.id,
+            TaskStatus::Blocked,
+            status,
+            super::retry::failed_as,
+        )
+    };
+    assert_eq!(
+        as_shown(AttemptStatus::Failed),
+        Some(FailureKind::Failed),
+        "a blocked task whose attempt failed"
+    );
+    assert_eq!(
+        as_shown(AttemptStatus::Blocked),
+        Some(FailureKind::Blocked),
+        "a blocked task whose attempt reported blocked, with no gate"
+    );
+    // Not settled: nothing failed yet, with no gate open to say it waits.
+    assert_eq!(as_shown(AttemptStatus::Running), None, "still running");
+    assert_eq!(as_shown(AttemptStatus::Preparing), None, "still preparing");
+}
+
+/// The same read, with a decision gate open on the task: the worker is
+/// waiting on it, which is neither a failure nor a block, whether its
+/// attempt is settled or not.
+#[test]
+fn a_blocked_task_with_an_open_gate_of_its_own_is_not_shown_as_failed() {
+    let lead = Lead::new();
+    let task = lead.task();
+    let attempt = lead.start(&task.id).unwrap();
+    lead.store
+        .create_gate(
+            &lead.key,
+            lead.run.id.clone(),
+            Some(task.id.clone()),
+            "Which volume should it write to?".into(),
+            vec!["The first".into(), "The second".into()],
+        )
+        .unwrap();
+    for status in [AttemptStatus::Failed, AttemptStatus::Blocked] {
+        assert_eq!(
+            read_as(
+                &lead,
+                &task.id,
+                &attempt.id,
+                TaskStatus::Blocked,
+                status,
+                super::retry::failed_as,
+            ),
+            None,
+            "an open gate holds a {status:?} attempt back from the failures"
+        );
+    }
+}
+
+/// A failed check that was reopened is Ready again, or Pending behind what
+/// it depends on, and keeps its verdict: what an act answers is still that
+/// check's failure, in either state.
+#[test]
+fn a_reopened_failed_check_is_counted_whether_it_is_ready_or_pending() {
+    let lead = Lead::new();
+    let review = lead.task_of(TaskKind::Review);
+    let attempt = lead.start(&review.id).unwrap();
+    lead.report(&attempt, WorkerOutcome::Completed, Some(Verdict::Fail));
+    for status in [TaskStatus::Ready, TaskStatus::Pending] {
+        assert_eq!(
+            read_as(
+                &lead,
+                &review.id,
+                &attempt.id,
+                status,
+                AttemptStatus::Completed,
+                super::retry::counted,
+            ),
+            Some(FailureKind::CheckFailed),
+            "a {status:?} task whose check failed"
+        );
+    }
+}
