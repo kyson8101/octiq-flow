@@ -71,6 +71,19 @@ describe("a time on each message", () => {
     expect(html).not.toMatch(/Retry|Resend/);
   });
 
+  it("finding 5: a finished tool-only or thinking-only turn shows its time, with no Copy", () => {
+    const tools = reply("a1", "", {
+      at: BEFORE + 60_000,
+      blocks: [{ kind: "tool", id: "t1", name: "Bash", args: { command: "ls" }, argsJson: "{}", state: "done", result: "ok" }],
+    });
+    const thinking = reply("a2", "", { at: BEFORE + 120_000, blocks: [{ kind: "thinking", text: "hmm" }] as never });
+    for (const message of [tools, thinking]) {
+      const html = render(user("u1", "go", { at: BEFORE }), message);
+      expect(count(html, 'class="message-time')).toBe(2);
+      expect(html).not.toContain("Copy this reply");
+    }
+  });
+
   it("is never the accent", () => {
     const html = render(user("u1", "hello", { at: BEFORE }));
     expect(html).not.toContain("accent");
