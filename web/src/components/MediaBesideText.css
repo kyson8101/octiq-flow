@@ -37,6 +37,11 @@
 .media-beside .media-beside-file .qa-media-box.is-audio { height: 56px; border-color: transparent; background: none; }
 .media-beside .media-beside-file .qa-media-box.is-audio audio { width: 100%; max-width: 100%; }
 
+/* A video is watched, not glanced at: it takes up to half the block, at its
+   own 16:9, and the whole row once the block is too narrow for both. */
+.media-beside-grid:has(.qa-media-item.is-video) { grid-template-columns: minmax(0, min(50%, 480px)) minmax(0, 1fr); }
+.media-beside .media-beside-file .qa-media-box.is-video { height: auto; aspect-ratio: 16 / 9; }
+
 .media-reply {
   min-width: 0;
   margin: 0 0 10px;
@@ -60,4 +65,9 @@
 @container (width < 480px) {
   .media-beside-grid { grid-template-columns: minmax(0, 1fr); }
   .media-beside-file { width: min(100%, 288px); }
+}
+
+@container (width < 720px) {
+  .media-beside-grid:has(.qa-media-item.is-video) { grid-template-columns: minmax(0, 1fr); }
+  .media-beside-grid:has(.qa-media-item.is-video) .media-beside-file { width: min(100%, 640px); }
 }

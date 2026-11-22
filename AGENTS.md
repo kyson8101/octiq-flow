@@ -1188,7 +1188,9 @@ ordinary code. Nothing is repaired, truncated or set as HTML.
   Check the space it takes in the transcript and where content below lands, not just its own height.
 - **The block width decides the layout**, with a container query: media left
   and text right at 480px, media above text below that, including beside a
-  run panel and a side column. Each media box reserves its size before load
+  run panel and a side column. A video is wider: up to half the block (480px
+  at most) at 16:9, and the whole row (640px at most) under 720px; a sound's
+  player always takes the whole row. Each media box reserves its size before load
   and on failure (`Could not be shown`). Files load only near the scroller;
   pictures open the shared viewer, native players use metadata preload and
   `nowPlaying`. The card uses neutral border/background tokens, no shadow.

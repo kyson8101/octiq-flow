@@ -357,9 +357,19 @@ async function besideScene(browser, size, kind) {
   });
   const before = { reply: await measure(reply), question: await measure(question), send: await box(page.locator(".qa-submit")) };
   for (const [which, item] of Object.entries(before).filter(([name]) => name !== "send")) {
-    const stacked = item.container.w < 480;
-    assert.equal(stacked, size.phone || !!size.columns, `${label}: ${which} uses its own block width (${item.container.w})`);
-    assert.equal(Math.round(item.box.h), 144, `${label}: reserved height`);
+    // A video is wider than the rest: half the block at 16:9, stacked under 720px.
+    // A sound's player always takes the whole row, above the words.
+    const stacked = kind === "audio" || item.container.w < (kind === "video" ? 720 : 480);
+    if (kind === "audio") {
+      assert.equal(Math.round(item.box.h), 56, `${label}: reserved height`);
+      assert.ok(Math.abs(item.box.w - item.container.w) < 1, `${label}: ${which} player takes the row`);
+    } else if (kind === "video") {
+      assert.ok(Math.abs(item.box.h - item.box.w * 9 / 16) < 1, `${label}: ${which} reserves 16:9`);
+      assert.ok(item.box.w >= Math.min(item.container.w, 320) - 1, `${label}: ${which} video is not a thumbnail (${item.box.w})`);
+    } else {
+      assert.equal(stacked, size.phone || !!size.columns, `${label}: ${which} uses its own block width (${item.container.w})`);
+      assert.equal(Math.round(item.box.h), 144, `${label}: reserved height`);
+    }
     assert.ok(stacked ? item.copy.y >= item.file.y + item.file.h : item.copy.x >= item.file.x + item.file.w, `${label}: ${which} geometry`);
   }
   await release();
