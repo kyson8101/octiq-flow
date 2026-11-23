@@ -32,6 +32,7 @@
 //   PLAYWRIGHT_CHANNEL=chrome                              a Chromium channel (chrome)
 //   OCTIQ_EVIDENCE_DIR=<dir>                               where the screenshots go (.shots/media-pip)
 //   OCTIQ_MEDIA_SIZES=1280,390                             optional width subset
+//   OCTIQ_MEDIA_POP_ONLY=1                                the video pop-up scene only
 //   OCTIQ_MEDIA_SPEED_ONLY=1                              speed controls and handoff, video + audio
 //   OCTIQ_MEDIA_PATH_MENU_ONLY=1                          path → native Play and intentional file actions
 //   OCTIQ_MEDIA_PATH_COMPAT_ONLY=1                        missing/throwing Popover API and Escape
@@ -209,7 +210,7 @@ async function pick(page, phone, title) {
 }
 
 /** The inline player of chat A, brought into view and playing. */
-async function startInline(page, kind, index = 0) {
+async function startInline(page, kind, index = 0, keepPop = false) {
   const selector = `.prose-media.is-${kind}`;
   const box = page.locator(selector).nth(index);
   await box.waitFor();
@@ -225,6 +226,13 @@ async function startInline(page, kind, index = 0) {
     return el.play();
   }, {sel: selector, index});
   await page.waitForFunction(() => { const el = document.querySelector("[data-mark=first]"); return el && el.currentTime > 0.6; });
+  // A video that starts playing in a chat reply with room around it opens in
+  // the pop-up (see popScene). The other scenes are about the inline player,
+  // so put it back the way a person would: Escape.
+  if (kind === "video" && !keepPop && await page.locator("dialog.media-pop[open]").count()) {
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("dialog.media-pop") && !document.querySelector("[data-mark=first]")?.closest("dialog"));
+  }
 }
 
 /** Everything about the marked element and the page's players. */
@@ -333,6 +341,48 @@ async function pipScene(browser, theme, size, shots) {
     await page.waitForFunction(() => !document.pictureInPictureElement && document.querySelector(".now-playing")?.dataset.shown === "false");
     assert.equal((await state(page)).playing, 1, `${label}: one player plays`);
     if (shots) await page.screenshot({ path: join(artifacts, `${theme}-${engine}-pip-back-${size.name}.png`) });
+  } finally {
+    await context.close();
+  }
+  return out;
+}
+
+/** A playing video in a chat reply opens larger in a pop-up where the window
+ *  has room, as the SAME element, and Escape puts it back still playing. A
+ *  phone never gets one. */
+async function popScene(browser, theme, size) {
+  const label = `${theme} pop ${size.name}`;
+  const { context, page } = await open(browser, theme, size);
+  const out = { scene: "pop", size: size.name, theme };
+  try {
+    await startInline(page, "video", 0, true);
+    if (size.phone) {
+      assert.equal(await page.locator("dialog.media-pop").count(), 0, `${label}: no pop-up on a phone`);
+      assert.equal((await state(page)).where, "inline", `${label}: stays inline`);
+      out.popped = false;
+      return out;
+    }
+    await page.locator("dialog.media-pop[open]").waitFor();
+    const inPop = await page.evaluate(() => {
+      const el = document.querySelector("[data-mark=first]");
+      const dialog = document.querySelector("dialog.media-pop");
+      return { inside: dialog.contains(el), paused: el.paused, width: el.getBoundingClientRect().width, place: !!document.querySelector(".media-pop-place") };
+    });
+    assert.equal(inPop.inside, true, `${label}: the same element is in the pop-up`);
+    assert.equal(inPop.paused, false, `${label}: playing in the pop-up`);
+    assert.ok(inPop.width > 600, `${label}: noticeably bigger (${inPop.width})`);
+    assert.equal(inPop.place, true, `${label}: a placeholder holds its place`);
+    const t = (await state(page)).time;
+    await advances(page, t);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("dialog.media-pop") && !document.querySelector("[data-mark=first]")?.closest("dialog"));
+    const back = await state(page);
+    assert.equal(back.where, "inline", `${label}: back inline`);
+    assert.equal(back.paused, false, `${label}: still playing inline`);
+    assert.ok(back.time >= t, `${label}: not reset (${t} → ${back.time})`);
+    await advances(page, back.time);
+    assert.equal(await page.locator(".media-pop-place").count(), 0, `${label}: placeholder gone`);
+    out.popped = true;
   } finally {
     await context.close();
   }
@@ -528,6 +578,12 @@ async function resumeScene(browser, theme, size, kind, repeated = false, takeove
     await page.waitForFunction(() => window.resumeMs !== null, null, { timeout: 900 }).catch(() => {});
     // WebKit can acknowledge Play before its seeked audio clock ticks.
     await page.waitForFunction(() => window.resumePlayer.currentTime > 12.05, null, { timeout: 1500 }).catch(() => {});
+    // A video press may open the pop-up (popScene); the holder question is
+    // about the reply, so put it back with Escape first.
+    if (await page.locator('dialog.media-pop[open]').count()) {
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !document.querySelector("dialog.media-pop") && !document.querySelector("[data-mark=first]")?.closest("dialog"));
+    }
     const resumed = await page.evaluate(() => ({
       same: document.querySelector('[data-mark=first]') === window.resumePlayer,
       sameHolder: window.resumePlayer.parentElement === window.resumeHolder,
@@ -655,6 +711,11 @@ async function lifecycleScene(browser, theme, size, scene) {
         await page.waitForFunction(() => window.playedElement.readyState >= 1 && !window.playedElement.error);
         await page.evaluate(() => window.playedElement.play());
         await advances(page, 0);
+        // The press may have opened the pop-up; Escape puts the element back.
+        if (await page.locator('dialog.media-pop[open]').count()) {
+          await page.keyboard.press('Escape');
+          await page.waitForFunction(() => !document.querySelector('dialog.media-pop') && !window.playedElement.closest('dialog'));
+        }
         assert.equal(await page.evaluate(() => document.querySelector('.msgs video') === window.playedElement), true, label);
         assert.equal(await retry.count(), 0, label);
         await pick(page, size.phone, 'Release notes');
@@ -1078,9 +1139,11 @@ try {
       if (process.env.OCTIQ_MEDIA_INTERACTION_ONLY) continue;
       for (const kind of ['video', 'audio']) for (const repeated of [false, true]) report.results.push(await resumeScene(browser, theme, size, kind, repeated));
       if (process.env.OCTIQ_MEDIA_RESUME_ONLY) continue;
+      if (process.env.OCTIQ_MEDIA_POP_ONLY) { report.results.push(await popScene(browser, theme, size)); continue; }
       const full = index === 0;
       if (!process.env.OCTIQ_MEDIA_REGRESSION_ONLY) {
         report.results.push(await pipScene(browser, theme, size, true));
+        report.results.push(await popScene(browser, theme, size));
         report.results.push(await miniScene(browser, theme, size, "video", true));
       }
       if (full) {

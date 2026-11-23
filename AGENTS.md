@@ -1276,6 +1276,25 @@ is re-fetched or re-buffered and a picture-in-picture window survives it.
 - `scripts/test-media-pip.mjs` drives the real App in Chrome (native
   picture-in-picture is granted headless) and in Playwright's WebKit (it is
   refused there, so the mini-player carries every scene).
+- **A video in a chat reply opens larger in a pop-up when it starts playing
+  and the window has room** (`lib/videoPop.popSize`, `ReviewVideo`,
+  `MediaPop.css`).
+  - It pops on each paused to play change, when the window is wider than 860px
+    and the picture would be at least 1.3 times as wide as the inline one
+    (at most 1600px wide, with 96px and 128px of margin). The aspect comes from
+    the video itself, 16:9 until it is known.
+  - The pop-up is a native modal `<dialog>`, so Escape, the Close button and a
+    press on the backdrop close it. The SAME `<video>` is moved in with one
+    `appendChild` and moved back the same way, so it never pauses or reloads.
+  - Closing does not pause: the video goes on playing inline and stays there
+    until the next press of play. A placeholder of the inline size marks its
+    place while it is popped, so nothing under it moves.
+  - A phone-sized window (860px or less) never pops. The file dock (no chat)
+    never pops. When the store moves the element away (another chat), the
+    pop-up is only forgotten and the store moves the element itself.
+  - `scripts/test-media-pip.mjs` closes the pop-up with Escape where a scene is
+    about the inline player, and `popScene` covers the pop-up at 1280 and 390
+    (`OCTIQ_MEDIA_POP_ONLY=1` runs it alone).
 
 ### A card that waits on the person arrives folded
 

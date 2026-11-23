@@ -1,0 +1,83 @@
+/* A chat reply's video, larger, while it plays (components/ReviewVideo).
+   The same <video> element is moved in here and moved back; nothing is
+   re-fetched. Token colours only, and nothing is the accent. */
+.media-pop-place {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  max-width: 100%;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+.media-pop {
+  box-sizing: border-box;
+  margin: auto;
+  padding: 10px 12px 12px;
+  max-width: calc(100vw - 32px);
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-1);
+  box-shadow: var(--shadow);
+  overflow: visible;
+  animation: media-pop-in 160ms ease-out;
+}
+.media-pop::backdrop {
+  background: var(--scrim);
+  animation: media-pop-fade 160ms ease-out;
+}
+.media-pop[open] { display: flex; flex-direction: column; gap: 8px; }
+
+.media-pop-bar { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.media-pop-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+.media-pop-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.media-pop-close:hover { background: var(--bg-2); color: var(--fg-1); }
+@media (hover: none), (any-pointer: coarse) {
+  .media-pop-close { width: 44px; height: 44px; }
+}
+
+.media-pop-holder {
+  display: block;
+  box-sizing: border-box;
+  max-width: calc(100vw - 96px);
+  max-height: calc(100vh - 128px);
+}
+.media-pop-holder video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  background: var(--bg-0, var(--bg-1));
+}
+
+@keyframes media-pop-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes media-pop-fade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .media-pop, .media-pop::backdrop { animation: none; }
+}
