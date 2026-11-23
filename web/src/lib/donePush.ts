@@ -28,9 +28,10 @@ import type { Conversation } from "./store";
 
 /** The wait between the tick and the robot, so the tick is seen to land. */
 export const PUSH_DELAY_MS = 3000;
-/** The robot pushing the row out, then the height closing up. Together they
- *  stay inside the app's ~600-900 ms for a single gesture. */
-export const PUSH_MS = 560;
+/** The robot pushing the row out, then the height closing up. The push is
+ *  slower than the app's usual gesture on purpose: at 560 ms the person found
+ *  it too fast to see. */
+export const PUSH_MS = 1100;
 export const COLLAPSE_MS = 200;
 /** Reduced motion: no robot, a short fade and the same collapse. */
 export const REDUCED_PUSH_MS = 160;

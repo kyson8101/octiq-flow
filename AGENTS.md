@@ -1737,7 +1737,7 @@ exactly as before (`doneAt`); this only decides when the row stops being held
 in the Active list. `chatFilterList` keeps the open chat and the hand-ticked
 rows listed, which is why a done chat never left. Three seconds after a chat
 that this page saw NOT done is seen done, its row slides out to the right
-with a small robot (about 560 ms, transform only), then collapses (200 ms);
+with a small robot (about 1100 ms, transform only), then collapses (200 ms);
 after that `withoutPushed` drops it from `keep`/`keepMarked`, so the row
 leaves while the open chat stays open (still in the Done view). Cancelled by a
 new message, an untick, pinning or leaving the Active view; one timer per row,

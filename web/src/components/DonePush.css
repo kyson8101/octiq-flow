@@ -16,7 +16,7 @@
 }
 
 .chat-row.is-pushing > .chat-row-content {
-  animation: done-push-row 560ms cubic-bezier(0.33, 1, 0.68, 1) forwards;
+  animation: done-push-row 1100ms cubic-bezier(0.33, 1, 0.68, 1) forwards;
 }
 
 /* The row has already left by the time it collapses; hold it there. */
@@ -50,7 +50,7 @@
   left: 0;
   margin-top: -16px;
   transform: translateX(-100%);
-  animation: done-push-robot 560ms cubic-bezier(0.33, 1, 0.68, 1) forwards;
+  animation: done-push-robot 1100ms cubic-bezier(0.33, 1, 0.68, 1) forwards;
   color: var(--fg-2);
   pointer-events: none;
 }
@@ -80,7 +80,7 @@
 .done-push-robot .done-push-leg { transform-box: fill-box; transform-origin: top center; }
 .done-push-robot .done-push-leg-a { animation: done-push-step 280ms ease-in-out infinite alternate; }
 .done-push-robot .done-push-leg-b { animation: done-push-step 280ms ease-in-out infinite alternate-reverse; }
-.done-push-robot .done-push-arm { animation: done-push-lean 560ms ease-out forwards; }
+.done-push-robot .done-push-arm { animation: done-push-lean 1100ms ease-out forwards; }
 
 @keyframes done-push-step {
   from { transform: translateX(-1.2px) rotate(-8deg); }
