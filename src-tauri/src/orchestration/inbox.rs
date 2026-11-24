@@ -149,6 +149,133 @@ fn batch_order(n: &Notification) -> (bool, u64, i64) {
     )
 }
 
+/// A coordinator's batch of plain updates waits until its newest notice is
+/// this old, so updates that arrive close together are one turn...
+const BATCH_QUIET_MS: i64 = 20_000;
+/// ...or until its oldest notice is this old, so a steady trickle still
+/// reaches the coordinator.
+const BATCH_LONGEST_MS: i64 = 90_000;
+
+/// Whether a notice may wait for the ones after it (`held_batches`). Every
+/// turn a coordinator is woken for re-reads its whole context, so plain
+/// updates are worth gathering; anything that asks the coordinator or the
+/// person to decide, or says something failed, is not held. A kind not named
+/// here is urgent.
+fn deferrable(data: &Stored, n: &Notification) -> bool {
+    match n.kind.as_str() {
+        // A worker's progress note: information only, already coalesced.
+        "progress" => true,
+        // A worker's message. Only its own `status` kind is information (the
+        // kind `informational_attempt` folds); a question, escalation, reply
+        // or instruction asks for something. Never judged by its words.
+        "message" => n
+            .source
+            .strip_prefix("message:")
+            .and_then(|id| data.messages.get(id))
+            .is_some_and(|message| message.kind == "status"),
+        // A worker's report: plain only when its attempt completed and its
+        // task finished well. Failed, blocked, a failing or missing verdict
+        // on a check: the coordinator has work to do.
+        "report" => n
+            .source
+            .strip_prefix("report:")
+            .and_then(|id| data.attempts.get(id))
+            .is_some_and(|attempt| {
+                attempt.status == AttemptStatus::Completed
+                    && data
+                        .tasks
+                        .get(&attempt.task_id)
+                        .is_some_and(releases_dependants)
+            }),
+        // A failing verdict that holds the task's dependants.
+        "verdict"
+        // A read-only worker's proposed report, which the coordinator confirms.
+        | "proposal"
+        // A worker's gate: a decision for the coordinator or the person.
+        | "decision"
+        // A gate's answer, to carry out.
+        | "resolution"
+        // A safety card or a safety-check outage on a worker's call.
+        | "native_decision"
+        // An attempt that failed or waits on its provider (`execution::fail`,
+        // a provider retry, a recovery that failed or is held).
+        | "capacity"
+        | "quota"
+        | "provider"
+        | "time_limit"
+        | "disconnected"
+        // A worker that has made no progress.
+        | "stalled"
+        // A service changed state, usually because it stopped.
+        | "service"
+        // The host's word on a lane: blocked by a dirty checkout, or tasks
+        // put back after the person stopped a batch.
+        | "status"
+        // Receipts of the person's own decisions, and an auto-approved plan
+        // whose workers the coordinator may have to start.
+        | "task_stopped"
+        | "plan_rejected"
+        | "plan_auto_approved"
+        // A teammate's request waiting on the plan card.
+        | "peer_request"
+        // To a requester: a peer request's result (it may have failed), or
+        // that it waits on the person.
+        | "peer_report"
+        | "peer_waiting"
+        // A note the person relayed from another run.
+        | "relay"
+        // The result of a cleanup card the chat asked for.
+        | "workspace_cleanup" => false,
+        // Anything else: urgent until said otherwise.
+        _ => false,
+    }
+}
+
+/// Whether a notice may be held in its chat's batch: a plain update to its
+/// run's coordinator that no delivery has been tried for. A notice to any
+/// other chat (a worker's above all) and a retry are never held.
+fn holdable(data: &Stored, n: &Notification) -> bool {
+    n.attempts == 0
+        && data
+            .runs
+            .get(&n.run_id)
+            .is_some_and(|run| run.coordinator_chat_key == n.target_chat_key)
+        && deferrable(data, n)
+}
+
+/// The chats whose due notices wait this pass, decided at read time from
+/// `created_at`, so nothing is stored. A chat waits only while every due
+/// notice of it is holdable, its newest untried pending notice is under
+/// `BATCH_QUIET_MS` old and its oldest under `BATCH_LONGEST_MS`. One urgent
+/// or retried notice takes the whole batch with it. A clock that went
+/// backwards (a notice from the future) holds nothing.
+fn held_batches<'a>(data: &Stored, due: &'a [Notification], now: i64) -> BTreeSet<&'a str> {
+    let mut held = BTreeSet::new();
+    let chats: BTreeSet<&str> = due.iter().map(|n| n.target_chat_key.as_str()).collect();
+    for chat in chats {
+        if due
+            .iter()
+            .any(|n| n.target_chat_key == chat && !holdable(data, n))
+        {
+            continue;
+        }
+        let ages = data
+            .notifications
+            .values()
+            .filter(|n| {
+                n.target_chat_key == chat && n.state == DeliveryState::Pending && n.attempts == 0
+            })
+            .map(|n| now.saturating_sub(n.created_at));
+        let (newest, oldest) = ages.fold((i64::MAX, i64::MIN), |(newest, oldest), age| {
+            (newest.min(age), oldest.max(age))
+        });
+        if (0..BATCH_QUIET_MS).contains(&newest) && (0..BATCH_LONGEST_MS).contains(&oldest) {
+            held.insert(chat);
+        }
+    }
+    held
+}
+
 /// A notice of a one-time command allowance from a build that offered one.
 /// The allowance was withdrawn (`safety_block::EXACT_GRANT_WITHDRAWN`), so
 /// the notice is false and is never delivered.
@@ -555,6 +682,13 @@ impl OrchestrationStore {
             })
             .cloned()
             .collect();
+        // Close plain updates to a coordinator wait to be one turn. Before
+        // the bound below, so a chat that waits takes no place in this pass.
+        let held: BTreeSet<String> = held_batches(&inner.data, &due, now)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        due.retain(|n| !held.contains(&n.target_chat_key));
         due.sort_by_key(batch_order);
         // Bound chats per pass, never split one chat's due backlog into turns.
         let mut targets = BTreeSet::new();
