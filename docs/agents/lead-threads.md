@@ -37,8 +37,10 @@ permission restriction. No proactive outreach is added. MCP server
 instructions are unchanged and remain under 4,096 characters.
 
 Claude and Codex keep native automatic compaction: OctiqFlow sets no
-compaction-disable flag, threshold override or host session rotation. Native
-settings/environment can affect it. If compaction cannot free enough room,
+compaction-disable flag or host session rotation. A Claude launch does get a
+compaction window (400,000 for a chat or lead thread; see
+`idle-chats-and-worker-tools.md`, Token budget). Native settings/environment
+can affect it. If compaction cannot free enough room,
 the provider errors; the thread id and transcript remain, and the host does
 not silently replace the conversation. See [agents mode](../agents-mode.md#long-context)
 for the launch flags and provider references.

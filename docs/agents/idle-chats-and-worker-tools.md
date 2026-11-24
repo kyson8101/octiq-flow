@@ -30,7 +30,7 @@ definition is read once from the person's `.claude.json` (user scope, then the
 project's local scope, honouring `CLAUDE_CONFIG_DIR`) by `worker_browser`, and
 nothing else of theirs is passed. Claude uses `--strict-mcp-config` without
 dropping settings or hooks and adds ONE more `--mcp-config` file,
-`~/.octiqflow/mcp/worker-browser-<hash>.json` (0600, content addressed, never
+`~/.octiqflow/mcp/worker-mcp-<hash>.json` (0600, content addressed, never
 on the command line). Codex lists inherited servers in the launch
 cwd/environment, turns each off individually (the person's own `playwright`
 too) and keeps `--disable apps --disable plugins`, then adds the browser as one
@@ -56,29 +56,19 @@ computer-use route (`cua_repl`, `node_repl`, the plugins that carry them) is NOT
 given to workers below full access by default; one registered Codex agent can
 opt in (next paragraph).
 
-**A worker whose EXACT attempt runs at Full access gets the person's whole tool
-set** (the person's decision of 2026-11-17: "Full access 的 agent 全给"): the
-same MCP servers, plugins and apps an ordinary chat of its provider gets
-(`AgentCommand::worker_full_tools`, set in `start_session`). Claude launches
-without `--strict-mcp-config` (the OctiqFlow `--mcp-config` and the worker
-browser file stay); Codex gets no `--disable apps`, no `--disable plugins`, no
-per-server `enabled=false` entry and no host `octiq_playwright` copy (the
-person's own `playwright` is inherited); OctiqFlow's own `octiq` server is on
-either way. Access is read by the same snapshot resolution as the agent
-(`OrchestrationStore::worker_runtime`: the access each attempt of that chat key
-recorded when it was reserved, with the batch or assignee identity agreeing),
-and the launch must itself run at Full. Never read it from the task, the run's
-defaults or the roster: a task reassigned from a Full agent to an Auto one
-leaves the old chat Full and the new chat Auto, and the reverse. A missing or
-mixed snapshot, an unreadable ledger, a batch before its first claim, a front
-desk or a lite chat is isolated, as are workers below Full (their flags are
-byte-identical to before; a Codex agent below Full still opts in to browser and
-computer use with the `desktopTools` checkbox). **Cost:** a chat that keeps the
-person's servers carries its own copy of each (~480 MB a chat was measured with
-the ordinary set, `docs/agent-chat-footprint.md`), so this applies to Full
-workers only. Its first-turn gate (Codex app-server) watches every ENABLED
-server of `codex mcp list` (a disabled one never reports a startup state), with
-the longest `startup_timeout_sec` as bound, capped at 120 s, off every lock.
+**A worker gets the extra MCP servers its registered agent names, at any
+access** (2026-11-24; replaces "Full access 的 agent 全给", measured at ~16K
+tokens per model call). `TeamAgent::worker_servers` (`workerServers`; Settings →
+Agents, or `agent_register`/`agent_update`; card row `Worker MCP servers: a, b`):
+at most 12 names, 1–64 chars of `[A-Za-z0-9_.-]` or space, de-duplicated,
+`octiq`/`octiq_playwright` refused, Claude and Codex only, cleared on moving
+provider. Every worker is isolated as above (Pi `-ne --no-mcp`) plus these. The
+agent is resolved by this chat's own reservation
+(`agent_chat::worker_registration`); any doubt, a front desk or a lite launch
+adds none. Claude copies each named stdio/http/sse definition into the 0600
+`worker-mcp-<hash>.json`. Codex leaves a named listed server on, with plugins
+still off, and the first-turn gate watches it. An unknown name gets one
+`worker-servers-skipped` line, never a refusal.
 
 **A registered Codex agent can keep the person's browser and computer use**
 (`TeamAgent::desktop_tools`, JSON `desktopTools`, default off; Settings →
@@ -189,3 +179,27 @@ See [measurements and limits](../agent-chat-footprint.md).
   kill the one turn that mattered.
 - Why it is worth having: a chat costs ~480 MB — the agent plus its own copy of
   every MCP server it starts. Nine left open overnight held 4.3 GB.
+
+### Token budget: the compaction window and gathered reports
+
+A Claude launch gets `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, so the session compacts
+at that size instead of near 1M tokens. An orchestration worker gets 200,000;
+every other Claude chat gets 400,000. The window is raised to 100,000 plus a
+third of the bytes in the launch folder's `CLAUDE.md`, `AGENTS.md`,
+`CLAUDE.local.md` and `.claude/CLAUDE.md`, so a session never compacts on every
+turn, and it is capped at 900,000. Parent folders are not read. Other providers
+get no variable, and a value in the project's environment or the server's own
+is kept (`agent_chat/auto_compact.rs`).
+
+A coordinator's plain updates are gathered into one turn: progress, a worker's
+`status` message, and a report of work that finished well. Its batch waits
+until the newest pending notice is 20 s old or the oldest is 90 s old. Anything
+that asks for a decision or reports a failure, and any notice already tried
+once, takes the whole batch at once. This is decided at read time from
+`created_at`, so nothing is stored. Notices to any chat other than the run's
+coordinator, workers included, are never held, and retry backoff is unchanged
+(`inbox::deferrable`, `held_batches`).
+
+Why: an audit of 2026-11-24 measured 94% of Claude model calls re-reading more
+than 100K tokens. Everything in a session's context is re-read on every call,
+so keep this file's parent `AGENTS.md` short and put detail in `docs/agents/`.

@@ -34,7 +34,7 @@ through the API.
   A host tool shadowed by a configured server is said in a startup notice
   (`MCP servers need attention`). A host server that cannot start is said the
   same way and leaves the tools unregistered.
-- **Isolation**: a front desk or a worker below Full runs `-ne --no-mcp` (the
+- **Isolation**: a front desk or any worker runs `-ne --no-mcp` (the
   person's own extensions and Pi's whole MCP support off; the host's server is
   reached by the extension alone, so no `mcp.json` server connects); a front
   desk also loses skills, prompt templates and context files and has the one
