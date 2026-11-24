@@ -12,6 +12,146 @@ fn ping(store: &OrchestrationStore, run: &Run, worker: &Attempt, kind: &str, bod
         )
         .unwrap();
 }
+/// A fixed moment, so the debounce tests read ages, not the wall clock.
+const T: i64 = 1_000_000_000_000;
+
+/// Says every notice whose body holds `body` was enqueued, and fell due, at `at`.
+fn stamp(store: &OrchestrationStore, body: &str, at: i64) {
+    store
+        .mutate(|data| {
+            for n in data
+                .notifications
+                .values_mut()
+                .filter(|n| n.body.contains(body))
+            {
+                n.created_at = at;
+                n.next_attempt_at = at;
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+fn due_at(store: &OrchestrationStore, now: i64) -> Vec<Notification> {
+    store.due_notifications(now).unwrap()
+}
+
+/// Close plain updates are one turn: held until the newest is 20 s old, or
+/// the oldest 90 s old, and not a millisecond longer.
+#[test]
+fn a_coordinators_plain_updates_wait_for_quiet_or_for_the_oldest_to_age() {
+    let store = OrchestrationStore::default();
+    let run = run(&store);
+    let worker = running_worker(&store, &run);
+    ping(&store, &run, &worker, "status", "first");
+    stamp(&store, "first", T);
+    assert!(due_at(&store, T + BATCH_QUIET_MS - 1).is_empty());
+    assert_eq!(due_at(&store, T + BATCH_QUIET_MS).len(), 1);
+    // A later update keeps the batch quiet-held, but only until the oldest
+    // has waited its longest.
+    ping(&store, &run, &worker, "status", "second");
+    stamp(&store, "second", T + 80_000);
+    assert!(due_at(&store, T + BATCH_LONGEST_MS - 1).is_empty());
+    assert_eq!(due_at(&store, T + BATCH_LONGEST_MS).len(), 2);
+}
+
+#[test]
+fn an_urgent_notice_takes_the_held_batch_with_it() {
+    let store = OrchestrationStore::default();
+    let run = run(&store);
+    let worker = running_worker(&store, &run);
+    ping(&store, &run, &worker, "status", "plain");
+    stamp(&store, "plain", T);
+    assert!(due_at(&store, T + 5_000).is_empty());
+    ping(&store, &run, &worker, "question", "help");
+    stamp(&store, "help", T + 5_000);
+    let due = due_at(&store, T + 5_000);
+    assert_eq!(due.len(), 2);
+    assert!(due[0].body.contains("plain") && due[1].body.contains("help"));
+}
+
+/// A report is plain only when the work finished well.
+#[test]
+fn a_failed_report_is_urgent_and_a_completed_one_waits() {
+    for (outcome, urgent) in [
+        (WorkerOutcome::Completed, false),
+        (WorkerOutcome::Failed, true),
+        (WorkerOutcome::Blocked, true),
+    ] {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        store
+            .report_worker(
+                &worker.worker_chat_key,
+                WorkerReport {
+                    attempt_id: worker.id.clone(),
+                    outcome,
+                    summary: "the result".into(),
+                    files_modified: vec![],
+                    verdict: None,
+                },
+            )
+            .unwrap();
+        stamp(&store, "", T);
+        assert_eq!(!due_at(&store, T + 1).is_empty(), urgent, "{outcome:?}");
+    }
+}
+
+/// The debounce never delays a retry: once a delivery was tried, the batch
+/// goes as soon as the retry's own backoff allows.
+#[test]
+fn a_notice_already_tried_is_never_held_and_takes_its_batch() {
+    let store = OrchestrationStore::default();
+    let run = run(&store);
+    let worker = running_worker(&store, &run);
+    ping(&store, &run, &worker, "status", "retried");
+    stamp(&store, "retried", T);
+    let id = store
+        .snapshot(None)
+        .unwrap()
+        .notifications
+        .into_iter()
+        .find(|n| n.body.contains("retried"))
+        .unwrap()
+        .id;
+    store.claim_notification(&id, T).unwrap().unwrap();
+    store
+        .retry_notification(&id, Some("offline".into()), T)
+        .unwrap();
+    ping(&store, &run, &worker, "status", "fresh");
+    stamp(&store, "fresh", T + 1_000);
+    // The retry's backoff (2 s after its first try) still runs; the fresh
+    // update alone waits.
+    assert!(due_at(&store, T + 1_999).is_empty());
+    let due = due_at(&store, T + 2_000);
+    assert_eq!(due.len(), 2);
+    assert!(due.iter().any(|n| n.id == id && n.attempts == 1));
+}
+
+/// Only a coordinator's batch waits: what goes to a worker is never held.
+#[test]
+fn a_notice_to_a_worker_is_never_held() {
+    let store = OrchestrationStore::default();
+    let run = run(&store);
+    let worker = running_worker(&store, &run);
+    store
+        .record_message(
+            &run.coordinator_chat_key,
+            run.id.clone(),
+            worker.id.clone(),
+            "progress".into(),
+            "Pace".into(),
+            "keep going".into(),
+        )
+        .unwrap();
+    stamp(&store, "keep going", T);
+    let due = due_at(&store, T);
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].target_chat_key, worker.worker_chat_key);
+    assert_eq!(due[0].kind, "progress");
+}
+
 #[test]
 fn coordinator_wake_avoids_a_workers_leased_worktree_and_unvouched_index_paths() {
     let home = crate::test_dir::TestDir::new("notification-lease");

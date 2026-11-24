@@ -4756,6 +4756,18 @@ fn start_session_with_recovery(
         fence.check()?;
     }
     let project_env = crate::workspaces::resolved_env(&env.unwrap_or_default());
+    // When a Claude chat compacts (`auto_compact`): a worker sooner than a
+    // chat, never so soon that the memory files fill the window, and never
+    // over a value the person already passes down.
+    let compact_window = auto_compact::auto_compact_window(
+        agent,
+        orchestration_worker,
+        auto_compact::memory_bytes(std::path::Path::new(&process_cwd)),
+        project_env
+            .iter()
+            .any(|(name, _)| name == auto_compact::AUTO_COMPACT_WINDOW_VAR)
+            || std::env::var_os(auto_compact::AUTO_COMPACT_WINDOW_VAR).is_some(),
+    );
     // `octiq-job` on the agent's PATH, and where its shells reach the host
     // from (`chat_jobs::agent_env`): put before the project's PATH.
     let mut job_env = crate::chat_jobs::agent_env(
@@ -4846,6 +4858,11 @@ fn start_session_with_recovery(
         //
         // Harmless for Codex, whose app-server ignores this Claude-only value.
         .env("CLAUDE_CODE_ARTIFACT", "1")
+        // Claude only, and only when the person passes none down.
+        .envs(
+            compact_window
+                .map(|window| (auto_compact::AUTO_COMPACT_WINDOW_VAR, window.to_string())),
+        )
         .stdin(if transport.accepts_stdin() {
             Stdio::piped()
         } else {
@@ -8016,6 +8033,8 @@ fn forget_standing(key: &str) {
 /// and plays the stand-in when `OCTIQ_TEST_STAND_IN` names a part.
 #[cfg(test)]
 pub(crate) mod stand_in;
+
+mod auto_compact;
 
 mod attachments;
 pub(crate) use attachments::attachments_dir;
