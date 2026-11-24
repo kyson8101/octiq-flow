@@ -491,6 +491,7 @@ mod tests {
             updated_at: 0,
             persistent_prompt: String::new(),
             desktop_tools: false,
+            worker_servers: Vec::new(),
         }
     }
 

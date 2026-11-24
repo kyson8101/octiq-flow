@@ -15,6 +15,7 @@ fn draft(name: &str, project: Option<&str>) -> TeamDraft {
         team_id: None,
         persistent_prompt: None,
         desktop_tools: None,
+        worker_servers: None,
     }
 }
 
@@ -149,6 +150,143 @@ fn desktop_tools_are_for_a_codex_agent_only_and_end_when_it_leaves_codex() {
     )
     .unwrap();
     assert!(!moved.desktop_tools, "a Claude agent has nothing to keep");
+}
+
+fn with_servers(names: &[&str]) -> TeamDraft {
+    TeamDraft {
+        worker_servers: Some(names.iter().map(|n| n.to_string()).collect()),
+        ..draft("Maker", None)
+    }
+}
+
+#[test]
+fn worker_servers_are_checked_at_their_bounds() {
+    let path = temp();
+    let names: Vec<String> = (1..=13).map(|n| format!("server-{n}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    // Twelve is the most; the thirteenth is refused, and nothing is saved.
+    let twelve = check(&path, with_servers(&names[..12])).unwrap();
+    assert_eq!(twelve.worker_servers.len(), 12);
+    let refused = check(&path, with_servers(&names)).unwrap_err();
+    assert!(refused.contains("at most 12"), "{refused}");
+    // A repeat is dropped before counting, the first kept.
+    let mut repeated = names[..12].to_vec();
+    repeated.insert(3, "server-1");
+    let kept = check(&path, with_servers(&repeated)).unwrap();
+    assert_eq!(kept.worker_servers, &names[..12]);
+    // Each name is trimmed and 1 to 64 characters of letters, digits,
+    // spaces, dots, dashes and underscores.
+    let sixty_four = "a".repeat(64);
+    let ok = check(
+        &path,
+        with_servers(&[
+            " higgsfield ",
+            "claude.ai Gmail",
+            "mssql_pandahrms",
+            &sixty_four,
+        ]),
+    )
+    .unwrap();
+    assert_eq!(
+        ok.worker_servers,
+        [
+            "higgsfield",
+            "claude.ai Gmail",
+            "mssql_pandahrms",
+            sixty_four.as_str()
+        ]
+    );
+    let sixty_five = "a".repeat(65);
+    for bad in [sixty_five.as_str(), "a/b", "a,b", "é", "a\tb", "x;y"] {
+        let refused = check(&path, with_servers(&[bad])).unwrap_err();
+        assert!(
+            refused.contains("not an MCP server name"),
+            "{bad:?}: {refused}"
+        );
+    }
+    assert!(check(&path, with_servers(&["  "]))
+        .unwrap_err()
+        .contains("cannot be empty"));
+    // OctiqFlow's own server and the host's browser copy, in any case.
+    for own in ["octiq", "OCTIQ", "octiq_playwright", "Octiq_Playwright"] {
+        let refused = check(&path, with_servers(&[own])).unwrap_err();
+        assert!(
+            refused.contains("OctiqFlow's own server"),
+            "{own}: {refused}"
+        );
+    }
+    // Absent keeps a saved list, `[]` clears it, and an empty list is not
+    // written (older files read the same).
+    let made = save(&path, with_servers(&["higgsfield", "sume"])).unwrap();
+    let kept = save(
+        &path,
+        TeamDraft {
+            id: Some(made.id.clone()),
+            role: "changed".into(),
+            ..draft("Maker", None)
+        },
+    )
+    .unwrap();
+    assert_eq!(kept.worker_servers, ["higgsfield", "sume"]);
+    assert!(std::fs::read_to_string(&*path)
+        .unwrap()
+        .contains("\"workerServers\""));
+    let cleared = save(
+        &path,
+        TeamDraft {
+            id: Some(made.id),
+            ..with_servers(&[])
+        },
+    )
+    .unwrap();
+    assert!(cleared.worker_servers.is_empty());
+    assert!(!std::fs::read_to_string(&*path)
+        .unwrap()
+        .contains("workerServers"));
+}
+
+#[test]
+fn worker_servers_are_for_claude_and_codex_and_end_when_the_agent_leaves_them() {
+    let path = temp();
+    let pi = |servers: Option<Vec<String>>| TeamDraft {
+        agent: ChatAgent::Pi,
+        model: "anthropic/claude-sonnet-5-5".into(),
+        worker_servers: servers,
+        ..draft("Maker", None)
+    };
+    let refused = save(&path, pi(Some(vec!["higgsfield".into()]))).unwrap_err();
+    assert!(
+        refused.contains("only available to a Claude or Codex agent"),
+        "{refused}"
+    );
+    let codex = save(
+        &path,
+        TeamDraft {
+            worker_servers: Some(vec!["sume".into()]),
+            ..codex_draft("Maker")
+        },
+    )
+    .unwrap();
+    assert_eq!(codex.worker_servers, ["sume"]);
+    // Moving to Claude keeps it; moving on to Pi ends it.
+    let claude = save(
+        &path,
+        TeamDraft {
+            id: Some(codex.id.clone()),
+            ..draft("Maker", None)
+        },
+    )
+    .unwrap();
+    assert_eq!(claude.worker_servers, ["sume"]);
+    let moved = save(
+        &path,
+        TeamDraft {
+            id: Some(codex.id),
+            ..pi(None)
+        },
+    )
+    .unwrap();
+    assert!(moved.worker_servers.is_empty());
 }
 
 #[test]
@@ -1775,6 +1913,7 @@ fn standing(name: &str, project: Option<&str>, text: &str) -> TeamDraft {
     TeamDraft {
         persistent_prompt: Some(text.into()),
         desktop_tools: None,
+        worker_servers: None,
         ..draft(name, project)
     }
 }
@@ -2041,6 +2180,7 @@ fn rosters_list_the_role_and_never_the_persistent_prompt() {
         TeamDraft {
             persistent_prompt: Some(hidden.into()),
             desktop_tools: None,
+            worker_servers: None,
             team_id: Some(web.id.clone()),
             ..under("Report", None, &manager)
         },
@@ -2051,6 +2191,7 @@ fn rosters_list_the_role_and_never_the_persistent_prompt() {
         TeamDraft {
             persistent_prompt: Some(hidden.into()),
             desktop_tools: None,
+            worker_servers: None,
             ..under("Other", None, &lead)
         },
     )

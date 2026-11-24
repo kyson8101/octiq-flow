@@ -61,6 +61,7 @@ fn claude_draft(name: &str, role: &str, model: &str) -> crate::team::TeamDraft {
         team_id: None,
         persistent_prompt: None,
         desktop_tools: None,
+        worker_servers: None,
     }
 }
 
@@ -3505,6 +3506,7 @@ fn agent(id: &str) -> crate::team::TeamAgent {
         updated_at: 0,
         persistent_prompt: String::new(),
         desktop_tools: false,
+        worker_servers: Vec::new(),
     }
 }
 

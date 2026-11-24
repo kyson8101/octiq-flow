@@ -21,6 +21,7 @@ fn agent(id: &str, team: Option<&str>, project: Option<&str>) -> TeamAgent {
         updated_at: 0,
         persistent_prompt: String::new(),
         desktop_tools: false,
+        worker_servers: Vec::new(),
     }
 }
 
@@ -3738,6 +3739,7 @@ fn a_peer_request_never_touches_who_reports_to_whom() {
         team_id: team.map(Into::into),
         persistent_prompt: None,
         desktop_tools: None,
+        worker_servers: None,
     };
     let leads = crate::team::save_team(
         &path,

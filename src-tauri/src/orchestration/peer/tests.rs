@@ -18,6 +18,7 @@ fn agent(id: &str, team: Option<&str>, project: Option<&str>) -> TeamAgent {
         updated_at: 0,
         persistent_prompt: String::new(),
         desktop_tools: false,
+        worker_servers: Vec::new(),
     }
 }
 

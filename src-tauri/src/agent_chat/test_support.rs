@@ -68,7 +68,7 @@ pub(super) fn build_command_with_mcp(
         codex_user_mcp: &[],
         codex_worker_playwright: None,
         codex_worker_desktop: false,
-        worker_full_tools: false,
+        codex_worker_servers: &[],
         claude_worker_mcp: None,
         preferences: None,
     })

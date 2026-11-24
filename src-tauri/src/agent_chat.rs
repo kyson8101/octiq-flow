@@ -4134,21 +4134,28 @@ fn worker_launch_role(
     manager.orchestrations.is_worker_chat(key)
 }
 
-/// Whether the registered agent this worker chat runs as has browser and
-/// computer use switched on. The ledger answers first and is let go before the
-/// roster is read (roster, then ledger is the one lock order). Any failure is
-/// "no".
-fn worker_wants_desktop_tools(manager: &ChatManager, key: &str) -> bool {
-    let Some(agent_id) = manager.orchestrations.worker_agent_id(key) else {
-        return false;
-    };
+/// The registered agent this worker chat runs as, by what was reserved for
+/// THAT chat (`OrchestrationStore::worker_agent_id`), never the task's current
+/// assignee. The ledger answers first and is let go before the roster is read
+/// (roster, then ledger is the one lock order). Every doubt is `None`: an
+/// unreadable ledger or roster, a missing or mixed snapshot, an agent that is
+/// gone. What it widens for a worker (`desktop_tools`, `worker_servers`)
+/// therefore widens nothing then.
+pub(crate) fn worker_registration(
+    orchestrations: &crate::orchestration::OrchestrationStore,
+    key: &str,
+) -> Option<crate::team::TeamAgent> {
+    let agent_id = orchestrations.worker_agent_id(key)?;
     crate::team::list(&crate::team::default_path(), None, true)
-        .map(|agents| {
-            agents
-                .iter()
-                .any(|a| a.id == agent_id && a.desktop_tools && a.agent == ChatAgent::Codex)
-        })
-        .unwrap_or(false)
+        .ok()?
+        .into_iter()
+        .find(|a| a.id == agent_id)
+}
+
+/// Whether a worker's registered agent has browser and computer use on: a
+/// Codex agent only.
+fn wants_desktop_tools(agent: Option<&crate::team::TeamAgent>) -> bool {
+    agent.is_some_and(|a| a.desktop_tools && a.agent == ChatAgent::Codex)
 }
 
 /// The person's own Codex MCP servers, as the Codex this chat would start
@@ -4358,26 +4365,58 @@ fn start_session_with_recovery(
     } else {
         Vec::new()
     };
-    // A worker whose exact attempt was reserved at full access, and is
-    // launched at it, gets the person's whole tool set (`AgentCommand::
-    // worker_full_tools`). Both Claude and Codex; never a front desk; any
-    // doubt (an unreadable ledger, no snapshot, mixed levels) leaves the
-    // worker isolated as before.
-    let worker_full_tools = orchestration_worker
+    // The registered agent a Claude or Codex worker runs as, by this chat's
+    // own reservation (`worker_registration`): what it names widens the
+    // worker. Every doubt, and a front desk, is `None`.
+    let registration = (orchestration_worker
         && !front_desk
-        && access == Some(Access::Full)
-        && matches!(agent, ChatAgent::Claude | ChatAgent::Codex)
-        && manager.orchestrations.worker_is_full_access(&key);
+        && matches!(agent, ChatAgent::Claude | ChatAgent::Codex))
+    .then(|| worker_registration(&manager.orchestrations, &key))
+    .flatten();
+    // What a worker keeps of the person's MCP servers, whatever its access:
+    // the browser, and the servers its agent names (`TeamAgent::
+    // worker_servers`). Every other server of theirs is off. A lite launch
+    // keeps none of them. A named server the person does not have is left
+    // out and said in one diagnostics line; it never refuses the launch.
+    let worker_servers: Vec<String> = if lite.unwrap_or(false) {
+        Vec::new()
+    } else {
+        registration
+            .as_ref()
+            .map(|a| a.worker_servers.clone())
+            .unwrap_or_default()
+    };
+    let mut codex_worker_servers: Vec<String> = Vec::new();
     // The one browser a worker keeps: the person's own `playwright`, read from
-    // their Claude settings. Claude takes it as a second config file, Codex as
-    // one whole `-c` entry. Never an error: no definition, no browser.
-    // (A full-access Codex worker inherits the person's `playwright` itself,
-    // so the host's copy would only duplicate it.)
+    // their Claude settings. Claude takes it, with the servers its agent
+    // names, as a second config file; Codex the browser as one whole `-c`
+    // entry and the named servers of its own config left on. Never an error:
+    // no definition, no browser.
     let (claude_worker_mcp, codex_worker_playwright) = if orchestration_worker && !front_desk {
         match agent {
-            ChatAgent::Claude => (crate::worker_browser::for_launch(&cwd, env.as_ref()), None),
-            ChatAgent::Codex if worker_full_tools => (None, None),
+            ChatAgent::Claude => {
+                let (file, skipped) =
+                    crate::worker_browser::for_launch(&cwd, env.as_ref(), &worker_servers);
+                if let Some(note) = skipped {
+                    crate::diagnostics::record(agent, &key, "worker-servers-skipped", &note);
+                }
+                (file, None)
+            }
             ChatAgent::Codex => {
+                let (kept, missing) =
+                    crate::agent_provider::codex_kept_servers(&codex_user_mcp, &worker_servers);
+                if !missing.is_empty() {
+                    crate::diagnostics::record(
+                        agent,
+                        &key,
+                        "worker-servers-skipped",
+                        &format!(
+                            "the agent's worker MCP servers were not all added to this worker: {} not in the person's Codex MCP servers",
+                            missing.join(", ")
+                        ),
+                    );
+                }
+                codex_worker_servers = kept;
                 let taken: Vec<String> = codex_user_mcp.iter().map(|s| s.name.clone()).collect();
                 let project_env = env
                     .as_ref()
@@ -4415,9 +4454,8 @@ fn start_session_with_recovery(
     // a Codex with neither server leaves the launch exactly as every worker's.
     let codex_worker_desktop = orchestration_worker
         && !front_desk
-        && !worker_full_tools
         && agent == ChatAgent::Codex
-        && worker_wants_desktop_tools(&manager, &key)
+        && wants_desktop_tools(registration.as_ref())
         && !crate::agent_provider::codex_desktop_servers(&codex_user_mcp).is_empty();
     if codex_worker_desktop {
         crate::diagnostics::record(
@@ -4425,14 +4463,6 @@ fn start_session_with_recovery(
             &key,
             "desktop-tools",
             "The worker keeps the person's browser and computer use (plugins on; other inherited MCP servers off).",
-        );
-    }
-    if worker_full_tools {
-        crate::diagnostics::record(
-            agent,
-            &key,
-            "full-tools",
-            "The worker runs at full access and keeps the person's whole tool set (their MCP servers, plugins and apps).",
         );
     }
     manager.admit_beside_writers(
@@ -4670,7 +4700,7 @@ fn start_session_with_recovery(
         codex_user_mcp: &codex_user_mcp,
         codex_worker_playwright: codex_worker_playwright.as_ref(),
         codex_worker_desktop,
-        worker_full_tools,
+        codex_worker_servers: &codex_worker_servers,
         claude_worker_mcp: claude_worker_mcp.as_deref(),
         preferences: preferences.as_deref(),
     };
@@ -4922,13 +4952,14 @@ fn start_session_with_recovery(
         None
     };
 
-    // A worker that was given the person's `playwright` holds its first turn
-    // until that server settles (`codex_mcp_ready`): Codex fixes a turn's tool
-    // list when the turn starts, and a cold `npx` is not ready by then.
+    // A worker that was given the person's `playwright`, or keeps servers its
+    // agent names, holds its first turn until those settle (`codex_mcp_ready`):
+    // Codex fixes a turn's tool list when the turn starts, and a cold `npx`
+    // is not ready by then.
     let mcp_ready = {
         let (watched, longest) = crate::agent_provider::codex_gate_servers(
             codex_worker_playwright.as_ref().map(|b| b.name.as_str()),
-            worker_full_tools && agent == ChatAgent::Codex,
+            &codex_worker_servers,
             codex_worker_desktop,
             &codex_user_mcp,
         );
