@@ -45,7 +45,7 @@ Detail lives in `docs/agents/`, moved verbatim from this file. **An agent MUST r
 | Composer runtime chip and composer fit | `docs/agents/composer-and-runtime-chip.md` | `AgentIdentityChip`, `RuntimeSheet`, `lib/chatSettings`, `lib/composerFit` |
 | Chat waiting state and turn clock | `docs/agents/chat-wait-and-turn-clock.md` | `lib/chatWait`, `lib/turnClock`, `lib/restoredPark`, `lib/pendingActions` |
 | Closing words, queue and Stop | `docs/agents/queue-and-stop.md` | `queued_turns`, `chat_interrupt`, `CutOff`, `carry_queued_turn`, `turn_is_over` |
-| Idle chats and worker tools | `docs/agents/idle-chats-and-worker-tools.md` | the idle reaper, `worker_browser.rs`, `codex_mcp_ready`, worker MCP flags |
+| Idle chats and worker tools | `docs/agents/idle-chats-and-worker-tools.md` | the idle reaper, `worker_browser.rs`, `codex_mcp_ready`, worker MCP flags and `workerServers`, the compaction window (`auto_compact.rs`), gathered coordinator reports (`orchestration/inbox.rs`) |
 | Completing a chat | `docs/agents/completing-a-chat.md` | `chat_complete`, `completing`, `chat_index::complete`, `lib/chatComplete` |
 | Run panel and progress strip | `docs/agents/run-panel-and-progress.md` | `RunProgressStrip`, `OrchestrationPanel`, `lib/runProgress`, `lib/runWaits`, `lib/taskHold`, `lib/orchestration` |
 | Jobs and attention alerts | `docs/agents/jobs-and-alerts.md` | `chat_jobs.rs`, `job_wrapper.rs`, `job_progress.rs`, `octiq-job`, OSC scanning in `pty.rs` |
