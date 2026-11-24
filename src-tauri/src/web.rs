@@ -1928,7 +1928,9 @@ async fn orchestration_handler(
     };
     // A peer tool acts as the chat's registered agent. An additional agent in
     // a room is one voice in the chat, not that agent.
-    if let Some(refused) = seat_refusal(command, &caller) {
+    if let Some(refused) = seat_refusal(command, &caller)
+        .or_else(|| seat_field_refusal(command, &request.args, &caller))
+    {
         return hook_failed(StatusCode::BAD_REQUEST, refused);
     }
     if command == "orchestration_workspace_cleanup_request" {
@@ -2114,6 +2116,28 @@ async fn workspace_cleanup_request(ctx: &Ctx, caller: HookCaller, args: Value) -
 /// them: a room seat's capability proves the chat, not that identity.
 const PEER_COMMANDS: &[&str] = &["orchestration_peer_ask", "orchestration_peer_request"];
 
+/// Why a room seat may neither list the MCP servers a task's worker could be
+/// given nor name them on a task.
+const SEAT_SERVERS: &str = "Only the chat's own agent plans its workers' MCP servers. An additional agent in a room cannot speak as the coordinator.";
+
+/// A room seat may create and revise tasks, but not name `workerServers` on
+/// them: that widens what a worker can do, and it is the coordinator's to
+/// plan (`seat_refusal` refuses the listing the same way).
+fn seat_field_refusal(
+    command: &str,
+    args: &Value,
+    caller: &HookCaller,
+) -> Option<crate::outcome::Refusal> {
+    (matches!(
+        command,
+        "orchestration_task_create" | "orchestration_task_revise"
+    ) && args.get("workerServers").is_some()
+        && caller.session_key != caller.chat_key)
+        .then(|| {
+            crate::outcome::Refusal::new(crate::outcome::ReasonClass::ScopeRefused, SEAT_SERVERS)
+        })
+}
+
 fn seat_refusal(command: &str, caller: &HookCaller) -> Option<crate::outcome::Refusal> {
     ((PEER_COMMANDS.contains(&command)
         || command == "orchestration_workspace_cleanup_request"
@@ -2124,7 +2148,7 @@ fn seat_refusal(command: &str, caller: &HookCaller) -> Option<crate::outcome::Re
             if command == "orchestration_workspace_cleanup_request" {
                 "Only the chat's own agent may request cleanup as coordinator. An additional agent in a room cannot speak as the coordinator."
             } else if command == "orchestration_worker_servers_available" {
-                "Only the chat's own agent plans its workers' MCP servers. An additional agent in a room cannot speak as the coordinator."
+                SEAT_SERVERS
             } else {
                 "Only the chat's own agent can ask a teammate or hand one work. An additional agent in a room has no team of its own here."
             },

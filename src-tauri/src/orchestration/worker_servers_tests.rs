@@ -268,9 +268,98 @@ fn a_task_with_a_worker_on_it_keeps_its_servers() {
     assert!(refused.contains("still on this task"), "{refused}");
     assert_eq!(plan_of(&store, &run.id).status, PlanStatus::Approved);
     finish_attempt(&store, working, WorkerOutcome::Failed);
-    // Once it has stopped, the change goes to the person.
+    // Once it has ended, the change goes to the person.
     servers_only(&store, "chat:master", &task.id, &["sume"]).unwrap();
     assert_eq!(plan_of(&store, &run.id).status, PlanStatus::Pending);
+}
+
+/// A task the person stopped is theirs to start again. Other servers would
+/// put it back on the plan card, where an approval (a standing one too)
+/// clears the stop and the coordinator's own Start goes through: the work
+/// restarted with nobody asked. So it is refused, and nothing changes.
+#[test]
+fn a_task_the_person_stopped_keeps_its_servers_and_its_approval() {
+    let store = OrchestrationStore::default();
+    let (run, task) = approved_with(&store, &["sume"]);
+    start_as_planned(&store, &task.id);
+    store.stop_task(&task.id, None).unwrap();
+    assert_eq!(
+        servers_only(&store, "chat:master", &task.id, &[]).unwrap_err(),
+        STOPPED_NOT_AMENDED
+    );
+    let kept = now(&store, &task.id);
+    assert!(kept.stopped.is_some());
+    assert_eq!(kept.worker_servers, names(&["sume"]));
+    assert_eq!(kept.approved, task.approved);
+    assert_eq!(plan_of(&store, &run.id).status, PlanStatus::Approved);
+}
+
+/// A failed task that used its automatic retries is the person's to
+/// decide: a trip back to the plan card with other servers is not a way
+/// round the budget.
+#[test]
+fn a_failed_task_past_its_retries_keeps_its_servers() {
+    let store = OrchestrationStore::default();
+    let (run, task) = approved_with(&store, &["sume"]);
+    let attempt = start_as_planned(&store, &task.id);
+    finish_attempt(&store, attempt, WorkerOutcome::Failed);
+    store
+        .mutate(|data| {
+            data.tasks.get_mut(&task.id).unwrap().retries_used = retry::RETRY_LIMIT;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        servers_only(&store, "chat:master", &task.id, &["higgsfield"]).unwrap_err(),
+        retry::RETRIES_USED
+    );
+    assert_eq!(now(&store, &task.id).worker_servers, names(&["sume"]));
+    assert_eq!(plan_of(&store, &run.id).status, PlanStatus::Approved);
+}
+
+/// A task back on the plan card because its servers changed can have them
+/// corrected again before the person decides, though it has attempts
+/// behind it; what a rejection restores is still the first approval.
+#[test]
+fn servers_sent_back_to_the_card_can_be_corrected_again_before_the_person_decides() {
+    for approve in [true, false] {
+        let store = OrchestrationStore::default();
+        let (run, task) = approved_with(&store, &["sume"]);
+        let attempt = start_as_planned(&store, &task.id);
+        finish_attempt(&store, attempt, WorkerOutcome::Failed);
+        servers_only(&store, "chat:master", &task.id, &["higgsfield"]).unwrap();
+        let corrected =
+            servers_only(&store, "chat:master", &task.id, &["higgsfield", "sentry"]).unwrap();
+        assert!(corrected.approved.is_none());
+        assert_eq!(corrected.worker_servers, names(&["higgsfield", "sentry"]));
+        let plan = plan_of(&store, &run.id);
+        assert_eq!(plan.status, PlanStatus::Pending);
+        if approve {
+            store
+                .approve_plan("chat:master", &run.id, None, Some(plan.revision))
+                .unwrap();
+            let again = start_as_planned(&store, &task.id);
+            assert_eq!(again.worker_servers, names(&["higgsfield", "sentry"]));
+        } else {
+            store
+                .reject_plan_from_card(
+                    "chat:master",
+                    &run.id,
+                    Some(&[task.id.clone()]),
+                    Some(plan.revision),
+                    None,
+                    CardView {
+                        surface: "chat".into(),
+                        shown_ms: Some(2_000),
+                        updated_ms: None,
+                    },
+                )
+                .unwrap();
+            let restored = now(&store, &task.id);
+            assert_eq!(restored.worker_servers, names(&["sume"]));
+            assert_eq!(restored.approved, task.approved);
+        }
+    }
 }
 
 /// The plan's revision moves when only a task's servers change: what the

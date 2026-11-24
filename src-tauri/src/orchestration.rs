@@ -3203,8 +3203,26 @@ impl OrchestrationStore {
                 return Err("This is a manager's subtask: it gets the MCP servers the person approved for the task it was split from.".into());
             }
             servers_need_plan_card(run, &servers)?;
+            // The person stopped it, so only they start it again. Other
+            // servers would put it back on the plan card, and an approval
+            // there would start the same work with nobody asked: refused as a
+            // replacement is (`supersedable`). A stopped task did not fail
+            // (`retry::counted` says nothing of it), so the budget below
+            // would not hold it either.
+            if task.stopped.is_some() {
+                return Err(STOPPED_NOT_AMENDED.into());
+            }
+            // Other servers for a task in failure are a way to retry it: held
+            // to the budget as a reopen and a replacement are, so a trip back
+            // to the plan card cannot get round it.
+            retry::allows(data, task, retry::counted(data, task))?;
             let approved = task.approved_at.is_some();
-            if approved {
+            // Approved, or back on the plan card with an approval a rejection
+            // would restore (an earlier servers amend, a reassignment or a
+            // resize): the same guards hold, and the list can be corrected
+            // again before the person decides. Only an approved task has an
+            // approval to take away.
+            if approved || task.approval_rollback.is_some() {
                 batches::require_no_batch(data, task_id)?;
                 if let Some(active) = task
                     .active_attempt_id
@@ -3215,7 +3233,7 @@ impl OrchestrationStore {
                         active.status,
                         AttemptStatus::Preparing | AttemptStatus::Running
                     ) {
-                        return Err("A worker is still on this task, with the MCP servers it was started with. Stop that attempt first, or name the servers on a new task.".into());
+                        return Err("A worker is still on this task, with the MCP servers it was started with. Change them once that attempt has ended, or name the servers on a new task.".into());
                     }
                 }
                 if !matches!(
@@ -5300,6 +5318,9 @@ const STOPPED_BY_PERSON: &str = "The person stopped this task's worker, so only 
 /// an agent reaches replaces it, and the page has no replacement of its own:
 /// the person's way on is their Start of the task itself.
 const STOPPED_NOT_REPLACED: &str = "The person stopped this task's worker, so it is not replaced: a replacement would be the same work starting again without them. Only they start it again, with Start on its row in the run panel. Nothing was created or replaced. If the work should change, say so in your reply and leave the task as it is.";
+
+/// What `amend_servers` says of a task the person stopped.
+const STOPPED_NOT_AMENDED: &str = "The person stopped this task's worker, so its MCP servers are not changed: that would put it back on the plan card, and an approval there would start the same work again without them. Only they start it again, with Start on its row in the run panel. Nothing was changed. If the work needs other servers, say so in your reply and leave the task as it is.";
 
 fn stop_run_in(data: &mut Stored, run_id: &str, reason: String, now: i64) -> Vec<String> {
     for notification in data.notifications.values_mut().filter(|notification| {

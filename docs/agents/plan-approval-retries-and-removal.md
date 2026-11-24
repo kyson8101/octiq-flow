@@ -114,9 +114,11 @@ page's. Nothing but an approval writes it. So:
   `approval::keeps_to`, never checked at one caller.
 - A task's MCP servers are the one thing of an approved task the coordinator
   may change (`orchestration_task_revise` with `taskId` and `workerServers`
-  alone, `amend_servers`): only while no worker runs it and it is in no batch,
-  and the task goes back on the plan card like a reassignment (rollback kept for
-  a rejection; the plan revision moves). The page shows the list on the task's
+  alone, `amend_servers`): only while no worker runs it, it is in no batch, the
+  person has not stopped it (`STOPPED_NOT_AMENDED`) and `retry::allows` it, and
+  the task goes back on the plan card like a reassignment (rollback kept for a
+  rejection; the plan revision moves). While it is back on the card with that
+  rollback the list can be corrected again under the same guards. The page shows the list on the task's
   row and on the stage line (`MCP servers: a, b`). A reopen that names them is
   refused (`REOPEN_SERVERS`); a manager's split takes its parent's APPROVED
   list and names none (`SPLIT_SERVERS`); a peer request takes none
