@@ -191,7 +191,14 @@ page's. Nothing but an approval writes it. So:
   retry budget says nothing of it and did not hold this. Once the person
   has started it again it is an ordinary task. A new way to get stopped
   work going again that is not a start of the task asks `task.stopped`
-  first, the same way.
+  first, the same way. **Nor does the coordinator hand a stopped task, or
+  one `retry::allows` refuses, to another agent** (`ReassignedBy`,
+  `STOPPED_NOT_REASSIGNED`): a new owner puts it back on the plan card,
+  whose approval (a standing one too) clears the stop and the retry count.
+  The coordinator's reassignment comes only through `/hook/orchestration`
+  (`task_reassign` → `orchestration_task_reassign_in_chat`, which the socket
+  refuses); the person's, the mission page's `orchestration_task_reassign`
+  (which no hook action maps to), is asked neither.
 - A review of an approval boundary checks the shape that actually runs
   against a durable source of authority.
 

@@ -1708,6 +1708,107 @@ fn a_backup_takes_over_a_task_only_through_the_person_and_never_beside_a_live_wo
     assert!(handoff().unwrap_err().contains("already has this task"));
 }
 
+/// The coordinator hands `task_id` to Noah.
+fn coordinator_hands_to_noah(store: &OrchestrationStore, task_id: &str) -> Result<Task, String> {
+    store.reassign_task(
+        "chat:master",
+        task_id,
+        (
+            None,
+            Some(TaskAssignee {
+                id: "noah".into(),
+                name: "Noah".into(),
+            }),
+            None,
+        ),
+        "Noah takes it over.".into(),
+    )
+}
+
+/// An approved task in a run with other work still to do: a run whose only
+/// task failed is called failed, and nothing in it changes hands.
+fn one_of_two_approved(store: &OrchestrationStore) -> (Run, Task) {
+    let (run, mut tasks) = approved_plan(store, 2);
+    (run, tasks.remove(0))
+}
+
+fn task_now(store: &OrchestrationStore, task_id: &str) -> Task {
+    store
+        .snapshot(None)
+        .unwrap()
+        .tasks
+        .into_iter()
+        .find(|task| task.id == task_id)
+        .unwrap()
+}
+
+/// A task the person stopped is theirs to start again. A new owner would put
+/// it back on the plan card, where an approval (a standing one too) clears
+/// the stop and the coordinator's own start goes through: the work restarted
+/// with nobody asked. So the coordinator's reassignment is refused, and
+/// nothing changes.
+#[test]
+fn a_task_the_person_stopped_does_not_change_hands_through_its_coordinator() {
+    let store = OrchestrationStore::default();
+    let (run, task) = one_of_two_approved(&store);
+    start_as_planned(&store, &task.id);
+    store.stop_task(&task.id, None).unwrap();
+    let before = task_now(&store, &task.id);
+    assert_eq!(
+        coordinator_hands_to_noah(&store, &task.id).unwrap_err(),
+        STOPPED_NOT_REASSIGNED
+    );
+    let kept = task_now(&store, &task.id);
+    assert!(kept.stopped.is_some());
+    assert_eq!(kept.assignee, before.assignee);
+    assert!(kept.handoffs.is_empty());
+    assert!(kept.approved.is_some());
+    assert_eq!(kept.approved, before.approved);
+    assert_eq!(plan_of(&store, &run.id).status, PlanStatus::Approved);
+}
+
+/// A failed task that used its automatic retries is the person's to decide:
+/// a new owner, and the approval that gives the retries back, is not the
+/// coordinator's way round the budget.
+#[test]
+fn a_failed_task_past_its_retries_does_not_change_hands_through_its_coordinator() {
+    let store = OrchestrationStore::default();
+    let (run, task) = one_of_two_approved(&store);
+    let attempt = start_as_planned(&store, &task.id);
+    finish_attempt(&store, attempt, WorkerOutcome::Failed);
+    store
+        .mutate(|data| {
+            data.tasks.get_mut(&task.id).unwrap().retries_used = retry::RETRY_LIMIT;
+            Ok(())
+        })
+        .unwrap();
+    let before = task_now(&store, &task.id);
+    assert_eq!(
+        coordinator_hands_to_noah(&store, &task.id).unwrap_err(),
+        retry::RETRIES_USED
+    );
+    let kept = task_now(&store, &task.id);
+    assert_eq!(kept.status, TaskStatus::Failed);
+    assert_eq!(kept.assignee, before.assignee);
+    assert!(kept.handoffs.is_empty());
+    assert_eq!(kept.approved, before.approved);
+    assert_eq!(plan_of(&store, &run.id).status, PlanStatus::Approved);
+}
+
+/// The control: an approved task that failed with its retries left still
+/// changes hands at the coordinator's word, and goes to the person.
+#[test]
+fn a_failed_task_with_retries_left_changes_hands_through_its_coordinator() {
+    let store = OrchestrationStore::default();
+    let (run, task) = one_of_two_approved(&store);
+    let attempt = start_as_planned(&store, &task.id);
+    finish_attempt(&store, attempt, WorkerOutcome::Failed);
+    let moved = coordinator_hands_to_noah(&store, &task.id).unwrap();
+    assert_eq!(moved.assignee.as_ref().unwrap().id, "noah");
+    assert!(moved.approved.is_none());
+    assert_eq!(plan_of(&store, &run.id).status, PlanStatus::Pending);
+}
+
 #[test]
 fn a_start_from_before_a_handoff_cannot_run_or_record_the_replaced_settings() {
     // Review of the mission page: a page holding the old snapshot of a
@@ -2369,7 +2470,7 @@ pub(super) fn host_launch(store: &OrchestrationStore, task_id: &str) -> WorkerLa
 }
 
 /// Start a task as the host's dispatch would.
-pub(super) fn start_as_planned(store: &OrchestrationStore, task_id: &str) -> Attempt {
+pub(crate) fn start_as_planned(store: &OrchestrationStore, task_id: &str) -> Attempt {
     let (_, _, attempt, _) = store
         .reserve_attempt("chat:master", &host_launch(store, task_id))
         .unwrap();

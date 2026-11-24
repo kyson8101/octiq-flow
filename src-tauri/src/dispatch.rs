@@ -1954,7 +1954,19 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // reports — the backup taking over. Routed exactly as a new task, so
         // the org chart holds; the host keeps the task's destination and
         // workspace and puts the new owner in front of the person.
-        "orchestration_task_reassign" => {
+        //
+        // Two doors, as for a reopen. The coordinator's comes only through
+        // `/hook/orchestration` as `_in_chat`, which the person's socket
+        // refuses, and is refused for a task the person stopped and held to
+        // the task's automatic retries. The person's (the mission page's
+        // reassign) comes only through the socket and is neither
+        // (`ReassignedBy`).
+        "orchestration_task_reassign" | "orchestration_task_reassign_in_chat" => {
+            let by = if cmd == "orchestration_task_reassign_in_chat" {
+                crate::orchestration::ReassignedBy::Coordinator
+            } else {
+                crate::orchestration::ReassignedBy::Person
+            };
             let actor: String = arg(&args, "actorChatKey")?;
             let task_id: String = arg(&args, "taskId")?;
             let current = svc
@@ -1985,6 +1997,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 route,
                 arg(&args, "reason")?,
                 Some(effort_chosen),
+                by,
             ))
         }
         // Browser-only: the person chooses a task's size before it starts.

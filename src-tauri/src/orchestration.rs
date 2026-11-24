@@ -1313,6 +1313,26 @@ pub enum ReopenedBy {
     Person,
 }
 
+/// Who hands a task to another agent. As with [`ReopenedBy`], the two reach
+/// the host by different doors and no argument can claim the other: the
+/// coordinator only through `/hook/orchestration` (`task_reassign` →
+/// `orchestration_task_reassign_in_chat`, which the person's socket
+/// refuses), the person only through their socket
+/// (`orchestration_task_reassign`, the mission page's reassign, which no
+/// hook action maps to).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReassignedBy {
+    /// The run's coordinator, an agent: refused for a task the person
+    /// stopped (`STOPPED_NOT_REASSIGNED`) and held to the task's automatic
+    /// retries (`retry.rs`), because the plan card it goes back to may be
+    /// approved with nobody asked (standing approval) and that approval
+    /// clears the stop and the count.
+    Coordinator,
+    /// The person, on the page: their decision about the task, which they
+    /// then approve on the plan card like any change of hands.
+    Person,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerReport {
@@ -2829,9 +2849,19 @@ impl OrchestrationStore {
         ),
         reason: String,
     ) -> Result<Task, String> {
-        self.reassign_task_with_effort(actor_chat_key, task_id, route, reason, None)
+        self.reassign_task_with_effort(
+            actor_chat_key,
+            task_id,
+            route,
+            reason,
+            None,
+            ReassignedBy::Coordinator,
+        )
     }
 
+    /// `reassign_task`, for whoever asks (`ReassignedBy`). The coordinator's
+    /// is refused for a task the person stopped and held to the automatic
+    /// retries; the person's own, from the page, is neither.
     pub(crate) fn reassign_task_with_effort(
         &self,
         actor_chat_key: &str,
@@ -2843,6 +2873,7 @@ impl OrchestrationStore {
         ),
         reason: String,
         effort_chosen: Option<bool>,
+        by: ReassignedBy,
     ) -> Result<Task, String> {
         let reason = required_text("handoff reason", reason, 2_000)?;
         let (worker, assignee, destination) = route;
@@ -2899,6 +2930,22 @@ impl OrchestrationStore {
                 TaskStatus::Pending | TaskStatus::Ready | TaskStatus::Failed | TaskStatus::Blocked
             ) {
                 return Err("Only a task nobody is working on and that has not finished can change hands.".into());
+            }
+            if by == ReassignedBy::Coordinator {
+                // The person stopped it, so only they start it again. A new
+                // owner puts it back on the plan card, and an approval there
+                // (a standing one too) clears the stop: the same work would
+                // start again with nobody asked. Refused as a replacement is
+                // (`supersedable`). A stopped task did not fail
+                // (`retry::counted` says nothing of it), so the budget below
+                // would not hold it either.
+                if task.stopped.is_some() {
+                    return Err(STOPPED_NOT_REASSIGNED.into());
+                }
+                // A new owner for a task in failure is a way to retry it, and
+                // the approval it goes back to gives the retries back: held to
+                // the budget as a reopen and a replacement are.
+                retry::allows(data, task, retry::counted(data, task))?;
             }
             if task.assignee.as_ref().is_some_and(|a| a.id == assignee.id) {
                 return Err(format!("{} already has this task.", assignee.name));
@@ -5321,6 +5368,9 @@ const STOPPED_NOT_REPLACED: &str = "The person stopped this task's worker, so it
 
 /// What `amend_servers` says of a task the person stopped.
 const STOPPED_NOT_AMENDED: &str = "The person stopped this task's worker, so its MCP servers are not changed: that would put it back on the plan card, and an approval there would start the same work again without them. Only they start it again, with Start on its row in the run panel. Nothing was changed. If the work needs other servers, say so in your reply and leave the task as it is.";
+
+/// What the coordinator's reassignment says of a task the person stopped.
+pub(crate) const STOPPED_NOT_REASSIGNED: &str = "The person stopped this task's worker, so it does not change hands: a new owner would put it back on the plan card, and an approval there would start the same work again without them. Only they start it again, with Start on its row in the run panel, or hand it to someone else themselves. Nothing was changed. If someone else should take it, say so in your reply and leave the task as it is.";
 
 fn stop_run_in(data: &mut Stored, run_id: &str, reason: String, now: i64) -> Vec<String> {
     for notification in data.notifications.values_mut().filter(|notification| {

@@ -3195,6 +3195,9 @@ const PERSON_ONLY: &[&str] = &[
     // not held to the automatic retries. A coordinator's goes through
     // `_in_chat`.
     "orchestration_task_reopen",
+    // The page's own reassignment: the person's decision, which may hand
+    // on a task they stopped. A coordinator's goes through `_in_chat`.
+    "orchestration_task_reassign",
     "orchestration_task_access",
     "team_head_set",
     // An agent only proposes these, on a card (`team_tools`).
@@ -3267,6 +3270,11 @@ fn the_hook_reaches_no_person_only_command() {
     assert_eq!(
         orchestration_hook_command("task_reopen"),
         Some("orchestration_task_reopen_in_chat")
+    );
+    // Nor its reassignment, which may not hand on a stopped task.
+    assert_eq!(
+        orchestration_hook_command("task_reassign"),
+        Some("orchestration_task_reassign_in_chat")
     );
 }
 
@@ -3548,6 +3556,7 @@ fn the_socket_refuses_what_only_a_proven_lead_chat_may_do() {
         "orchestration_worker_start_in_chat",
         "orchestration_gate_resolve_in_chat",
         "orchestration_task_reopen_in_chat",
+        "orchestration_task_reassign_in_chat",
         "memory_vault_agent",
     ] {
         assert!(socket_refusal(command).is_some(), "{command}");
@@ -3563,6 +3572,7 @@ fn the_socket_refuses_what_only_a_proven_lead_chat_may_do() {
         "orchestration_worker_start",
         "orchestration_gate_resolve",
         "orchestration_task_reopen",
+        "orchestration_task_reassign",
     ] {
         assert!(socket_refusal(command).is_none(), "{command}");
     }
