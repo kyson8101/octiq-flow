@@ -239,11 +239,71 @@ pub fn worker_servers(
     }
     let note = (!why.is_empty()).then(|| {
         format!(
-            "the agent's worker MCP servers were not all added to this worker: {}",
+            "the worker MCP servers its agent and task name were not all added to this worker: {}",
             why.join("; ")
         )
     });
     (servers, note)
+}
+
+/// A name a task or an agent may give as one of its worker's extra servers:
+/// one the name check takes (`team::checked_server_names`), and not the
+/// browser, which every worker has already.
+fn nameable(name: &str) -> bool {
+    name != PLAYWRIGHT && crate::team::checked_server_names(&[name.to_owned()], "").is_ok()
+}
+
+/// The person's Claude servers a worker could be given, as NAME and
+/// transport (`stdio`, `http` or `sse`) and nothing else of the definition:
+/// the user scope of their settings (a worker runs in a checkout of its
+/// own, so one folder's local servers are not offered), each a definition
+/// `worker_servers` would copy. Sorted by name.
+pub fn claude_offered(config: &Value) -> Vec<(String, &'static str)> {
+    let Some(servers) = config.get("mcpServers").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut offered: Vec<(String, &'static str)> = servers
+        .iter()
+        .filter(|(name, _)| nameable(name))
+        .filter_map(|(name, definition)| {
+            let transport = if stdio(definition).is_some() {
+                "stdio"
+            } else if remote(definition) {
+                match definition.get("type").and_then(Value::as_str) {
+                    Some("sse") => "sse",
+                    _ => "http",
+                }
+            } else {
+                return None;
+            };
+            Some((name.clone(), transport))
+        })
+        .collect();
+    offered.sort();
+    offered
+}
+
+/// [`claude_offered`] from the settings a worker launched with `env` would
+/// read; `None` when they cannot be read.
+pub fn claude_offered_for(
+    env: Option<&BTreeMap<String, String>>,
+) -> Option<Vec<(String, &'static str)>> {
+    person_config(env).map(|config| claude_offered(&config))
+}
+
+/// The person's Codex servers a worker could be given, by name and
+/// transport: the ones Codex lists as enabled, but OctiqFlow's own and the
+/// browser, which every worker has. Sorted by name.
+pub fn codex_offered(
+    servers: &[crate::agent_provider::CodexMcpServer],
+) -> Vec<(String, &'static str)> {
+    let mut offered: Vec<(String, &'static str)> = servers
+        .iter()
+        .filter(|s| s.enabled && !s.name.starts_with(CODEX_SERVER) && nameable(&s.name))
+        .map(|s| (s.name.clone(), if s.remote { "http" } else { "stdio" }))
+        .collect();
+    offered.sort();
+    offered
 }
 
 /// The second `--mcp-config` file for a Claude worker in `cwd` (the browser
@@ -868,5 +928,60 @@ mod tests {
         let (file, note) = for_launch("/a", Some(&env_with(&dir)), &named(&["nope"]));
         assert!(file.is_none());
         assert!(note.unwrap().contains("nope"));
+    }
+
+    /// `worker_servers_available` says a name and a transport and nothing
+    /// else of a definition: no command, URL, header or variable reaches a
+    /// coordinator. It offers what a worker launch would take, and not what
+    /// every worker has (the browser, OctiqFlow's own).
+    #[test]
+    fn what_a_coordinator_is_offered_is_names_and_transports_only() {
+        let config = json!({
+            "mcpServers": {
+                "higgsfield": {"type": "http", "url": "https://mcp.higgsfield.ai/mcp", "headers": {"Authorization": "Bearer s3cret"}},
+                "events": {"type": "sse", "url": "https://events.example/sse"},
+                "sume": {"command": "npx", "args": ["sume-mcp"], "env": {"SUME_KEY": "k3y"}},
+                "playwright": {"command": "npx", "args": ["@playwright/mcp"]},
+                "octiq": {"command": "node", "args": ["octiq-ask.cjs"]},
+                "a/b": {"command": "x"},
+                "socket": {"type": "ws", "url": "wss://x"}
+            },
+            "projects": {"/work": {"mcpServers": {"local": {"command": "x"}}}}
+        });
+        let offered = claude_offered(&config);
+        assert_eq!(
+            offered,
+            [
+                ("events".to_string(), "sse"),
+                ("higgsfield".to_string(), "http"),
+                ("sume".to_string(), "stdio"),
+            ]
+        );
+        let said = format!("{offered:?}");
+        for secret in ["s3cret", "k3y", "npx", "https://", "SUME_KEY"] {
+            assert!(!said.contains(secret), "{secret}: {said}");
+        }
+        assert!(claude_offered(&json!({})).is_empty());
+
+        let codex =
+            |name: &str, remote: bool, enabled: bool| crate::agent_provider::CodexMcpServer {
+                name: name.into(),
+                remote,
+                startup_timeout_secs: None,
+                enabled,
+            };
+        assert_eq!(
+            codex_offered(&[
+                codex("sume", false, true),
+                codex("higgsfield", true, true),
+                codex("off", false, false),
+                codex("playwright", false, true),
+                codex(CODEX_SERVER, false, true),
+            ]),
+            [
+                ("higgsfield".to_string(), "http"),
+                ("sume".to_string(), "stdio"),
+            ]
+        );
     }
 }

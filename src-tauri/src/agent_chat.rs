@@ -4152,6 +4152,54 @@ pub(crate) fn worker_registration(
         .find(|a| a.id == agent_id)
 }
 
+/// The extra MCP servers a worker launch adds: its registered agent's own,
+/// in its order, then each its task's approval adds, once.
+pub(crate) fn worker_server_union(agent: &[String], tasks: &[String]) -> Vec<String> {
+    let mut all: Vec<String> = agent.to_vec();
+    for name in tasks {
+        if !all.contains(name) {
+            all.push(name.clone());
+        }
+    }
+    all
+}
+
+/// The extra MCP servers one launch of `key` asks for, by name, and what was
+/// left out for the diagnostics log: the union of its registered agent's
+/// list (`registration`, resolved by the chat's own reservation) and the
+/// list the person approved for the task(s) this chat was reserved for
+/// (`OrchestrationStore::worker_task_servers`, never a task's current
+/// value). `isolated_worker` is a worker launch that is neither a front desk
+/// nor a lite launch; anything else asks for none. Only Claude and Codex
+/// take them: another provider gets none, and a task's list it was given is
+/// said in the note.
+pub(crate) fn worker_launch_servers(
+    orchestrations: &crate::orchestration::OrchestrationStore,
+    key: &str,
+    agent: ChatAgent,
+    registration: Option<&crate::team::TeamAgent>,
+    isolated_worker: bool,
+) -> (Vec<String>, Option<String>) {
+    if !isolated_worker {
+        return (Vec::new(), None);
+    }
+    let tasks = orchestrations.worker_task_servers(key);
+    if !matches!(agent, ChatAgent::Claude | ChatAgent::Codex) {
+        let note = (!tasks.is_empty()).then(|| {
+            format!(
+                "the task's worker MCP servers were not added to this worker: a {} worker takes none (Claude and Codex workers only): {}",
+                agent.id(),
+                tasks.join(", ")
+            )
+        });
+        return (Vec::new(), note);
+    }
+    let agent_list = registration
+        .map(|a| a.worker_servers.as_slice())
+        .unwrap_or_default();
+    (worker_server_union(agent_list, &tasks), None)
+}
+
 /// Whether a worker's registered agent has browser and computer use on: a
 /// Codex agent only.
 fn wants_desktop_tools(agent: Option<&crate::team::TeamAgent>) -> bool {
@@ -4161,7 +4209,7 @@ fn wants_desktop_tools(agent: Option<&crate::team::TeamAgent>) -> bool {
 /// The person's own Codex MCP servers, as the Codex this chat would start
 /// sees them: `codex mcp list --json` through the agent shell, in the chat's
 /// folder, with the project's environment (a project may set `CODEX_HOME`).
-fn codex_user_mcp_servers(
+pub(crate) fn codex_user_mcp_servers(
     cwd: &str,
     env: Option<&std::collections::BTreeMap<String, String>>,
 ) -> Result<Vec<crate::agent_provider::CodexMcpServer>, String> {
@@ -4374,18 +4422,23 @@ fn start_session_with_recovery(
     .then(|| worker_registration(&manager.orchestrations, &key))
     .flatten();
     // What a worker keeps of the person's MCP servers, whatever its access:
-    // the browser, and the servers its agent names (`TeamAgent::
-    // worker_servers`). Every other server of theirs is off. A lite launch
-    // keeps none of them. A named server the person does not have is left
-    // out and said in one diagnostics line; it never refuses the launch.
-    let worker_servers: Vec<String> = if lite.unwrap_or(false) {
-        Vec::new()
-    } else {
-        registration
-            .as_ref()
-            .map(|a| a.worker_servers.clone())
-            .unwrap_or_default()
-    };
+    // the browser, the servers its agent names (`TeamAgent::
+    // worker_servers`) and the ones the person approved for its task(s)
+    // (`Task::worker_servers`, read from this chat's own reservation:
+    // `OrchestrationStore::worker_task_servers`). Every other server of
+    // theirs is off. A lite launch keeps none of them. A named server the
+    // person does not have is left out and said in one diagnostics line; it
+    // never refuses the launch.
+    let (worker_servers, skipped) = worker_launch_servers(
+        &manager.orchestrations,
+        &key,
+        agent,
+        registration.as_ref(),
+        orchestration_worker && !front_desk && !lite.unwrap_or(false),
+    );
+    if let Some(note) = skipped {
+        crate::diagnostics::record(agent, &key, "worker-servers-skipped", &note);
+    }
     let mut codex_worker_servers: Vec<String> = Vec::new();
     // The one browser a worker keeps: the person's own `playwright`, read from
     // their Claude settings. Claude takes it, with the servers its agent
@@ -4411,7 +4464,7 @@ fn start_session_with_recovery(
                         &key,
                         "worker-servers-skipped",
                         &format!(
-                            "the agent's worker MCP servers were not all added to this worker: {} not in the person's Codex MCP servers",
+                            "the worker MCP servers its agent and task name were not all added to this worker: {} not in the person's Codex MCP servers",
                             missing.join(", ")
                         ),
                     );

@@ -70,6 +70,25 @@ adds none. Claude copies each named stdio/http/sse definition into the 0600
 still off, and the first-turn gate watches it. An unknown name gets one
 `worker-servers-skipped` line, never a refusal.
 
+**A task can add servers for its own worker** (`Task::worker_servers`, the same
+`workerServers` on `orchestration_task_create` / `_revise`, same bounds through
+`team::checked_server_names`). Only the run's coordinator names them, only on a
+run with a plan card, never for a peer request, a manager's split (it takes its
+parent's approved list) or a known non-Claude/Codex worker; the person approves
+them as part of the plan (see [plan approval](plan-approval-retries-and-removal.md)).
+The launch asks for the agent's list, then each approved task name not already
+in it (`agent_chat::worker_launch_servers`). The task half is read from the
+reservation (`Attempt::worker_servers`, copied from `Approved` at the door;
+`BatchLaunch::worker_servers` for an agent batch, copied from its head's
+approval before any claim), never the task's current value; a chat whose
+attempts disagree gets none. A batch groups only tasks approved with the same
+list (`batches::compatible`) and refuses a claim whose approval no longer
+matches its process (`keeps_to_batch`). A Pi or Antigravity launch adds none and
+says the task's names in `worker-servers-skipped`. The coordinator reads what it
+may name with `worker_servers_available` (chat-only; refused to a worker by
+`require_user_chat`, to a front desk and to a room seat): names and transport
+only (Claude's user-scope `mcpServers`, Codex's enabled `codex mcp list`).
+
 **A registered Codex agent can keep the person's browser and computer use**
 (`TeamAgent::desktop_tools`, JSON `desktopTools`, default off; Settings →
 Agents' "Keep my browser and computer use", or `agent_register` /

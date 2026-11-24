@@ -89,7 +89,9 @@ export function autoPlanHeld(run: Pick<OrchestrationRun, "autoPlan">, tasks: Orc
     .map((task) => `${task.assignee?.name ?? "Unassigned"}: ${task.title}`);
   const named = names.length ? ` (${names.join("; ")})` : "";
   if (held.reason === "peerRequest") return `Waits for you: ${n} peer request${n === 1 ? "" : "s"}${named}. Peer requests are always approved by you.`;
-  return `Waits for you: ${n} task${n === 1 ? " runs" : "s run"} at Full access${named}. Auto-approve covers Auto or lower unless you turn on Full access tasks.`;
+  // A task that names extra MCP servers is held like a Full access one
+  // (the host's `auto_plan::held`).
+  return `Waits for you: ${n} task${n === 1 ? " runs" : "s run"} at Full access or with extra MCP servers${named}. Auto-approve covers Auto or lower unless you turn on Full access tasks.`;
 }
 
 /** Approval is final even if saving future consent fails. */

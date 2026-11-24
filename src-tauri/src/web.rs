@@ -1843,6 +1843,12 @@ const ORCHESTRATION_HOOK_ACTIONS: &[(&str, &str)] = &[
     // only on the person's own message, which the host reads itself.
     ("plan_approve", "orchestration_plan_approve_in_chat"),
     ("destinations", "orchestration_destinations"),
+    // Read-only: the names of the person's MCP servers a coordinator may
+    // name on a task. A worker is refused by its durable identity.
+    (
+        "worker_servers_available",
+        "orchestration_worker_servers_available",
+    ),
     ("snapshot", "orchestration_snapshot"),
     // The coordinator's own start, its manual override. NOT the socket's
     // `orchestration_worker_start`, which is the page's retry.
@@ -1922,7 +1928,9 @@ async fn orchestration_handler(
     };
     // A peer tool acts as the chat's registered agent. An additional agent in
     // a room is one voice in the chat, not that agent.
-    if let Some(refused) = seat_refusal(command, &caller) {
+    if let Some(refused) = seat_refusal(command, &caller)
+        .or_else(|| seat_field_refusal(command, &request.args, &caller))
+    {
         return hook_failed(StatusCode::BAD_REQUEST, refused);
     }
     if command == "orchestration_workspace_cleanup_request" {
@@ -2108,13 +2116,39 @@ async fn workspace_cleanup_request(ctx: &Ctx, caller: HookCaller, args: Value) -
 /// them: a room seat's capability proves the chat, not that identity.
 const PEER_COMMANDS: &[&str] = &["orchestration_peer_ask", "orchestration_peer_request"];
 
+/// Why a room seat may neither list the MCP servers a task's worker could be
+/// given nor name them on a task.
+const SEAT_SERVERS: &str = "Only the chat's own agent plans its workers' MCP servers. An additional agent in a room cannot speak as the coordinator.";
+
+/// A room seat may create and revise tasks, but not name `workerServers` on
+/// them: that widens what a worker can do, and it is the coordinator's to
+/// plan (`seat_refusal` refuses the listing the same way).
+fn seat_field_refusal(
+    command: &str,
+    args: &Value,
+    caller: &HookCaller,
+) -> Option<crate::outcome::Refusal> {
+    (matches!(
+        command,
+        "orchestration_task_create" | "orchestration_task_revise"
+    ) && args.get("workerServers").is_some()
+        && caller.session_key != caller.chat_key)
+        .then(|| {
+            crate::outcome::Refusal::new(crate::outcome::ReasonClass::ScopeRefused, SEAT_SERVERS)
+        })
+}
+
 fn seat_refusal(command: &str, caller: &HookCaller) -> Option<crate::outcome::Refusal> {
-    ((PEER_COMMANDS.contains(&command) || command == "orchestration_workspace_cleanup_request")
+    ((PEER_COMMANDS.contains(&command)
+        || command == "orchestration_workspace_cleanup_request"
+        || command == "orchestration_worker_servers_available")
         && caller.session_key != caller.chat_key).then(|| {
         crate::outcome::Refusal::new(
             crate::outcome::ReasonClass::ScopeRefused,
             if command == "orchestration_workspace_cleanup_request" {
                 "Only the chat's own agent may request cleanup as coordinator. An additional agent in a room cannot speak as the coordinator."
+            } else if command == "orchestration_worker_servers_available" {
+                SEAT_SERVERS
             } else {
                 "Only the chat's own agent can ask a teammate or hand one work. An additional agent in a room has no team of its own here."
             },

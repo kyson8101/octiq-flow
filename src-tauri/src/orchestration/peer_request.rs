@@ -102,6 +102,9 @@ pub const PEERS_VALIDATION_IN_USE: &str = "This task is a peer request and its t
 /// Why an agent's start of a peer-request task names no base branch
 /// (`reserve_attempt_for`): the branch's name and what it holds would reach
 /// the teammate as part of its task.
+/// A coordinator naming MCP servers for a peer request's worker.
+pub const PEERS_SERVERS: &str = "This task is a peer request, so its worker gets only the MCP servers its teammate's registration names: a server widens what the worker can do, and nobody but the person adds to a request they approved. If the job needs another server, put that work in a task of your own plan.";
+
 pub const PEERS_BASE: &str = "This task is a peer request, so its worker starts from the branch the host planned for the request the person approved. Start it without baseBranch.";
 
 /// How many of the scheduler's looks an attempt's clock may go unwritten:
@@ -929,6 +932,9 @@ impl OrchestrationStore {
                 worker: Some(worker.clone()),
                 assignee: Some(teammate.clone()),
                 destination: destination.clone(),
+                // A request names no server of its own: its worker gets what
+                // its teammate's registration names (`PEERS_SERVERS`).
+                worker_servers: Vec::new(),
                 approved_at: None,
                 approved: None,
                 approval_rollback: None,

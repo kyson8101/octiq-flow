@@ -22,7 +22,7 @@ import { modelFromReported } from "../lib/agentProviders";
 import type { OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
 import { planHoldsEveryStart } from "../lib/taskHold";
 import {
-  awaitingApproval, nextPlanChanges, planDestination, planNumbers, planOwner, planStages, planTasks, stageSummary, type PlanChanges, type PlanStage,
+  awaitingApproval, nextPlanChanges, planDestination, planNumbers, planOwner, planServers, planStages, planTasks, stageSummary, type PlanChanges, type PlanStage,
 } from "../lib/planReview";
 import { isShort, SHORT_TEXT, planFoldId, planLabel, sizeLabel } from "../lib/cardFold";
 import { FoldBody, FoldToggle, useFold } from "./CardFold";
@@ -374,7 +374,7 @@ export function PlanReview({ run: inputRun, tasks: inputTasks, drafting, project
                   }} />
                 <span>{offerFull ? "Also auto-approve Full access tasks in this chat" : "Auto-approve this chat's future plans"}</span>
               </label>}
-              {surface === "chat" && offerFull && <p className="auto-plan-full-note">Full access workers run with no permission checks; plans with them are approved without you. Peer requests still wait for you.</p>}
+              {surface === "chat" && offerFull && <p className="auto-plan-full-note">Full access workers run with no permission checks; plans with them are approved without you. So are tasks that give their worker extra MCP servers. Peer requests still wait for you.</p>}
               {rejecting && <PlanRejectConfirmation reason={reason} busy={busy} disabled={holding || refreshing || !detail.ready}
                 rejecting={busyAction === "reject"} onReason={setReason} onConfirm={() => void reject()}
                 onCancel={() => { setRejecting(false); setReason(""); }} />}
@@ -469,6 +469,7 @@ function PlanTask({ task, run, projectName, added, number, numbers, whole = fals
   const model = owner.agent && task.worker?.model ? modelFromReported(owner.agent, task.worker.model)?.name : undefined;
   const after = task.dependsOn.flatMap((id) => numbers.has(id) ? [numbers.get(id)!] : []);
   const where = planDestination(task, run, projectName);
+  const servers = planServers(task);
   const spec = task.spec.trim();
   const summary = <>
     <span className="plan-task-num">{number}</span>
@@ -482,6 +483,10 @@ function PlanTask({ task, run, projectName, added, number, numbers, whole = fals
             share a folder name, and the name alone would pass for either. */}
         <span><span className="plan-task-project">{where.project}</span>{" · "}<span className="plan-task-repo">{whole ? where.path : where.repository}</span></span>
       </span>
+      {/* What its worker gets beyond OctiqFlow's tools: a short fact of the
+          row itself, never behind the task's disclosure, and wrapped rather
+          than cut on a narrow card. */}
+      {servers && <span className="plan-task-servers">{servers}</span>}
     </span>
     {added && <span className="plan-task-new">New</span>}
     {/* A peer request: a teammate asked for it, not the owner's manager. Its

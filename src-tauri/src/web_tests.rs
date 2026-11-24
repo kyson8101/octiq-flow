@@ -3390,13 +3390,105 @@ fn a_room_seat_cannot_use_the_peer_tools() {
         );
         assert!(seat_refusal(command, &own).is_none(), "{action}");
     }
+    // The coordinator's own reading of which MCP servers its workers may be
+    // given is the chat's own agent's, like the cleanup proposal.
+    let command =
+        orchestration_hook_command("worker_servers_available").expect("worker_servers_available");
+    assert!(seat_refusal(command, &seat)
+        .expect("a seat is refused")
+        .message
+        .contains("An additional agent in a room"));
+    assert!(seat_refusal(command, &own).is_none());
     // Existing non-identity actions remain available to seats. The new
     // coordinator cleanup proposal has its own seat refusal above.
     for (_, command) in ORCHESTRATION_HOOK_ACTIONS.iter().filter(|(_, command)| {
-        !PEER_COMMANDS.contains(command) && *command != "orchestration_workspace_cleanup_request"
+        !PEER_COMMANDS.contains(command)
+            && *command != "orchestration_workspace_cleanup_request"
+            && *command != "orchestration_worker_servers_available"
     }) {
         assert!(seat_refusal(command, &seat).is_none(), "{command}");
     }
+}
+
+/// A room seat may revise a task but not name the MCP servers its worker
+/// gets: refused in the listing's own words before anything is recorded,
+/// while the chat's own agent names them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_room_seat_cannot_name_a_tasks_mcp_servers() {
+    let store = Arc::new(crate::orchestration::OrchestrationStore::default());
+    let chats = Arc::new(crate::agent_chat::ChatManager::default());
+    let lead = format!("chat:servers-lead-{}", uuid::Uuid::new_v4().simple());
+    let seat_key = format!("{lead}#2");
+    let cap = chats.test_launch(&lead);
+    let seat_cap = chats.test_launch_in(&seat_key, &lead);
+    let repo = crate::git_ops::workflow::tests::Repo::new();
+    let run = store
+        .create_run_with_mode(
+            lead.clone(),
+            "Hook fixture".into(),
+            "p".into(),
+            repo.root.clone(),
+            None,
+            crate::git_ops::workflow::WorkspaceMode::Worktree,
+        )
+        .unwrap();
+    store.require_plan_approval(&run.id).unwrap();
+    let task = store
+        .create_task(
+            &lead,
+            run.id.clone(),
+            "Cut".into(),
+            "Cut the video".into(),
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+    let (_ctx, base) = test_server(chats.clone(), store.clone()).await;
+    let body = |session: &str, action: &str, args: Value| json!({ "chatKey": lead, "sessionKey": session, "action": action, "args": args });
+    for (action, args) in [
+        (
+            "task_create",
+            json!({ "runId": run.id, "title": "Mine", "spec": "Mine", "workerServers": ["sume"] }),
+        ),
+        (
+            "task_revise",
+            json!({ "taskId": task.id, "workerServers": ["sume"] }),
+        ),
+    ] {
+        let (status, answer) = post_hook(
+            &base,
+            "orchestration",
+            None,
+            Some(&seat_cap),
+            body(&seat_key, action, args),
+        )
+        .await;
+        assert_eq!(status, 400, "{action}: {answer}");
+        assert_eq!(answer["error"], SEAT_SERVERS, "{action}");
+    }
+    let servers_of = || {
+        let tasks = store.snapshot(None).unwrap().tasks;
+        assert_eq!(tasks.len(), 1, "the seat made no task");
+        tasks[0].worker_servers.clone()
+    };
+    assert!(servers_of().is_empty());
+    let (status, answer) = post_hook(
+        &base,
+        "orchestration",
+        None,
+        Some(&cap),
+        body(
+            &lead,
+            "task_revise",
+            json!({ "taskId": task.id, "workerServers": ["sume"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(servers_of(), ["sume"]);
+    chats.test_end(&lead);
+    chats.test_end(&seat_key);
 }
 
 /// A chat with no registered agent behind it (no lead record, no worker

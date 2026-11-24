@@ -57,6 +57,18 @@ export function planDestination(
   return { project, repository: folderName(path), path };
 }
 
+/** The extra MCP servers a task's worker gets, as the plan card says them:
+ *  `MCP servers: higgsfield, sume`, or nothing for a task that names none.
+ *  They widen what its worker can do, so they are a short fact of the row,
+ *  never behind a disclosure. */
+export function planServers(task: Pick<OrchestrationTask, "workerServers">): string | null {
+  const names = (task.workerServers ?? []).filter(Boolean);
+  return names.length ? `MCP servers: ${names.join(", ")}` : null;
+}
+
+/** How many server names a folded stage line gives before it counts the rest. */
+export const STAGE_SERVERS = 6;
+
 /** How many agents a folded stage line names before it counts the rest. */
 export const STAGE_AGENTS = 6;
 
@@ -129,9 +141,10 @@ export function planPlaceKey(task: OrchestrationTask, run: Run, projectName?: (i
 }
 
 /** A stage on one line, for a plan drawn folded: how many tasks, who does
- *  them and where they land. Every agent up to six and every destination up
- *  to four is named; past that the rest are counted in words. `plan` is the
- *  whole plan's tasks, so a destination goes by one name on every line. */
+ *  them, where they land and the extra MCP servers their workers get. Every
+ *  agent up to six, every destination up to four and every server up to six
+ *  is named; past that the rest are counted in words. `plan` is the whole
+ *  plan's tasks, so a destination goes by one name on every line. */
 export function stageSummary(
   stage: PlanStage,
   run: Run,
@@ -153,10 +166,14 @@ export function stageSummary(
     const key = planPlaceKey(task, run, projectName);
     if (!places.has(key)) places.set(key, names.get(key) ?? key);
   }
+  // The servers a stage's workers get stay on its folded line: the one
+  // disclosure of the chat's card must not be what hides them.
+  const servers = [...new Set(stage.tasks.flatMap((task) => task.workerServers ?? []))].filter(Boolean);
   return [
     `${n} task${n === 1 ? "" : "s"}`,
     nameList([...agents.values()], STAGE_AGENTS, "agent"),
     nameList([...places.values()], STAGE_PLACES, "destination"),
+    servers.length ? `MCP servers: ${nameList(servers, STAGE_SERVERS, "server")}` : "",
   ].filter(Boolean).join(" · ");
 }
 

@@ -65,6 +65,7 @@ pub const HOST_BOOKKEEPING: &[&str] = &[
     "orchestration_gate_create",
     "orchestration_snapshot",
     "orchestration_destinations",
+    "worker_servers_available",
     "orchestration_peer_ask",
     "orchestration_peer_request",
     "set_chat_title",

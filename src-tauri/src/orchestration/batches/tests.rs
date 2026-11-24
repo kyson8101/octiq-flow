@@ -617,3 +617,94 @@ fn held_tasks_never_enter_a_lane() {
     assert!(queue(&inner.data, "agent_test").is_empty());
     assert!(!inner.data.agent_queue.contains_key(&task.id));
 }
+
+/// One process, one set of MCP servers. A batch is launched, before any
+/// claim, with its head task's approved list, groups only tasks approved
+/// with the same list, and refuses a claim of a task whose approval no
+/// longer matches what its process was started with.
+#[test]
+fn a_batch_runs_with_its_heads_approved_servers_and_groups_only_the_same() {
+    let home = TestDir::new("agent-batch-servers");
+    let _profile = crate::profile::started_in(&home);
+    crate::scheduling::save(settings()).unwrap();
+    let projects = WorkspaceState::load();
+    let fixed = |store: &OrchestrationStore, task: &Task, servers: &[&str]| {
+        store
+            .mutate(|data| {
+                let task = data.tasks.get_mut(&task.id).unwrap();
+                task.worker_servers = servers.iter().map(|s| s.to_string()).collect();
+                task.approved = Some(approval::Approved::of(
+                    None,
+                    task,
+                    approval::FixedBy::Plan,
+                    now_ms(),
+                ));
+                Ok(())
+            })
+            .unwrap();
+    };
+    let store = OrchestrationStore::default();
+    let run = super::super::tests::run(&store);
+    store
+        .mutate(|d| {
+            d.runs.get_mut(&run.id).unwrap().max_concurrent = 8;
+            Ok(())
+        })
+        .unwrap();
+    let head = assigned(&store, &run, 1);
+    let same = assigned(&store, &run, 2);
+    let other = assigned(&store, &run, 3);
+    fixed(&store, &head, &["sume"]);
+    fixed(&store, &same, &["sume"]);
+    fixed(&store, &other, &["higgsfield"]);
+    store.sync_agent_queue().unwrap();
+    let (_, runtime) = store
+        .begin_batch("agent_test", &settings())
+        .unwrap()
+        .unwrap();
+    assert_eq!(runtime.worker_servers, ["sume"]);
+    assert!(runtime.candidates.contains(&same.id));
+    assert!(!runtime.candidates.contains(&other.id));
+    // The launch knows its list before any attempt exists.
+    assert_eq!(
+        store.worker_task_servers(&runtime.worker_chat_key),
+        ["sume"]
+    );
+    assert!(store
+        .batch_claim(
+            &projects,
+            &runtime.worker_chat_key,
+            vec![head.id.clone(), other.id.clone()]
+        )
+        .is_err());
+    let claims = store
+        .batch_claim(
+            &projects,
+            &runtime.worker_chat_key,
+            vec![head.id.clone(), same.id.clone()],
+        )
+        .unwrap();
+    assert!(claims.iter().all(|a| a.worker_servers == ["sume"]));
+    assert_eq!(
+        store.worker_task_servers(&runtime.worker_chat_key),
+        ["sume"]
+    );
+
+    // The head re-approved with another list after its process began: the
+    // claim is refused, and nothing is reserved.
+    let store = OrchestrationStore::default();
+    let run = super::super::tests::run(&store);
+    let head = assigned(&store, &run, 1);
+    fixed(&store, &head, &["sume"]);
+    store.sync_agent_queue().unwrap();
+    let (_, runtime) = store
+        .begin_batch("agent_test", &settings())
+        .unwrap()
+        .unwrap();
+    fixed(&store, &head, &["sume", "higgsfield"]);
+    let refused = store
+        .batch_claim(&projects, &runtime.worker_chat_key, vec![head.id.clone()])
+        .unwrap_err();
+    assert!(refused.contains("other MCP servers"), "{refused}");
+    assert!(store.inner.lock().unwrap().data.attempts.is_empty());
+}
