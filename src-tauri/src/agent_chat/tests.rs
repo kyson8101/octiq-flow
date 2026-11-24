@@ -438,24 +438,20 @@ fn a_worker_keeps_desktop_tools_only_when_its_registered_codex_agent_has_them_on
         )
         .worker_chat_key
     };
+    let wants =
+        |key: &str| wants_desktop_tools(worker_registration(&manager.orchestrations, key).as_ref());
     // No assignee, no agent: no.
     let run0 = run(store);
     let unassigned = running_worker(store, &run0).worker_chat_key;
-    assert!(!worker_wants_desktop_tools(&manager, &unassigned));
+    assert!(!wants(&unassigned));
     let plain = register("Plain", None);
-    assert!(
-        !worker_wants_desktop_tools(&manager, &worker_of(&plain.id)),
-        "default off"
-    );
+    assert!(!wants(&worker_of(&plain.id)), "default off");
     let opted = register("Opted", Some(true));
     let key = worker_of(&opted.id);
-    assert!(worker_wants_desktop_tools(&manager, &key));
+    assert!(wants(&key));
     // Not another chat, and not an agent that is no longer on the roster.
-    assert!(!worker_wants_desktop_tools(&manager, "chat:orch-other"));
-    assert!(!worker_wants_desktop_tools(
-        &manager,
-        &worker_of("agent_gone")
-    ));
+    assert!(!wants("chat:orch-other"));
+    assert!(!wants(&worker_of("agent_gone")));
     // Switched off later: the next launch sees it.
     crate::team::save(
         &roster,
@@ -466,7 +462,7 @@ fn a_worker_keeps_desktop_tools_only_when_its_registered_codex_agent_has_them_on
         .unwrap(),
     )
     .unwrap();
-    assert!(!worker_wants_desktop_tools(&manager, &key));
+    assert!(!wants(&key));
 }
 
 #[test]

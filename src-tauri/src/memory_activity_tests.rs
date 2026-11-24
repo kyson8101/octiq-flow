@@ -392,6 +392,7 @@ impl World {
                 team_id: None,
                 persistent_prompt: None,
                 desktop_tools: None,
+                worker_servers: None,
             },
         )
         .unwrap()

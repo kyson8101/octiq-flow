@@ -29,6 +29,7 @@ fn register(team: &Path, name: &str, project: Option<&str>) -> TeamAgent {
             team_id: None,
             persistent_prompt: None,
             desktop_tools: None,
+            worker_servers: None,
         },
     )
     .unwrap()
@@ -358,6 +359,7 @@ async fn an_agent_changed_while_the_card_was_up_is_not_overwritten() {
                 team_id: None,
                 persistent_prompt: None,
                 desktop_tools: None,
+                worker_servers: None,
             },
         )
         .unwrap();
@@ -457,6 +459,7 @@ fn the_listing_carries_the_policy_and_each_persistent_prompt() {
             id: Some(potato.id.clone()),
             persistent_prompt: Some("Build first.".into()),
             desktop_tools: None,
+            worker_servers: None,
             ..redraft(&potato)
         },
     )
@@ -483,6 +486,7 @@ pub(super) fn redraft(agent: &TeamAgent) -> TeamDraft {
         team_id: None,
         persistent_prompt: None,
         desktop_tools: None,
+        worker_servers: None,
     }
 }
 
@@ -597,6 +601,92 @@ async fn the_card_shows_browser_and_computer_use_and_only_codex_may_have_it() {
     assert!(shown.lock().unwrap().is_empty());
 }
 
+/// The extra MCP servers an agent's workers get widen what a worker can do,
+/// so the card names them on a new agent that has any and whenever the list
+/// moves, as a row of its facts too.
+#[tokio::test]
+async fn the_card_names_the_worker_mcp_servers_when_they_are_set_or_move() {
+    let (_dir, team) = temp_team();
+    let card = |shown: &Arc<Mutex<Vec<crate::permission::Request>>>| {
+        shown.lock().unwrap().pop().unwrap().tool_input.unwrap()
+    };
+    let (shown, allow) = asker("allow", "you allowed it");
+    let saved = propose(
+        &roster(&team),
+        &team,
+        "chat:lead",
+        Kind::Register,
+        Proposal {
+            name: Some("Maker".into()),
+            provider: Some(ChatAgent::Claude),
+            model: Some("sonnet".into()),
+            worker_servers: Some(vec!["higgsfield".into(), "sume".into()]),
+            ..Proposal::default()
+        },
+        allow,
+    )
+    .await
+    .unwrap();
+    assert_eq!(saved.worker_servers, ["higgsfield", "sume"]);
+    let input = card(&shown);
+    assert!(input["change"]
+        .as_str()
+        .unwrap()
+        .contains("\nWorker MCP servers: higgsfield, sume"));
+    assert!(input["changeFacts"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["label"] == "Worker MCP servers" && row["value"] == "higgsfield, sume"));
+    assert_eq!(
+        public(&roster(&team), &saved)["workerServers"],
+        json!(["higgsfield", "sume"])
+    );
+
+    let (shown, allow) = asker("allow", "you allowed it");
+    let cleared = propose(
+        &roster(&team),
+        &team,
+        "chat:lead",
+        Kind::Update,
+        Proposal {
+            agent: Some("Maker".into()),
+            worker_servers: Some(vec![]),
+            ..Proposal::default()
+        },
+        allow,
+    )
+    .await
+    .unwrap();
+    assert!(cleared.worker_servers.is_empty());
+    assert!(card(&shown)["change"]
+        .as_str()
+        .unwrap()
+        .contains("Worker MCP servers: higgsfield, sume → none"));
+
+    // A change to something else leaves it off the card; a new agent with
+    // none has no such row.
+    let (shown, allow) = asker("allow", "you allowed it");
+    propose(
+        &roster(&team),
+        &team,
+        "chat:lead",
+        Kind::Update,
+        Proposal {
+            agent: Some("Maker".into()),
+            role: Some("Makes.".into()),
+            ..Proposal::default()
+        },
+        allow,
+    )
+    .await
+    .unwrap();
+    assert!(!card(&shown)["change"]
+        .as_str()
+        .unwrap()
+        .contains("Worker MCP servers"));
+}
+
 #[tokio::test]
 async fn the_card_shows_a_persistent_prompt_only_when_it_changes() {
     let (_dir, team) = temp_team();
@@ -607,6 +697,7 @@ async fn the_card_shows_a_persistent_prompt_only_when_it_changes() {
         TeamDraft {
             persistent_prompt: Some(hidden.clone()),
             desktop_tools: None,
+            worker_servers: None,
             ..redraft(&potato)
         },
     )
@@ -839,6 +930,7 @@ async fn an_agent_is_removed_only_on_the_persons_allow_against_the_version_shown
             team_id: None,
             persistent_prompt: None,
             desktop_tools: None,
+            worker_servers: None,
         },
     )
     .unwrap();
@@ -858,6 +950,7 @@ async fn an_agent_is_removed_only_on_the_persons_allow_against_the_version_shown
             team_id: None,
             persistent_prompt: None,
             desktop_tools: None,
+            worker_servers: None,
         },
     )
     .unwrap();
@@ -924,6 +1017,7 @@ async fn an_agent_is_removed_only_on_the_persons_allow_against_the_version_shown
         team_id: None,
         persistent_prompt: None,
         desktop_tools: None,
+        worker_servers: None,
     };
     crate::team::save(&team, edited).unwrap();
     let (_, allow) = asker("allow", "you allowed it");
@@ -1005,6 +1099,7 @@ fn register_under(team: &Path, name: &str, manager: &TeamAgent) -> TeamAgent {
             team_id: None,
             persistent_prompt: None,
             desktop_tools: None,
+            worker_servers: None,
         },
     )
     .unwrap()
@@ -1029,6 +1124,7 @@ fn move_under(team: &Path, agent: &TeamAgent, manager: Option<&TeamAgent>) -> Te
             team_id: None,
             persistent_prompt: None,
             desktop_tools: None,
+            worker_servers: None,
         },
     )
     .unwrap()

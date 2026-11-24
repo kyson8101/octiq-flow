@@ -8,8 +8,9 @@ pages more than once; it is not unique physical memory or a production forecast.
 ## Launch policy
 
 Ordinary chats keep the person's configured MCP servers. Claude and Codex
-orchestration workers default to **OctiqFlow's MCP plus the person's own
-`playwright`** (front desks keep OctiqFlow's MCP only). OctiqFlow's tools include the native Memory Vault/docspace and
+orchestration workers, at every access level, get **OctiqFlow's MCP plus the
+person's own `playwright`, plus the servers their registered agent names**
+(`workerServers`, below; front desks keep OctiqFlow's MCP only). OctiqFlow's tools include the native Memory Vault/docspace and
 orchestration operations, so workers do not need another copy of those servers.
 
 - Claude workers use `--strict-mcp-config` with the generated OctiqFlow config.
@@ -17,8 +18,9 @@ orchestration operations, so workers do not need another copy of those servers.
   With `--strict-mcp-config` alone a worker sees no other MCP server (checked
   from `system/init`), which also dropped the person's `playwright`. The
   person's own definition of each server in `CLAUDE_WORKER_MCP_ON`
-  (`playwright`) is written to a private, content-addressed
-  `~/.octiqflow/mcp/worker-browser-<hash>.json` and named by a second
+  (`playwright`), and of each server the worker's agent names, is written to a
+  private, content-addressed
+  `~/.octiqflow/mcp/worker-mcp-<hash>.json` and named by a second
   `--mcp-config`; no other server is passed and no allow rule is added, so its
   calls take the normal permission cards. An unreadable `.claude.json` means no
   browser, not a failed launch. Claude in Chrome only exists with `--chrome`,
@@ -127,27 +129,43 @@ orchestration operations, so workers do not need another copy of those servers.
   Sonnet).
 - Pi runs one `pi --mode rpc` process per chat, with OctiqFlow's MCP loaded
   through its own extension (the extension speaks MCP to OctiqFlow's server itself);
-  a worker below Full runs `-ne --no-mcp`, so the person's own extensions and
-  servers stay off.
+  every worker, at any access, runs `-ne --no-mcp`, so the person's own
+  extensions and servers stay off.
   Antigravity's
   installed CLI has no per-launch strict MCP flag; its personal settings are
   not rewritten to imitate one. Its existing plugin/access rules are unchanged.
 
-- **Full-access workers keep the person's whole tool set.** A worker whose exact
-  attempt was reserved, and is launched, at Full gets what an ordinary chat of
-  its provider gets: Claude without `--strict-mcp-config`; Codex with no
-  `--disable apps`, no `--disable plugins`, no per-server disable and no host
-  browser entry. OctiqFlow's `octiq` server stays. The access comes from that
-  attempt's recorded settings (the same snapshot as its agent), never from the
-  task, the run's defaults or the roster; missing or mixed means isolated, and
-  front desks are never given it. Memory: every kept server is one more
-  subprocess in that chat's bucket (a chat is ~480 MB with the ordinary set; nine
-  left open held 4.3 GB), so only Full workers pay it; workers below Full are
-  unchanged. Checked against codex-cli 0.164: `codex mcp list --json` under the
-  Full flags lists `cua_repl` and `node_repl` enabled, under the isolated flags
-  disabled; `codex_app` is `enabled: false` in the person's config either way.
-  The first turn waits for every enabled server (a disabled one reports no
-  startup state), bounded by the longest `startup_timeout_sec` (120 s cap).
+- **Each registered agent names the extra servers its workers get**
+  (`TeamAgent::worker_servers`, `workerServers`; Claude and Codex agents only,
+  at most 12 names). This replaced "a Full worker keeps the person's whole
+  tool set" (2026-11-17 to 2026-11-24): measured at ~16K extra tokens re-read
+  on every model call (39 servers, ~600 tools) across 145 workers a week. A
+  worker is now isolated as above at every access level, plus the named
+  servers. The agent is the one THIS chat's attempt was reserved for
+  (`worker_agent_id`, then the roster); any doubt, a front desk or a lite
+  launch adds nothing.
+  - Claude: the named definitions ride the same 0600 `worker-mcp-<hash>.json`
+    as the browser, from the same `.claude.json` scopes. Unlike the browser,
+    `http` and `sse` definitions are taken (copied whole: `headers`, `oauth`).
+    Checked against claude 2.1.331: `claude -p … --strict-mcp-config
+    --mcp-config <file with higgsfield, sume and sentry, each type http and
+    url only>` reported all three `"status": "connected"` in `system/init`,
+    with 200, 101 and 76 of their tools listed (OAuth-backed servers; no
+    paid tool call was made).
+  - Codex: a named server `codex mcp list` shows is left alone instead of
+    being turned off; `--disable apps --disable plugins` stay. Checked against
+    codex-cli 0.171 under the exact worker flags with a scratch `CODEX_HOME`:
+    named `alpha` (stdio, `env`) and `beta` (`streamable_http`) listed
+    enabled with their own command/url, the unnamed `gamma` disabled. A
+    plugin's server (`cua_repl`) is gone under `--disable plugins` whether
+    named or not; `desktopTools` is still the route to it.
+  - A name the person's config does not have, or a definition neither rule
+    takes, is left out with one `worker-servers-skipped` diagnostics line
+    (names only); the launch is never refused.
+  - The first app-server turn waits for the named servers that are enabled,
+    as for the browser, bounded by the longest `startup_timeout_sec` (120 s
+    cap). Memory: each named server is one more subprocess in that chat's
+    bucket.
 
 No approval rule, `HOST_BOOKKEEPING` entry, capability, writable root or Windows
 launch quoting rule changes. Front desks still expose only `route_chat`.

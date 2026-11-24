@@ -315,116 +315,91 @@ fn a_reassigned_tasks_old_chat_never_resolves_to_the_new_agent() {
     );
 }
 
-/// Full access is read the way the agent is: from the exact attempt a chat
-/// was reserved for, never from the task as it stands after a handoff.
+/// The extra MCP servers a worker gets are its OWN reservation's agent's
+/// (`agent_chat::worker_registration`), never the task's assignee after a
+/// handoff, and the access it runs at changes nothing: a Full task handed
+/// from A to B leaves A's old chat with A's list and gives B's chat B's, for
+/// every start path that asks by the chat key.
 #[test]
-fn a_reassigned_tasks_chats_resolve_full_access_by_their_own_attempt() {
-    for (first, second) in [(Access::Full, Access::Auto), (Access::Auto, Access::Full)] {
-        let home = crate::test_dir::TestDir::new("worker-full-access-reassign");
-        let _profile = crate::profile::started_in(&home);
-        let svc = Services::at_profile();
-        let store = svc.orchestrations.clone();
-        let (run, task) = pending_plan(&store);
-        let settings = |access| automation::WorkerSettings {
-            agent: ChatAgent::Codex,
-            access,
-            model: Some("gpt-5.6-terra".into()),
-            effort: None,
-            recovery: None,
-        };
-        let hand_to = |id: &str, access| {
-            store
-                .reassign_task(
-                    "chat:master",
-                    &task.id,
-                    (Some(settings(access)), Some(who(id)), None),
-                    "Hand over".into(),
-                )
-                .unwrap();
-            store
-                .approve_plan("chat:master", &run.id, None, None)
-                .unwrap();
-        };
-        let start = |access| {
-            store
-                .reserve_attempt(
-                    "chat:master",
-                    &WorkerLaunch {
-                        agent: ChatAgent::Codex,
-                        model: Some("gpt-5.6-terra".into()),
-                        access,
-                        ..launch_for(&task.id)
-                    },
-                )
-                .unwrap()
-                .2
-        };
-        hand_to("agent_a", first);
-        let old = start(first);
-        let old = store
-            .activate_attempt(&old.id, "/tmp".into(), "a".into(), true)
-            .unwrap();
-        finish_attempt(&store, old.clone(), WorkerOutcome::Blocked);
-        hand_to("agent_b", second);
-        let new = start(second);
-        assert_eq!(
-            store.worker_is_full_access(&old.worker_chat_key),
-            first == Access::Full,
-            "the old chat keeps what it was reserved at: {first:?} then {second:?}"
-        );
-        assert_eq!(
-            store.worker_is_full_access(&new.worker_chat_key),
-            second == Access::Full,
-            "the new chat has its own: {first:?} then {second:?}"
-        );
-    }
-}
-
-#[test]
-fn a_chat_with_no_clear_reservation_is_not_full_access() {
-    let home = crate::test_dir::TestDir::new("worker-full-access-doubt");
+fn a_reassigned_tasks_chats_keep_their_own_agents_worker_servers() {
+    let home = crate::test_dir::TestDir::new("worker-servers-reassign");
     let _profile = crate::profile::started_in(&home);
+    let roster = home.join("team.json");
+    let _team = crate::team::use_test_path(roster.clone());
+    let register = |name: &str, agent: &str, model: &str, servers: &[&str]| {
+        crate::team::save(
+            &roster,
+            serde_json::from_value(json!({
+                "name": name, "agent": agent, "model": model, "workerServers": servers,
+            }))
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let a = register("Alpha", "claude", "opus", &["higgsfield"]);
+    let b = register("Beta", "codex", "gpt-5.6-terra", &["sume", "sentry"]);
     let svc = Services::at_profile();
     let store = svc.orchestrations.clone();
-    let run = run(&store);
-    let live = running_worker_of(&store, &run, &who("agent_a"));
-    let key = live.worker_chat_key.clone();
-    let set = |access: Access| {
+    let (run, task) = pending_plan(&store);
+    let settings = |agent, model: &str| automation::WorkerSettings {
+        agent,
+        access: Access::Full,
+        model: Some(model.into()),
+        effort: None,
+        recovery: None,
+    };
+    let hand_to = |agent: &crate::team::TeamAgent, worker| {
         store
-            .mutate(|data| {
-                data.attempts.get_mut(&live.id).unwrap().access = access;
-                Ok(())
-            })
+            .reassign_task(
+                "chat:master",
+                &task.id,
+                (Some(worker), Some(who(&agent.id)), None),
+                "Hand over".into(),
+            )
+            .unwrap();
+        store
+            .approve_plan("chat:master", &run.id, None, None)
             .unwrap();
     };
-    set(Access::Full);
-    assert!(store.worker_is_full_access(&key));
-    // Mixed levels on one chat, a stranger, the coordinator and an unknown key
-    // are all "no", and so is a snapshot with no agent.
-    store
-        .mutate(|data| {
-            let mut twin = data.attempts[&live.id].clone();
-            twin.id = "attempt_twin".into();
-            twin.access = Access::Auto;
-            data.attempts.insert(twin.id.clone(), twin);
-            Ok(())
-        })
+    let start = |agent, model: &str| {
+        store
+            .reserve_attempt(
+                "chat:master",
+                &WorkerLaunch {
+                    agent,
+                    model: Some(model.into()),
+                    access: Access::Full,
+                    ..launch_for(&task.id)
+                },
+            )
+            .unwrap()
+            .2
+    };
+    let servers = |key: &str| {
+        crate::agent_chat::worker_registration(&store, key).map(|agent| agent.worker_servers)
+    };
+    hand_to(&a, settings(ChatAgent::Claude, "opus"));
+    let old = start(ChatAgent::Claude, "opus");
+    let old = store
+        .activate_attempt(&old.id, "/tmp".into(), "a".into(), true)
         .unwrap();
-    assert!(!store.worker_is_full_access(&key));
-    store
-        .mutate(|data| {
-            data.attempts.remove("attempt_twin");
-            Ok(())
-        })
-        .unwrap();
-    assert!(store.worker_is_full_access(&key));
-    assert!(!store.worker_is_full_access("chat:orch-unknown"));
-    assert!(!store.worker_is_full_access(&run.coordinator_chat_key));
-    store
-        .mutate(|data| {
-            data.attempts.get_mut(&live.id).unwrap().assignee = None;
-            Ok(())
-        })
-        .unwrap();
-    assert!(!store.worker_is_full_access(&key));
+    assert_eq!(
+        servers(&old.worker_chat_key),
+        Some(vec!["higgsfield".into()])
+    );
+    finish_attempt(&store, old.clone(), WorkerOutcome::Blocked);
+    hand_to(&b, settings(ChatAgent::Codex, "gpt-5.6-terra"));
+    let new = start(ChatAgent::Codex, "gpt-5.6-terra");
+    assert_eq!(
+        servers(&old.worker_chat_key),
+        Some(vec!["higgsfield".into()]),
+        "the old chat keeps its own agent's list after the handoff"
+    );
+    assert_eq!(
+        servers(&new.worker_chat_key),
+        Some(vec!["sume".into(), "sentry".into()])
+    );
+    // A chat that is no worker, or a coordinator, gets nothing.
+    assert_eq!(servers("chat:orch-unknown"), None);
+    assert_eq!(servers(&run.coordinator_chat_key), None);
 }

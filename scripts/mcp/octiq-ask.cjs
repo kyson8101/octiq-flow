@@ -1755,6 +1755,7 @@ const AGENT_FIELDS = {
   team: { type: "string", description: "Its peer-help team: a team id or name from agent_list. \"\" takes it off its team." },
   persistentPrompt: { type: "string", maxLength: 8000, description: "The agent's standing instructions (runbooks, tool rules), sent ahead of its role in every brief it is launched with and never shown in the roster. \"\" clears them." },
   desktopTools: { type: "boolean", description: "Codex agents only, default false: its orchestration workers keep the person's own browser and computer-use route (their logged-in Brave or Chrome) instead of starting isolated. It widens what a worker can do, so the card shows it. Absent keeps the current setting." },
+  workerServers: { type: "array", maxItems: 12, items: { type: "string", minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9_. -]+$" }, description: "Claude and Codex agents only: names of the person's own MCP servers (as their Claude or Codex config names them) that this agent's orchestration workers get. Every worker otherwise has OctiqFlow's tools and Playwright only. It widens what a worker can do, so the card shows it. [] clears it; absent keeps it." },
 };
 function agentTool(name, description, properties, required, readOnly) {
   return {
@@ -1767,7 +1768,7 @@ const AGENT_APPROVAL =
   " The person approves or declines it on a card in this chat; only a result with status saved means it was saved. " +
   "A refusal, a decline or an unanswered card changes nothing: say so, and propose again only when the person asks. " +
   "Make one change per call, and only on the person's instruction.";
-const AGENT_LIST = agentTool("list", "Agents mode: list the person's registered agents (id, name, role, persistentPrompt, desktopTools, provider, model, effort, access, projectId, reportsTo, and teamId with team, its team's name, both null when it is on no team), with projects, with teams (each peer-help team's id, name, projectId and members, the names of the agents on it), and agentPolicy, the shared policy every agent's brief starts with. Call it before agent_register, agent_update, agent_delete, agent_policy_update, team_create or team_update: a removal or a team change is proposed against the roster as you last read it.", {
+const AGENT_LIST = agentTool("list", "Agents mode: list the person's registered agents (id, name, role, persistentPrompt, desktopTools, workerServers, provider, model, effort, access, projectId, reportsTo, and teamId with team, its team's name, both null when it is on no team), with projects, with teams (each peer-help team's id, name, projectId and members, the names of the agents on it), and agentPolicy, the shared policy every agent's brief starts with. Call it before agent_register, agent_update, agent_delete, agent_policy_update, team_create or team_update: a removal or a team change is proposed against the roster as you last read it.", {
   project: { type: "string", description: "Only the agents this project sees: its own and the global ones. A project id or name." },
 }, [], true);
 const AGENT_REGISTER = agentTool("register", "Agents mode: propose registering a new agent, with the same fields and the same validation as Settings → Agents." + AGENT_APPROVAL, AGENT_FIELDS, ["name", "provider", "model"], false);

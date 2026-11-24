@@ -44,6 +44,12 @@ test("agent tools are offered to both providers, list-only for a worker, none ou
     // Browser and computer use for a Codex agent's workers is a boolean the
     // person approves on the card.
     assert.equal(register.inputSchema.properties.desktopTools.type, "boolean");
+    // So are the extra MCP servers its workers get: names, at most 12.
+    const servers = register.inputSchema.properties.workerServers;
+    assert.equal(servers.type, "array");
+    assert.equal(servers.maxItems, 12);
+    assert.equal(servers.items.maxLength, 64);
+    assert.deepEqual(listed.tools.find(tool => tool.name === "agent_update").inputSchema.properties.workerServers, servers);
     const policy = listed.tools.find(tool => tool.name === "agent_policy_update");
     assert.deepEqual(policy.inputSchema.required, ["policy"]);
     assert.deepEqual(Object.keys(policy.inputSchema.properties), ["policy"]);

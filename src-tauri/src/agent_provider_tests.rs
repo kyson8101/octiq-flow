@@ -97,7 +97,7 @@ fn request(prompt: &str) -> AgentCommand<'_> {
         codex_user_mcp: &[],
         codex_worker_playwright: None,
         codex_worker_desktop: false,
-        worker_full_tools: false,
+        codex_worker_servers: &[],
         claude_worker_mcp: None,
         preferences: None,
     }
@@ -638,7 +638,7 @@ fn browser_worker<'a>(
         lite: false,
         codex_worker_playwright: playwright,
         codex_worker_desktop: false,
-        worker_full_tools: false,
+        codex_worker_servers: &[],
         ..codex_request(false, servers)
     }
 }
@@ -706,7 +706,7 @@ fn desktop_servers() -> Vec<CodexMcpServer> {
 fn without_desktop_tools_a_codex_workers_flags_are_unchanged() {
     let servers = desktop_servers();
     let mut off = String::new();
-    append_codex_worker_mcp(&mut off, &servers, None, false);
+    append_codex_worker_mcp(&mut off, &servers, None, false, &[]);
     assert_eq!(
         off,
         " --disable apps --disable plugins \
@@ -733,7 +733,7 @@ fn with_desktop_tools_a_codex_worker_keeps_plugins_and_the_two_servers_only() {
     let servers = desktop_servers();
     let on = AgentCommand {
         codex_worker_desktop: true,
-        worker_full_tools: false,
+        codex_worker_servers: &[],
         ..browser_worker(&servers, None)
     };
     for line in [CODEX.build_command(&on), codex_exec_command(&on, &CODEX)] {
@@ -761,7 +761,7 @@ fn with_desktop_tools_a_codex_worker_keeps_plugins_and_the_two_servers_only() {
     let browser = browser();
     let both = AgentCommand {
         codex_worker_desktop: true,
-        worker_full_tools: false,
+        codex_worker_servers: &[],
         ..browser_worker(&servers, Some(&browser))
     };
     let line = CODEX.build_command(&both);
@@ -771,7 +771,7 @@ fn with_desktop_tools_a_codex_worker_keeps_plugins_and_the_two_servers_only() {
     let desk = AgentCommand {
         front_desk: true,
         codex_worker_desktop: true,
-        worker_full_tools: false,
+        codex_worker_servers: &[],
         ..browser_worker(&servers, None)
     };
     let line = CODEX.build_command(&desk);
@@ -886,94 +886,130 @@ fn the_hosts_browser_never_shares_a_name_with_the_persons_playwright() {
     );
 }
 
-/// A full-access worker gets the person's whole tool set, as an ordinary
-/// chat of its provider has it: no isolation flag, no per-server disable,
-/// no host copy of the browser (the person's own is inherited). OctiqFlow's
-/// own `octiq` server is on either way.
+/// Full access no longer brings the person's whole tool set: a Full worker
+/// whose agent names no server is isolated exactly as one below Full, on
+/// every provider. Codex's app-server line does not carry the access at all,
+/// so it is the same text; the command-line one differs only in its sandbox
+/// flags, and its MCP part is the same text; Claude's differs only in its
+/// permission flag.
 #[test]
-fn a_full_access_worker_keeps_the_persons_whole_tool_set_on_both_providers() {
+fn a_full_access_worker_with_no_list_is_isolated_exactly_as_one_below_full() {
     let servers = desktop_servers();
     let browser = browser();
-    let full = AgentCommand {
+    let at = |access| AgentCommand {
+        access: Some(access),
+        ..browser_worker(&servers, Some(&browser))
+    };
+    let mut isolated = String::new();
+    append_codex_worker_mcp(&mut isolated, &servers, Some(&browser), false, &[]);
+    let full = at(Access::Full);
+    for access in [Access::Read, Access::Manual, Access::Edits, Access::Auto] {
+        let below = at(access);
+        assert_eq!(
+            CODEX.build_command(&full),
+            CODEX.build_command(&below),
+            "{access:?}"
+        );
+        for line in [
+            codex_exec_command(&full, &CODEX),
+            codex_exec_command(&below, &CODEX),
+        ] {
+            assert!(line.contains(&isolated), "{access:?}: {line}");
+        }
+    }
+    assert!(isolated.starts_with(" --disable apps --disable plugins"));
+    for name in ["codex_app", "cua_repl", "node_repl"] {
+        assert!(
+            isolated.contains(&format!(
+                "mcp_servers.{name}={{command=\"false\",enabled=false}}"
+            )),
+            "{name}: {isolated}"
+        );
+    }
+    let claude_full = CLAUDE.build_command(&full);
+    assert!(
+        claude_full.contains(" --strict-mcp-config"),
+        "{claude_full}"
+    );
+    assert_eq!(
+        claude_full.replace(" --dangerously-skip-permissions", " --permission-mode auto"),
+        CLAUDE.build_command(&at(Access::Auto))
+    );
+    // Pi: the person's extensions and servers stay off at Full too.
+    let dir = crate::test_dir::TestDir::new("pi-full-worker");
+    let mcp = dir.join("octiq-ask.json");
+    let pi = provider_for(AgentKind::Pi).build_command(&AgentCommand {
         access: Some(Access::Full),
-        worker_full_tools: true,
+        orchestration_worker: true,
+        ..pi_request(&mcp)
+    });
+    assert!(pi.contains(" -ne --no-mcp "), "{pi}");
+    assert!(pi.contains("mcp__octiq__*'"), "{pi}");
+}
+
+/// A worker whose agent names servers keeps those and only those: they are
+/// left as the person configured them, every other inherited server is still
+/// off, and plugins and apps stay off. OctiqFlow's own server and the host's
+/// browser are unchanged.
+#[test]
+fn a_codex_worker_keeps_only_the_servers_its_agent_names() {
+    let servers = desktop_servers();
+    let browser = browser();
+    let keep = vec!["sentry".to_string(), "node_repl".to_string()];
+    let named = AgentCommand {
+        codex_worker_servers: &keep,
         ..browser_worker(&servers, Some(&browser))
     };
     for line in [
-        CODEX.build_command(&full),
-        codex_exec_command(&full, &CODEX),
+        CODEX.build_command(&named),
+        codex_exec_command(&named, &CODEX),
     ] {
-        assert!(!line.contains("--disable apps"), "{line}");
-        assert!(!line.contains("--disable plugins"), "{line}");
-        assert!(!line.contains("enabled=false"), "{line}");
-        assert!(!line.contains("octiq_playwright"), "{line}");
-        for name in ["codex_app", "cua_repl", "node_repl", "sentry"] {
+        assert!(line.contains(" --disable apps --disable plugins"), "{line}");
+        assert!(!line.contains("mcp_servers.sentry="), "left alone: {line}");
+        assert!(
+            !line.contains("mcp_servers.node_repl="),
+            "left alone: {line}"
+        );
+        for name in ["codex_app", "cua_repl"] {
             assert!(
-                !line.contains(&format!("mcp_servers.{name}=")),
+                line.contains(&format!(
+                    "mcp_servers.{name}={{command=\"false\",enabled=false}}"
+                )),
                 "{name}: {line}"
             );
         }
+        assert!(line.contains("mcp_servers.octiq_playwright="), "{line}");
         assert!(
             line.contains(
                 "mcp_servers.octiq.tools.orchestration_worker_report.approval_mode=\"approve\""
             ),
-            "ours stays: {line}"
+            "{line}"
         );
     }
-    let claude = CLAUDE.build_command(&full);
-    assert!(!claude.contains("--strict-mcp-config"), "{claude}");
-    assert!(
-        claude.contains("--mcp-config 'octiq-ask.json'"),
-        "ours stays: {claude}"
+    // What a worker keeps is the names its agent gives that the person's
+    // Codex has; the rest are said, not refused.
+    let (kept, missing) = codex_kept_servers(
+        &servers,
+        &["node_repl".into(), "higgsfield".into(), "sentry".into()],
     );
-    // The worker browser file stays beside it.
-    let file = Path::new("/tmp/worker-browser.json");
-    let with_file = AgentCommand {
-        claude_worker_mcp: Some(file),
-        ..full
-    };
-    let claude = CLAUDE.build_command(&with_file);
-    assert!(
-        claude.contains("--mcp-config '/tmp/worker-browser.json'"),
-        "{claude}"
+    assert_eq!(kept, ["node_repl", "sentry"]);
+    assert_eq!(missing, ["higgsfield"]);
+    assert_eq!(
+        codex_kept_servers(&servers, &[]),
+        (Vec::<String>::new(), Vec::<String>::new())
     );
-    assert!(!claude.contains("--strict-mcp-config"), "{claude}");
 }
 
-/// Below Full nothing moves: the flag is simply false, so the text is the
-/// one every worker had before.
+/// A name is the host's to keep for a worker alone: a front desk stays
+/// isolated even when one is handed in, and so does an ordinary chat's
+/// launch (which keeps the person's servers anyway).
 #[test]
-fn below_full_access_a_workers_flags_are_byte_identical_to_the_isolated_launch() {
+fn a_front_desk_or_lite_chat_stays_isolated_whatever_it_is_handed() {
     let servers = desktop_servers();
-    let browser = browser();
-    for access in [Access::Read, Access::Manual, Access::Edits, Access::Auto] {
-        let base = AgentCommand {
-            access: Some(access),
-            ..browser_worker(&servers, Some(&browser))
-        };
-        for line in [
-            CODEX.build_command(&base),
-            codex_exec_command(&base, &CODEX),
-        ] {
-            assert!(line.contains(" --disable apps --disable plugins"), "{line}");
-            assert!(line.contains("mcp_servers.octiq_playwright="), "{line}");
-            assert!(
-                line.contains("mcp_servers.cua_repl={command=\"false\",enabled=false}"),
-                "{line}"
-            );
-        }
-        assert!(CLAUDE.build_command(&base).contains(" --strict-mcp-config"));
-    }
-}
-
-/// The flag is the host's to set for a worker alone: a front desk and a
-/// lite chat stay isolated even when it is handed in.
-#[test]
-fn a_front_desk_or_lite_chat_stays_isolated_whatever_the_flag_says() {
-    let servers = desktop_servers();
+    let keep = vec!["cua_repl".to_string()];
     let desk = AgentCommand {
         access: Some(Access::Full),
-        worker_full_tools: true,
+        codex_worker_servers: &keep,
         orchestration_worker: true,
         ..codex_request(true, &servers)
     };
@@ -993,7 +1029,6 @@ fn a_front_desk_or_lite_chat_stays_isolated_whatever_the_flag_says() {
     let lite = AgentCommand {
         lite: true,
         access: Some(Access::Full),
-        worker_full_tools: true,
         ..browser_worker(&servers, None)
     };
     assert!(CLAUDE.build_command(&lite).contains("--strict-mcp-config"));
@@ -1006,18 +1041,24 @@ fn the_first_turn_gate_watches_what_a_launch_keeps() {
     servers[0].enabled = false; // codex_app: disabled, never reports
                                 // Isolated, nothing kept: no gate.
     assert_eq!(
-        codex_gate_servers(None, false, false, &servers),
+        codex_gate_servers(None, &[], false, &servers),
         (Vec::<String>::new(), Duration::ZERO)
     );
-    // Full: every enabled server, the longest timeout, no repeats.
-    let (names, longest) = codex_gate_servers(Some("octiq_playwright"), true, true, &servers);
+    // Named servers that are enabled, the browser and the desktop pair:
+    // the longest timeout, no repeats. A disabled one is not waited for.
+    let kept = vec!["sentry".to_string(), "codex_app".into(), "cua_repl".into()];
+    let (names, longest) = codex_gate_servers(Some("octiq_playwright"), &kept, true, &servers);
     assert_eq!(
         names,
-        ["octiq_playwright", "cua_repl", "node_repl", "sentry"]
+        ["octiq_playwright", "cua_repl", "sentry", "node_repl"]
     );
     assert_eq!(longest, Duration::from_secs(120));
+    // Named alone: those servers only, with their own timeout.
+    let (names, longest) = codex_gate_servers(None, &["sentry".into()], false, &servers);
+    assert_eq!(names, ["sentry"]);
+    assert_eq!(longest, Duration::ZERO);
     // Desktop alone: the two desktop servers only.
-    let (names, _) = codex_gate_servers(None, false, true, &servers);
+    let (names, _) = codex_gate_servers(None, &[], true, &servers);
     assert_eq!(names, ["cua_repl", "node_repl"]);
 }
 
@@ -1042,7 +1083,7 @@ fn the_browser_reaches_workers_only() {
     let desk = AgentCommand {
         codex_worker_playwright: Some(&entry),
         codex_worker_desktop: false,
-        worker_full_tools: false,
+        codex_worker_servers: &[],
         ..codex_request(true, &servers)
     };
     for line in [
@@ -1055,7 +1096,7 @@ fn the_browser_reaches_workers_only() {
     let ordinary = AgentCommand {
         codex_worker_playwright: Some(&entry),
         codex_worker_desktop: false,
-        worker_full_tools: false,
+        codex_worker_servers: &[],
         ..codex_request(false, &servers)
     };
     for line in [
@@ -1098,7 +1139,7 @@ fn a_claude_worker_gets_the_browser_config_and_no_other_launch_does() {
         ..browser_worker(&[], None)
     };
     let line = CLAUDE.build_command(&real);
-    assert!(line.contains("worker-browser-"), "{line}");
+    assert!(line.contains("worker-mcp-"), "{line}");
     assert!(!line.contains("s3cret-value"), "{line}");
     for other in [
         AgentCommand {
@@ -1607,9 +1648,8 @@ fn pi_tool_lists_follow_access_and_role() {
         // An ordinary chat keeps the person's own extensions and servers.
         assert!(!chat.contains(" -ne "), "{chat}");
     }
-    // A worker below Full gets OctiqFlow's MCP tools and none of the
-    // person's extensions; at Full it gets the whole set, as Claude's and
-    // Codex's workers do.
+    // A worker gets OctiqFlow's MCP tools and none of the person's
+    // extensions, at Full as below it.
     let worker = line(AgentCommand {
         access: Some(Access::Edits),
         orchestration_worker: true,
@@ -1624,11 +1664,10 @@ fn pi_tool_lists_follow_access_and_role() {
     let full_worker = line(AgentCommand {
         access: Some(Access::Full),
         orchestration_worker: true,
-        worker_full_tools: true,
         ..pi_request(&mcp)
     });
-    assert!(full_worker.contains("mcp__*'"), "{full_worker}");
-    assert!(!full_worker.contains(" -ne "), "{full_worker}");
+    assert!(full_worker.contains("mcp__octiq__*'"), "{full_worker}");
+    assert!(full_worker.contains(" -ne --no-mcp "), "{full_worker}");
     // A front desk is read-only whatever it was asked for, with one tool.
     let desk = line(AgentCommand {
         access: Some(Access::Full),
