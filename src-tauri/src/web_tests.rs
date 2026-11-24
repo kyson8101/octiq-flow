@@ -3390,10 +3390,21 @@ fn a_room_seat_cannot_use_the_peer_tools() {
         );
         assert!(seat_refusal(command, &own).is_none(), "{action}");
     }
+    // The coordinator's own reading of which MCP servers its workers may be
+    // given is the chat's own agent's, like the cleanup proposal.
+    let command =
+        orchestration_hook_command("worker_servers_available").expect("worker_servers_available");
+    assert!(seat_refusal(command, &seat)
+        .expect("a seat is refused")
+        .message
+        .contains("An additional agent in a room"));
+    assert!(seat_refusal(command, &own).is_none());
     // Existing non-identity actions remain available to seats. The new
     // coordinator cleanup proposal has its own seat refusal above.
     for (_, command) in ORCHESTRATION_HOOK_ACTIONS.iter().filter(|(_, command)| {
-        !PEER_COMMANDS.contains(command) && *command != "orchestration_workspace_cleanup_request"
+        !PEER_COMMANDS.contains(command)
+            && *command != "orchestration_workspace_cleanup_request"
+            && *command != "orchestration_worker_servers_available"
     }) {
         assert!(seat_refusal(command, &seat).is_none(), "{command}");
     }

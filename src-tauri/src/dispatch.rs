@@ -1862,6 +1862,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "size")?,
                 arg::<Option<crate::orchestration::TaskKind>>(&args, "kind")?.unwrap_or_default(),
                 effort_chosen,
+                arg::<Option<Vec<String>>>(&args, "workerServers")?.unwrap_or_default(),
             );
             if let (Ok(task), Some(old)) = (&created, &supersedes) {
                 svc.orchestrations.supersede(&actor, old, &task.id)?;
@@ -1930,7 +1931,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             } else {
                 None
             };
-            to_value(svc.orchestrations.revise_task(
+            to_value(svc.orchestrations.revise_task_with_servers(
                 &actor,
                 &task_id,
                 crate::orchestration::TaskRevision {
@@ -1944,6 +1945,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     withdraw: arg::<Option<bool>>(&args, "withdraw")?.unwrap_or(false),
                     size: arg(&args, "size")?,
                 },
+                // A task's extra MCP servers: on an approved task, a call
+                // naming only these puts it back on the plan card.
+                arg(&args, "workerServers")?,
             ))
         }
         // A lead hands a task nobody is working on to another of its direct
@@ -2052,6 +2056,52 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 &crate::workspaces::list_workspaces_impl(&svc.workspaces)?,
                 manager.as_deref(),
             ))
+        }
+        // The hook's `worker_servers_available`: which of the person's MCP
+        // servers a coordinator may name on a task (`workerServers`). Names
+        // and transports only, never a command, URL, header or variable.
+        // Asked of the chat's own identity: a worker is refused for good,
+        // settled or not.
+        "orchestration_worker_servers_available" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            svc.orchestrations.require_user_chat(&actor)?;
+            let meta = crate::chat_index::list()
+                .into_iter()
+                .find(|meta| format!("chat:{}", meta.id) == actor);
+            let env = meta.as_ref().and_then(|meta| {
+                crate::workspaces::list_workspaces_impl(&svc.workspaces)
+                    .ok()?
+                    .into_iter()
+                    .find(|project| project.id == meta.project_id)
+                    .map(|project| project.env)
+            });
+            let cwd = meta.and_then(|meta| meta.cwd).unwrap_or_default();
+            let listed = |servers: Vec<(String, &'static str)>| -> Value {
+                servers
+                    .into_iter()
+                    .map(|(name, transport)| json!({ "name": name, "transport": transport }))
+                    .collect()
+            };
+            let mut out = serde_json::Map::new();
+            match crate::worker_browser::claude_offered_for(env.as_ref()) {
+                Some(servers) => out.insert("claude".into(), listed(servers)),
+                None => out.insert(
+                    "claudeError".into(),
+                    json!("The person's Claude settings could not be read."),
+                ),
+            };
+            match crate::agent_chat::codex_user_mcp_servers(&cwd, env.as_ref()) {
+                Ok(servers) => out.insert(
+                    "codex".into(),
+                    listed(crate::worker_browser::codex_offered(&servers)),
+                ),
+                Err(error) => out.insert("codexError".into(), json!(error)),
+            };
+            out.insert(
+                "note".into(),
+                json!(crate::orchestration::SERVERS_OFFERED_NOTE),
+            );
+            Ok(Value::Object(out))
         }
         "orchestration_auto_plan_get" => to_value(
             svc.orchestrations
@@ -2397,6 +2447,12 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             } else {
                 crate::orchestration::ReopenedBy::Person
             };
+            // A reopen keeps the approval and changes only the words. A
+            // task's MCP servers are part of what was approved: said, not
+            // silently dropped, when a reopen names them.
+            if args.get("workerServers").is_some() {
+                return Err(crate::orchestration::REOPEN_SERVERS.into());
+            }
             to_value(svc.orchestrations.reopen_task_as(
                 &arg::<String>(&args, "actorChatKey")?,
                 &arg::<String>(&args, "taskId")?,

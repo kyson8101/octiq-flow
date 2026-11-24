@@ -95,6 +95,13 @@ pub const WORKER_SERVER_NAME_MAX: usize = 64;
 /// CODEX_SERVER`), in any case: every worker has those already, and a server
 /// of the person's under either name would stand in for the host's.
 fn checked_worker_servers(names: &[String]) -> Result<Vec<String>, String> {
+    checked_server_names(names, "An agent's workers")
+}
+
+/// The same check for any list of extra worker MCP servers: an agent's
+/// (`TeamAgent::worker_servers`) or a task's (`orchestration::Task::
+/// worker_servers`). `whose` begins the sentence that refuses too many.
+pub(crate) fn checked_server_names(names: &[String], whose: &str) -> Result<Vec<String>, String> {
     let mut kept: Vec<String> = Vec::new();
     for raw in names {
         let name = raw.trim();
@@ -122,7 +129,7 @@ fn checked_worker_servers(names: &[String]) -> Result<Vec<String>, String> {
     }
     if kept.len() > WORKER_SERVERS_MAX {
         return Err(format!(
-            "An agent's workers can be given at most {WORKER_SERVERS_MAX} extra MCP servers."
+            "{whose} can be given at most {WORKER_SERVERS_MAX} extra MCP servers."
         ));
     }
     Ok(kept)

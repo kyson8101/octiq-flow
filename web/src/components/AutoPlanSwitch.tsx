@@ -23,7 +23,7 @@ export function AutoPlanSwitch({ enabled, includeFull, busy, ready, error, onCha
         }}>
         <span>Include Full access tasks</span><span className="auto-plan-track" aria-hidden="true"><span /></span>
       </button>
-      <p>Full access workers run with no permission checks; plans with them are approved without you.</p>
+      <p>Full access workers run with no permission checks; plans with them are approved without you. So are tasks that give their worker extra MCP servers.</p>
     </>}
     {error && <p className="auto-plan-error" role="alert">{error}</p>}
   </section>;

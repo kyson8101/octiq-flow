@@ -167,3 +167,65 @@ test("without the host's hook port nothing is sent, whatever web.json says", asy
   await call(root, env, "tools/call", { name: "ask_user", arguments: { questions: [{ question: "Which one?", header: "Pick", options: [{ label: "A" }, { label: "B" }] }] } });
   assert.equal(requests, 0);
 });
+
+test("a task names its worker's MCP servers as an agent does, and only a person's own chat lists them", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "octiq-worker-servers-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    requests.push({ url: req.url, capability: req.headers["x-octiq-chat-capability"], body: JSON.parse(body) });
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ result: { claude: [{ name: "higgsfield", transport: "http" }], codex: [] } }));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  fs.writeFileSync(path.join(root, "web.json"), JSON.stringify({ port: server.address().port, token: "test-token" }));
+  const port = String(server.address().port);
+  const lead = { OCTIQ_CHAT_KEY: "chat:lead", OCTIQ_CHAT_CAPABILITY: "secret-lead", OCTIQ_HOOK_PORT: port };
+  const worker = { OCTIQ_CHAT_KEY: "chat:orch-one", OCTIQ_CHAT_CAPABILITY: "secret-worker", OCTIQ_HOOK_PORT: port };
+
+  const listed = await call(root, lead, "tools/list", {});
+  const named = name => listed.tools.find(tool => tool.name === name);
+  // The same bounds the host holds a task's list to (`team::checked_server_names`).
+  for (const name of ["orchestration_task_create", "orchestration_task_revise"]) {
+    const servers = named(name).inputSchema.properties.workerServers;
+    assert.equal(servers.type, "array", name);
+    assert.equal(servers.maxItems, 12, name);
+    assert.equal(servers.items.maxLength, 64, name);
+    assert.equal(servers.items.pattern, "^[A-Za-z0-9_. -]+$", name);
+  }
+  assert.match(named("orchestration_task_revise").inputSchema.properties.workerServers.description, /taskId and workerServers alone/);
+  const available = named("worker_servers_available");
+  assert.deepEqual(available.inputSchema, { type: "object", properties: {}, additionalProperties: false });
+  assert.equal(available.annotations.readOnlyHint, true);
+  assert.match(available.description, /only when the task needs it/);
+  assert.match(available.description, /every model call/);
+  assert.ok(available.description.length < 4096);
+  // Never offered to a worker.
+  const workerTools = (await call(root, worker, "tools/list", {})).tools.map(tool => tool.name);
+  assert.ok(!workerTools.includes("worker_servers_available"));
+
+  // Nothing the agent passes crosses the hook; the chat is the process's.
+  const answer = await call(root, lead, "tools/call", { name: "worker_servers_available", arguments: { chatKey: "chat:other", cwd: "/etc" } });
+  assert.equal(answer.isError, undefined);
+  assert.deepEqual(JSON.parse(answer.content[0].text).claude, [{ name: "higgsfield", transport: "http" }]);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "/hook/orchestration");
+  assert.equal(requests[0].capability, "secret-lead");
+  assert.equal(requests[0].body.chatKey, "chat:lead");
+  assert.equal(requests[0].body.action, "worker_servers_available");
+  assert.deepEqual(requests[0].body.args, {});
+
+  // A worker that calls it by name is refused before anything is sent.
+  const refused = await call(root, worker, "tools/call", { name: "worker_servers_available", arguments: {} });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /Tell your coordinator/);
+  assert.equal(requests.length, 1);
+
+  // A task's list rides task_create's arguments to the host, which checks it.
+  await call(root, lead, "tools/call", { name: "orchestration_task_create", arguments: { runId: "run_1", title: "Cut", spec: "Cut it.", workerServers: ["higgsfield", "sume"] } });
+  assert.equal(requests[1].body.action, "task_create");
+  assert.deepEqual(requests[1].body.args.workerServers, ["higgsfield", "sume"]);
+});

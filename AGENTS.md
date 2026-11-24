@@ -51,7 +51,7 @@ Detail lives in `docs/agents/`, moved verbatim from this file. **An agent MUST r
 | Jobs and attention alerts | `docs/agents/jobs-and-alerts.md` | `chat_jobs.rs`, `job_wrapper.rs`, `job_progress.rs`, `octiq-job`, OSC scanning in `pty.rs` |
 | Appearance modes | `docs/agents/appearance-modes.md` | `web/src/lib/themes/`, `theme.ts`, `manga.css`, `guofeng.css`, `xp.css`, `cyberpunk.css` |
 | Scheduling orientation and batches | `docs/agents/scheduling-and-batches.md` | `scheduling.rs`, agent lanes, `orchestration_batch_claim`, `workspace_cleanup_request` |
-| Plan approval, retries, reopen, agent removal, peer requests | `docs/agents/plan-approval-retries-and-removal.md` | `orchestration/approval.rs`, `orchestration/retry.rs`, `reserve_attempt_for`, `agent_work.rs`, `team.rs` delete |
+| Plan approval, retries, reopen, agent removal, peer requests | `docs/agents/plan-approval-retries-and-removal.md` | `orchestration/approval.rs`, `orchestration/retry.rs`, `reserve_attempt_for`, `agent_work.rs`, `team.rs` delete, a task's approved `workerServers` |
 | Lead threads | `docs/agents/lead-threads.md` | `lead_threads`, `lead_thread_open`, `chat:lead-` keys |
 | Worktree lifespan and removal paths | `docs/agents/worktree-lifespan-and-removal.md` | `worktree_lifespan.rs`, `worktree_lifespan/quarantine.rs`, `remove_proven`, Cleanup, Close, Abandon, Archive |
 | Conventions and gotchas (the rest) | `docs/agents/conventions.md` | hooks that can write, transcripts and receipts, `profile` saves, source-text tests, browser scripts |

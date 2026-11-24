@@ -94,14 +94,17 @@ tells the lead whether automatic dispatch is paused (the coordinator starts
 the workers) or the host dispatches through the normal gates. Snapshot-only
 `run.autoPlan` reports `includeFull` and explains an access or peer-request
 hold. With Full included, no `access` hold is produced; `peerRequest` still
-holds. This uses no provider plan mode and changes none of the task,
+holds. A task that names extra MCP servers (`workerServers`) counts as Full
+here whatever its access (`auto_plan::held`): it is held as `access` unless the
+chat included Full. This uses no provider plan mode and changes none of the task,
 permission, safety or reserve gates.
 
 **An approval fixes what a task runs as, and a time stamp or a parent id is
 not that approval.** `approved_at` says a task was approved. `Task::approved`
 (`orchestration/approval.rs`) says as what: the worker in effect when the
 person approved (provider, model, effort, access, recovery policy with its
-fallback model), the assignee, the destination, the base branch and the workspace mode. Every
+fallback model), the assignee, the destination, the base branch, the workspace mode
+and the extra MCP servers its worker gets (`Approved::worker_servers`). Every
 start is compared with it in `reserve_attempt_for`, the one door, before an
 attempt is reserved: the coordinator's, the host's dispatch and recovery, the
 page's. Nothing but an approval writes it. So:
@@ -109,6 +112,16 @@ page's. Nothing but an approval writes it. So:
 - A new way to start a task goes through `reserve_attempt_for`, and a new
   thing an approval should fix is added to `Approved` and to
   `approval::keeps_to`, never checked at one caller.
+- A task's MCP servers are the one thing of an approved task the coordinator
+  may change (`orchestration_task_revise` with `taskId` and `workerServers`
+  alone, `amend_servers`): only while no worker runs it and it is in no batch,
+  and the task goes back on the plan card like a reassignment (rollback kept for
+  a rejection; the plan revision moves). The page shows the list on the task's
+  row and on the stage line (`MCP servers: a, b`). A reopen that names them is
+  refused (`REOPEN_SERVERS`); a manager's split takes its parent's APPROVED
+  list and names none (`SPLIT_SERVERS`); a peer request takes none
+  (`PEERS_SERVERS`). The attempt records the approved list at the door, and the
+  launch reads only that.
 - The run's defaults reach only tasks not yet approved. Read a task's worker
   through `automation::settings_for_task` or `approval::worker_of`, never
   `task.worker` or `run.worker_defaults` alone: a start leaves on

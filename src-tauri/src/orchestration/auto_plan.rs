@@ -57,9 +57,13 @@ pub(super) fn held(data: &Stored, run: &Run) -> Option<Held> {
         return None;
     }
     let access: Vec<_> = waiting.iter().filter(|t| {
+        // A task that names extra MCP servers widens what its worker can do
+        // beyond its access level, so it is held as a Full access task is:
+        // for the person, unless this chat included Full.
+        !t.worker_servers.is_empty()
         // Includes the approval-fixed worker and inherited defaults. Unknown
         // or invalid effective settings cannot establish consent <= Auto.
-        !matches!(automation::settings_for_task(run, t), Ok(Some(worker))
+        || !matches!(automation::settings_for_task(run, t), Ok(Some(worker))
             if crate::access_request::rank(worker.access) <= crate::access_request::rank(Access::Auto))
     }).map(|t| t.id.clone()).collect();
     (!access.is_empty()).then_some(Held {
@@ -906,6 +910,58 @@ mod tests {
             assert!(!held.task_ids.contains(&safe.id));
             if include_full {
                 fact("auto_plan_full_peer_request", &page);
+            }
+        }
+    }
+
+    /// A task that names extra MCP servers widens its worker beyond its
+    /// access level, so standing consent treats it as Full: held for the
+    /// person unless this chat included Full, whatever its access.
+    #[test]
+    fn auto_plan_holds_a_task_naming_mcp_servers_unless_full_is_included() {
+        for include_full in [false, true] {
+            let store = OrchestrationStore::default();
+            let (run, plain) = pending(&store, Access::Auto);
+            let named = task(&store, &run, vec![]);
+            store
+                .mutate(|data| {
+                    data.tasks.get_mut(&named.id).unwrap().worker_servers =
+                        vec!["higgsfield".into()];
+                    Ok(())
+                })
+                .unwrap();
+            store
+                .auto_plan_set("chat:master", true, Some(include_full))
+                .unwrap();
+            let approved = apply(&store, "chat:master");
+            let page = store.snapshot(Some(&run.id)).unwrap();
+            if include_full {
+                assert_eq!(approved.len(), 1);
+                assert!(page.tasks.iter().all(|t| t.approved_at.is_some()));
+                assert_eq!(
+                    page.tasks
+                        .iter()
+                        .find(|t| t.id == named.id)
+                        .unwrap()
+                        .approved
+                        .as_ref()
+                        .unwrap()
+                        .worker_servers,
+                    ["higgsfield"]
+                );
+            } else {
+                assert!(approved.is_empty());
+                assert!(page.tasks.iter().all(|t| t.approved_at.is_none()));
+                let held = page.runs[0]
+                    .auto_plan
+                    .as_ref()
+                    .unwrap()
+                    .held
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(held.reason, "access");
+                assert_eq!(held.task_ids, [named.id.clone()]);
+                assert!(!held.task_ids.contains(&plain.id));
             }
         }
     }

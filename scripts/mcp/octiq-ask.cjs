@@ -1209,6 +1209,10 @@ const ORCHESTRATION_RUN_CREATE = {
   },
 };
 
+/** A task's extra MCP servers, validated by the host as an agent's are
+ *  (`team::checked_server_names`). */
+const TASK_WORKER_SERVERS = { type: "array", maxItems: 12, items: { type: "string", minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9_. -]+$" }, description: "Agents mode, Claude and Codex workers: names of the person's own MCP servers (from worker_servers_available) this task's worker gets beside OctiqFlow's tools, Playwright and its registered agent's own. Name one only when the task needs it: each adds its tools to every model call that worker makes. Shown on the plan card and fixed by the person's approval. A manager's subtask takes its parent's and names none." };
+
 const ASSIGNED_EFFORT = { type: "string", description: "Optional effort for an assigned task, above or below the registered default; choose by size and risk. Must suit the registered provider/model and match worker.effort if both are given. Antigravity accepts only the effort encoded in its Gemini model id; otherwise omit. Shown on the plan card and fixed by approval. A reassignment keeps a lead choice if valid; otherwise pass a new effort on reassign." };
 const ASSIGNED_WORKER = { type: "object", description: "With an assignee only effort and recovery are read; all other fields are ignored.", properties: WORKER_SETTINGS_PROPERTIES };
 
@@ -1238,6 +1242,7 @@ const ORCHESTRATION_TASK_CREATE = {
       kind: { type: "string", enum: ["work", "check", "review", "acceptance"], description: "What the task is for. \"work\" (the default) produces something. \"check\", \"review\" and \"acceptance\" judge something: their worker must settle completed with verdict pass or fail (a completed report without one is refused), and only a pass releases the tasks that depend on them. Use one for every task whose result gates later work, such as a code review, a test run or an acceptance check. Shown on the plan card and counted as acceptance coverage." },
       size: { type: "string", enum: ["small", "medium", "large"], description: "Agents mode: what the task is worth when its result is accepted — small 25 XP, medium 75 XP (the default), large 150 XP. Judge by scope and risk, not effort spent. Fixed once the task starts." },
       supersedes: { type: "string", description: "The ID of a blocked or failed task in this run that this new task replaces. Its history is kept, but it stops counting as blocked and the board shows it as replaced by this task. Use it whenever you start over with a new task instead of retrying the old one." },
+      workerServers: TASK_WORKER_SERVERS,
     },
     required: ["runId", "title", "spec"],
   },
@@ -1248,7 +1253,7 @@ const ORCHESTRATION_TASK_REVISE = {
   description:
     "Agents mode: change a task of YOUR plan while it still waits for the person's approval, or withdraw it from the plan. " +
     "This is how a requested change becomes the new plan revision they see before approving. Only the fields you pass change; " +
-    "owner and destination are routed exactly as orchestration_task_create routes them. An approved task is fixed: add a new task instead.",
+    "owner and destination are routed exactly as orchestration_task_create routes them. An approved task is fixed but for its workerServers: add a new task instead.",
   inputSchema: {
     type: "object",
     properties: {
@@ -1267,6 +1272,7 @@ const ORCHESTRATION_TASK_REVISE = {
       acceptance: { type: "array", items: { type: "string" }, maxItems: 5, description: "Replaces the plan card's acceptance criteria." },
       size: { type: "string", enum: ["small", "medium", "large"], description: "Agents mode: what the task is worth when its result is accepted — small 25 XP, medium 75 XP (the default), large 150 XP. Judge by scope and risk, not effort spent. Fixed once the task starts." },
       withdraw: { type: "boolean", description: "Take this task out of the plan. Refused while another task depends on it." },
+      workerServers: { ...TASK_WORKER_SERVERS, description: TASK_WORKER_SERVERS.description + " Replaces the list; [] clears it. The one change an approved task takes: pass taskId and workerServers alone, and the task goes back on the plan card for the person, while nobody starts it." },
     },
     required: ["taskId"],
   },
@@ -1324,6 +1330,28 @@ const ORCHESTRATION_DESTINATIONS = {
   inputSchema: { type: "object", properties: {} },
   annotations: {
     title: "List task destinations",
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
+};
+
+/** Which of the person's MCP servers a task's worker could be given. Read
+ *  only; offered to the person's own chats, never to a worker (the host
+ *  refuses one by its durable identity, settled or not). */
+const WORKER_SERVERS_AVAILABLE = {
+  name: "worker_servers_available",
+  description:
+    "Agents mode: list the person's own MCP servers that a task's worker could be given with workerServers on orchestration_task_create or " +
+    "orchestration_task_revise. Returns names and transport (stdio, http or sse) only: claude for Claude workers (the user-level servers of " +
+    "the person's Claude settings), codex for Codex workers (the servers Codex lists as enabled), and claudeError or codexError when a list " +
+    "cannot be read. Every worker already has OctiqFlow's tools, Playwright and whatever its registered agent names, so those are not listed. " +
+    "Name a server on a task only when the task needs it: each one adds its tools to every model call that worker makes, which costs tokens " +
+    "on every call. The person sees the list on the plan card and approves it. Workers, front desks and room seats are refused.",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  annotations: {
+    title: "List MCP servers for workers",
     readOnlyHint: true,
     destructiveHint: false,
     idempotentHint: true,
@@ -1907,7 +1935,7 @@ async function handle(msg) {
               JOB_REGISTER,
               JOB_LIST,
               SET_CHAT_TITLE,
-              ...(IS_WORKER ? [] : [HANDOVER, HANDOVER_ASK, HANDOVER_OUTCOME, REQUEST_ACCESS]),
+              ...(IS_WORKER ? [] : [HANDOVER, HANDOVER_ASK, HANDOVER_OUTCOME, REQUEST_ACCESS, WORKER_SERVERS_AVAILABLE]),
               ...AGENT_TOOLS(IS_WORKER),
               ...FEEDBACK_TOOLS,
               ...vaultTools(IS_WORKER),
@@ -2023,6 +2051,27 @@ async function handle(msg) {
           return reply(msg.id, { outcome: error?.outcome,
             isError: true,
             content: [{ type: "text", text: error instanceof Error ? error.message : "The orchestration call failed." }],
+          });
+        }
+      }
+
+      if (msg.params?.name === WORKER_SERVERS_AVAILABLE.name) {
+        // Not offered to a worker; the host refuses one too, by what the
+        // chat is rather than by this process's word.
+        if (!CHAT_KEY || IS_WORKER) {
+          return reply(msg.id, { isError: true, outcome: hostOutcome("scope-refused"), content: [{ type: "text", text: IS_WORKER
+            ? "An orchestration worker gets the MCP servers its task was approved with. Tell your coordinator which server you need and why instead."
+            : "This tool requires an OctiqFlow chat." }] });
+        }
+        try {
+          // Nothing the agent passes crosses the hook: which chat asks comes
+          // from this process.
+          const result = await callOrchestration("worker_servers_available", {});
+          return reply(msg.id, { content: [{ type: "text", text: JSON.stringify(result) }] });
+        } catch (error) {
+          return reply(msg.id, { outcome: error?.outcome,
+            isError: true,
+            content: [{ type: "text", text: error instanceof Error ? error.message : "The MCP server list could not be read." }],
           });
         }
       }

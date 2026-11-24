@@ -145,6 +145,14 @@ describe("PlanReview", () => {
     expect(html).toMatch(/Task b.*OctiqFlow.*r<\/span>.*Sam/s);
   });
 
+  it("draws a task's MCP servers on its row, outside the disclosure, and nothing for a task that names none", () => {
+    const html = render([task("a", [], { workerServers: ["higgsfield", "sume"], spec: "Cut the video." }), task("b")]);
+    // On the summary row itself, before the brief the disclosure holds.
+    expect(html).toMatch(/<summary>.*Task a.*<span class="plan-task-servers">MCP servers: higgsfield, sume<\/span>.*<\/summary>/s);
+    expect(html.match(/plan-task-servers/g)).toHaveLength(1);
+    expect(render([task("a"), task("b")])).not.toContain("plan-task-servers");
+  });
+
   it("marks what was added since the plan was last approved", () => {
     const html = render([task("a", [], { approvedAt: 5 }), task("b")]);
     expect(html.match(/plan-task-new/g)).toHaveLength(1);

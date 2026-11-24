@@ -16,7 +16,8 @@
 //!   with its fallback model;
 //! - the assignee, the registered agent the task was handed to;
 //! - the destination, a project and a repository;
-//! - the base branch and workspace mode the host planned.
+//! - the base branch and workspace mode the host planned;
+//! - the extra MCP servers its worker gets (`Task::worker_servers`).
 //!
 //! The words a task carries are not part of it. `reopen_task` gives an
 //! approved task new instructions and keeps the approval; this record is what
@@ -59,6 +60,11 @@ pub struct Approved {
     /// Actual allocation mode. Absent on old approvals without a planned workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_mode: Option<WorkspaceMode>,
+    /// The extra MCP servers the task's worker gets (`Task::worker_servers`).
+    /// Empty on approvals from before the field existed, as on tasks that
+    /// name none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worker_servers: Vec<String>,
     pub by: FixedBy,
     pub at: i64,
 }
@@ -129,9 +135,18 @@ impl Approved {
                     .and_then(|p| p.plan.as_ref())
                     .map(|p| p.mode)
             }),
+            worker_servers: task.worker_servers.clone(),
             by,
             at,
         }
+    }
+}
+
+fn servers(names: &[String]) -> String {
+    if names.is_empty() {
+        "no extra MCP servers".into()
+    } else {
+        format!("the MCP servers {}", names.join(", "))
     }
 }
 
@@ -235,6 +250,17 @@ pub(super) fn keeps_to(
             "{} instead of {}",
             place(task.destination.as_ref()),
             place(approved.destination.as_ref())
+        ));
+    }
+    // Like the destination, no start names them: a task's list changes only
+    // by going back to the plan card, so a difference is a ledger edited
+    // some other way, and a worker never gets a server the person did not
+    // approve for it.
+    if task.worker_servers != approved.worker_servers {
+        differs.push(format!(
+            "{} instead of {}",
+            servers(&task.worker_servers),
+            servers(&approved.worker_servers)
         ));
     }
     if !base_branch.is_empty() && approved.base_branch.as_deref() != Some(base_branch) {

@@ -64,6 +64,8 @@ pub mod summary;
 mod util;
 #[cfg(test)]
 mod worker_identity_tests;
+#[cfg(test)]
+mod worker_servers_tests;
 mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
 pub use destination::TaskDestination;
@@ -414,6 +416,14 @@ pub struct Task {
     /// every task created before destinations existed has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<TaskDestination>,
+    /// The person's own MCP servers, by name, this task's worker gets beside
+    /// OctiqFlow's tools, the browser and its registered agent's own
+    /// (`TeamAgent::worker_servers`). Set by the run's coordinator on the plan
+    /// (`orchestration_task_create` / `_revise`), shown on the plan card and
+    /// fixed by the approval (`Approved::worker_servers`); a launch reads it
+    /// from its attempt's reservation, never from here. Empty: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worker_servers: Vec<String>,
     /// Agents mode: when the person approved this task as part of the plan.
     /// A coordinator task added after approval has none until they approve
     /// again, so new or re-routed work never rides an earlier approval.
@@ -583,6 +593,8 @@ struct TaskApprovalRollback {
     assignee: Option<TaskAssignee>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     destination: Option<TaskDestination>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    worker_servers: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     size: Option<TaskSize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -602,6 +614,7 @@ impl TaskApprovalRollback {
             worker: task.worker.clone(),
             assignee: task.assignee.clone(),
             destination: task.destination.clone(),
+            worker_servers: task.worker_servers.clone(),
             size: task.size,
             workspace_proposal: task.workspace_proposal.clone(),
             status: task.status,
@@ -617,6 +630,7 @@ impl TaskApprovalRollback {
         task.worker = self.worker;
         task.assignee = self.assignee;
         task.destination = self.destination;
+        task.worker_servers = self.worker_servers;
         task.size = self.size;
         task.workspace_proposal = self.workspace_proposal;
         task.status = self.status;
@@ -803,6 +817,13 @@ pub struct Attempt {
     /// record, never to whatever the task says later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<TaskAssignee>,
+    /// The extra MCP servers the person approved for the task, copied from
+    /// its approval when this attempt was reserved (`Approved::
+    /// worker_servers`; none for a task with no approval). What a launch of
+    /// this attempt's chat adds, never the task's value of the moment
+    /// (`OrchestrationStore::worker_task_servers`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worker_servers: Vec<String>,
     #[serde(default)]
     pub files_modified: Vec<String>,
     /// Settlement time is immutable; later archival or delivery metadata is not runtime.
@@ -2030,6 +2051,45 @@ impl OrchestrationStore {
         ids.all(|id| id == Some(first)).then(|| first.to_string())
     }
 
+    /// The extra MCP servers the person approved for the task(s) a worker
+    /// chat was reserved for, from what was recorded with THAT chat's
+    /// reservation and never from a task's current list. A batch's chat
+    /// has the list its launch recorded from its head task's approval
+    /// (`BatchLaunch::worker_servers`): a batch only groups tasks whose
+    /// approved lists are the same (`batches::compatible`), and a claim of
+    /// a task whose approved list differs from it is refused
+    /// (`keeps_to_batch`). Any other worker chat has its attempt's list.
+    /// Every doubt is none: no worker, an unreadable ledger, attempts of one
+    /// chat (or a batch and its attempts) that do not agree.
+    pub(crate) fn worker_task_servers(&self, chat_key: &str) -> Vec<String> {
+        let Ok(inner) = self.inner.lock() else {
+            return Vec::new();
+        };
+        if inner.load_error.is_some() {
+            return Vec::new();
+        }
+        let mut lists = inner
+            .data
+            .attempts
+            .values()
+            .filter(|attempt| attempt.worker_chat_key == chat_key)
+            .map(|attempt| &attempt.worker_servers);
+        let launched = inner
+            .data
+            .batch_launches
+            .values()
+            .find(|launch| launch.worker_chat_key == chat_key)
+            .map(|launch| &launch.worker_servers);
+        let Some(first) = launched.or_else(|| lists.next()) else {
+            return Vec::new();
+        };
+        if lists.all(|list| list == first) {
+            first.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
     pub fn worker_assignment(
         &self,
         chat_key: &str,
@@ -2502,6 +2562,7 @@ impl OrchestrationStore {
             size,
             kind,
             false,
+            Vec::new(),
         )
     }
 
@@ -2521,9 +2582,11 @@ impl OrchestrationStore {
         size: Option<TaskSize>,
         kind: TaskKind,
         effort_chosen: bool,
+        worker_servers: Vec<String>,
     ) -> Result<Task, String> {
         let title = required_text("task title", title, 240)?;
         let spec = required_text("task spec", spec, 40_000)?;
+        let worker_servers = task_servers(&worker_servers)?;
         let worker = worker
             .map(automation::WorkerSettings::normalized)
             .transpose()?;
@@ -2571,10 +2634,19 @@ impl OrchestrationStore {
                     if assignee.is_none() {
                         return Err("Give each subtask an `assignee`: one of your direct reports.".into());
                     }
+                    // A split goes by its parent's approval, servers too: it
+                    // takes the parent's approved list and names none of its
+                    // own, so it can never widen what the person approved.
+                    if !worker_servers.is_empty() {
+                        return Err(SPLIT_SERVERS.into());
+                    }
                     created_under = Some(parent.to_owned());
                     data.runs.get(&run_id).ok_or("The run does not exist.")?
                 }
             };
+            if created_under.is_none() {
+                servers_need_plan_card(run, &worker_servers)?;
+            }
             if run.archived_at.is_some() {
                 return Err("This run is archived. Restore it before adding work.".into());
             }
@@ -2616,6 +2688,18 @@ impl OrchestrationStore {
                     .get(dependency)
                     .is_some_and(releases_dependants)
             });
+            // A manager's split takes its parent's APPROVED list: what the
+            // person approved for the work being split, never the parent's
+            // value of the moment.
+            let worker_servers = match &created_under {
+                Some(parent) => data
+                    .tasks
+                    .get(parent)
+                    .and_then(|parent| parent.approved.as_ref())
+                    .map(|approved| approved.worker_servers.clone())
+                    .unwrap_or_default(),
+                None => worker_servers,
+            };
             let mut task = Task {
                 effort_chosen,
                 id,
@@ -2625,6 +2709,7 @@ impl OrchestrationStore {
                 worker,
                 assignee,
                 destination,
+                worker_servers,
                 approved_at: None,
                 approved: None,
                 approval_rollback: None,
@@ -2661,6 +2746,9 @@ impl OrchestrationStore {
                 created_at: now,
                 updated_at: now,
             };
+            if created_under.is_none() {
+                servers_fit_worker(run, &task)?;
+            }
             // A manager's subtask is never on the plan card, so no approval
             // will fix what it runs as. The split does: the worker the host
             // routed it to, its assignee and its destination.
@@ -2873,12 +2961,45 @@ impl OrchestrationStore {
     /// approved yet — how "change X" becomes a new revision they can see
     /// before approving. An approved task is fixed: new work is a new task,
     /// which puts the plan back in front of the person.
+    #[cfg(test)]
     pub fn revise_task(
         &self,
         actor_chat_key: &str,
         task_id: &str,
         revision: TaskRevision,
     ) -> Result<Task, String> {
+        self.revise_task_with_servers(actor_chat_key, task_id, revision, None)
+    }
+
+    /// `revise_task`, and a new list of the extra MCP servers the task's
+    /// worker gets (`Task::worker_servers`) when `servers` is `Some`. On a
+    /// task of a pending plan it is one more field of the revision. On a
+    /// task the person already approved, a call that changes the list and
+    /// nothing else puts that task back on the plan card, the way a resize
+    /// or a reassignment does (`amend_servers_in`): what it runs with is
+    /// theirs to approve again, and rejecting it restores what they had
+    /// approved.
+    pub(crate) fn revise_task_with_servers(
+        &self,
+        actor_chat_key: &str,
+        task_id: &str,
+        revision: TaskRevision,
+        servers: Option<Vec<String>>,
+    ) -> Result<Task, String> {
+        let servers = servers.map(|names| task_servers(&names)).transpose()?;
+        let servers_only = servers.is_some()
+            && !revision.withdraw
+            && revision.effort_chosen.is_none()
+            && revision.title.is_none()
+            && revision.spec.is_none()
+            && revision.card.is_none()
+            && revision.depends_on.is_none()
+            && revision.kind.is_none()
+            && revision.route.is_none()
+            && revision.size.is_none();
+        if let Some(servers) = servers.as_ref().filter(|_| servers_only) {
+            return self.amend_servers(actor_chat_key, task_id, servers.clone());
+        }
         let title = revision
             .title
             .map(|title| required_text("task title", title, 240))
@@ -2935,6 +3056,9 @@ impl OrchestrationStore {
                 || !matches!(task.status, TaskStatus::Pending | TaskStatus::Ready)
             {
                 return Err("This task has already started or been withdrawn.".into());
+            }
+            if task.peer_request.is_some() && servers.is_some() {
+                return Err(peer_request::PEERS_SERVERS.into());
             }
             // A peer request is fixed as asked: its text, its teammate and
             // its destination are what the bounds were checked against.
@@ -3016,6 +3140,9 @@ impl OrchestrationStore {
                     task.destination = destination;
                     task.workspace_proposal = proposal;
                 }
+                if let Some(servers) = servers {
+                    task.worker_servers = servers;
+                }
                 task.depends_on = next_deps;
                 task.status = if now_ready {
                     TaskStatus::Ready
@@ -3025,12 +3152,138 @@ impl OrchestrationStore {
             }
             task.updated_at = now;
             let revised = task.clone();
+            // A new worker may be one that takes no extra servers.
+            if !revision.withdraw {
+                if let Some(run) = data.runs.get(&revised.run_id) {
+                    servers_fit_worker(run, &revised)?;
+                }
+            }
             if let Some(run) = data.runs.get_mut(&revised.run_id) {
                 run.updated_at = now;
             }
             Ok(revised)
         })
         .inspect(|_| announce(&run_id, "task_revised"))
+    }
+
+    /// The coordinator names other extra MCP servers for one task's worker,
+    /// and changes nothing else (`revise_task_with_servers`). On a task of a
+    /// pending plan that is an ordinary revision. On a task the person has
+    /// approved it is a change to what they approved: the task goes back on
+    /// the plan card with what they had approved kept for a rejection
+    /// (`TaskApprovalRollback`), and nobody starts it meanwhile, exactly as
+    /// a resize (`set_task_size`) or a reassignment does. A list equal to the
+    /// one it has changes nothing.
+    fn amend_servers(
+        &self,
+        actor_chat_key: &str,
+        task_id: &str,
+        servers: Vec<String>,
+    ) -> Result<Task, String> {
+        let mut run_id = String::new();
+        let mut reopened = false;
+        let task = self.mutate(|data| {
+            let task = data.tasks.get(task_id).ok_or("The task does not exist.")?;
+            let run = coordinator(data, &task.run_id, actor_chat_key)?;
+            run_id = run.id.clone();
+            // A run the host calls failed has not ended: an unanswered
+            // failure is what leaves it so, and a retry with another server
+            // is one way to answer it. Only what no start reaches is refused.
+            if matches!(
+                run.status,
+                RunStatus::Completed | RunStatus::Stopped | RunStatus::Closed
+            ) || run.archived_at.is_some()
+            {
+                return Err("This run has ended.".into());
+            }
+            if task.peer_request.is_some() {
+                return Err(peer_request::PEERS_SERVERS.into());
+            }
+            if approval_parent(task).is_some() {
+                return Err("This is a manager's subtask: it gets the MCP servers the person approved for the task it was split from.".into());
+            }
+            servers_need_plan_card(run, &servers)?;
+            let approved = task.approved_at.is_some();
+            if approved {
+                batches::require_no_batch(data, task_id)?;
+                if let Some(active) = task
+                    .active_attempt_id
+                    .as_deref()
+                    .and_then(|id| data.attempts.get(id))
+                {
+                    if matches!(
+                        active.status,
+                        AttemptStatus::Preparing | AttemptStatus::Running
+                    ) {
+                        return Err("A worker is still on this task, with the MCP servers it was started with. Stop that attempt first, or name the servers on a new task.".into());
+                    }
+                }
+                if !matches!(
+                    task.status,
+                    TaskStatus::Pending | TaskStatus::Ready | TaskStatus::Failed | TaskStatus::Blocked
+                ) {
+                    return Err("Only a task nobody is working on and that has not finished can be given other MCP servers. Add a new task instead.".into());
+                }
+            } else {
+                if !run.awaiting_plan_approval() {
+                    return Err("Only a plan still waiting for the person's approval can be revised. Add a new task instead; the plan goes back to them.".into());
+                }
+                if task.active_attempt_id.is_some()
+                    || !matches!(task.status, TaskStatus::Pending | TaskStatus::Ready)
+                {
+                    return Err("This task has already started or been withdrawn.".into());
+                }
+            }
+            if task.worker_servers == servers {
+                return Ok(task.clone());
+            }
+            let ready = task.depends_on.iter().all(|dependency| {
+                data.tasks
+                    .get(dependency)
+                    .is_some_and(releases_dependants)
+            });
+            let now = now_ms();
+            let task = data.tasks.get_mut(task_id).expect("read above");
+            if approved {
+                if task.approval_rollback.is_none() {
+                    task.approval_rollback = TaskApprovalRollback::capture(task);
+                }
+                task.approved_at = None;
+                task.approved = None;
+                task.status = if ready {
+                    TaskStatus::Ready
+                } else {
+                    TaskStatus::Pending
+                };
+            }
+            task.worker_servers = servers;
+            task.updated_at = now;
+            let task = task.clone();
+            let run = data.runs.get_mut(&run_id).ok_or("The run does not exist.")?;
+            servers_fit_worker(run, &task)?;
+            run.updated_at = now;
+            if let Some(plan) = run
+                .plan_approval
+                .as_mut()
+                .filter(|plan| plan.status != PlanStatus::Pending)
+            {
+                plan.status = PlanStatus::Pending;
+                plan.requested_at = now;
+                plan.decided_at = None;
+                reopened = true;
+            }
+            // A run its one failed task left `failed` is running again with
+            // that task back to do, so the plan can be decided.
+            if approved {
+                recompute_run(data, &run_id);
+            }
+            Ok(task)
+        })?;
+        announce(&run_id, "task_revised");
+        if reopened {
+            announce(&run_id, "plan_pending");
+        }
+        Ok(task)
     }
 
     /// The person chooses, on a plan card before approving it, whether a
@@ -3503,6 +3756,13 @@ impl OrchestrationStore {
             is_worktree: false,
             summary: None,
             assignee: task.assignee.clone(),
+            // What the approval fixed, checked against the task above
+            // (`approval::keeps_to`). A task with no approval adds none.
+            worker_servers: task
+                .approved
+                .as_ref()
+                .map(|approved| approved.worker_servers.clone())
+                .unwrap_or_default(),
             files_modified: Vec::new(),
             finished_at: None,
             archived_at: None,
@@ -5336,6 +5596,54 @@ fn task_is_withdrawable_from_plan(data: &Stored, task: &Task) -> bool {
         ) && !task_has_attempt(data, &task.id))
 }
 
+/// A manager's split names no MCP servers of its own: it takes the ones the
+/// person approved for the task it splits (`create_task_with_effort`).
+pub(crate) const SPLIT_SERVERS: &str = "A subtask you split off your own task gets the MCP servers the person approved for that task, and names none of its own. Leave workerServers out; if the work needs another server, tell your coordinator.";
+
+/// What `worker_servers_available` says beside its lists.
+pub(crate) const SERVERS_OFFERED_NOTE: &str = "Names only. Every worker already has OctiqFlow's tools and Playwright, plus what its registered agent names. claude lists the user-level servers of the person's Claude settings, codex the enabled servers Codex lists. Name one on a task (workerServers) only when the task needs it: each adds its tools to every model call that worker makes. The person approves the list on the plan card.";
+
+/// The one sentence the master brief gives a run whose plan the person
+/// approves (`prompts::master_prompt`).
+pub(crate) const SERVERS_BRIEF: &str = "Workers get only OctiqFlow's tools and Playwright, plus what their registered agent names, unless the task names workerServers on orchestration_task_create or _revise (shown on the plan card, approved by the person); call worker_servers_available to see the names, and name one only when the task needs it.";
+
+/// A reopen keeps the approval and changes only the instructions.
+pub(crate) const REOPEN_SERVERS: &str = "A reopen changes only a task's instructions; it keeps the MCP servers the person approved. To give it other servers, call orchestration_task_revise with taskId and workerServers alone: the task goes back on the plan card for the person.";
+
+/// Extra MCP servers for a task's worker are the person's to approve on the
+/// plan card, so a run without one names none.
+pub(crate) const SERVERS_NEED_PLAN: &str = "Only a run whose plan the person approves can name MCP servers for a task's worker: the plan card is where they see and approve them. This run has none, so leave workerServers out.";
+
+/// A task's `workerServers`, checked as an agent's are (`team::
+/// checked_server_names`).
+fn task_servers(names: &[String]) -> Result<Vec<String>, String> {
+    crate::team::checked_server_names(names, "A task's worker")
+}
+
+fn servers_need_plan_card(run: &Run, names: &[String]) -> Result<(), String> {
+    if !names.is_empty() && run.plan_approval.is_none() {
+        return Err(SERVERS_NEED_PLAN.into());
+    }
+    Ok(())
+}
+
+/// Only a Claude or Codex worker is launched with extra MCP servers. A task
+/// whose worker is known to be another provider names none; one whose
+/// worker is decided later is left to the launch, which says in the
+/// diagnostics log what it did not add.
+fn servers_fit_worker(run: &Run, task: &Task) -> Result<(), String> {
+    if task.worker_servers.is_empty() {
+        return Ok(());
+    }
+    match automation::settings_for_task(run, task) {
+        Ok(Some(worker)) if !matches!(worker.agent, ChatAgent::Claude | ChatAgent::Codex) => Err(
+            "Only a Claude or Codex worker can be given MCP servers. Leave workerServers out, or give this task a Claude or Codex worker."
+                .into(),
+        ),
+        _ => Ok(()),
+    }
+}
+
 /// The parent whose approval `task` goes by: only for a subtask its
 /// parent's own manager split off (`Task::split_by`). A parent id alone
 /// proves nothing: the coordinator can put one on any task it creates, and
@@ -5745,6 +6053,11 @@ fn plan_scope(data: &Stored, run: &Run) -> String {
             // Likewise only when not ordinary work.
             if !task.kind.is_work() {
                 entry["kind"] = json!(task.kind);
+            }
+            // And only when it names any: a revision that changes nothing
+            // but these is a changed plan.
+            if !task.worker_servers.is_empty() {
+                entry["workerServers"] = json!(task.worker_servers);
             }
             // Who asked a teammate for it, and the bounds they set.
             if let Some(request) = &task.peer_request {

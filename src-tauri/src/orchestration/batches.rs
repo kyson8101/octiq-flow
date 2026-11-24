@@ -76,6 +76,12 @@ pub(super) struct BatchLaunch {
     pub launch: WorkerLaunch,
     #[serde(default)]
     pub destination: Option<TaskDestination>,
+    /// The extra MCP servers the batch's process is launched with: its head
+    /// task's approved list (`Approved::worker_servers`), recorded when the
+    /// batch began, before any attempt exists. Every task it claims has the
+    /// same approved list (`compatible`, `keeps_to_batch`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worker_servers: Vec<String>,
     pub started: bool,
     /// In-memory spawn barrier: a concurrent Stop/reaper cannot release the
     /// lease while chat_start is still capable of creating this process.
@@ -103,6 +109,15 @@ pub(super) fn agent_workspace(task: &Task) -> bool {
                 .map(|p| p.mode)
         })
         == Some(WorkspaceMode::Agent)
+}
+
+/// The extra MCP servers the person approved for `task`; none without an
+/// approval.
+fn approved_servers(task: &Task) -> Vec<String> {
+    task.approved
+        .as_ref()
+        .map(|approved| approved.worker_servers.clone())
+        .unwrap_or_default()
 }
 
 /// The same handoff door covers the pre-attempt claim and the working batch.
@@ -149,6 +164,10 @@ fn keeps_to_batch(
         &runtime.plan.base_branch,
         runtime.plan.mode,
     )?;
+    // The process already runs with the servers it was launched with.
+    if approved.worker_servers != runtime.worker_servers {
+        return Err("The batch's worker was started with other MCP servers than the person approved for this task. The task stays queued for a batch of its own; nothing was started.".into());
+    }
     let plan = task
         .workspace
         .as_ref()
@@ -317,6 +336,10 @@ fn compatible(data: &Stored, head: &Task, candidate: &Task) -> bool {
         && mode(candidate) == Some(WorkspaceMode::Agent)
         && automation::settings_for_task(run, head).ok().flatten()
             == automation::settings_for_task(run, candidate).ok().flatten()
+        // One process, one set of servers: a task approved with another
+        // list runs in a batch of its own, never with more than it was
+        // approved for.
+        && approved_servers(head) == approved_servers(candidate)
         && original(data, head).is_none_or(|b| b.task_ids.contains(&candidate.id))
         && original(data, candidate).map(|b| &b.id) == original(data, head).map(|b| &b.id)
 }
@@ -675,6 +698,7 @@ impl OrchestrationStore {
             plan,
             launch: data.agent_queue[&head.id].launch.clone(),
             destination: head.destination.clone(),
+            worker_servers: approved_servers(&head),
             started: false,
             launching: false,
         };

@@ -1843,6 +1843,12 @@ const ORCHESTRATION_HOOK_ACTIONS: &[(&str, &str)] = &[
     // only on the person's own message, which the host reads itself.
     ("plan_approve", "orchestration_plan_approve_in_chat"),
     ("destinations", "orchestration_destinations"),
+    // Read-only: the names of the person's MCP servers a coordinator may
+    // name on a task. A worker is refused by its durable identity.
+    (
+        "worker_servers_available",
+        "orchestration_worker_servers_available",
+    ),
     ("snapshot", "orchestration_snapshot"),
     // The coordinator's own start, its manual override. NOT the socket's
     // `orchestration_worker_start`, which is the page's retry.
@@ -2109,12 +2115,16 @@ async fn workspace_cleanup_request(ctx: &Ctx, caller: HookCaller, args: Value) -
 const PEER_COMMANDS: &[&str] = &["orchestration_peer_ask", "orchestration_peer_request"];
 
 fn seat_refusal(command: &str, caller: &HookCaller) -> Option<crate::outcome::Refusal> {
-    ((PEER_COMMANDS.contains(&command) || command == "orchestration_workspace_cleanup_request")
+    ((PEER_COMMANDS.contains(&command)
+        || command == "orchestration_workspace_cleanup_request"
+        || command == "orchestration_worker_servers_available")
         && caller.session_key != caller.chat_key).then(|| {
         crate::outcome::Refusal::new(
             crate::outcome::ReasonClass::ScopeRefused,
             if command == "orchestration_workspace_cleanup_request" {
                 "Only the chat's own agent may request cleanup as coordinator. An additional agent in a room cannot speak as the coordinator."
+            } else if command == "orchestration_worker_servers_available" {
+                "Only the chat's own agent plans its workers' MCP servers. An additional agent in a room cannot speak as the coordinator."
             } else {
                 "Only the chat's own agent can ask a teammate or hand one work. An additional agent in a room has no team of its own here."
             },

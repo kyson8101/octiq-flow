@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  awaitingApproval, nextPlanChanges, planDestination, planNumbers, planOwner, planPlaceKey, planPlaceNames, planStages, stageSummary,
+  awaitingApproval, nextPlanChanges, planDestination, planNumbers, planOwner, planPlaceKey, planPlaceNames, planServers, planStages, stageSummary,
 } from "./planReview";
 import type { OrchestrationTask } from "./orchestration";
 
@@ -87,6 +87,16 @@ describe("a stage on one line", () => {
     expect(line(tasks)).toBe(
       "4 tasks · OCTIQ FE, OCTIQ BE, OCTIQ QA, STAR MUSIC · OctiqFlow · octiq-flow, Production · octiq-flow",
     );
+  });
+
+  it("keeps the MCP servers its workers get on the folded line, once each, and says nothing when none are named", () => {
+    const video = { ...to("a", "Ada", "Shop", "/repos/shop/api"), workerServers: ["higgsfield", "sume"] };
+    const edit = { ...to("b", "Bo", "Shop", "/repos/shop/api"), workerServers: ["sume"] };
+    expect(line([video, edit])).toBe("2 tasks · Ada, Bo · api · MCP servers: higgsfield, sume");
+    expect(line([to("a", "Ada", "Shop", "/repos/shop/api")])).toBe("1 task · Ada · api");
+    expect(planServers(video)).toBe("MCP servers: higgsfield, sume");
+    expect(planServers({ workerServers: [] })).toBeNull();
+    expect(planServers({})).toBeNull();
   });
 
   it("names a destination by its folder while that names one place", () => {

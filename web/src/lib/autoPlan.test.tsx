@@ -23,7 +23,7 @@ describe("standing plan consent", () => {
     // Changed only the task's display identity from the recorded host fixture.
     ledger.tasks[0].assignee = { id: "video", name: "STAR VIDEO" };
     const run = ledger.runs[0];
-    const held = "Waits for you: 1 task runs at Full access (STAR VIDEO: Implement). Auto-approve covers Auto or lower unless you turn on Full access tasks.";
+    const held = "Waits for you: 1 task runs at Full access or with extra MCP servers (STAR VIDEO: Implement). Auto-approve covers Auto or lower unless you turn on Full access tasks.";
     expect(autoPlanHeld(run, ledger.tasks)).toBe(held);
     const draw = (surface: "chat" | "panel") => renderToStaticMarkup(<PlanReview run={run} tasks={ledger.tasks} surface={surface} drafting={false} onRequestChanges={() => {}} />);
     expect(draw("chat")).toContain(held);
@@ -55,7 +55,7 @@ describe("standing plan consent", () => {
     ledger.runs[0].autoPlan!.held!.taskIds.push("second");
     const draw = (startOpen: boolean) => renderToStaticMarkup(<PlanReview run={ledger.runs[0]} tasks={ledger.tasks} surface="chat" folds startOpen={startOpen} drafting={false} onRequestChanges={() => {}} />);
     const shut = draw(false);
-    expect(shut).toContain(reason === "access" ? "Waits for you: 2 tasks run at Full access." : "Waits for you: 2 peer requests. Peer requests are always approved by you.");
+    expect(shut).toContain(reason === "access" ? "Waits for you: 2 tasks run at Full access or with extra MCP servers." : "Waits for you: 2 peer requests. Peer requests are always approved by you.");
     expect(shut).toMatch(/Held tasks · [\d,]+ characters/);
     expect(shut).not.toContain("First complete title");
     expect(shut).not.toContain("Second complete title");

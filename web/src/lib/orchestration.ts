@@ -169,6 +169,10 @@ export type OrchestrationTask = {
   assignee?: { id: string; name: string };
   /** Where the task runs. Absent: the run's own checkout. */
   destination?: TaskDestination;
+  /** The person's own MCP servers, by name, this task's worker gets beside
+   *  OctiqFlow's tools, the browser and its agent's own. Named by the lead,
+   *  shown on the plan card, fixed by the approval. Absent: none. */
+  workerServers?: string[];
   /** Agents mode: when the person approved it. Absent: not yet approved. */
   approvedAt?: number;
   /** The standard plan card: one line of problem, one of goal, and a few
