@@ -1,14 +1,15 @@
 //! What an orchestration worker keeps of the person's MCP servers.
 //!
-//! A worker starts with `--strict-mcp-config` (Claude) or every inherited
-//! server switched off (Codex), so it sees no server of the person's. That
+//! A worker, at every access level, starts with `--strict-mcp-config`
+//! (Claude) or every inherited server switched off (Codex), so it sees no
+//! server of the person's but the ones below. That
 //! also took away the browser: checked against claude 2.1 (`system/init` of a
 //! stream-json launch), the person's `playwright` server is the only browser
 //! tool an ordinary chat has (Claude in Chrome exists only with `--chrome`,
 //! which no launch passes).
 //!
-//! The person's definition of each server in `CLAUDE_WORKER_MCP_ON`, and of
-//! nothing else, is read from their Claude settings (user scope, then the
+//! The person's definition of each server in `CLAUDE_WORKER_MCP_ON` is read
+//! from their Claude settings (user scope, then the
 //! project's own on top). **Only a valid stdio definition qualifies, for both
 //! providers**, and it is validated AFTER the scope precedence has chosen it:
 //! a project-scope `http`, `sse` or `{}` entry is not replaced by the user
@@ -18,6 +19,19 @@
 //! Claude gets the definition in a second config file the launch names with
 //! one more `--mcp-config` (the file is 0600 and content addressed: nothing
 //! of it is on the command line).
+//!
+//! **The servers the worker's registered agent names** (`TeamAgent::
+//! worker_servers`) ride the same Claude file, read from the same settings by
+//! the same scope precedence. Unlike the browser, a remote definition is
+//! taken for them: `type` `http` or `sse` with a `url` (checked against
+//! claude 2.1.331: OAuth-backed `http` servers such as higgsfield and sume
+//! report `connected` in `system/init` under `--strict-mcp-config` with only
+//! this second file). The definition is copied whole, so its own `headers`
+//! or `oauth` settings go with it, into the 0600 file and never onto a
+//! command line. A name the person's settings do not have, or have in a
+//! shape neither rule takes, is left out and said in one diagnostics line;
+//! it never refuses the launch. A Codex worker keeps the named servers of
+//! its own Codex config instead (`agent_provider::codex_kept_servers`).
 //!
 //! Codex has no config file to point at, so the server is one inline `-c
 //! mcp_servers.<name>=...` table (`codex_browser`). Two things about it were
@@ -50,11 +64,21 @@ pub const CODEX_SERVER: &str = "octiq_playwright";
 /// MCP servers a Claude worker keeps, by the name the person gave them.
 pub const CLAUDE_WORKER_MCP_ON: &[&str] = &[PLAYWRIGHT];
 
-/// The allowlisted servers among those the person configured for `cwd`:
+/// The allowlisted servers among those the person configured for `cwd`
+/// (`named_servers` of `CLAUDE_WORKER_MCP_ON`).
+pub fn allowlisted_servers(config: &Value, cwd: &str) -> Map<String, Value> {
+    named_servers(config, cwd, CLAUDE_WORKER_MCP_ON.iter().copied())
+}
+
+/// The servers called `names` among those the person configured for `cwd`:
 /// user scope first, the project's own (local scope, `projects[cwd]`) on top,
 /// as Claude resolves a name that exists in both. Nothing is validated here:
-/// the winner is chosen first, then judged (`stdio`).
-pub fn allowlisted_servers(config: &Value, cwd: &str) -> Map<String, Value> {
+/// the winner is chosen first, then judged (`stdio`, `remote`).
+pub fn named_servers<'a>(
+    config: &Value,
+    cwd: &str,
+    names: impl Iterator<Item = &'a str> + Clone,
+) -> Map<String, Value> {
     let mut found = Map::new();
     let scopes = [
         config.get("mcpServers"),
@@ -64,13 +88,34 @@ pub fn allowlisted_servers(config: &Value, cwd: &str) -> Map<String, Value> {
             .and_then(|project| project.get("mcpServers")),
     ];
     for scope in scopes.into_iter().flatten().filter_map(Value::as_object) {
-        for name in CLAUDE_WORKER_MCP_ON {
-            if let Some(definition) = scope.get(*name).filter(|d| d.is_object()) {
-                found.insert((*name).to_owned(), definition.clone());
+        for name in names.clone() {
+            if let Some(definition) = scope.get(name).filter(|d| d.is_object()) {
+                found.insert(name.to_owned(), definition.clone());
             }
         }
     }
     found
+}
+
+/// A remote definition Claude takes for a named server: `type` `http` or
+/// `sse`, a non-empty string `url`, and `headers`, when present, an object
+/// of strings. Its other keys (`oauth`, say) are Claude's to read.
+fn remote(definition: &Value) -> bool {
+    let Some(object) = definition.as_object() else {
+        return false;
+    };
+    matches!(
+        object.get("type").and_then(Value::as_str),
+        Some("http" | "sse")
+    ) && object
+        .get("url")
+        .and_then(Value::as_str)
+        .is_some_and(|url| !url.trim().is_empty())
+        && object.get("headers").map_or(true, |headers| {
+            headers
+                .as_object()
+                .is_some_and(|headers| headers.values().all(Value::is_string))
+        })
 }
 
 /// A definition both providers can take: no `type` or `"stdio"`, a non-empty
@@ -134,27 +179,90 @@ fn claude_config_path(env: Option<&BTreeMap<String, String>>) -> Option<PathBuf>
     }
 }
 
+/// The person's Claude settings, or `None` when they cannot be read.
+fn person_config(env: Option<&BTreeMap<String, String>>) -> Option<Value> {
+    let text = std::fs::read_to_string(claude_config_path(env)?).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 /// The person's allowlisted servers for a launch in `cwd`, read from their
 /// Claude settings. Empty when there are none or the file cannot be read.
 fn person_servers(cwd: &str, env: Option<&BTreeMap<String, String>>) -> Map<String, Value> {
-    let read = || -> Option<Map<String, Value>> {
-        let text = std::fs::read_to_string(claude_config_path(env)?).ok()?;
-        let config: Value = serde_json::from_str(&text).ok()?;
-        Some(allowlisted_servers(&config, cwd))
-    };
-    read().unwrap_or_default()
+    person_config(env)
+        .map(|config| allowlisted_servers(&config, cwd))
+        .unwrap_or_default()
 }
 
-/// The second `--mcp-config` file for a Claude worker in `cwd`, or `None`
-/// when the person has no usable allowlisted server or it cannot be set up.
-pub fn for_launch(cwd: &str, env: Option<&BTreeMap<String, String>>) -> Option<PathBuf> {
-    let mut servers = person_servers(cwd, env);
-    servers.retain(|_, definition| stdio(definition).is_some());
-    if servers.is_empty() {
-        return None;
+/// What a Claude worker in `cwd` keeps of the person's servers, as the
+/// definitions to write: the browser when it is a valid stdio one, and each
+/// of `extra` (its agent's `worker_servers`) that is a valid stdio or remote
+/// one. The second half names the `extra` servers left out, and why, for the
+/// diagnostics log: names only, never a value.
+pub fn worker_servers(
+    config: Option<&Value>,
+    cwd: &str,
+    extra: &[String],
+) -> (Map<String, Value>, Option<String>) {
+    let names = CLAUDE_WORKER_MCP_ON
+        .iter()
+        .copied()
+        .chain(extra.iter().map(String::as_str));
+    let found = config
+        .map(|config| named_servers(config, cwd, names))
+        .unwrap_or_default();
+    let mut servers = Map::new();
+    if let Some(browser) = found.get(PLAYWRIGHT).filter(|d| stdio(d).is_some()) {
+        servers.insert(PLAYWRIGHT.to_owned(), browser.clone());
     }
-    let dir = crate::paths::home_dir()?.join(".octiqflow").join("mcp");
-    write_config(&dir, &servers)
+    let (mut missing, mut unusable) = (Vec::new(), Vec::new());
+    for name in extra {
+        match found.get(name) {
+            None => missing.push(name.as_str()),
+            Some(definition) if stdio(definition).is_some() || remote(definition) => {
+                servers.insert(name.clone(), definition.clone());
+            }
+            Some(_) => unusable.push(name.as_str()),
+        }
+    }
+    let mut why = Vec::new();
+    if !missing.is_empty() {
+        why.push(format!(
+            "{} not in the person's Claude settings for this folder",
+            missing.join(", ")
+        ));
+    }
+    if !unusable.is_empty() {
+        why.push(format!(
+            "{} not a stdio, http or sse definition",
+            unusable.join(", ")
+        ));
+    }
+    let note = (!why.is_empty()).then(|| {
+        format!(
+            "the agent's worker MCP servers were not all added to this worker: {}",
+            why.join("; ")
+        )
+    });
+    (servers, note)
+}
+
+/// The second `--mcp-config` file for a Claude worker in `cwd` (the browser
+/// and the servers its agent names, `worker_servers`), or `None` when there
+/// is nothing usable or it cannot be set up; and what was left out, for the
+/// diagnostics log.
+pub fn for_launch(
+    cwd: &str,
+    env: Option<&BTreeMap<String, String>>,
+    extra: &[String],
+) -> (Option<PathBuf>, Option<String>) {
+    let (servers, note) = worker_servers(person_config(env).as_ref(), cwd, extra);
+    if servers.is_empty() {
+        return (None, note);
+    }
+    let file = crate::paths::home_dir()
+        .map(|home| home.join(".octiqflow").join("mcp"))
+        .and_then(|dir| write_config(&dir, &servers));
+    (file, note)
 }
 
 /// A Codex worker's browser: what goes on its command line and what goes in
@@ -298,19 +406,19 @@ pub fn codex_browser_checked(
     })
 }
 
-/// `<dir>/worker-browser-<hash of the content>.json`, written whole under a
+/// `<dir>/worker-mcp-<hash of the content>.json`, written whole under a
 /// temporary name and renamed into place, private to the person. A file that
 /// is already there holds the same bytes, so a launch racing another is fine.
 pub fn write_config(dir: &Path, servers: &Map<String, Value>) -> Option<PathBuf> {
     let body = serde_json::to_vec_pretty(&json!({ "mcpServers": servers })).ok()?;
     let digest = Sha256::digest(&body);
     let name: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
-    let target = dir.join(format!("worker-browser-{name}.json"));
+    let target = dir.join(format!("worker-mcp-{name}.json"));
     if target.is_file() {
         return Some(target);
     }
     crate::profile::create_dir_all(dir).ok()?;
-    let temp = dir.join(format!(".worker-browser-{name}-{}.tmp", std::process::id()));
+    let temp = dir.join(format!(".worker-mcp-{name}-{}.tmp", std::process::id()));
     {
         use std::io::Write;
         let mut options = std::fs::OpenOptions::new();
@@ -404,9 +512,9 @@ mod tests {
             "CLAUDE_CONFIG_DIR".to_owned(),
             dir.to_string_lossy().into_owned(),
         );
-        assert!(for_launch("/a", Some(&env)).is_none(), "no file");
+        assert!(for_launch("/a", Some(&env), &[]).0.is_none(), "no file");
         std::fs::write(dir.join(".claude.json"), "{not json").unwrap();
-        assert!(for_launch("/a", Some(&env)).is_none(), "not JSON");
+        assert!(for_launch("/a", Some(&env), &[]).0.is_none(), "not JSON");
     }
 
     fn none_set(_: &str) -> Option<String> {
@@ -501,7 +609,7 @@ mod tests {
             )
             .unwrap();
             let env = env_with(&dir);
-            assert!(for_launch("/a", Some(&env)).is_none(), "{bad}");
+            assert!(for_launch("/a", Some(&env), &[]).0.is_none(), "{bad}");
             assert!(for_codex_launch("/a", Some(&env), &[], &none_set).is_none());
         }
     }
@@ -521,9 +629,9 @@ mod tests {
         )
         .unwrap();
         let env = env_with(&dir);
-        assert!(for_launch("/p", Some(&env)).is_none());
+        assert!(for_launch("/p", Some(&env), &[]).0.is_none());
         assert!(for_codex_launch("/p", Some(&env), &[], &none_set).is_none());
-        assert!(for_launch("/other", Some(&env)).is_some());
+        assert!(for_launch("/other", Some(&env), &[]).0.is_some());
     }
 
     #[test]
@@ -659,8 +767,106 @@ mod tests {
             "CLAUDE_CONFIG_DIR".to_owned(),
             dir.to_string_lossy().into_owned(),
         );
-        let path = for_launch("/elsewhere", Some(&env)).expect("a config for the worker");
+        let path = for_launch("/elsewhere", Some(&env), &[])
+            .0
+            .expect("a config for the worker");
         let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(saved["mcpServers"].as_object().unwrap().len(), 1);
+    }
+
+    fn named(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// The servers an agent names ride the worker's file beside the browser,
+    /// remote ones included, copied whole; no other server of the person's
+    /// does.
+    #[test]
+    fn a_workers_named_servers_ride_its_file_and_nothing_else_does() {
+        let config = json!({
+            "mcpServers": {
+                "playwright": {"command": "npx"},
+                "higgsfield": {"type": "http", "url": "https://mcp.higgsfield.ai/mcp", "headers": {"X-Key": "k3y"}},
+                "sentry": {"type": "http", "url": "https://mcp.sentry.dev/mcp"},
+                "docspace": {"type": "stdio", "command": "node", "env": {"T": "v"}},
+                "events": {"type": "sse", "url": "https://e.example/sse"}
+            },
+            "projects": {"/work": {"mcpServers": {"sume": {"type": "http", "url": "https://sume.example/mcp"}}}}
+        });
+        let (servers, note) = worker_servers(
+            Some(&config),
+            "/work",
+            &named(&["higgsfield", "docspace", "sume", "events"]),
+        );
+        let mut keys: Vec<_> = servers.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["docspace", "events", "higgsfield", "playwright", "sume"]
+        );
+        assert_eq!(servers["higgsfield"], config["mcpServers"]["higgsfield"]);
+        assert_eq!(note, None);
+        // No list: the browser alone, as every worker had before.
+        let (alone, note) = worker_servers(Some(&config), "/work", &[]);
+        assert_eq!(alone.keys().collect::<Vec<_>>(), ["playwright"]);
+        assert_eq!(note, None);
+        // Through the launch: the file holds exactly those.
+        let dir = TestDir::new("worker-servers-file");
+        std::fs::write(
+            dir.join(".claude.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        let (file, _) = for_launch("/work", Some(&env_with(&dir)), &named(&["sentry"]));
+        let saved: Value = serde_json::from_slice(&std::fs::read(file.unwrap()).unwrap()).unwrap();
+        let mut keys: Vec<_> = saved["mcpServers"].as_object().unwrap().keys().collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["playwright", "sentry"]);
+    }
+
+    /// A name the person's settings do not have, or have in a shape neither
+    /// rule takes, is left out and said by name; the rest still go, and
+    /// nothing fails.
+    #[test]
+    fn an_unknown_or_unusable_name_is_left_out_and_said_without_failing() {
+        let config = json!({"mcpServers": {
+            "higgsfield": {"type": "http", "url": "https://mcp.higgsfield.ai/mcp"},
+            "nourl": {"type": "http", "headers": {"A": "s3cret"}},
+            "badheaders": {"type": "http", "url": "https://x", "headers": {"A": 1}},
+            "socket": {"type": "ws", "url": "wss://x"}
+        }});
+        let (servers, note) = worker_servers(
+            Some(&config),
+            "/a",
+            &named(&["nope", "higgsfield", "nourl", "badheaders", "socket"]),
+        );
+        assert_eq!(servers.keys().collect::<Vec<_>>(), ["higgsfield"]);
+        let note = note.expect("a note");
+        assert!(
+            note.contains("nope not in the person's Claude settings"),
+            "{note}"
+        );
+        assert!(
+            note.contains("nourl, badheaders, socket not a stdio, http or sse definition"),
+            "{note}"
+        );
+        assert!(
+            !note.contains("s3cret") && !note.contains("wss://"),
+            "{note}"
+        );
+        // Settings that cannot be read: every named server is missing.
+        let (servers, note) = worker_servers(None, "/a", &named(&["higgsfield"]));
+        assert!(servers.is_empty());
+        assert!(note.unwrap().contains("higgsfield not in"));
+        // Nothing usable at all: no file, the note still said, no error.
+        let dir = TestDir::new("worker-servers-unknown");
+        std::fs::write(
+            dir.join(".claude.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        let (file, note) = for_launch("/a", Some(&env_with(&dir)), &named(&["nope"]));
+        assert!(file.is_none());
+        assert!(note.unwrap().contains("nope"));
     }
 }

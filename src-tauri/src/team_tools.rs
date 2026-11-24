@@ -79,6 +79,11 @@ pub struct Proposal {
     /// computer-use route (their Brave/Chrome session). Absent keeps it.
     #[serde(default)]
     pub desktop_tools: Option<bool>,
+    /// Claude and Codex only: the person's own MCP servers, by name, that its
+    /// orchestration workers get beside OctiqFlow's tools and the browser.
+    /// Absent keeps the list, `[]` clears it.
+    #[serde(default)]
+    pub worker_servers: Option<Vec<String>>,
     /// How long the person's card may stay up, in seconds. The MCP sets it
     /// from what its provider will wait for a tool call; the host clamps it.
     #[serde(default)]
@@ -292,6 +297,7 @@ fn public(roster: &Roster, agent: &TeamAgent) -> Value {
         "role": agent.role,
         "persistentPrompt": agent.persistent_prompt,
         "desktopTools": agent.desktop_tools,
+        "workerServers": agent.worker_servers,
         "provider": agent.agent,
         "model": agent.model,
         "effort": agent.effort,
@@ -397,6 +403,7 @@ pub fn draft(roster: &Roster, kind: Kind, p: &Proposal) -> Result<Draft, String>
                 },
                 persistent_prompt: p.persistent_prompt.clone(),
                 desktop_tools: p.desktop_tools,
+                worker_servers: p.worker_servers.clone(),
             };
             Ok(Draft {
                 draft,
@@ -420,7 +427,8 @@ pub fn draft(roster: &Roster, kind: Kind, p: &Proposal) -> Result<Draft, String>
                 && p.reports_to.is_none()
                 && p.team.is_none()
                 && p.persistent_prompt.is_none()
-                && p.desktop_tools.is_none();
+                && p.desktop_tools.is_none()
+                && p.worker_servers.is_none();
             if nothing {
                 return Err(format!("Say what to change about {}.", current.name));
             }
@@ -460,6 +468,7 @@ pub fn draft(roster: &Roster, kind: Kind, p: &Proposal) -> Result<Draft, String>
                 // Absent keeps it, as in `team::save`.
                 persistent_prompt: p.persistent_prompt.clone(),
                 desktop_tools: p.desktop_tools,
+                worker_servers: p.worker_servers.clone(),
             };
             Ok(Draft {
                 draft,
@@ -651,6 +660,13 @@ fn moves(
             on_off(after.desktop_tools).into(),
         ));
     }
+    if before.worker_servers != after.worker_servers {
+        moved.push((
+            WORKER_SERVERS,
+            server_list(&before.worker_servers),
+            server_list(&after.worker_servers),
+        ));
+    }
     moved
 }
 
@@ -658,6 +674,20 @@ fn moves(
 /// worker can do, so it is stated on a new agent that has it on and whenever it
 /// moves; it is not a row of every card (a removal, a change to something else).
 const DESKTOP_TOOLS: &str = "Browser and computer use";
+
+/// The card's label for the extra MCP servers an agent's workers get. Like
+/// `DESKTOP_TOOLS` it widens what a worker can do: stated on a new agent that
+/// has any, and whenever the list moves.
+const WORKER_SERVERS: &str = "Worker MCP servers";
+
+/// The servers as the card names them: `a, b`, or `none`.
+fn server_list(names: &[String]) -> String {
+    if names.is_empty() {
+        "none".into()
+    } else {
+        names.join(", ")
+    }
+}
 
 fn on_off(on: bool) -> &'static str {
     if on {
@@ -689,6 +719,12 @@ pub fn describe(roster: &Roster, change: &Draft, after: &TeamAgent) -> String {
             }
             if after.desktop_tools {
                 text.push_str(&format!("\n{DESKTOP_TOOLS}: on"));
+            }
+            if !after.worker_servers.is_empty() {
+                text.push_str(&format!(
+                    "\n{WORKER_SERVERS}: {}",
+                    server_list(&after.worker_servers)
+                ));
             }
         }
         Some(before) => {
@@ -728,6 +764,10 @@ pub fn facts(roster: &Roster, change: &Draft, after: &TeamAgent) -> ChangeFacts 
             .into_iter()
             .map(|(label, value)| plain(label, value))
             .chain(after.desktop_tools.then(|| plain(DESKTOP_TOOLS, "on")))
+            .chain(
+                (!after.worker_servers.is_empty())
+                    .then(|| plain(WORKER_SERVERS, server_list(&after.worker_servers))),
+            )
             .collect(),
         Some(before) => moves(roster, before, after)
             .into_iter()

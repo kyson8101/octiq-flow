@@ -69,8 +69,63 @@ pub struct TeamAgent {
     /// on the card. Off in files written before it existed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub desktop_tools: bool,
+    /// Claude and Codex only: the person's own MCP servers, by the name their
+    /// Claude or Codex config gives them, that this agent's orchestration
+    /// workers get beside OctiqFlow's tools and the browser. Every other
+    /// server of the person's is off for a worker, whatever its access
+    /// (`worker_browser`, `agent_provider::codex_kept_servers`). It widens
+    /// what a worker can do, so the person approves it on the card. Empty in
+    /// files written before it existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worker_servers: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// The most extra MCP servers one agent's workers may be given.
+pub const WORKER_SERVERS_MAX: usize = 12;
+/// The longest name of one, in characters.
+pub const WORKER_SERVER_NAME_MAX: usize = 64;
+
+/// The extra MCP server names a draft gives, checked: each trimmed, 1 to
+/// `WORKER_SERVER_NAME_MAX` characters of ASCII letters, digits, `_`, `.`,
+/// `-` or space; a repeat dropped (the first kept); at most
+/// `WORKER_SERVERS_MAX` once repeats are gone; never OctiqFlow's own server
+/// (`octiq`) or the host's copy of the browser (`worker_browser::
+/// CODEX_SERVER`), in any case: every worker has those already, and a server
+/// of the person's under either name would stand in for the host's.
+fn checked_worker_servers(names: &[String]) -> Result<Vec<String>, String> {
+    let mut kept: Vec<String> = Vec::new();
+    for raw in names {
+        let name = raw.trim();
+        if name.is_empty() {
+            return Err("An MCP server name for workers cannot be empty.".into());
+        }
+        let fits = name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | ' '));
+        if !fits || name.chars().count() > WORKER_SERVER_NAME_MAX {
+            return Err(format!(
+                "{name:?} is not an MCP server name: use up to {WORKER_SERVER_NAME_MAX} letters, digits, spaces, dots, dashes or underscores."
+            ));
+        }
+        if name.eq_ignore_ascii_case("octiq")
+            || name.eq_ignore_ascii_case(crate::worker_browser::CODEX_SERVER)
+        {
+            return Err(format!(
+                "{name} is OctiqFlow's own server, which every worker already has."
+            ));
+        }
+        if !kept.iter().any(|k| k == name) {
+            kept.push(name.to_owned());
+        }
+    }
+    if kept.len() > WORKER_SERVERS_MAX {
+        return Err(format!(
+            "An agent's workers can be given at most {WORKER_SERVERS_MAX} extra MCP servers."
+        ));
+    }
+    Ok(kept)
 }
 
 /// The longest role an agent may have.
@@ -152,6 +207,11 @@ pub struct TeamDraft {
     /// Codex agent may have it on (`apply`).
     #[serde(default)]
     pub desktop_tools: Option<bool>,
+    /// Absent keeps the current list, `[]` clears it, a list replaces it.
+    /// Only a Claude or Codex agent may have one (`apply`); moving to another
+    /// provider clears it.
+    #[serde(default)]
+    pub worker_servers: Option<Vec<String>>,
 }
 
 /// A chat a task was handed to: the host needs it to know that a run the chat
@@ -467,6 +527,17 @@ fn apply(
             "Browser and computer use for workers is only available to a Codex agent.".into(),
         );
     }
+    let takes_servers = matches!(draft.agent, ChatAgent::Claude | ChatAgent::Codex);
+    let worker_servers = draft
+        .worker_servers
+        .as_deref()
+        .map(checked_worker_servers)
+        .transpose()?;
+    if !takes_servers && worker_servers.as_ref().is_some_and(|list| !list.is_empty()) {
+        return Err(
+            "Extra MCP servers for workers are only available to a Claude or Codex agent.".into(),
+        );
+    }
     let id = draft.id.filter(|id| !id.is_empty());
     if let (Some(me), Some(expected)) = (&id, expected) {
         let current = stored
@@ -617,6 +688,12 @@ fn apply(
                 // Moving off Codex ends it: nothing else could use it.
                 desktop_tools: draft.agent == ChatAgent::Codex
                     && draft.desktop_tools.unwrap_or(existing.desktop_tools),
+                // Moving to a provider that cannot take them ends them too.
+                worker_servers: if takes_servers {
+                    worker_servers.unwrap_or_else(|| existing.worker_servers.clone())
+                } else {
+                    Vec::new()
+                },
                 created_at: existing.created_at,
                 // Never the same stamp twice, so a card made against one
                 // version is never taken for the next.
@@ -640,6 +717,7 @@ fn apply(
                 team_id,
                 persistent_prompt: persistent_prompt.unwrap_or_default(),
                 desktop_tools: draft.desktop_tools.unwrap_or(false),
+                worker_servers: worker_servers.unwrap_or_default(),
                 created_at: now,
                 updated_at: now,
             };
@@ -1639,6 +1717,7 @@ pub fn create_front_desk(path: &Path, draft: FrontDeskDraft) -> Result<TeamAgent
             team_id: None,
             persistent_prompt: None,
             desktop_tools: None,
+            worker_servers: None,
         },
     )?;
     set_front_desk(path, Some(&saved.id))?;

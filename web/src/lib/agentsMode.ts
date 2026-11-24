@@ -52,6 +52,10 @@ export type TeamAgent = {
    *  computer-use route instead of starting isolated (team.rs `desktop_tools`).
    *  Absent when off. */
   desktopTools?: boolean;
+  /** Claude and Codex only: the person's own MCP servers, by name, that its
+   *  orchestration workers get beside OctiqFlow's tools and Playwright
+   *  (team.rs `worker_servers`). Absent when none. */
+  workerServers?: string[];
   createdAt: number;
   updatedAt: number;
 };
@@ -103,7 +107,21 @@ export type TeamDraft = {
   persistentPrompt?: string;
   /** Absent keeps it; only a Codex agent may have it on. */
   desktopTools?: boolean;
+  /** Absent keeps it, [] clears it; only a Claude or Codex agent may have one. */
+  workerServers?: string[];
 };
+
+/** The MCP server names a comma-separated line holds: each trimmed, empty
+ *  ones and repeats dropped (the first kept). The host checks the rest
+ *  (team.rs `checked_worker_servers`). */
+export function serverNames(text: string): string[] {
+  const names: string[] = [];
+  for (const part of text.split(",")) {
+    const name = part.trim();
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
 
 /** Global agents plus the project's own; every agent with `all`. */
 export async function loadTeam(projectId: string | null, all = false): Promise<TeamAgent[]> {

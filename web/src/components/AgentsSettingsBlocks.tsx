@@ -1,12 +1,12 @@
 // The blocks of the agents settings page (moved verbatim from AgentsSettings.tsx).
 import type { ProjectRef } from "./AgentsSettings";
 import { ActionIcon } from "./ActionIcon";
-import { useEffect, useRef, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   ACCESS, AGENT_NAME, EFFORTS, providerFor,
   type AccessLevel, type Effort, type Provider,
 } from "../lib/agentProviders";
-import { AGENT_POLICY_MAX, PERSISTENT_PROMPT_MAX, ROLE_MAX, charCount, frontDeskDefaults, frontDeskRefusal, joinableTeams, leadOnly, teamModelLabel, teamModels, type AgentTeam, type AgentTeamDraft, type TeamAgent, type TeamDraft } from "../lib/agentsMode";
+import { AGENT_POLICY_MAX, PERSISTENT_PROMPT_MAX, ROLE_MAX, charCount, frontDeskDefaults, frontDeskRefusal, joinableTeams, leadOnly, serverNames, teamModelLabel, teamModels, type AgentTeam, type AgentTeamDraft, type TeamAgent, type TeamDraft } from "../lib/agentsMode";
 import { orgChart, teamBadge } from "../lib/agentsDashboard";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentAvatarEditor } from "./AgentAvatarEditor";
@@ -357,8 +357,10 @@ export function teamDraftFields(draft: TeamDraft, team: TeamAgent[], teams: Agen
     // nearest one it does: Auto if it has it, else Accept edits.
     const level = ACCESS[agent].some((a) => a.id === draft.access) ? draft.access
       : ACCESS[agent].some((a) => a.id === "auto") ? "auto" : "edits";
-    // Browser and computer use for workers is Codex's; leaving Codex ends it.
-    onChange({ ...draft, agent, model, effort, access: level, ...(agent === "codex" ? {} : { desktopTools: false }) });
+    // Browser and computer use for workers is Codex's, and extra MCP servers
+    // for workers are Claude's and Codex's; leaving them ends each.
+    onChange({ ...draft, agent, model, effort, access: level, ...(agent === "codex" ? {} : { desktopTools: false }),
+      ...(agent === "claude" || agent === "codex" ? {} : { workerServers: [] }) });
   };
   const lead = leadOnly(draft);
   // A manager must be visible wherever this agent is, and must not already
@@ -476,6 +478,29 @@ function DesktopToolsField({ draft, saving, set }: { draft: TeamDraft; saving: b
   </label>;
 }
 
+const WORKER_SERVERS_LABEL = "Extra MCP servers for this agent's workers";
+
+/** Claude and Codex agents only. The person's own MCP servers, by name, that
+ *  this agent's orchestration workers get beside OctiqFlow's tools and
+ *  Playwright; the host shows the list on the card too (team.rs
+ *  `worker_servers`). Typed as one comma-separated line; the draft holds the
+ *  list it says. */
+export function WorkerServersField({ draft, saving, set }: { draft: TeamDraft; saving: boolean; set: (patch: Partial<TeamDraft>) => void }) {
+  const listed = draft.workerServers ?? [];
+  const [text, setText] = useState(() => listed.join(", "));
+  if (draft.agent !== "claude" && draft.agent !== "codex") return null;
+  // What was typed stands while it still says the draft's list (a trailing
+  // comma, a space before the next name); a list changed elsewhere is drawn
+  // from the draft.
+  const typed = serverNames(text);
+  const shown = typed.length === listed.length && typed.every((name, i) => name === listed[i]) ? text : listed.join(", ");
+  return <label className="team-form-wide"><span>{WORKER_SERVERS_LABEL}</span>
+    <input type="text" aria-label={WORKER_SERVERS_LABEL} disabled={saving} value={shown} placeholder="e.g. higgsfield, sume" spellCheck={false}
+      onChange={(event) => { setText(event.target.value); set({ workerServers: serverNames(event.target.value) }); }} />
+    <small className="team-field-note">Names from your Claude/Codex MCP config. Workers otherwise get OctiqFlow's tools and Playwright only.</small>
+  </label>;
+}
+
 export function InlineAgentRow({ draft, depth, team, teams, projects, saving, onChange, onSave, onCancel, onDetails }: {
   draft: TeamDraft; depth: number; team: TeamAgent[]; teams: AgentTeam[]; projects: ProjectRef[]; saving: boolean;
   onChange: (draft: TeamDraft) => void; onSave: () => void; onCancel: () => void; onDetails: (draft: TeamDraft) => void;
@@ -509,6 +534,7 @@ export function InlineAgentRow({ draft, depth, team, teams, projects, saving, on
         <label><span>Team</span><select aria-label="Team" disabled={saving} value={draft.teamId ?? ""} onChange={(event) => set({ teamId: event.target.value || null })}>
           <option value="">None</option>{joinable.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
         <DesktopToolsField draft={draft} saving={saving} set={set} />
+        <WorkerServersField draft={draft} saving={saving} set={set} />
       </div>
       {leadOnly(draft) && <small className="team-field-note">Astra can lead a task, but it cannot be given one.</small>}
       <div className="agents-edit-footer">
@@ -647,6 +673,7 @@ export function TeamForm({ draft, team, teams, projects, saving, onChange, onSav
         </select>
       </label>
       <DesktopToolsField draft={draft} saving={saving} set={set} />
+      <WorkerServersField draft={draft} saving={saving} set={set} />
       {lead && (
         <p className="settings-note team-form-wide">
           Astra can lead a task, but it cannot be given one.

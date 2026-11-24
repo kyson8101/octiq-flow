@@ -82,6 +82,7 @@ pub(crate) fn register(
             team_id: None,
             persistent_prompt: None,
             desktop_tools: None,
+            worker_servers: None,
         },
     )
     .unwrap()
@@ -563,6 +564,7 @@ fn confirm_starts_exactly_one_chat_on_the_recipients_registered_settings() {
             team_id: None,
             persistent_prompt: None,
             desktop_tools: None,
+            worker_servers: None,
         },
     )
     .unwrap();

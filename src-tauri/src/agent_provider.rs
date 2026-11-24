@@ -188,16 +188,17 @@ pub struct AgentCommand<'a> {
     /// and the plugins that carry them). False leaves the launch exactly as
     /// every worker's. Only set when one of those servers exists.
     pub codex_worker_desktop: bool,
-    /// An orchestration worker whose exact attempt runs at full access
-    /// (`OrchestrationStore::worker_is_full_access`) gets the person's whole
-    /// tool set, the MCP servers, plugins and apps an ordinary chat of its
-    /// provider gets: Claude without `--strict-mcp-config`, Codex without
-    /// `--disable apps`, `--disable plugins` or any per-server disable. OctiqFlow's own
-    /// `octiq` server is on either way. Never set for a front desk, a lite
-    /// chat or anything that is not an orchestration worker.
-    pub worker_full_tools: bool,
+    /// A Codex worker's extra servers: the names, among `codex_user_mcp`, of
+    /// the servers its registered agent names (`TeamAgent::worker_servers`,
+    /// `codex_kept_servers`). These are left as the person configured them
+    /// instead of being turned off; `--disable apps --disable plugins` stay.
+    /// Only an orchestration worker reads it.
+    pub codex_worker_servers: &'a [String],
     /// A Claude worker's second MCP config: the person's own definitions of
-    /// the servers in `CLAUDE_WORKER_MCP_ON`, nothing else (`worker_browser`).
+    /// the servers in `CLAUDE_WORKER_MCP_ON` and of those its registered agent
+    /// names, nothing else (`worker_browser`). Only an orchestration worker
+    /// reads it; every worker, whatever its access, runs with
+    /// `--strict-mcp-config`.
     pub claude_worker_mcp: Option<&'a Path>,
     /// The person's personal preferences from Settings, already worded for a
     /// system prompt (`personal_preferences::prompt`). Every provider ends
@@ -246,14 +247,41 @@ pub fn codex_desktop_servers(servers: &[CodexMcpServer]) -> Vec<&CodexMcpServer>
         .collect()
 }
 
+/// The servers a Codex worker keeps of the person's list because its
+/// registered agent names them: the names found, in the person's order, and
+/// the names the list does not have (said in the diagnostics log, never a
+/// refusal). A name matches exactly, as Codex matches it.
+///
+/// A server a Codex PLUGIN brings (the `unified-computer-use` plugin's
+/// `cua_repl`) is in the list a worker reads but is gone under the worker's
+/// `--disable plugins` whether it is turned off or not (checked against
+/// codex-cli 0.171, `codex mcp list --json`): only `desktop_tools` keeps the
+/// plugins on.
+pub fn codex_kept_servers(
+    servers: &[CodexMcpServer],
+    names: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let kept: Vec<String> = servers
+        .iter()
+        .filter(|s| names.contains(&s.name))
+        .map(|s| s.name.clone())
+        .collect();
+    let missing = names
+        .iter()
+        .filter(|name| !kept.contains(name))
+        .cloned()
+        .collect();
+    (kept, missing)
+}
+
 /// The servers a Codex worker's first turn waits for, and the longest
 /// `startup_timeout_sec` any of them was given (zero when none says):
-/// the host's own browser entry; for a full-access worker every ENABLED server
-/// of the person's list (a disabled one never reports a startup state); for
-/// an opted-in desktop worker the desktop servers. Names are not repeated.
+/// the host's own browser entry; the ENABLED servers among those its agent
+/// names (`kept`; a disabled one never reports a startup state); for an
+/// opted-in desktop worker the desktop servers. Names are not repeated.
 pub fn codex_gate_servers(
     host_browser: Option<&str>,
-    full: bool,
+    kept: &[String],
     desktop: bool,
     servers: &[CodexMcpServer],
 ) -> (Vec<String>, std::time::Duration) {
@@ -268,10 +296,11 @@ pub fn codex_gate_servers(
     if let Some(name) = host_browser {
         add(name, None);
     }
-    if full {
-        for server in servers.iter().filter(|s| s.enabled) {
-            add(&server.name, server.startup_timeout_secs);
-        }
+    for server in servers
+        .iter()
+        .filter(|s| s.enabled && kept.contains(&s.name))
+    {
+        add(&server.name, server.startup_timeout_secs);
     }
     if desktop {
         for server in codex_desktop_servers(servers) {
@@ -376,27 +405,32 @@ fn append_codex_front_desk(cmd: &mut String, servers: &[CodexMcpServer]) {
 /// off like every other inherited server, and nothing is merged into the
 /// host's entry. The name is `worker_browser::codex_server_name`,
 /// which steps aside for a taken one.
+///
+/// The servers the worker's agent names (`keep`, from `codex_kept_servers`)
+/// are not turned off: they run as the person configured them. Nothing is
+/// written for them, so nothing is merged into them either.
 fn append_codex_worker_mcp(
     cmd: &mut String,
     servers: &[CodexMcpServer],
     browser: Option<&crate::worker_browser::CodexBrowser>,
     desktop: bool,
+    keep: &[String],
 ) {
+    let off: Vec<CodexMcpServer> = servers
+        .iter()
+        .filter(|s| !keep.contains(&s.name))
+        .filter(|s| !desktop || s.remote || !CODEX_DESKTOP_SERVERS.contains(&s.name.as_str()))
+        .cloned()
+        .collect();
     if desktop {
         // The opt-in route (`CODEX_DESKTOP_SERVERS`): plugins stay on because
         // they carry the route, apps stay off, and every other inherited
         // server (the plugins' others included) is still turned off by name.
         cmd.push_str(" --disable apps");
-        let rest: Vec<CodexMcpServer> = servers
-            .iter()
-            .filter(|s| s.remote || !CODEX_DESKTOP_SERVERS.contains(&s.name.as_str()))
-            .cloned()
-            .collect();
-        append_codex_inherited_mcp_off(cmd, &rest);
     } else {
         cmd.push_str(" --disable apps --disable plugins");
-        append_codex_inherited_mcp_off(cmd, servers);
     }
+    append_codex_inherited_mcp_off(cmd, &off);
     if let Some(browser) = browser {
         cmd.push_str(&format!(
             " -c {}",
@@ -880,13 +914,11 @@ impl AgentProvider for ClaudeProvider {
         // that built-in tool is removed in favour of OctiqFlow's MCP tool.
         cmd.push_str(" --permission-prompt-tool stdio");
         cmd.push_str(" --disallowedTools AskUserQuestion");
-        if request.orchestration_worker
-            && !request.front_desk
-            && !request.lite
-            && !request.worker_full_tools
-        {
+        if request.orchestration_worker && !request.front_desk && !request.lite {
             // Keep settings/hooks/skills and leave the system prompt last:
             // the Windows launch-line guard checks its final outage guidance.
+            // Whatever its access: what a worker keeps of the person's
+            // servers is the second config below, never their whole set.
             cmd.push_str(" --strict-mcp-config");
         }
         if request.front_desk {
@@ -909,8 +941,8 @@ impl AgentProvider for ClaudeProvider {
                 .then(orchestration_worker_prompt)
                 .unwrap_or_default();
             // A worker's `--strict-mcp-config` drops the person's servers; the
-            // browser one they chose to keep is a second config, never theirs
-            // all (`worker_browser`).
+            // browser and the ones its agent names are a second config, never
+            // theirs all (`worker_browser`).
             let browser = request
                 .orchestration_worker
                 .then_some(request.claude_worker_mcp)
@@ -1179,12 +1211,13 @@ fn codex_exec_command(request: &AgentCommand<'_>, provider: &CodexProvider) -> S
     append_codex_mcp(&mut cmd, request.mcp_config, request.front_desk);
     if request.front_desk {
         append_codex_front_desk(&mut cmd, request.codex_user_mcp);
-    } else if request.orchestration_worker && !request.worker_full_tools {
+    } else if request.orchestration_worker {
         append_codex_worker_mcp(
             &mut cmd,
             request.codex_user_mcp,
             request.codex_worker_playwright,
             request.codex_worker_desktop,
+            request.codex_worker_servers,
         );
     }
     let extra_dirs: &[String] = if request.front_desk {
@@ -1286,12 +1319,13 @@ impl AgentProvider for CodexProvider {
             append_codex_mcp(&mut cmd, request.mcp_config, request.front_desk);
             if request.front_desk {
                 append_codex_front_desk(&mut cmd, request.codex_user_mcp);
-            } else if request.orchestration_worker && !request.worker_full_tools {
+            } else if request.orchestration_worker {
                 append_codex_worker_mcp(
                     &mut cmd,
                     request.codex_user_mcp,
                     request.codex_worker_playwright,
                     request.codex_worker_desktop,
+                    request.codex_worker_servers,
                 );
             }
             cmd
@@ -1513,8 +1547,8 @@ const PI_HOST_PROMPT: &str = "You are running inside OctiqFlow, which owns this 
 
 /// Pi's `--tools` allowlist for a launch. Read gets only the tools that
 /// cannot change anything; the host gate refuses the rest in any case. A
-/// front desk gets one MCP tool and a worker below Full only OctiqFlow's own
-/// MCP tools beside the built-ins.
+/// front desk gets one MCP tool and a worker only OctiqFlow's own MCP
+/// tools beside the built-ins.
 fn pi_tools(request: &AgentCommand<'_>, access: Access) -> String {
     if request.front_desk {
         return "mcp__octiq__route_chat".into();
@@ -1526,7 +1560,7 @@ fn pi_tools(request: &AgentCommand<'_>, access: Access) -> String {
     // A plain list hides every MCP tool no entry names (docs/cli.md), so the
     // list says which MCP tools stay: all of them for an ordinary chat, which
     // keeps the person's own servers like Claude and Codex chats do, and
-    // OctiqFlow's own for a worker below Full.
+    // OctiqFlow's own for a worker.
     if pi_isolated(request) {
         tools.push_str(",mcp__octiq__*");
     } else {
@@ -1536,13 +1570,13 @@ fn pi_tools(request: &AgentCommand<'_>, access: Access) -> String {
 }
 
 /// Whether a launch keeps the person's own Pi extensions, skills and prompt
-/// templates, and their MCP servers. A front desk and a worker below Full do
-/// not (as Claude's `--strict-mcp-config` and Codex's `--disable plugins`):
+/// templates, and their MCP servers. A front desk and a worker, whatever its
+/// access, do not (as Claude's `--strict-mcp-config` and Codex's `--disable plugins`):
 /// Pi's own MCP support is off too (`--no-mcp`), so nothing from the person's
 /// or the project's `mcp.json` connects; OctiqFlow's extension reaches the
 /// host's server itself.
 fn pi_isolated(request: &AgentCommand<'_>) -> bool {
-    request.front_desk || (request.orchestration_worker && !request.worker_full_tools)
+    request.front_desk || request.orchestration_worker
 }
 
 /// Pi's image content block for a `prompt` command.

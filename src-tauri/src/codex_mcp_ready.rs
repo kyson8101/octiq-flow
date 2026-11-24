@@ -27,8 +27,9 @@
 //! (package download) in the order of ten, so the bound leaves headroom for
 //! both.
 //!
-//! Only worker launches that carry the `playwright` entry, or keep the
-//! computer-use servers for an agent that opted in (`desktop_tools`), on the
+//! Only worker launches that carry the `playwright` entry, keep the servers
+//! the worker's agent names (`worker_servers`), or keep the computer-use
+//! servers for an agent that opted in (`desktop_tools`), on the
 //! app-server transport have a gate, and it waits for every one of them. `codex exec` has no equivalent: it prints no MCP
 //! startup state on its stream and takes its prompt as an argument, so the
 //! host has nothing to wait on (see `docs/agent-chat-footprint.md`).
