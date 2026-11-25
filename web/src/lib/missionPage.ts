@@ -8,10 +8,12 @@
 // whoever the coordinator chat belongs to, a developer owns a work task, a
 // reviewer owns a check, review or acceptance task. One agent can be both.
 //
-// Reassignment is the lead's existing `orchestration_task_reassign`, asked by
-// the person on the lead's behalf: the same routing (direct reports only, at
-// the task's destination), the same handoff record, and the same rule that a
-// new owner puts the task back in front of the person before anyone starts it.
+// Reassignment is `orchestration_task_reassign`, which is the PERSON's door
+// (the coordinator's own is `orchestration_task_reassign_in_chat`): the same
+// routing (direct reports only, at the task's destination), the same handoff
+// record, and the same rule that a new owner puts the task back in front of
+// the person before anyone starts it. Unlike the coordinator, the person may
+// hand on a task they stopped or one that is out of retries.
 import type { Persona } from "./agentPersona";
 import { runPeople, type PersonState } from "./runPanel";
 import type {
@@ -223,8 +225,8 @@ export function reassignReason(words: string): string {
 
 export type ReassignRequest = { actorChatKey: string; taskId: string; assignee: string; reason: string };
 
-/** The one call the page makes: the lead's own reassignment, so the routing,
- *  the record and the re-approval are the host's, unchanged. */
+/** The one call the page makes: the person's reassignment, named for the
+ *  lead's chat, so the routing, the record and the re-approval are the host's. */
 export function reassignRequest(
   run: Pick<OrchestrationRun, "coordinatorChatKey">,
   task: Pick<OrchestrationTask, "id">,
