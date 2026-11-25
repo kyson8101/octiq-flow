@@ -104,8 +104,9 @@ last word from `orchestration_mission_refresh`) above its tasks. All of it is
 derived from the ledger the page already reads (`web/src/lib/missionPage.ts`);
 nothing new is persisted, so missions from before the page draw the same.
 
-A task row's reassign control is the lead's own `orchestration_task_reassign`,
-sent by the page with the run's coordinator as actor. Candidates come from
+A task row's reassign control is the person's `orchestration_task_reassign`
+(the lead's own is the hook's `_in_chat`), sent by the page with the run's
+coordinator as actor. Candidates come from
 `orchestration_destinations` asked as that lead (its direct reports allowed at
 the task's destination, crew first), the reason records that the person asked,
 and the host keeps the handoff, re-opens plan approval and refuses any start

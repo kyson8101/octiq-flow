@@ -381,3 +381,37 @@ fn approved_effort_is_fixed_until_reassignment_to_a_different_report() {
         assert_eq!(snapshot["tasks"][0]["heldByPlan"], true);
     });
 }
+
+/// Two doors to a reassignment, chosen by the route. The coordinator's
+/// (`_in_chat`, the hook's) does not hand on a task the person stopped; the
+/// person's (the mission page's, the socket's) does, and the change goes
+/// back to them on the plan card.
+#[test]
+fn a_stopped_task_changes_hands_through_the_persons_door_only() {
+    with_routes(|svc, run, agents| {
+        let task = create(svc, run, &agents[0], json!({})).unwrap();
+        // Other work keeps the run going: a run whose only task failed is
+        // called failed, and nothing in it changes hands.
+        create(svc, run, &agents[0], json!({})).unwrap();
+        svc.orchestrations
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
+        crate::orchestration::tests::start_as_planned(&svc.orchestrations, &task.id);
+        svc.orchestrations.stop_task(&task.id, None).unwrap();
+        let hand_on = |cmd: &str| {
+            dispatch(
+                svc,
+                cmd,
+                json!({"actorChatKey":"chat:master", "taskId":task.id, "assignee":agents[1].id, "reason":"Backup takes over"}),
+            )
+        };
+        assert_eq!(
+            hand_on("orchestration_task_reassign_in_chat").unwrap_err(),
+            crate::orchestration::STOPPED_NOT_REASSIGNED
+        );
+        assert_eq!(now(svc, &task.id).assignee.unwrap().id, agents[0].id);
+        let moved = hand_on("orchestration_task_reassign").unwrap();
+        assert_eq!(moved["assignee"]["id"], agents[1].id.as_str());
+        assert!(moved.get("approved").is_none());
+    });
+}

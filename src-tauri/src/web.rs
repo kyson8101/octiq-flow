@@ -1838,7 +1838,10 @@ const ORCHESTRATION_HOOK_ACTIONS: &[(&str, &str)] = &[
     ("run_create", "orchestration_run_create"),
     ("task_create", "orchestration_task_create"),
     ("task_revise", "orchestration_task_revise"),
-    ("task_reassign", "orchestration_task_reassign"),
+    // The coordinator's reassignment, refused for a task the person stopped
+    // and held to its automatic retries. NOT the socket's
+    // `orchestration_task_reassign`, which is the person's own.
+    ("task_reassign", "orchestration_task_reassign_in_chat"),
     // NOT the browser's `orchestration_plan_approve`: this one approves
     // only on the person's own message, which the host reads itself.
     ("plan_approve", "orchestration_plan_approve_in_chat"),
@@ -2868,6 +2871,10 @@ const CHAT_ONLY_COMMANDS: &[&str] = &[
     // only a capability may ask as the coordinator, and nothing an agent
     // reaches may ask as the person.
     "orchestration_task_reopen_in_chat",
+    // The coordinator's reassignment, refused for a task the person stopped
+    // and held to its automatic retries. The page's is the person's own;
+    // only a capability may ask as the coordinator.
+    "orchestration_task_reassign_in_chat",
     // Acts as the chat's registered agent on its own memory, and what it
     // writes is shown in that chat as the agent's own update: only the
     // agent's capability, on /hook/vault, may say so.

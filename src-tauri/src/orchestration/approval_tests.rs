@@ -171,6 +171,7 @@ fn rejecting_effort_on_reassignment_restores_its_worker_and_input_provenance() {
                 ),
                 "Backup takeover".into(),
                 Some(true),
+                ReassignedBy::Coordinator,
             )
             .unwrap();
         assert!(moved.approved.is_none() && moved.effort_chosen);
