@@ -84,6 +84,7 @@
 }
 .message-delivery-icon { flex: 0 0 auto; color: var(--fg-3); }
 .message-delivery[data-delivery="failed"] .message-delivery-status { color: var(--warn, #ff9f0a); }
+.message-delivery[data-delivery="failed"] .message-delivery-icon { color: inherit; }
 
 .message-delivery-actions {
   display: flex;
