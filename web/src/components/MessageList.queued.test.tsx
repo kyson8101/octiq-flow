@@ -6,6 +6,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 
 import { MessageList } from "./MessageList";
+import { MessageBubble } from "./MessageBubble";
+import { draw as drawTree, byLabel, press } from "../lib/__fixtures__/pressTree";
 import { addUserTurn, emptyChat, reduceChat, type Message } from "../lib/chat";
 import { lf } from "../lib/sourceText";
 import bubbleCssRaw from "./MessageBubble.css?raw";
@@ -141,14 +143,32 @@ describe("message delivery controls", () => {
   it.each([
     [{}, "Queued"],
     [{ delivery: "starting" }, "Sending next…"],
-    [{ delivery: "failed" }, "Not sent"],
-    [{ delivery: "unknown" }, "Delivery unconfirmed"],
     [{ queueAction: "cancel" }, "Returning to composer…"],
     [{ takenUp: true, queueAction: "start" }, "Sending next…"],
   ] as const)("keeps the other status wording visible for %j", (extra, label) => {
     const html = draw(extra);
     expect(html).toContain(`>${label}</span>`);
     expect(html).not.toContain("message-delivery-receipt");
+  });
+
+  it.each([
+    [{ delivery: "failed" }, "Not sent"],
+    [{ delivery: "unknown" }, "Delivery unconfirmed"],
+  ] as const)("draws %j as one icon whose name carries the words", (extra, label) => {
+    const html = draw(extra);
+    expect(html).not.toContain(`>${label}</span>`);
+    expect(html).not.toContain("message-delivery-detail");
+    expect(html).toContain(`aria-label="${label} — `);
+    expect(html).toMatch(/title="[^"]*"/);
+  });
+
+  it("presses the icon-only restore button of an unconfirmed message", () => {
+    const onRestore = vi.fn();
+    const tree = drawTree(MessageBubble, { user: true, message: { ...sent, delivery: "unknown" }, onRestore, children: "x" });
+    const button = byLabel(tree, "Restore to composer");
+    press(button);
+    expect(onRestore).toHaveBeenCalledTimes(1);
+    expect(button.props.children).not.toBe("Restore to composer");
   });
 
   it.each(["sending", "starting", "dispatched", "unknown", "failed"] as const)("never offers queue mutations for %s", (delivery) => {

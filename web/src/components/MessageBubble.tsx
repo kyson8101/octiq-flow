@@ -44,15 +44,19 @@ export function MessageBubble({ user, message, wrapUp = false, onStart, onCancel
   const waiting = delivery === "queued" && !accepted && !pending;
   const receipt = label === "Sent" || label === "Awaiting agent confirmation" || label === "Sending…";
   const receiptName = receipt ? (detail ? `${label} — ${detail}` : label) : undefined;
+  // Not sent / unconfirmed: one quiet glyph; the words and the explanation
+  // live in the tooltip and the accessible name.
+  const alert = label === "Not sent" || label === "Delivery unconfirmed";
+  const alertName = alert ? (detail ? `${label} — ${detail}` : label) : undefined;
   return (
     <div className="message-bubble" data-noswipe={onStart || onCancel || onRestore || onDismiss ? "" : undefined}>
       {body}
       {(label || footer) && (
         <div className="message-delivery" data-delivery={delivery} aria-busy={pending}>
           <div className="message-delivery-line">
-            <span className={`message-delivery-status${receipt ? " message-delivery-receipt" : ""}`} role="status" title={receiptName ?? detail} aria-label={receiptName}>
+            <span className={`message-delivery-status${receipt ? " message-delivery-receipt" : ""}`} role="status" title={receiptName ?? alertName ?? detail} aria-label={receiptName ?? alertName}>
               {waiting && <QueuedIcon />}
-              {receipt ? <ReceiptIcon sending={label === "Sending…"} accepted={accepted} /> : label}
+              {receipt ? <ReceiptIcon sending={label === "Sending…"} accepted={accepted} /> : alert ? <AlertIcon /> : label}
             </span>
             <div className="message-delivery-actions" role="group" aria-label="Message actions">
               {onStart && <button type="button" disabled={pending}
@@ -70,7 +74,11 @@ export function MessageBubble({ user, message, wrapUp = false, onStart, onCancel
                 aria-label="Take this queued message back to edit" aria-description="Return this message and its attachments to the composer" onClick={onCancel} data-icon-action>
                   <ActionIcon name="edit" />
                 </button>)}
-              {onRestore && <button type="button" onClick={onRestore}>Restore to composer</button>}
+              {onRestore && <button type="button" onClick={onRestore} data-icon-action
+                title="Return this message to the composer to edit or send again"
+                aria-label="Restore to composer">
+                <ActionIcon name="cancel" />
+              </button>}
               {footer}
               {onDismiss && <StatusDismiss label="Dismiss" visible onClick={onDismiss} />}
             </div>
@@ -84,7 +92,7 @@ export function MessageBubble({ user, message, wrapUp = false, onStart, onCancel
           <div className="message-delivery-line"><MessageTime at={at} /></div>
         </div>
       )}
-      {detail && !accepted && delivery !== "dispatched" && delivery !== "queued" && <p className="message-delivery-detail">{detail}</p>}
+      {detail && !alert && !accepted && delivery !== "dispatched" && delivery !== "queued" && <p className="message-delivery-detail">{detail}</p>}
       {message.queueError && <p className="message-delivery-error" role="alert">{message.queueError}</p>}
     </div>
   );
@@ -105,6 +113,16 @@ function QueuedIcon() {
     <svg className="message-delivery-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="9" />
       <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+/** A circle with an exclamation mark: not sent, or not confirmed. */
+function AlertIcon() {
+  return (
+    <svg className="message-delivery-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7.5v5.5M12 16.5v.01" />
     </svg>
   );
 }
